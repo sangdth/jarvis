@@ -31,12 +31,12 @@ async def run_pipecat_harness() -> None:
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
-    from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-    from pipecat.services.anthropic import AnthropicLLMService
-    from pipecat.services.whisper import WhisperSTTService
+    from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
-    from jarvis.voice_gates import JarvisIntentGate, SpeakerVerificationGate
+    from jarvis.voice_gates import JarvisIntentGate
 
     executive_filter = ExecutiveFilter()
     task_ref: dict[str, PipelineTask] = {}
@@ -72,20 +72,43 @@ async def run_pipecat_harness() -> None:
         )
     )
 
-    # 2. Voice Biometrics Gate ("Talk to me only")
-    speaker_gate = SpeakerVerificationGate()
+    # 2. Local Always-On STT (Faster-Whisper / MLX-Whisper)
+    try:
+        from pipecat.services.whisper.stt import WhisperSTTService
 
-    # 3. Local Always-On STT (Faster-Whisper)
-    stt = WhisperSTTService(model=settings.whisper_model)
+        stt = WhisperSTTService(model=settings.whisper_model)
+    except Exception as exc:
+        logger.warning(f"Whisper STT service initialization warning ({exc}).")
+        stt = None
 
-    # 4. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier)
+    # 3. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier)
     intent_gate = JarvisIntentGate(state=state, executive_filter=executive_filter)
 
-    # 5. Executive LLM Brain (Anthropic Claude)
-    llm = AnthropicLLMService(
-        api_key=settings.anthropic_api_key,
-        model=settings.executive_model,
-    )
+    # 4. Executive LLM Brain (OpenRouter or Anthropic direct)
+    if settings.openrouter_api_key:
+        from pipecat.services.openrouter.llm import OpenRouterLLMService
+
+        llm = OpenRouterLLMService(
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+            settings=OpenRouterLLMService.Settings(model=settings.executive_model),
+            default_headers={
+                "HTTP-Referer": "https://github.com/sangdth/jarvis",
+                "X-Title": "Jarvis",
+            },
+        )
+        logger.info(f"Initialized OpenRouter LLM: {settings.executive_model}")
+    elif settings.anthropic_api_key:
+        from pipecat.services.anthropic.llm import AnthropicLLMService
+
+        llm = AnthropicLLMService(
+            api_key=settings.anthropic_api_key,
+            model=settings.executive_model,
+        )
+        logger.info(f"Initialized Anthropic direct LLM: {settings.executive_model}")
+    else:
+        logger.warning("No OPENROUTER_API_KEY or ANTHROPIC_API_KEY configured; running in offline mode.")
+        llm = None
 
     # Register tool so Jarvis can forward user decisions to Claude Code / OpenCode / Pi
     async def handle_send_agent_decision(
@@ -98,44 +121,45 @@ async def run_pipecat_harness() -> None:
             {"status": "sent" if ok else "agent_not_active", "agent_id": agent_id}
         )
 
-    llm.register_function("send_agent_decision", handle_send_agent_decision)
-
     tools = [
-        {
-            "name": "send_agent_decision",
-            "description": "Send the user's verbal decision, approval, or instruction to a watched coding agent.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "agent_id": {
-                        "type": "string",
-                        "description": "ID of the agent (e.g., claude-auth, opencode-frontend, pi-backend)",
-                    },
-                    "instruction": {
-                        "type": "string",
-                        "description": "Clear instruction or decision to send to the agent",
-                    },
+        FunctionSchema(
+            name="send_agent_decision",
+            description="Send the user's verbal decision, approval, or instruction to a watched coding agent.",
+            properties={
+                "agent_id": {
+                    "type": "string",
+                    "description": "ID of the agent (e.g., claude-auth, opencode-frontend, pi-backend)",
                 },
-                "required": ["agent_id", "instruction"],
+                "instruction": {
+                    "type": "string",
+                    "description": "Clear instruction or decision to send to the agent",
+                },
             },
-        }
+            required=["agent_id", "instruction"],
+        )
     ]
 
-    context = OpenAILLMContext(
+    if llm is not None:
+        llm.register_function("send_agent_decision", handle_send_agent_decision)
+
+    context = LLMContext(
         messages=[{"role": "system", "content": JARVIS_EXECUTIVE_SYSTEM_PROMPT}],
         tools=tools,
     )
-    context_aggregator = llm.create_context_aggregator(context)
+    context_aggregator = LLMContextAggregatorPair(context)
 
-    # 6. Text-to-Speech (ElevenLabs if configured)
+    # 5. Text-to-Speech (ElevenLabs if configured)
     processors = [
         transport.input(),
-        speaker_gate,
-        stt,
+    ]
+    if stt is not None:
+        processors.append(stt)
+    processors.extend([
         intent_gate,
         context_aggregator.user(),
-        llm,
-    ]
+    ])
+    if llm is not None:
+        processors.append(llm)
 
     if settings.elevenlabs_api_key:
         from pipecat.services.elevenlabs import ElevenLabsTTSService

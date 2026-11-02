@@ -2,11 +2,10 @@
 
 ## 1. Core Requirements
 
-1. **Talk to Me Only:** Listen to the owner's voice and ignore background voices, other people in the room, or media playback.
-2. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
-3. **Multi-Agent Orchestration:** Continuously watch and orchestrate coding agents including **Claude Code**, **OpenCode**, and **Pi**.
-4. **Executive Filtering (Jargon-Free):** Coding agent outputs are typically long and full of stack traces, diffs, and file paths. Jarvis must understand the context first, filter out routine progress, and surface only key blockers or architectural trade-offs that require the user's attention or decision.
-5. **Dynamic Silence / Notification Mode:**
+1. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
+2. **Multi-Agent Orchestration:** Continuously watch and orchestrate coding agents including **Claude Code**, **OpenCode**, and **Pi**.
+3. **Executive Filtering (Jargon-Free):** Coding agent outputs are typically long and full of stack traces, diffs, and file paths. Jarvis must understand the context first, filter out routine progress, and surface only key blockers or architectural trade-offs that require the user's attention or decision.
+4. **Dynamic Silence / Notification Mode:**
    - Saying **"Shut up"** or **"Be quiet"** immediately silences Jarvis's voice (`BEEP_ONLY` mode), interrupting any active speech and using short audio chimes ("beep") to notify when new agent decisions arrive.
    - Saying **"You can talk"** restores `VOICE` mode and reads out a concise digest of queued topics.
 
@@ -18,8 +17,7 @@
 flowchart LR
     subgraph Input ["1. Always-On Ear"]
         Mic["Mic Input"] --> VAD["Silero VAD"]
-        VAD --> VoiceID["Speaker ID (Picovoice Eagle)"]
-        VoiceID -->|Your Voice Only| STT["Local STT (Faster-Whisper)"]
+        VAD --> STT["Local STT (Faster-Whisper)"]
     end
 
     subgraph Brain ["2. Jarvis Executive Filter"]
@@ -50,14 +48,13 @@ flowchart LR
 
 ### A. Real-Time Voice Pipeline Framework
 * **[Pipecat](https://github.com/pipecat-ai/pipecat) (Python) — *Selected***
-  * **Why:** Frame-based architecture makes it trivial to insert custom gates (`SpeakerVerificationGate` and `JarvisIntentGate`) directly into the audio/transcription stream. Supports instant interruption (`CancelFrame`), raw PCM beep injection (`OutputAudioRawFrame`), and direct TTS synthesis (`TTSSpeakFrame`).
+  * **Why:** Frame-based architecture makes it trivial to insert custom gates (`JarvisIntentGate`) directly into the audio/transcription stream. Supports instant interruption (`CancelFrame`), raw PCM beep injection (`OutputAudioRawFrame`), and direct TTS synthesis (`TTSSpeakFrame`).
 * **Alternative:** **[LiveKit Agents](https://github.com/livekit/agents)** (WebRTC-focused with an open-weight Semantic Turn Detector).
 
-### B. "Talk to Me Only" & "No Wake Word"
-Without a wake word, three local filtering stages prevent false triggers and API cost blowups:
+### B. "No Wake Word"
+Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
-2. **Speaker Verification ("Talk to me only"):** **[Picovoice Eagle](https://picovoice.ai/platform/eagle/)** (or open-source **[Pyannote](https://github.com/pyannote/pyannote-audio)** / **SpeechBrain**). You enroll a 10-second voiceprint (`jarvis-enroll`). Every audio frame is scored against your voiceprint; if the similarity score is below threshold (`0.65`), the audio is dropped before reaching STT.
-3. **Local Always-On STT + Turn Classifier:** **[Faster-Whisper](https://github.com/SYSTRAN/faster-whisper)** (`distil-large-v3`) transcribes speech locally at $0 cost. A fast classifier then labels the transcript as `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`.
+2. **Local Always-On STT + Turn Classifier:** **[Faster-Whisper](https://github.com/SYSTRAN/faster-whisper)** (`distil-large-v3`) transcribes speech locally at $0 cost. A fast classifier then labels the transcript as `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`.
 
 ### C. Coding Agent Integration (Claude Code, OpenCode, Pi)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
@@ -80,9 +77,8 @@ Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON p
 
 | Module | Path | Responsibility |
 | :--- | :--- | :--- |
-| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, Eagle Speaker ID, Faster-Whisper, Intent Gate, Claude LLM, ElevenLabs TTS, and Agent Watchers. |
+| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, Faster-Whisper, Intent Gate, Claude LLM, ElevenLabs TTS, and Agent Watchers. |
 | **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
 | **Executive Filter** | `src/jarvis/executive_filter.py` | LLM filter that strips technical jargon and classifies whether un-waked speech is addressed to Jarvis. |
-| **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementations: `SpeakerVerificationGate` and `JarvisIntentGate`. |
+| **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
 | **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeStreamAdapter`, `ACPStdioAdapter` (Pi), `OpenCodeSSEAdapter`, and `AgentOrchestrator`. |
-| **Voice Enrollment** | `src/jarvis/enroll.py` | CLI tool (`jarvis-enroll`) to record and save the owner's Picovoice Eagle voiceprint. |

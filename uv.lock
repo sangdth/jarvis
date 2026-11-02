@@ -1170,7 +1170,6 @@ dependencies = [
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pipecat-ai", version = "0.0.108", source = { registry = "https://pypi.org/simple" }, extra = ["anthropic", "elevenlabs", "local", "openai", "whisper"], marker = "python_full_version < '3.11'" },
     { name = "pipecat-ai", version = "1.15.0", source = { registry = "https://pypi.org/simple" }, extra = ["anthropic", "local", "openai", "whisper"], marker = "python_full_version >= '3.11'" },
-    { name = "pveagle" },
     { name = "pydantic" },
     { name = "pydantic-settings", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pydantic-settings", version = "2.16.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -1189,7 +1188,6 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pipecat-ai", extras = ["silero", "whisper", "openai", "anthropic", "elevenlabs", "local"], specifier = ">=0.0.50" },
-    { name = "pveagle", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pydantic-settings", specifier = ">=2.2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
@@ -2752,15 +2750,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9b/ca/25afc144934014700c52e05103c2421997482d561f3101ff352e1292fb81/protobuf-6.33.6-cp39-abi3-manylinux2014_s390x.whl", hash = "sha256:c96c37eec15086b79762ed265d59ab204dabc53056e3443e702d2681f4b39ce3", size = 339381, upload-time = "2026-03-18T19:04:54.616Z" },
     { url = "https://files.pythonhosted.org/packages/16/92/d1e32e3e0d894fe00b15ce28ad4944ab692713f2e7f0a99787405e43533a/protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593", size = 323436, upload-time = "2026-03-18T19:04:55.768Z" },
     { url = "https://files.pythonhosted.org/packages/c4/72/02445137af02769918a93807b2b7890047c32bfb9f90371cbc12688819eb/protobuf-6.33.6-py3-none-any.whl", hash = "sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901", size = 170656, upload-time = "2026-03-18T19:04:59.826Z" },
-]
-
-[[package]]
-name = "pveagle"
-version = "3.0.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0b/94/5040e431779634291b61152c446857aa2637a4cb89f6e03d6fcdede476b4/pveagle-3.0.2.tar.gz", hash = "sha256:65635d46fd3849011cf6de176aa5b00c11331ced202bfa57fd591509d7276f1c", size = 7255615, upload-time = "2026-05-11T16:36:59.765Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/88/4b12ba21b7acc15e2e055038375984164bd592612a2e8bc2706bc9576193/pveagle-3.0.2-py3-none-any.whl", hash = "sha256:622b743b2316224bb6546fac1972aa25a497bb4f4d776e58e0df8b406f7a2d84", size = 7268735, upload-time = "2026-05-11T16:36:57.596Z" },
 ]
 
 [[package]]

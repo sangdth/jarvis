@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "pipecat-ai[silero,whisper,openai,anthropic,elevenlabs,local]>=0.0.50",
-    "pveagle>=1.0.0",
     "numpy>=1.26.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",
@@ -23,7 +22,6 @@ dev = [
 
 [project.scripts]
 jarvis = "jarvis.main:main"
-jarvis-enroll = "jarvis.enroll:main"
 
 [build-system]
 requires = ["hatchling"]
