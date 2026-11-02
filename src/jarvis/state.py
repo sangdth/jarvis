@@ -22,7 +22,7 @@ class UserIntent(str, Enum):
 
 @dataclass
 class AgentTopic:
-    """A distilled, jargon-free topic from a sub-agent that requires user attention."""
+    """Something an agent said that the user should hear: a question, an approval request, or a finished turn."""
 
     agent_id: str
     agent_name: str
@@ -122,7 +122,7 @@ class JarvisState:
             msg = "I'm back. Nothing urgent came up while I was quiet."
         else:
             count = len(topics)
-            asks = " ".join(f"{t.agent_name}: {t.summary}" for t in topics if not t.is_report)
+            asks = " ".join(f"{t.agent_name} {t.summary}" for t in topics if not t.is_report)
             msg = f"I can talk again. While I was quiet, {count} item{'s' if count > 1 else ''} came up. {asks}".strip()
 
         if self.on_speak:
@@ -145,11 +145,13 @@ class JarvisState:
         elif topic.is_report:
             await self._retell([topic])
         elif self.on_speak:
-            await self.on_speak(f"{topic.agent_name}: {topic.summary}")
+            # The summary starts with the verb ("asks: ...", "needs approval: ..."); the name goes in front of it.
+            await self.on_speak(f"{topic.agent_name} {topic.summary}")
 
     async def _retell(self, reports: list[AgentTopic]) -> None:
         """Finished turns are long markdown; the conversation model shortens them. Offline: last line only."""
         if self.on_report:
-            await self.on_report("\n\n".join(f"{t.agent_name}: {t.summary}" for t in reports))
+            # Trim per report so the agent's name survives, and no queued report disappears behind a long one.
+            await self.on_report("\n\n".join(f"{t.agent_name}: {t.summary[-3000:]}" for t in reports))
         elif self.on_speak:
             await self.on_speak(" ".join(f"{t.agent_name}: {_last_line(t.summary)}" for t in reports))

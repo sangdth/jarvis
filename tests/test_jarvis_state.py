@@ -45,7 +45,7 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         topic1 = AgentTopic(
             agent_id="claude",
             agent_name="Claude Code",
-            summary="Should we drop the legacy users table?",
+            summary="asks: Should we drop the legacy users table?",
         )
         await state.notify_topic(topic1)
         self.assertEqual(len(spoken_messages), 1)
@@ -62,7 +62,7 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         topic2 = AgentTopic(
             agent_id="opencode-fe",
             agent_name="OpenCode",
-            summary="Wants approval to install Tailwind v4.",
+            summary="needs approval: install Tailwind v4.",
         )
         await state.notify_topic(topic2)
         self.assertEqual(len(spoken_messages), 1)  # No new speech while muted
@@ -94,12 +94,18 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
 
         # Muted: the question is read out on unmute, the finished turn is retold after it
         await state.set_mute()
-        await state.notify_topic(AgentTopic("opencode", "OpenCode", "OpenCode asks: tests or docs?"))
+        await state.notify_topic(AgentTopic("opencode", "OpenCode", "asks: tests or docs?"))
         await state.notify_topic(done)
         await state.set_unmute()
         self.assertIn("OpenCode asks: tests or docs?", spoken[-1])
+        self.assertNotIn("OpenCode OpenCode", spoken[-1])
         self.assertNotIn("src/app.py", spoken[-1])
         self.assertEqual(len(reports), 2)
+
+        # A long report keeps the agent's name: the trim is per report, from the end
+        await state.notify_topic(AgentTopic("claude", "Claude Code", "x" * 5000, is_report=True))
+        self.assertTrue(reports[-1].startswith("Claude Code: xxx"))
+        self.assertEqual(len(reports[-1]), len("Claude Code: ") + 3000)
 
         # Offline (no conversation model): only the last line is spoken
         offline = JarvisState(on_speak=on_speak)

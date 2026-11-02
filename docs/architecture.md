@@ -4,7 +4,7 @@
 
 1. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
 2. **Multi-Agent Orchestration:** Continuously watch and orchestrate coding agents including **Claude Code** and **OpenCode**.
-3. **Executive Filtering (Jargon-Free):** Coding agent outputs are typically long and full of stack traces, diffs, and file paths. Jarvis must understand the context first, filter out routine progress, and surface only key blockers or architectural trade-offs that require the user's attention or decision.
+3. **Plain-Words Reporting:** Agent questions and approval requests are read out as they are. A finished turn is long markdown full of file paths and diffs; Jarvis has its conversation model retell it in two spoken sentences.
 4. **Dynamic Silence / Notification Mode:**
    - Saying **"Shut up"** or **"Be quiet"** immediately silences Jarvis's voice (`BEEP_ONLY` mode), interrupting any active speech and using short audio chimes ("beep") to notify when new agent decisions arrive.
    - Saying **"You can talk"** restores `VOICE` mode and reads out a concise digest of queued topics.

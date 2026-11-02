@@ -97,7 +97,7 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
         result = await self.ask_and_answer("Bash", {"command": "rm -rf build"}, "yes, go ahead")
         self.assertIsInstance(result, PermissionResultAllow)
         self.adapter._surface.assert_awaited_with(
-            "Claude Code needs approval: rm -rf build"
+            "needs approval: rm -rf build"
         )
         result = await self.ask_and_answer("Bash", {"command": "rm -rf build"}, "no, don't")
         self.assertIsInstance(result, PermissionResultDeny)
@@ -108,7 +108,7 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
         result = await self.ask_and_answer("AskUserQuestion", {"questions": questions}, "let's use sqlite")
         self.assertEqual(result.updated_input["answers"], {"Which database?": "SQLite"})
         self.adapter._surface.assert_awaited_with(
-            "Claude Code asks: Which database? Options: Postgres, SQLite."
+            "asks: Which database? Options: Postgres, SQLite."
         )
 
     async def test_stop_while_waiting_denies_and_interrupts(self) -> None:
@@ -148,7 +148,7 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         }
         await self.adapter._handle_event(event)
         self.adapter._surface.assert_awaited_once_with(
-            "OpenCode needs approval: read /etc/hosts"
+            "needs approval: read /etc/hosts"
         )
 
         with patch.object(self.adapter._http, "post", new=self.post):
@@ -159,7 +159,7 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         # Shape captured from a live OpenCode v2.2.5 server: the form sits under data.form
         await self.adapter._handle_event({"type": "form.created", "data": {"form": QUESTION_FORM}})
         self.adapter._surface.assert_awaited_once_with(
-            "OpenCode asks: Which should come next: tests or docs? Options: Tests, Docs."
+            "asks: Which should come next: tests or docs? Options: Tests, Docs."
         )
         with patch.object(self.adapter._http, "post", new=self.post):
             self.assertTrue(await self.adapter.answer("Tests first"))
