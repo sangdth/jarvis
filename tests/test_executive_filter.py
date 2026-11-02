@@ -1,4 +1,6 @@
 import json
+
+import httpx
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -75,19 +77,23 @@ class TestExecutiveFilter(unittest.IsolatedAsyncioTestCase):
         assert topic is not None
         self.assertEqual(topic.summary, "Claude Code wants to run the deploy.")
 
-    async def test_classify_user_utterance(self) -> None:
+    async def test_classify_user_utterance_asks_the_decision_model(self) -> None:
         filt = online_filter()
-        with patch.object(filt, "_call_llm", new=AsyncMock(return_value="ADDRESSED_TO_JARVIS")):
-            intent = await filt.classify_user_utterance("Jarvis, what is the status of Claude Code?")
-            self.assertEqual(intent, UserIntent.ADDRESSED_TO_JARVIS)
-
-        with patch.object(filt, "_call_llm", new=AsyncMock(return_value="IGNORE_BACKGROUND")):
-            intent = await filt.classify_user_utterance("Yeah I think the coffee is ready")
-            self.assertEqual(intent, UserIntent.IGNORE_BACKGROUND)
+        reply = MagicMock()
+        reply.json.return_value = {"answers": {"intent": {"type": "choice", "choice": "ADDRESSED_TO_JARVIS"}}}
+        post = AsyncMock(return_value=reply)
+        with patch.object(filt._http, "post", new=post):
+            intent = await filt.classify_user_utterance("Use Postgres", recent_jarvis_question="Postgres or SQLite?")
+        self.assertEqual(intent, UserIntent.ADDRESSED_TO_JARVIS)
+        self.assertEqual(post.call_args.args[0], "https://openrouter.ai/api/alpha/decisions")
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["model"], "typesafe/jev-1.14")
+        self.assertEqual(body["state"], {"document": "Use Postgres", "jarvis_last_said": "Postgres or SQLite?"})
+        self.assertEqual(set(body["questions"]["intent"]["criteria"]), {i.value for i in UserIntent})
 
     async def test_classifier_failure_ignores_speech(self) -> None:
         filt = online_filter()
-        with patch.object(filt, "_call_llm", new=AsyncMock(side_effect=RuntimeError("network down"))):
+        with patch.object(filt._http, "post", new=AsyncMock(side_effect=httpx.ConnectError("network down"))):
             intent = await filt.classify_user_utterance("Turn on the lights in the kitchen")
         self.assertEqual(intent, UserIntent.IGNORE_BACKGROUND)
 

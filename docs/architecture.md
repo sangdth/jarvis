@@ -53,7 +53,7 @@ flowchart LR
 ### B. "No Wake Word"
 Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
-2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. A fast classifier then labels the transcript as `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`.
+2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
 
 ### C. Coding Agent Integration (Claude Code, OpenCode)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
@@ -90,6 +90,6 @@ a pending question.
 | :--- | :--- | :--- |
 | **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, Faster-Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash), ElevenLabs TTS, and Agent Watchers. |
 | **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
-| **Executive Filter** | `src/jarvis/executive_filter.py` | DeepSeek V4.1 Flash via OpenRouter (thinking off) that strips technical jargon and classifies whether un-waked speech is addressed to Jarvis. |
+| **Executive Filter** | `src/jarvis/executive_filter.py` | DeepSeek V4.1 Flash via OpenRouter (thinking off) strips technical jargon from agent events; `typesafe/jev-1.14` classifies whether speech is addressed to Jarvis. |
 | **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
 | **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, and `AgentOrchestrator`. |
