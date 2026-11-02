@@ -84,30 +84,27 @@ async def run_pipecat_harness() -> None:
     # 3. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier)
     intent_gate = JarvisIntentGate(state=state, executive_filter=executive_filter)
 
-    # 4. Executive LLM Brain (OpenRouter or Anthropic direct)
+    # 4. Executive LLM Brain (OpenRouter)
     if settings.openrouter_api_key:
         from pipecat.services.openrouter.llm import OpenRouterLLMService
 
         llm = OpenRouterLLMService(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
-            settings=OpenRouterLLMService.Settings(model=settings.executive_model),
+            settings=OpenRouterLLMService.Settings(
+                model=settings.executive_model,
+                # DeepSeek thinks by default, which more than doubles time to first word;
+                # sort=latency routes to whichever provider currently answers fastest.
+                extra={"extra_body": {"reasoning": {"enabled": False}, "provider": {"sort": "latency"}}},
+            ),
             default_headers={
                 "HTTP-Referer": "https://github.com/sangdth/jarvis",
                 "X-Title": "Jarvis",
             },
         )
         logger.info(f"Initialized OpenRouter LLM: {settings.executive_model}")
-    elif settings.anthropic_api_key:
-        from pipecat.services.anthropic.llm import AnthropicLLMService
-
-        llm = AnthropicLLMService(
-            api_key=settings.anthropic_api_key,
-            model=settings.executive_model,
-        )
-        logger.info(f"Initialized Anthropic direct LLM: {settings.executive_model}")
     else:
-        logger.warning("No OPENROUTER_API_KEY or ANTHROPIC_API_KEY configured; running in offline mode.")
+        logger.warning("No OPENROUTER_API_KEY configured; running in offline mode.")
         llm = None
 
     # Register tool so Jarvis can forward user decisions to Claude Code / OpenCode / Pi

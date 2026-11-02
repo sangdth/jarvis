@@ -52,18 +52,20 @@ class ExecutiveFilter:
         model: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        self.api_key = (
-            api_key
-            if api_key is not None
-            else (settings.openrouter_api_key or settings.anthropic_api_key)
-        )
+        self.api_key = settings.openrouter_api_key if api_key is None else api_key
         self.model = model or settings.filter_model
         self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
-        # If openrouter_api_key is set, or api_key is not an Anthropic key, use OpenRouter / OpenAI format
-        self.is_openrouter = bool(
-            settings.openrouter_api_key
-            or (self.api_key and not self.api_key.startswith("sk-ant-"))
+        # One long-lived client keeps the TLS connection warm between calls.
+        self._http = httpx.AsyncClient(
+            timeout=12.0,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://github.com/sangdth/jarvis",
+                "X-Title": "Jarvis",
+            },
         )
+        if not self.api_key:
+            logger.warning("OPENROUTER_API_KEY is not set; executive filter runs on offline heuristics.")
 
     async def _call_llm(
         self,
@@ -72,18 +74,12 @@ class ExecutiveFilter:
         max_tokens: int = 250,
         temperature: float = 0.0,
     ) -> str:
-        """Call either OpenRouter chat/completions or Anthropic messages API."""
+        """Call the filter model through OpenRouter chat/completions."""
         if not self.api_key:
-            raise ValueError("No LLM API key configured.")
-
-        if self.is_openrouter:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "HTTP-Referer": "https://github.com/sangdth/jarvis",
-                "X-Title": "Jarvis",
-                "Content-Type": "application/json",
-            }
-            body = {
+            raise ValueError("OPENROUTER_API_KEY is not configured.")
+        resp = await self._http.post(
+            f"{self.base_url}/chat/completions",
+            json={
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
@@ -91,30 +87,13 @@ class ExecutiveFilter:
                 ],
                 "max_tokens": max_tokens,
                 "temperature": temperature,
-            }
-            url = f"{self.base_url}/chat/completions"
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                resp = await client.post(url, headers=headers, json=body)
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"].strip()
-        else:
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            }
-            body = {
-                "model": self.model,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_content}],
-            }
-            url = "https://api.anthropic.com/v1/messages"
-            async with httpx.AsyncClient(timeout=12.0) as client:
-                resp = await client.post(url, headers=headers, json=body)
-                resp.raise_for_status()
-                return resp.json()["content"][0]["text"].strip()
+                # Thinking more than doubles latency; these are one-shot labels.
+                "reasoning": {"enabled": False},
+                "provider": {"sort": "latency"},
+            },
+        )
+        resp.raise_for_status()
+        return (resp.json()["choices"][0]["message"]["content"] or "").strip()
 
     async def evaluate_agent_event(
         self,
@@ -128,9 +107,9 @@ class ExecutiveFilter:
         if not cleaned:
             return None
 
-        # Fallback heuristic when no LLM API key is configured yet
+        # Fallback heuristic when no OpenRouter key is configured
         if not self.api_key:
-            logger.debug("No LLM API key configured; using heuristic executive filter.")
+            logger.debug("No OPENROUTER_API_KEY; using heuristic executive filter.")
             lower = cleaned.lower()
             triggers = ("?", "permission", "approve", "should i", "blocked", "error:", "completed")
             if force_decision or any(t in lower for t in triggers):
@@ -195,7 +174,7 @@ class ExecutiveFilter:
             return fast
 
         if not self.api_key:
-            # When running without API keys, ignore background speech unless explicitly addressed
+            # When running without an API key, ignore background speech unless explicitly addressed
             return UserIntent.IGNORE_BACKGROUND
 
         try:

@@ -32,7 +32,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 Fill in:
-- `OPENROUTER_API_KEY`: Used by the Executive Filter and Jarvis's conversational brain (`ANTHROPIC_API_KEY` works as a direct fallback).
+- `OPENROUTER_API_KEY`: used for both Jarvis's conversational brain (`EXECUTIVE_MODEL`) and the filter (`FILTER_MODEL`); both default to `deepseek/deepseek-v4.1-flash` with thinking off. Left empty, the filter runs on offline keyword heuristics.
 - `ELEVENLABS_API_KEY`: For ultra-low-latency voice output.
 
 ### 3. Configure Watched Coding Agents

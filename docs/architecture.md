@@ -77,8 +77,8 @@ Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON p
 
 | Module | Path | Responsibility |
 | :--- | :--- | :--- |
-| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, Faster-Whisper, Intent Gate, Claude LLM, ElevenLabs TTS, and Agent Watchers. |
+| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, Faster-Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash), ElevenLabs TTS, and Agent Watchers. |
 | **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
-| **Executive Filter** | `src/jarvis/executive_filter.py` | LLM filter that strips technical jargon and classifies whether un-waked speech is addressed to Jarvis. |
+| **Executive Filter** | `src/jarvis/executive_filter.py` | DeepSeek V4.1 Flash via OpenRouter (thinking off) that strips technical jargon and classifies whether un-waked speech is addressed to Jarvis. |
 | **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
 | **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeStreamAdapter`, `ACPStdioAdapter` (Pi), `OpenCodeSSEAdapter`, and `AgentOrchestrator`. |
