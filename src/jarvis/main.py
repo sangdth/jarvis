@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime
 from collections.abc import Awaitable, Callable
 from typing import Any
 from loguru import logger
@@ -32,6 +33,20 @@ AGENT_REPORT_PROMPT = (
     "[Not the user speaking: a coding agent finished its turn.] Tell the user what it did in at most two "
     "short spoken sentences. Do not call any tool; the user decides what happens next.\n\n"
 )
+
+
+def greeting_prompt(now: datetime, memories: list[str]) -> str:
+    """What the brain gets at startup so Jarvis speaks first: the local time and a few things it remembers."""
+    remembered = (
+        " Things you remember about the user: " + "; ".join(memories) + ". Mention one only if it is timely"
+        " (today or the next day or two); otherwise mention none."
+        if memories
+        else ""
+    )
+    return (
+        f"[Not the user speaking: Jarvis just started. It is {now:%A %H:%M}.] Greet the user first, in one or two short spoken sentences"
+        f" that fit the time of day, and let them know you're listening.{remembered} Do not call any tool."
+    )
 
 
 def agent_roster(orchestrator: AgentOrchestrator) -> str:
@@ -268,6 +283,22 @@ async def run_pipecat_harness() -> None:
         ),
     )
     task_ref["task"] = task
+
+    @task.event_handler("on_pipeline_started")
+    async def greet(task: PipelineTask, frame) -> None:
+        if llm is None:
+            await on_speak("Jarvis here. I'm listening.")
+            return
+        memories: list[str] = []
+        if memory is not None:
+            try:
+                memories = [m["memory"] for m in (await memory.get_memories())[-10:]]
+            except Exception as exc:
+                logger.warning(f"Could not read memories for the greeting ({exc!r}).")
+        await task.queue_frame(
+            # A user-role note: with no conversation yet, a trailing system message makes DeepSeek reply with junk.
+            LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_prompt(datetime.now(), memories)}], run_llm=True)
+        )
 
     # Start background coding agent watchers (Claude Code, OpenCode)
     await orchestrator.start_all()
