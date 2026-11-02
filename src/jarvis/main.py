@@ -19,7 +19,7 @@ JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, an executive voice harness o
 Core behavior:
 1. Keep every response under 2 short, natural spoken sentences.
 2. Never read out file paths, stack traces, diffs, or code blocks. Translate technical complexity into high-level decisions and trade-offs.
-3. You have access to the `send_agent_decision` tool. When the user asks you to write code, build a feature, fix a bug, or gives any programming instruction without specifying an agent, immediately dispatch it to the default coding agent using `send_agent_decision`.
+3. Use the `send_agent_decision` tool to pass the user's tasks, approvals and decisions to a watched coding agent.
 """
 
 
@@ -28,18 +28,16 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
     if not orchestrator.adapters:
         return "\nNo coding agents are configured right now."
     default_id = orchestrator.default_agent_id
-    lines = []
-    for a in orchestrator.adapters.values():
-        tag = " (DEFAULT)" if a.config.id == default_id else ""
-        lines.append(f"- id `{a.config.id}`{tag}: {a.config.name}")
-    roster = "\nWatched coding agents:\n" + "\n".join(lines)
-    if default_id:
-        roster += (
-            f"\n\nDefault coding agent: `{default_id}`. "
-            f"Whenever the user tells you to code, build, fix, refactor, or test something "
-            f"without naming a specific agent, invoke `send_agent_decision` with agent_id='{default_id}' by default."
-        )
-    return roster
+    lines = [
+        f"- id `{a.config.id}`{' (DEFAULT)' if a.config.id == default_id else ''}: {a.config.name}"
+        for a in orchestrator.adapters.values()
+    ]
+    return (
+        "\nWatched coding agents (use the exact id with send_agent_decision):\n"
+        + "\n".join(lines)
+        + f"\nWhen the user gives you a coding task without naming an agent, send it to `{default_id}`."
+        " When they ask a question, answer it yourself; do not forward it."
+    )
 
 
 async def run_pipecat_harness() -> None:
@@ -124,25 +122,22 @@ async def run_pipecat_harness() -> None:
     async def handle_send_agent_decision(
         function_name, tool_call_id, args, llm_service, context, result_callback
     ):
-        raw_agent_id = args.get("agent_id") or orchestrator.default_agent_id or ""
-        instruction = args.get("instruction", "")
-        ok = await orchestrator.route_user_decision(raw_agent_id, instruction)
-        target = orchestrator.resolve_agent_id(raw_agent_id) or raw_agent_id
+        sent_to = await orchestrator.route_user_decision(args.get("agent_id"), args.get("instruction", ""))
         await result_callback(
-            {"status": "sent" if ok else "agent_not_active", "agent_id": target}
+            {"status": "sent" if sent_to else "agent_not_active", "agent_id": sent_to or args.get("agent_id")}
         )
 
     tools = [
         FunctionSchema(
             name="send_agent_decision",
             description=(
-                "Send a coding instruction, feature request, approval, or decision to a watched coding agent. "
-                "If no agent is specified by the user, omit agent_id or use the default agent."
+                "Send a coding task, approval, or decision to a watched coding agent. "
+                "Omit agent_id to use the default agent."
             ),
             properties={
                 "agent_id": {
                     "type": "string",
-                    "description": "Exact ID of the watched agent (optional; defaults to the configured default coding agent)",
+                    "description": "Exact ID of the watched agent, from the list in your instructions. Omit for the default agent.",
                 },
                 "instruction": {
                     "type": "string",

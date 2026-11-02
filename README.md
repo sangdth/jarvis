@@ -33,7 +33,7 @@ cp .env.example .env
 ```
 Fill in:
 - `OPENROUTER_API_KEY`: used for both Jarvis's conversational brain (`EXECUTIVE_MODEL`) and the filter (`FILTER_MODEL`); both default to `deepseek/deepseek-v4.1-flash` with thinking off. Left empty, the filter runs on offline keyword heuristics.
-- `DEFAULT_CODING_AGENT`: default coding agent ID or type (e.g. `opencode-frontend`, `opencode`, `claude-auth`, `claude`). When you tell Jarvis *"build a login screen"* or *"fix this bug"*, it automatically routes to this agent.
+- `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `opencode-frontend`) that gets tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `ELEVENLABS_API_KEY`: For ultra-low-latency voice output.
 
 ### 3. Configure Watched Coding Agents

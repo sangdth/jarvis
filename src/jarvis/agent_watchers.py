@@ -430,6 +430,10 @@ class AgentOrchestrator:
             elif cfg.type == "opencode_sse":
                 self.adapters[cfg.id] = OpenCodeSSEAdapter(cfg, self.state, self.executive_filter)
 
+        default = settings.default_coding_agent
+        if default and default not in self.adapters:
+            raise ValueError(f"DEFAULT_CODING_AGENT={default!r} is not an enabled agent id; use one of {list(self.adapters)}")
+
     async def start_all(self) -> None:
         for adapter in self.adapters.values():
             await adapter.start()
@@ -440,48 +444,14 @@ class AgentOrchestrator:
 
     @property
     def default_agent_id(self) -> str | None:
-        """Return the configured default agent id, or the first active agent if not specified."""
-        target = (settings.default_coding_agent or "").strip()
-        if target:
-            resolved = self.resolve_agent_id(target)
-            if resolved:
-                return resolved
-        # Fallback to the first active adapter loaded
-        return next(iter(self.adapters.keys()), None)
+        """The configured default agent, or the first loaded one when DEFAULT_CODING_AGENT is empty."""
+        return settings.default_coding_agent or next(iter(self.adapters), None)
 
-    def resolve_agent_id(self, target: str | None) -> str | None:
-        """Resolve an agent identifier by exact id, agent type, or name substring."""
-        if not target:
-            return None
-        target_lower = target.strip().lower()
-
-        # 1. Exact ID match (case-sensitive or insensitive)
-        if target in self.adapters:
-            return target
-        for aid in self.adapters:
-            if aid.lower() == target_lower:
-                return aid
-
-        # 2. Agent type match (e.g. "opencode", "claude_code", "claude", "acp")
-        for aid, adapter in self.adapters.items():
-            cfg_type = adapter.config.type.lower()
-            if target_lower in cfg_type or cfg_type in target_lower:
-                return aid
-
-        # 3. Agent name substring match (e.g. "auth", "frontend")
-        for aid, adapter in self.adapters.items():
-            if target_lower in adapter.config.name.lower():
-                return aid
-
-        return None
-
-    async def route_user_decision(self, agent_id: str | None, instruction: str) -> bool:
-        target_id = self.resolve_agent_id(agent_id) if agent_id else self.default_agent_id
-        if not target_id:
-            logger.warning("Cannot route decision; no agent specified and no default agent available.")
-            return False
-        adapter = self.adapters.get(target_id)
+    async def route_user_decision(self, agent_id: str | None, instruction: str) -> str | None:
+        """Send the instruction to agent_id (exact id) or the default agent. Returns the id it went to."""
+        target_id = agent_id or self.default_agent_id
+        adapter = self.adapters.get(target_id) if target_id else None
         if not adapter:
-            logger.warning(f"No active adapter found for agent '{target_id}'.")
-            return False
-        return await adapter.send_instruction(instruction)
+            logger.warning(f"No active agent '{target_id}'; known: {list(self.adapters)}")
+            return None
+        return target_id if await adapter.send_instruction(instruction) else None
