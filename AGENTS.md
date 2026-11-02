@@ -1,13 +1,17 @@
 # Jarvis
 
-An always-on voice harness (Pipecat) that watches coding agents (Claude Code, OpenCode) and talks to the user.
-No wake word. Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
+An always-on voice harness (Pipecat) that talks to the user and hands work to agents: coding to Claude Code
+(or OpenCode when named), everything else to Hermes Agent. No wake word. Jarvis stays thin: it routes and
+relays; the work, tools and memory live in each agent's own harness.
+Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
 
 ## Commands
 
-- Run: `uv run jarvis` (needs `.env`; OpenCode needs `opencode serve --port 4096` with the same password)
+- Run: `uv run jarvis` (needs `.env`; OpenCode needs `opencode serve --port 4096` with the same password;
+  Hermes needs its gateway service, `hermes gateway status`, with `API_SERVER_ENABLED=true`)
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
-- Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 100 at 3 rounds)
+- Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
+- Routing benchmark: `uv run python scripts/bench_routing.py` (about 90 paid calls)
 
 ## Where to fix "Jarvis"
 
@@ -21,9 +25,12 @@ speech check dropping the sentence, not the conversation model.
 | Reacts, but the reply is wrong       | `main.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`             |
 | Says something wrong about an agent  | `agent_watchers.py` `_surface` call sites              |
 | Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`  |
-| Wrong agent gets a task or answer    | `agent_watchers.py` `AgentOrchestrator.find`           |
+| Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`         |
+| Right agent, wrong id or no answer   | `agent_watchers.py` `AgentOrchestrator.find`           |
+| Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                    |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
-| Mic, Whisper, voice, interruptions   | `main.py` pipeline, `voice_gates.py`                   |
+| Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |
+| Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
 | Model names, keys                    | `config.py`, `.env`, `.env.example`                    |
 
 Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/userdata/logs/terminals/*.log`).
@@ -34,18 +41,27 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Speech check changes need the benchmark.** Any edit to `INTENT_QUESTION` or `FILTER_MODEL` runs
   `scripts/bench_intent.py` before and after and quotes both results. It exits 1 below 97%; going below needs
   Sang's OK. New misses found in real use become new cases in that script.
+- **Routing changes need the routing benchmark.** An edit to an agent `role`, `agent_roster` or the system
+  prompt runs `scripts/bench_routing.py` before and after; it exits 1 below 95%.
+- **Thin layer.** Jarvis never does an agent's job: no email, calendar or coding logic here. A new kind of
+  work is a new `role` (or a new agent in `agents.json`), not new code in Jarvis.
+- **Hermes decides its own approvals.** Its guardian model (`approvals` in `~/.hermes/config.yaml`) lets safe
+  commands run; only flagged ones reach Jarvis as `approval.request`. A question Hermes asks ends its turn, so
+  the reply goes back with `send_agent_task` into the same Hermes session.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
-- **Agent ids are exact** (`claude`, `opencode`), matched as written in `agents.json`. A bad
+- **Agent ids are exact** (`claude`, `opencode`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.
 - **Two model settings, one job each:** `EXECUTIVE_MODEL` talks and retells turns; `FILTER_MODEL` (a decision
   model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis.
+- **Voice is ElevenLabs `eleven_v4_turbo` over Text-to-Dialogue** (the plain TTS socket rejects it). Emotion
+  tags come from Pipecat's expressive conversation mode; Jarvis writes no tag rules of its own.
 - Mock HTTP and the Claude SDK in unit tests. Live checks against real agents go in a throwaway script, not in `tests/`.
 
 ## Later, not now
 
-- More agents (Pi, Codex): add an adapter with the same shape as `ClaudeCodeAdapter` / `OpenCodeSSEAdapter`.
+- More agents (Pi, Codex): add an adapter with the same shape as `OpenCodeSSEAdapter` / `HermesAdapter`.
 - Speaker verification: use sherpa-onnx, not Picovoice.
 - Laya as a local speech check: parked; it lost to the OpenRouter decision models.

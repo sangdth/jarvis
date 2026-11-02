@@ -5,6 +5,7 @@
       "name": "Claude Code",
       "type": "claude_code",
       "cwd": ".",
+      "role": "coding: write, fix, test and explain code",
       "enabled": true
     },
     {
@@ -12,6 +13,15 @@
       "name": "OpenCode",
       "type": "opencode_sse",
       "url": "http://127.0.0.1:4096",
+      "role": "coding, only when the user names OpenCode",
+      "enabled": true
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "type": "hermes",
+      "url": "http://127.0.0.1:8642",
+      "role": "everything that is not coding: research, web lookups, notes, email, calendar, reminders, files",
       "enabled": true
     }
   ]

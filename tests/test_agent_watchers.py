@@ -6,6 +6,7 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, Result
 
 from jarvis.agent_watchers import (
     ClaudeCodeAdapter,
+    HermesAdapter,
     OpenCodeSSEAdapter,
     WatchedAgentConfig,
     form_answer,
@@ -206,10 +207,48 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.post.assert_awaited_once_with("/api/session/ses_1/interrupt")
 
 
-def fake_adapter(agent_id: str, name: str = "Agent One") -> MagicMock:
+class TestHermesAdapter(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.adapter = make(HermesAdapter, "hermes")
+
+    async def asyncTearDown(self) -> None:
+        await self.adapter._http.aclose()
+
+    async def test_tasks_share_one_session(self) -> None:
+        post = AsyncMock(return_value=MagicMock(json=MagicMock(side_effect=[{"run_id": "run_1"}, {"run_id": "run_2"}])))
+        with patch.object(self.adapter._http, "post", new=post):
+            self.assertTrue(await self.adapter.send_task("Check my calendar"))
+            self.assertTrue(await self.adapter.send_task("Move it to 3pm"))
+        self.assertEqual(post.call_args_list[0].kwargs["json"], {"input": "Check my calendar"})
+        self.assertEqual(post.call_args_list[1].kwargs["json"], {"input": "Move it to 3pm", "session_id": "run_1"})
+        self.assertEqual(self.adapter._runs.qsize(), 2)
+
+    async def test_approval_is_read_out_and_answered_once(self) -> None:
+        await self.adapter._handle_event(
+            {"event": "approval.request", "run_id": "run_1", "request_id": "apr_1", "command": "rm -rf build"}
+        )
+        self.adapter._surface.assert_awaited_once_with("needs approval: rm -rf build")
+        post = AsyncMock(return_value=MagicMock(is_success=True))
+        with patch.object(self.adapter._http, "post", new=post):
+            self.assertTrue(await self.adapter.answer("yes, go ahead"))
+            self.assertFalse(await self.adapter.answer("yes"))  # nothing pending any more
+        self.assertEqual(post.call_args.args[0], "/v1/runs/run_1/approval")
+        self.assertEqual(post.call_args.kwargs["json"], {"choice": "once", "request_id": "apr_1"})
+
+    async def test_run_end_events(self) -> None:
+        await self.adapter._handle_event({"event": "run.cancelled", "run_id": "run_1"})
+        self.adapter._surface.assert_not_awaited()  # the user stopped it
+        await self.adapter._handle_event({"event": "run.completed", "run_id": "run_1", "output": "Booked."})
+        self.adapter._surface.assert_awaited_with("Booked.", is_report=True)
+        await self.adapter._handle_event({"event": "run.failed", "run_id": "run_1", "error": "no network"})
+        self.adapter._surface.assert_awaited_with("The turn failed. no network", is_report=True)
+
+
+def fake_adapter(agent_id: str, name: str = "Agent One", role: str = "") -> MagicMock:
     adapter = MagicMock()
     adapter.config.id = agent_id
     adapter.config.name = name
+    adapter.config.role = role
     return adapter
 
 
@@ -226,8 +265,10 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
         self.orch.adapters["opencode"] = fake_adapter("opencode")
         with patch("jarvis.agent_watchers.settings.default_coding_agent", ""):
             roster = agent_roster(self.orch)
-        self.assertIn("id `opencode` (DEFAULT): Agent One", roster)
-        self.assertIn("send it to `opencode`", roster)
+        self.assertIn("id `opencode` (DEFAULT for coding): Agent One", roster)
+        self.assertIn("a coding task goes to `opencode`", roster)
+        self.orch.adapters["hermes"] = fake_adapter("hermes", "Hermes", role="everything that is not coding")
+        self.assertIn("id `hermes`: Hermes — everything that is not coding", agent_roster(self.orch))
 
     def test_default_agent_gets_unnamed_tasks_and_exact_ids_only(self) -> None:
         self.orch.adapters["claude"] = fake_adapter("claude")

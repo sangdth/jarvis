@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     # OpenCode v2 `serve` password (it prints a random one at startup unless OPENCODE_SERVER_PASSWORD is set)
     opencode_server_password: str = ""
     watch_config_path: str = "./agents.json"
+    # Hermes API server key (API_SERVER_KEY in ~/.hermes/.env)
+    hermes_api_key: str = ""
 
     # OpenRouter model IDs
     executive_model: str = "deepseek/deepseek-v4.1-flash"

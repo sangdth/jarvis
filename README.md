@@ -2,7 +2,7 @@
 
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
-It listens continuously without a wake word, watches your coding agents (**Claude Code**, **OpenCode**) in the background, reads out their questions and approvals, and retells each finished turn in plain words.
+It listens continuously without a wake word and hands your requests to agents: coding to **Claude Code** (or **OpenCode** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
 
 ---
 
@@ -14,7 +14,7 @@ It listens continuously without a wake word, watches your coding agents (**Claud
 | **"Shut up" / "Be quiet" -> Beep Mode** | `JarvisState` (`VOICE` vs `BEEP_ONLY` + sine PCM beep synth) | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **"You can talk" -> Unmute & Digest** | `JarvisState.set_unmute()` | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **Hear only speech meant for Jarvis** | `ExecutiveFilter` (decision model) | [`src/jarvis/executive_filter.py`](src/jarvis/executive_filter.py) |
-| **Watch Claude Code, OpenCode** | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter` | [`src/jarvis/agent_watchers.py`](src/jarvis/agent_watchers.py) |
+| **Drive Claude Code, OpenCode, Hermes** | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter` | [`src/jarvis/agent_watchers.py`](src/jarvis/agent_watchers.py) |
 
 ---
 
@@ -33,15 +33,19 @@ cp .env.example .env
 ```
 Fill in:
 - `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash` with thinking off), which also retells finished agent turns in two sentences, and for the decision model that tells whether a sentence is meant for Jarvis (`FILTER_MODEL`, `typesafe/jev-1.14`). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
-- `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `opencode`) that gets tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
-- `ELEVENLABS_API_KEY`: For ultra-low-latency voice output.
+- `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `claude`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
+- `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
+- `ELEVENLABS_API_KEY`: voice output with `eleven_v4_turbo` (about 100 ms to first audio; it laughs and sighs when the brain tags a reply).
 
 ### 3. Configure Watched Coding Agents
-Edit [`agents.json`](agents.json): set each agent's `cwd` to the project it should work in.
+Edit [`agents.json`](agents.json): set each agent's `cwd` to the project it should work in. Each agent's `role` tells
+Jarvis what to send it.
 - **Claude Code** runs through the Agent SDK with `acceptEdits`: file edits go through without asking. Other tools your
   Claude settings don't allow, and Claude's own questions, are read out, and Claude waits for your answer.
 - **OpenCode** needs its v2 server running with the same password Jarvis has in `.env`:
   `OPENCODE_SERVER_PASSWORD=<same value> opencode serve --port 4096`, started in the project folder.
+- **Hermes Agent** needs its API server: `API_SERVER_ENABLED=true` and an `API_SERVER_KEY` of 16+ characters in
+  `~/.hermes/.env`, then `hermes gateway install` (port 8642). Hermes's own approval settings decide what it asks.
 
 ### 4. Run Jarvis
 On laptop speakers Jarvis ignores the mic while it talks (`MUTE_MIC_WHILE_SPEAKING=true`), so it doesn't hear itself; you can't interrupt it mid-sentence then. With headphones, set it to `false` to cut Jarvis off with "shut up".
@@ -51,6 +55,7 @@ uv run jarvis
 
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.
+- **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Hermes.
 - **Answering an agent** ("yes", "use Postgres") — Goes to the question or approval the agent is waiting on.
 - **"Stop Claude"** / **"Stop that"** — Stops the agent's current turn.
 - **"Shut up"** / **"Be quiet"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.

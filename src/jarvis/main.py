@@ -32,21 +32,64 @@ AGENT_REPORT_PROMPT = (
 
 
 def agent_roster(orchestrator: AgentOrchestrator) -> str:
-    """List the watched agents so the LLM knows them and uses their exact IDs in the agent tools."""
+    """List the watched agents and what each is for, so the LLM routes by role and uses exact IDs."""
     if not orchestrator.adapters:
         return "\nNo coding agents are configured right now."
     default_id = orchestrator.default_agent_id
     lines = [
-        f"- id `{a.config.id}`{' (DEFAULT)' if a.config.id == default_id else ''}: {a.config.name}"
+        f"- id `{a.config.id}`{' (DEFAULT for coding)' if a.config.id == default_id else ''}: {a.config.name}"
+        + (f" — {a.config.role}" if a.config.role else "")
         for a in orchestrator.adapters.values()
     ]
     return (
-        "\nWatched coding agents (use the exact id with the agent tools):\n"
+        "\nWatched agents (use the exact id with the agent tools):\n"
         + "\n".join(lines)
-        + f"\nWhen the user gives you a coding task without naming an agent, send it to `{default_id}`."
-        " When the user replies to a question an agent asked, use answer_agent, not send_agent_task."
-        " When the user asks you a question, answer it yourself; do not forward it."
+        + f"\nRoute by role: a coding task goes to `{default_id}` unless the user names another agent; any other"
+        " task that needs doing goes to the agent whose role covers it."
+        " Small talk and questions you can answer from what you know, answer yourself; do not forward them."
+        " When the user replies to a question an agent asked, use answer_agent, not send_agent_task. If"
+        " answer_agent returns no_pending_question, the agent asked in its last reply: send the user's answer"
+        " to that same agent with send_agent_task."
     )
+
+
+def agent_tools() -> list:
+    """The three agent tools the conversation model can call (also used by scripts/bench_routing.py)."""
+    from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
+
+    agent_id_property = {
+        "type": "string",
+        "description": "Exact ID of the watched agent, from the list in your instructions. Omit for the default coding agent.",
+    }
+    return [
+        FunctionSchema(
+            name="send_agent_task",
+            description=(
+                "Give a watched agent new work: a coding task, or any other task for the agent whose role covers it, "
+                "or a follow-up to its last reply."
+            ),
+            properties={"agent_id": agent_id_property, "task": {"type": "string", "description": "The task, in clear words"}},
+            required=["task"],
+        ),
+        FunctionSchema(
+            name="answer_agent",
+            description=(
+                "Answer the question or approval an agent is waiting on. "
+                "Returns no_pending_question if it asked nothing."
+            ),
+            properties={
+                "agent_id": agent_id_property,
+                "answer": {"type": "string", "description": "The user's answer, in their words (e.g. 'yes', 'use Postgres')"},
+            },
+            required=["answer"],
+        ),
+        FunctionSchema(
+            name="stop_agent",
+            description="Stop what an agent is doing right now.",
+            properties={"agent_id": agent_id_property},
+            required=[],
+        ),
+    ]
 
 
 async def run_pipecat_harness() -> None:
@@ -56,8 +99,8 @@ async def run_pipecat_harness() -> None:
     from pipecat.frames.frames import InterruptionFrame, LLMMessagesAppendFrame, OutputAudioRawFrame, TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.expressive.policy import ExpressionGuidance, ExpressionPolicy
     from pipecat.pipeline.task import PipelineParams, PipelineTask
-    from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import (
         LLMContextAggregatorPair,
@@ -160,36 +203,7 @@ async def run_pipecat_harness() -> None:
     async def handle_stop(function_name, tool_call_id, args, llm_service, context, result_callback):
         await call_agent(args, result_callback, lambda a: a.interrupt(), "stopped", "failed")
 
-    agent_id_property = {
-        "type": "string",
-        "description": "Exact ID of the watched agent, from the list in your instructions. Omit for the default agent.",
-    }
-    tools = [
-        FunctionSchema(
-            name="send_agent_task",
-            description="Give a watched coding agent new work: a feature, a fix, a follow-up instruction.",
-            properties={"agent_id": agent_id_property, "task": {"type": "string", "description": "The task, in clear words"}},
-            required=["task"],
-        ),
-        FunctionSchema(
-            name="answer_agent",
-            description=(
-                "Answer the question or approval a coding agent is waiting on. "
-                "Returns no_pending_question if it asked nothing."
-            ),
-            properties={
-                "agent_id": agent_id_property,
-                "answer": {"type": "string", "description": "The user's answer, in their words (e.g. 'yes', 'use Postgres')"},
-            },
-            required=["answer"],
-        ),
-        FunctionSchema(
-            name="stop_agent",
-            description="Stop what a coding agent is doing right now.",
-            properties={"agent_id": agent_id_property},
-            required=[],
-        ),
-    ]
+    tools = agent_tools()
 
     if llm is not None:
         llm.register_function("send_agent_task", handle_send_task)
@@ -223,18 +237,28 @@ async def run_pipecat_harness() -> None:
         processors.append(llm)
 
     if settings.elevenlabs_api_key:
-        from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+        # Text-to-Dialogue serves eleven_v4_turbo (its default): ~100 ms to first audio and real laughs and sighs;
+        # the plain TTS socket rejects that model.
+        from pipecat.services.elevenlabs.dialogue.tts import ElevenLabsDialogueTTSService
 
-        tts = ElevenLabsTTSService(
+        tts = ElevenLabsDialogueTTSService(
             api_key=settings.elevenlabs_api_key,
-            settings=ElevenLabsTTSService.Settings(voice=settings.elevenlabs_voice_id),
+            settings=ElevenLabsDialogueTTSService.Settings(voice=settings.elevenlabs_voice_id),
         )
         processors.append(tts)
 
     processors.extend([transport.output(), context_aggregator.assistant()])
 
     pipeline = Pipeline(processors)
-    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            allow_interruptions=True,
+            # Pipecat teaches the LLM the voice's tags ([laughs], excited...) and keeps them out of the context.
+            enable_expressive_conversation=True,
+            expression_policy=ExpressionPolicy(guidance=[ExpressionGuidance.MATCH_STYLE]),
+        ),
+    )
     task_ref["task"] = task
 
     # Start background coding agent watchers (Claude Code, OpenCode)
