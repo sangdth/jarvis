@@ -1,7 +1,7 @@
 [project]
 name = "jarvis-harness"
 version = "0.1.0"
-description = "Always-on voice executive agent harness for orchestrating Claude Code, OpenCode, and Pi."
+description = "Always-on voice executive agent harness for orchestrating Claude Code and OpenCode."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.27.0",
     "loguru>=0.7.2",
     "python-dotenv>=1.0.1",
+    "claude-agent-sdk>=0.2.176",
 ]
 
 [project.optional-dependencies]

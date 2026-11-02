@@ -14,17 +14,17 @@ from jarvis.executive_filter import ExecutiveFilter
 from jarvis.state import JarvisState
 
 
-JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, an executive voice harness orchestrating coding agents (Claude Code, OpenCode, Pi) for the user.
+JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, an executive voice harness orchestrating coding agents (Claude Code, OpenCode) for the user.
 
 Core behavior:
 1. Keep every response under 2 short, natural spoken sentences.
 2. Never read out file paths, stack traces, diffs, or code blocks. Translate technical complexity into high-level decisions and trade-offs.
-3. Use the `send_agent_decision` tool to pass the user's tasks, approvals and decisions to a watched coding agent.
+3. `send_agent_task` gives an agent new work. `answer_agent` answers the question or approval an agent is waiting on. `stop_agent` stops what an agent is doing.
 """
 
 
 def agent_roster(orchestrator: AgentOrchestrator) -> str:
-    """List the watched agents so the LLM knows them and uses their exact IDs in send_agent_decision."""
+    """List the watched agents so the LLM knows them and uses their exact IDs in the agent tools."""
     if not orchestrator.adapters:
         return "\nNo coding agents are configured right now."
     default_id = orchestrator.default_agent_id
@@ -33,10 +33,11 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
         for a in orchestrator.adapters.values()
     ]
     return (
-        "\nWatched coding agents (use the exact id with send_agent_decision):\n"
+        "\nWatched coding agents (use the exact id with the agent tools):\n"
         + "\n".join(lines)
         + f"\nWhen the user gives you a coding task without naming an agent, send it to `{default_id}`."
-        " When they ask a question, answer it yourself; do not forward it."
+        " When the user replies to a question an agent asked, use answer_agent, not send_agent_task."
+        " When the user asks you a question, answer it yourself; do not forward it."
     )
 
 
@@ -118,38 +119,61 @@ async def run_pipecat_harness() -> None:
         logger.warning("No OPENROUTER_API_KEY configured; running in offline mode.")
         llm = None
 
-    # Register tool so Jarvis can forward user decisions to Claude Code / OpenCode / Pi
-    async def handle_send_agent_decision(
-        function_name, tool_call_id, args, llm_service, context, result_callback
-    ):
-        sent_to = await orchestrator.route_user_decision(args.get("agent_id"), args.get("instruction", ""))
-        await result_callback(
-            {"status": "sent" if sent_to else "agent_not_active", "agent_id": sent_to or args.get("agent_id")}
+    # Tools so Jarvis can give work to, answer, and stop Claude Code / OpenCode
+    async def call_agent(args, result_callback, action, ok_status: str, fail_status: str) -> None:
+        agent = orchestrator.find(args.get("agent_id"))
+        if agent is None:
+            await result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})
+            return
+        ok = await action(agent)
+        await result_callback({"status": ok_status if ok else fail_status, "agent_id": agent.config.id})
+
+    async def handle_send_task(function_name, tool_call_id, args, llm_service, context, result_callback):
+        await call_agent(args, result_callback, lambda a: a.send_task(args.get("task", "")), "sent", "failed")
+
+    async def handle_answer(function_name, tool_call_id, args, llm_service, context, result_callback):
+        await call_agent(
+            args, result_callback, lambda a: a.answer(args.get("answer", "")), "answered", "no_pending_question"
         )
 
+    async def handle_stop(function_name, tool_call_id, args, llm_service, context, result_callback):
+        await call_agent(args, result_callback, lambda a: a.interrupt(), "stopped", "failed")
+
+    agent_id_property = {
+        "type": "string",
+        "description": "Exact ID of the watched agent, from the list in your instructions. Omit for the default agent.",
+    }
     tools = [
         FunctionSchema(
-            name="send_agent_decision",
+            name="send_agent_task",
+            description="Give a watched coding agent new work: a feature, a fix, a follow-up instruction.",
+            properties={"agent_id": agent_id_property, "task": {"type": "string", "description": "The task, in clear words"}},
+            required=["task"],
+        ),
+        FunctionSchema(
+            name="answer_agent",
             description=(
-                "Send a coding task, approval, or decision to a watched coding agent. "
-                "Omit agent_id to use the default agent."
+                "Answer the question or approval a coding agent is waiting on. "
+                "Returns no_pending_question if it asked nothing."
             ),
             properties={
-                "agent_id": {
-                    "type": "string",
-                    "description": "Exact ID of the watched agent, from the list in your instructions. Omit for the default agent.",
-                },
-                "instruction": {
-                    "type": "string",
-                    "description": "Clear instruction or decision to send to the agent",
-                },
+                "agent_id": agent_id_property,
+                "answer": {"type": "string", "description": "The user's answer, in their words (e.g. 'yes', 'use Postgres')"},
             },
-            required=["instruction"],
-        )
+            required=["answer"],
+        ),
+        FunctionSchema(
+            name="stop_agent",
+            description="Stop what a coding agent is doing right now.",
+            properties={"agent_id": agent_id_property},
+            required=[],
+        ),
     ]
 
     if llm is not None:
-        llm.register_function("send_agent_decision", handle_send_agent_decision)
+        llm.register_function("send_agent_task", handle_send_task)
+        llm.register_function("answer_agent", handle_answer)
+        llm.register_function("stop_agent", handle_stop)
 
     context = LLMContext(
         messages=[{"role": "system", "content": JARVIS_EXECUTIVE_SYSTEM_PROMPT + agent_roster(orchestrator)}],
@@ -192,7 +216,7 @@ async def run_pipecat_harness() -> None:
     task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
     task_ref["task"] = task
 
-    # Start background coding agent watchers (Claude Code, OpenCode, Pi)
+    # Start background coding agent watchers (Claude Code, OpenCode)
     await orchestrator.start_all()
     logger.info("Jarvis is listening (no wake word required). Say 'Shut up' to mute to beep-only mode.")
 

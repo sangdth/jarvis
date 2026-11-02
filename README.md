@@ -1,8 +1,8 @@
 # Jarvis — Always-On Voice Executive Harness
 
-Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, and **ACP / Claude Code Streams**.
+Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
-It listens continuously without a wake word, watches your coding agents (**Claude Code**, **OpenCode**, **Pi**) in the background, strips out technical jargon, and surfaces only high-level decisions.
+It listens continuously without a wake word, watches your coding agents (**Claude Code**, **OpenCode**) in the background, strips out technical jargon, and surfaces only high-level decisions.
 
 ---
 
@@ -14,7 +14,7 @@ It listens continuously without a wake word, watches your coding agents (**Claud
 | **"Shut up" / "Be quiet" -> Beep Mode** | `JarvisState` (`VOICE` vs `BEEP_ONLY` + sine PCM beep synth) | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **"You can talk" -> Unmute & Digest** | `JarvisState.set_unmute()` | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **Strip technical jargon & routine logs** | `ExecutiveFilter` | [`src/jarvis/executive_filter.py`](src/jarvis/executive_filter.py) |
-| **Watch Claude Code, OpenCode, Pi** | `ClaudeCodeStreamAdapter`, `OpenCodeSSEAdapter`, `ACPStdioAdapter` | [`src/jarvis/agent_watchers.py`](src/jarvis/agent_watchers.py) |
+| **Watch Claude Code, OpenCode** | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter` | [`src/jarvis/agent_watchers.py`](src/jarvis/agent_watchers.py) |
 
 ---
 
@@ -38,10 +38,10 @@ Fill in:
 
 ### 3. Configure Watched Coding Agents
 Edit [`agents.json`](agents.json): set each agent's `cwd` to the project it should work in.
-- **Claude Code** runs with `--permission-mode acceptEdits`: file edits go through without asking, and Jarvis doesn't answer Claude Code permission prompts yet.
+- **Claude Code** runs through the Agent SDK with `acceptEdits`: file edits go through without asking. Other tools your
+  Claude settings don't allow, and Claude's own questions, are read out, and Claude waits for your answer.
 - **OpenCode** needs its v2 server running with the same password Jarvis has in `.env`:
   `OPENCODE_SERVER_PASSWORD=<same value> opencode serve --port 4096`, started in the project folder.
-- **Pi** (`pi --acp`) is disabled; set `"enabled": true` once `pi` is installed.
 
 ### 4. Run Jarvis
 On laptop speakers Jarvis ignores the mic while it talks (`MUTE_MIC_WHILE_SPEAKING=true`), so it doesn't hear itself; you can't interrupt it mid-sentence then. With headphones, set it to `false` to cut Jarvis off with "shut up".
@@ -50,6 +50,8 @@ uv run jarvis
 ```
 
 ### Voice Commands
-- **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Dispatches the task directly to your default coding agent without having to say "tell OpenCode...".
+- **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.
+- **Answering an agent** ("yes", "use Postgres") — Goes to the question or approval the agent is waiting on.
+- **"Stop Claude"** / **"Stop that"** — Stops the agent's current turn.
 - **"Shut up"** / **"Be quiet"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
 - **"You can talk"** — Switches Jarvis back to `VOICE` mode and immediately reads a concise, jargon-free digest of everything queued while muted.
