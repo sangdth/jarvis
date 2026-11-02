@@ -21,8 +21,7 @@ from claude_agent_sdk import (
 )
 
 from jarvis.config import settings
-from jarvis.executive_filter import ExecutiveFilter
-from jarvis.state import JarvisState
+from jarvis.state import AgentTopic, JarvisState
 
 # Refusals are checked first, so "not sure" or "don't allow" never count as approval.
 _REJECT_WORDS = re.compile(r"\b(no|not|don'?t|do not|never|reject|deny|denied|cancel|stop|wait)\b", re.IGNORECASE)
@@ -99,11 +98,9 @@ class BaseAgentAdapter:
         self,
         config: WatchedAgentConfig,
         state: JarvisState,
-        executive_filter: ExecutiveFilter,
     ) -> None:
         self.config = config
         self.state = state
-        self.executive_filter = executive_filter
         self._task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
@@ -132,16 +129,12 @@ class BaseAgentAdapter:
         """Stop the agent's current turn."""
         raise NotImplementedError
 
-    async def _handle_raw_event(self, text: str, force_decision: bool = False) -> None:
-        topic = await self.executive_filter.evaluate_agent_event(
-            agent_id=self.config.id,
-            agent_name=self.config.name,
-            raw_event_text=text,
-            force_decision=force_decision,
+    async def _surface(self, text: str, is_report: bool = False) -> None:
+        """Tell the user: a question or approval is spoken as is; a finished turn (is_report) gets retold."""
+        logger.info(f"[{self.config.name}] Surfaced: {text[:200]}")
+        await self.state.notify_topic(
+            AgentTopic(agent_id=self.config.id, agent_name=self.config.name, summary=text, is_report=is_report)
         )
-        if topic is not None:
-            logger.info(f"[{self.config.name}] Surfaced topic: {topic.summary}")
-            await self.state.notify_topic(topic)
 
 
 class ClaudeCodeAdapter(BaseAgentAdapter):
@@ -154,9 +147,8 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         self,
         config: WatchedAgentConfig,
         state: JarvisState,
-        executive_filter: ExecutiveFilter,
     ) -> None:
-        super().__init__(config, state, executive_filter)
+        super().__init__(config, state)
         self._client: ClaudeSDKClient | None = None
         self._question: asyncio.Future[str | None] | None = None  # None result = stopped by the user
         self._ask_lock = asyncio.Lock()  # parallel tool calls are asked one at a time
@@ -191,13 +183,13 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 return
             text = message.result or ("" if not message.is_error else f"The turn failed ({message.subtype}).")
             if text:
-                await self._handle_raw_event(text, force_decision=message.is_error)
+                await self._surface(text, is_report=True)
 
     async def _ask(self, spoken: str) -> str | None:
         async with self._ask_lock:
             self._question = asyncio.get_running_loop().create_future()
             try:
-                await self._handle_raw_event(spoken, force_decision=True)
+                await self._surface(spoken)
                 return await self._question
             finally:
                 self._question = None
@@ -256,9 +248,8 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         self,
         config: WatchedAgentConfig,
         state: JarvisState,
-        executive_filter: ExecutiveFilter,
     ) -> None:
-        super().__init__(config, state, executive_filter)
+        super().__init__(config, state)
         self.base_url = (config.url or "http://127.0.0.1:4096").rstrip("/")
         auth = ("opencode", settings.opencode_server_password) if settings.opencode_server_password else None
         self._http = httpx.AsyncClient(base_url=self.base_url, auth=auth, timeout=10.0)
@@ -307,14 +298,14 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         if request["id"] not in self._spoken:
             self._spoken.add(request["id"])
             what = " ".join([request.get("action", "")] + request.get("resources", [])).strip()
-            await self._handle_raw_event(f"OpenCode needs approval: {what or 'a tool call'}", force_decision=True)
+            await self._surface(f"OpenCode needs approval: {what or 'a tool call'}")
 
     async def _on_form(self, form: dict[str, Any]) -> None:
         self._pending_form = form
         self._session_id = form.get("sessionID", self._session_id)
         if form["id"] not in self._spoken:
             self._spoken.add(form["id"])
-            await self._handle_raw_event(f"OpenCode asks: {describe_fields(form.get('fields', []))}", force_decision=True)
+            await self._surface(f"OpenCode asks: {describe_fields(form.get('fields', []))}")
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
         ev_type = event.get("type", "")
@@ -341,7 +332,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         elif ev_type in ("session.execution.succeeded", "session.execution.failed") and session_id:
             text = self._last_text.pop(session_id, "")
             if text:
-                await self._handle_raw_event(text, force_decision=ev_type.endswith("failed"))
+                await self._surface(("The turn failed. " if ev_type.endswith("failed") else "") + text, is_report=True)
 
     async def send_task(self, task: str) -> bool:
         try:
@@ -395,9 +386,8 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
 class AgentOrchestrator:
     """Manages all coding agent watchers and routes user verbal decisions back to the right agent."""
 
-    def __init__(self, state: JarvisState, executive_filter: ExecutiveFilter) -> None:
+    def __init__(self, state: JarvisState) -> None:
         self.state = state
-        self.executive_filter = executive_filter
         self.adapters: dict[str, BaseAgentAdapter] = {}
 
     def load_from_file(self, config_path: str | Path) -> None:
@@ -412,9 +402,9 @@ class AgentOrchestrator:
             if not cfg.enabled:
                 continue
             if cfg.type == "claude_code":
-                self.adapters[cfg.id] = ClaudeCodeAdapter(cfg, self.state, self.executive_filter)
+                self.adapters[cfg.id] = ClaudeCodeAdapter(cfg, self.state)
             elif cfg.type == "opencode_sse":
-                self.adapters[cfg.id] = OpenCodeSSEAdapter(cfg, self.state, self.executive_filter)
+                self.adapters[cfg.id] = OpenCodeSSEAdapter(cfg, self.state)
             else:
                 logger.warning(f"Agent {cfg.id!r} has unknown type {cfg.type!r}; skipped.")
 

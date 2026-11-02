@@ -34,9 +34,8 @@ class Settings(BaseSettings):
 
     # OpenRouter model IDs
     executive_model: str = "deepseek/deepseek-v4.1-flash"
-    filter_model: str = "deepseek/deepseek-v4.1-flash"
     # Decision model that labels each heard sentence (is it for Jarvis?); won the 2026-11-02 benchmark
-    classifier_model: str = "typesafe/jev-1.14"
+    filter_model: str = "typesafe/jev-1.14"
 
 
 settings = Settings()

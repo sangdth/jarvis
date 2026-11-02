@@ -77,6 +77,35 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Tailwind v4", digest)
         self.assertEqual(len(spoken_messages), 2)
 
+    async def test_finished_turn_is_retold_not_read_out(self) -> None:
+        spoken: list[str] = []
+        reports: list[str] = []
+
+        async def on_speak(text: str) -> None:
+            spoken.append(text)
+
+        async def on_report(text: str) -> None:
+            reports.append(text)
+
+        state = JarvisState(on_speak=on_speak, on_report=on_report)
+        done = AgentTopic("claude", "Claude Code", "## Summary\nEdited `src/app.py`.", is_report=True)
+        await state.notify_topic(done)
+        self.assertEqual((spoken, reports), ([], ["Claude Code: ## Summary\nEdited `src/app.py`."]))
+
+        # Muted: the question is read out on unmute, the finished turn is retold after it
+        await state.set_mute()
+        await state.notify_topic(AgentTopic("opencode", "OpenCode", "OpenCode asks: tests or docs?"))
+        await state.notify_topic(done)
+        await state.set_unmute()
+        self.assertIn("OpenCode asks: tests or docs?", spoken[-1])
+        self.assertNotIn("src/app.py", spoken[-1])
+        self.assertEqual(len(reports), 2)
+
+        # Offline (no conversation model): only the last line is spoken
+        offline = JarvisState(on_speak=on_speak)
+        await offline.notify_topic(done)
+        self.assertEqual(spoken[-1], "Claude Code: Edited `src/app.py`.")
+
 
 if __name__ == "__main__":
     unittest.main()

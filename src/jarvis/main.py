@@ -22,6 +22,12 @@ Core behavior:
 3. `send_agent_task` gives an agent new work. `answer_agent` answers the question or approval an agent is waiting on. `stop_agent` stops what an agent is doing.
 """
 
+# A finished agent turn is long markdown; the conversation model retells it. Approvals never come this way.
+AGENT_REPORT_PROMPT = (
+    "[Not the user speaking: a coding agent finished its turn.] Tell the user what it did in at most two "
+    "short spoken sentences. Do not call any tool; the user decides what happens next.\n\n"
+)
+
 
 def agent_roster(orchestrator: AgentOrchestrator) -> str:
     """List the watched agents so the LLM knows them and uses their exact IDs in the agent tools."""
@@ -71,6 +77,14 @@ async def run_pipecat_harness() -> None:
             )
             await task_ref["task"].queue_frame(TTSSpeakFrame(text=text))
 
+    async def on_report(text: str) -> None:
+        if "task" in task_ref:
+            await task_ref["task"].queue_frame(
+                LLMMessagesAppendFrame(
+                    messages=[{"role": "user", "content": AGENT_REPORT_PROMPT + text[-4000:]}], run_llm=True
+                )
+            )
+
     async def on_beep(pcm_bytes: bytes) -> None:
         if "task" in task_ref:
             await task_ref["task"].queue_frame(
@@ -81,8 +95,13 @@ async def run_pipecat_harness() -> None:
         if "task" in task_ref:
             await task_ref["task"].queue_frame(InterruptionFrame())
 
-    state = JarvisState(on_speak=on_speak, on_beep=on_beep, on_interrupt=on_interrupt)
-    orchestrator = AgentOrchestrator(state=state, executive_filter=executive_filter)
+    state = JarvisState(
+        on_speak=on_speak,
+        on_beep=on_beep,
+        on_interrupt=on_interrupt,
+        on_report=on_report if settings.openrouter_api_key else None,  # no LLM offline: last line only
+    )
+    orchestrator = AgentOrchestrator(state=state)
     orchestrator.load_from_file(settings.watch_config_path)
 
     # 1. Local mic + speaker (always on, no wake word)

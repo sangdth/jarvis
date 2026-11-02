@@ -15,8 +15,8 @@ from jarvis.agent_watchers import (
 
 def make(adapter_cls, agent_type: str):
     cfg = WatchedAgentConfig(id="a1", name="Agent One", type=agent_type, cwd="/tmp")
-    adapter = adapter_cls(cfg, state=MagicMock(), executive_filter=MagicMock())
-    adapter._handle_raw_event = AsyncMock()
+    adapter = adapter_cls(cfg, state=MagicMock())
+    adapter._surface = AsyncMock()
     return adapter
 
 
@@ -89,15 +89,15 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
 
     async def test_result_is_surfaced_and_errors_are_forced(self) -> None:
         await self.adapter._handle_message(MagicMock(spec=ResultMessage, result="Done.", is_error=False))
-        self.adapter._handle_raw_event.assert_awaited_with("Done.", force_decision=False)
+        self.adapter._surface.assert_awaited_with("Done.", is_report=True)
         await self.adapter._handle_message(MagicMock(spec=ResultMessage, result=None, is_error=True, subtype="error"))
-        self.adapter._handle_raw_event.assert_awaited_with("The turn failed (error).", force_decision=True)
+        self.adapter._surface.assert_awaited_with("The turn failed (error).", is_report=True)
 
     async def test_bash_permission_is_asked_and_follows_the_answer(self) -> None:
         result = await self.ask_and_answer("Bash", {"command": "rm -rf build"}, "yes, go ahead")
         self.assertIsInstance(result, PermissionResultAllow)
-        self.adapter._handle_raw_event.assert_awaited_with(
-            "Claude Code needs approval: rm -rf build", force_decision=True
+        self.adapter._surface.assert_awaited_with(
+            "Claude Code needs approval: rm -rf build"
         )
         result = await self.ask_and_answer("Bash", {"command": "rm -rf build"}, "no, don't")
         self.assertIsInstance(result, PermissionResultDeny)
@@ -107,8 +107,8 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
                       "options": [{"label": "Postgres", "description": ""}, {"label": "SQLite", "description": ""}]}]
         result = await self.ask_and_answer("AskUserQuestion", {"questions": questions}, "let's use sqlite")
         self.assertEqual(result.updated_input["answers"], {"Which database?": "SQLite"})
-        self.adapter._handle_raw_event.assert_awaited_with(
-            "Claude Code asks: Which database? Options: Postgres, SQLite.", force_decision=True
+        self.adapter._surface.assert_awaited_with(
+            "Claude Code asks: Which database? Options: Postgres, SQLite."
         )
 
     async def test_stop_while_waiting_denies_and_interrupts(self) -> None:
@@ -118,14 +118,14 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.interrupt)
         self.adapter._client.interrupt.assert_awaited_once()
         # The stopped turn ends with an error result; the user asked for it, so it is not read out.
-        self.adapter._handle_raw_event.reset_mock()
+        self.adapter._surface.reset_mock()
         await self.adapter._handle_message(MagicMock(spec=ResultMessage, result=None, is_error=True, subtype="x"))
-        self.adapter._handle_raw_event.assert_not_awaited()
+        self.adapter._surface.assert_not_awaited()
 
     async def test_stop_while_idle_does_not_hide_the_next_result(self) -> None:
         await self.adapter.interrupt()
         await self.adapter._handle_message(MagicMock(spec=ResultMessage, result="Done.", is_error=False))
-        self.adapter._handle_raw_event.assert_awaited_once_with("Done.", force_decision=False)
+        self.adapter._surface.assert_awaited_once_with("Done.", is_report=True)
 
     async def test_answer_without_question_and_new_task(self) -> None:
         self.assertFalse(await self.adapter.answer("yes"))
@@ -147,8 +147,8 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
             "data": {"id": "per_1", "sessionID": "ses_1", "action": "read", "resources": ["/etc/hosts"]},
         }
         await self.adapter._handle_event(event)
-        self.adapter._handle_raw_event.assert_awaited_once_with(
-            "OpenCode needs approval: read /etc/hosts", force_decision=True
+        self.adapter._surface.assert_awaited_once_with(
+            "OpenCode needs approval: read /etc/hosts"
         )
 
         with patch.object(self.adapter._http, "post", new=self.post):
@@ -158,8 +158,8 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
     async def test_question_form_is_read_out_and_answered(self) -> None:
         # Shape captured from a live OpenCode v2.2.5 server: the form sits under data.form
         await self.adapter._handle_event({"type": "form.created", "data": {"form": QUESTION_FORM}})
-        self.adapter._handle_raw_event.assert_awaited_once_with(
-            "OpenCode asks: Which should come next: tests or docs? Options: Tests, Docs.", force_decision=True
+        self.adapter._surface.assert_awaited_once_with(
+            "OpenCode asks: Which should come next: tests or docs? Options: Tests, Docs."
         )
         with patch.object(self.adapter._http, "post", new=self.post):
             self.assertTrue(await self.adapter.answer("Tests first"))
@@ -168,7 +168,7 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
     async def test_finished_turn_is_surfaced_and_next_message_is_a_prompt(self) -> None:
         await self.adapter._handle_event({"type": "session.text.ended", "data": {"sessionID": "ses_1", "text": "All tests pass."}})
         await self.adapter._handle_event({"type": "session.execution.succeeded", "data": {"sessionID": "ses_1"}})
-        self.adapter._handle_raw_event.assert_awaited_once_with("All tests pass.", force_decision=False)
+        self.adapter._surface.assert_awaited_once_with("All tests pass.", is_report=True)
 
         with patch.object(self.adapter._http, "post", new=self.post):
             self.assertFalse(await self.adapter.answer("Now add dark mode"))
@@ -196,7 +196,7 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.adapter._http, "get", new=get):
             await self.adapter._resync()
             await self.adapter._resync()
-        self.adapter._handle_raw_event.assert_awaited_once()
+        self.adapter._surface.assert_awaited_once()
         self.assertEqual(self.adapter._pending_form["id"], "frm_1")
 
     async def test_stop_interrupts_the_session(self) -> None:
@@ -217,7 +217,7 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         from jarvis.agent_watchers import AgentOrchestrator
 
-        self.orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
+        self.orch = AgentOrchestrator(state=MagicMock())
 
     def test_roster_lists_exact_ids_and_default(self) -> None:
         from jarvis.main import agent_roster
