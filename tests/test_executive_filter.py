@@ -67,6 +67,14 @@ class TestExecutiveFilter(unittest.IsolatedAsyncioTestCase):
         assert topic is not None
         self.assertEqual(topic.summary, "OpenCode needs permission to run DB migration.")
 
+    async def test_forced_question_is_never_filtered_out(self) -> None:
+        filt = online_filter()
+        reply = json.dumps({"should_interrupt": False, "spoken_summary": "Claude Code wants to run the deploy."})
+        with patch.object(filt, "_call_llm", new=AsyncMock(return_value=reply)):
+            topic = await filt.evaluate_agent_event("claude", "Claude Code", "needs approval: make deploy", True)
+        assert topic is not None
+        self.assertEqual(topic.summary, "Claude Code wants to run the deploy.")
+
     async def test_classify_user_utterance(self) -> None:
         filt = online_filter()
         with patch.object(filt, "_call_llm", new=AsyncMock(return_value="ADDRESSED_TO_JARVIS")):

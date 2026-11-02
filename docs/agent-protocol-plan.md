@@ -1,5 +1,7 @@
 # Plan: talk to coding agents the way T3 Code does
 
+Status: steps 1-4 are done (see `docs/architecture.md`); Pi support was removed instead of step 5.
+
 Research source: `pingdotgg/t3code` at `701e13ce` (2026-11-02). Paths below are in that repo.
 
 ## What T3 Code does

@@ -9,7 +9,7 @@ from jarvis.state import AgentTopic, UserIntent, classify_fast_command
 
 
 EXECUTIVE_FILTER_SYSTEM_PROMPT = """You are Jarvis's Executive Attention Filter.
-You monitor verbose raw output from coding agents (Claude Code, OpenCode, Pi) on behalf of a busy software architect.
+You monitor verbose raw output from coding agents (Claude Code, OpenCode) on behalf of a busy software architect.
 
 Your job is to decide whether the agent's latest event requires the user's immediate verbal attention or a decision.
 
@@ -142,7 +142,8 @@ class ExecutiveFilter:
                 content = content.split("```")[1].removeprefix("json").strip()
             parsed = json.loads(content)
 
-            if not parsed.get("should_interrupt"):
+            # A forced event is an agent waiting on the user; dropping it would leave the agent stuck.
+            if not parsed.get("should_interrupt") and not force_decision:
                 logger.debug(f"[{agent_id}] Filtered out routine output.")
                 return None
 

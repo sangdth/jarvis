@@ -5,17 +5,6 @@
       "name": "Claude Code",
       "type": "claude_code",
       "cwd": ".",
-      "command": [
-        "claude",
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--input-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "acceptEdits"
-      ],
       "enabled": true
     },
     {
@@ -24,17 +13,6 @@
       "type": "opencode_sse",
       "url": "http://127.0.0.1:4096",
       "enabled": true
-    },
-    {
-      "id": "pi",
-      "name": "Pi",
-      "type": "acp_stdio",
-      "cwd": ".",
-      "command": [
-        "pi",
-        "--acp"
-      ],
-      "enabled": false
     }
   ]
 }

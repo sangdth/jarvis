@@ -10,7 +10,16 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from jarvis import __version__
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    CLINotFoundError,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
+    ToolPermissionContext,
+)
+
 from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.state import JarvisState
@@ -43,6 +52,29 @@ def form_answer(fields: list[dict[str, Any]], instruction: str) -> dict[str, Any
     return answer
 
 
+def describe_fields(fields: list[dict[str, Any]]) -> str:
+    """Speakable text for a list of questions: each question, then its options."""
+    asks = []
+    for field in fields:
+        question = field.get("description") or field.get("title") or ""
+        labels = [o["label"] for o in field.get("options") or []]
+        asks.append(f"{question} Options: {', '.join(labels)}." if labels else question)
+    return " ".join(asks)
+
+
+def claude_question_fields(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Claude Code AskUserQuestion questions in the OpenCode form-field shape, so form_answer works for both."""
+    return [
+        {
+            "key": q["question"],
+            "description": q["question"],
+            "type": "multiselect" if q.get("multiSelect") else "string",
+            "options": [{"value": o["label"], "label": o["label"]} for o in q.get("options", [])],
+        }
+        for q in questions
+    ]
+
+
 def is_approval(instruction: str) -> bool:
     """True only when the user clearly approves and says nothing that sounds like a refusal."""
     if _REJECT_WORDS.search(instruction):
@@ -54,15 +86,14 @@ def is_approval(instruction: str) -> bool:
 class WatchedAgentConfig:
     id: str
     name: str
-    type: str  # "claude_code" | "opencode_sse" | "acp_stdio"
+    type: str  # "claude_code" | "opencode_sse"
     cwd: str = "."
-    command: list[str] | None = None
     url: str | None = None
     enabled: bool = True
 
 
 class BaseAgentAdapter:
-    """Base interface for watching a coding agent and sending user decisions back to it."""
+    """Watches one coding agent. A new task, an answer to the agent's question, and a stop are separate calls."""
 
     def __init__(
         self,
@@ -89,8 +120,16 @@ class BaseAgentAdapter:
     async def _run_loop(self) -> None:
         raise NotImplementedError
 
-    async def send_instruction(self, instruction: str) -> bool:
-        """Send a natural-language decision or prompt back to this coding agent."""
+    async def send_task(self, task: str) -> bool:
+        """Send new work to the agent as a prompt."""
+        raise NotImplementedError
+
+    async def answer(self, answer: str) -> bool:
+        """Answer the agent's pending question or permission request. False when nothing is pending."""
+        raise NotImplementedError
+
+    async def interrupt(self) -> bool:
+        """Stop the agent's current turn."""
         raise NotImplementedError
 
     async def _handle_raw_event(self, text: str, force_decision: bool = False) -> None:
@@ -105,12 +144,10 @@ class BaseAgentAdapter:
             await self.state.notify_topic(topic)
 
 
-class ClaudeCodeStreamAdapter(BaseAgentAdapter):
+class ClaudeCodeAdapter(BaseAgentAdapter):
     """
-    Watches and controls a Claude Code instance via `--output-format stream-json --input-format stream-json`.
-    Surfaces questions and final turn results through the ExecutiveFilter.
-    shortcut: tool permission prompts are not answered; run it with `--permission-mode acceptEdits`
-    (see agents.json) until Jarvis handles Claude Code's control_request messages.
+    Runs Claude Code through the Agent SDK, one long-lived process for the whole Jarvis run.
+    Permission prompts and AskUserQuestion arrive in `can_use_tool`; the agent waits until `answer()`.
     """
 
     def __init__(
@@ -120,190 +157,98 @@ class ClaudeCodeStreamAdapter(BaseAgentAdapter):
         executive_filter: ExecutiveFilter,
     ) -> None:
         super().__init__(config, state, executive_filter)
-        self._proc: asyncio.subprocess.Process | None = None
+        self._client: ClaudeSDKClient | None = None
+        self._question: asyncio.Future[str | None] | None = None  # None result = stopped by the user
+        self._ask_lock = asyncio.Lock()  # parallel tool calls are asked one at a time
+        self._running = False  # a turn is in progress (a task was sent and its result has not arrived)
+        self._stopped = False  # the user stopped this turn, so its error result is not news
 
     async def _run_loop(self) -> None:
-        cmd = self.config.command or [
-            "claude",
-            "-p",
-            "--output-format",
-            "stream-json",
-            "--input-format",
-            "stream-json",
-            "--verbose",
-            "--permission-mode",
-            "acceptEdits",
-        ]
+        options = ClaudeAgentOptions(
+            cwd=self.config.cwd,
+            # File edits go through; Bash and other tools not allowed in the user's settings ask first.
+            permission_mode="acceptEdits",
+            can_use_tool=self._can_use_tool,
+            setting_sources=["user", "project", "local"],
+            stderr=lambda line: logger.debug(f"[{self.config.id}] {line}"),
+        )
         try:
-            self._proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=self.config.cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                # Nothing reads stderr; a full pipe would freeze the agent.
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            logger.info(f"Started Claude Code stream watcher [{self.config.id}]: {' '.join(cmd)}")
-        except FileNotFoundError:
+            async with ClaudeSDKClient(options) as client:
+                self._client = client
+                logger.info(f"Started Claude Code [{self.config.id}] in {self.config.cwd}")
+                async for message in client.receive_messages():
+                    await self._handle_message(message)
+        except CLINotFoundError:
             logger.warning(f"[{self.config.id}] `claude` CLI not found on PATH; watcher idle.")
-            return
+        finally:
+            self._client = None
 
-        assert self._proc.stdout is not None
-        async for raw_line in self._proc.stdout:
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
+    async def _handle_message(self, message: Any) -> None:
+        if isinstance(message, ResultMessage):
+            self._running = False
+            if self._stopped:
+                self._stopped = False
+                return
+            text = message.result or ("" if not message.is_error else f"The turn failed ({message.subtype}).")
+            if text:
+                await self._handle_raw_event(text, force_decision=message.is_error)
+
+    async def _ask(self, spoken: str) -> str | None:
+        async with self._ask_lock:
+            self._question = asyncio.get_running_loop().create_future()
             try:
-                event: dict[str, Any] = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            await self._handle_event(event)
+                await self._handle_raw_event(spoken, force_decision=True)
+                return await self._question
+            finally:
+                self._question = None
 
-    async def _handle_event(self, event: dict[str, Any]) -> None:
-        event_type = event.get("type", "")
-        if event_type == "result":
-            await self._handle_raw_event(event.get("result", ""), force_decision=bool(event.get("is_error", False)))
-        elif event_type == "assistant":
-            for block in event.get("message", {}).get("content", []):
-                if block.get("type") == "text" and "?" in block.get("text", ""):
-                    await self._handle_raw_event(block["text"], force_decision=True)
+    async def _can_use_tool(
+        self, tool_name: str, tool_input: dict[str, Any], context: ToolPermissionContext
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        if tool_name == "AskUserQuestion":
+            fields = claude_question_fields(tool_input.get("questions", []))
+            said = await self._ask(f"Claude Code asks: {describe_fields(fields)}")
+            if said is None:
+                return PermissionResultDeny(message="Stopped by the user.", interrupt=True)
+            answers = {k: ", ".join(v) if isinstance(v, list) else str(v) for k, v in form_answer(fields, said).items()}
+            return PermissionResultAllow(updated_input={**tool_input, "answers": answers})
 
-    async def send_instruction(self, instruction: str) -> bool:
-        if not self._proc or not self._proc.stdin:
-            logger.warning(f"[{self.config.id}] Cannot send instruction; process not running.")
+        what = context.title or tool_input.get("command") or context.description or tool_name
+        said = await self._ask(f"Claude Code needs approval: {what}")
+        if said is None:
+            return PermissionResultDeny(message="Stopped by the user.", interrupt=True)
+        if is_approval(said):
+            return PermissionResultAllow(updated_input=tool_input)
+        return PermissionResultDeny(message=f"The user declined: {said}")
+
+    async def send_task(self, task: str) -> bool:
+        if not self._client:
+            logger.warning(f"[{self.config.id}] Cannot send task; Claude Code is not running.")
             return False
-        payload = {
-            "type": "user",
-            "message": {"role": "user", "content": [{"type": "text", "text": instruction}]},
-        }
-        self._proc.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
-        await self._proc.stdin.drain()
-        logger.info(f"Sent instruction to {self.config.name}: {instruction!r}")
+        self._running = True
+        await self._client.query(task)
+        logger.info(f"Sent task to {self.config.name}: {task!r}")
         return True
 
-
-class ACPStdioAdapter(BaseAgentAdapter):
-    """
-    Watches and orchestrates Agent Client Protocol agents (Pi, Gemini CLI, etc.) over JSON-RPC 2.0 stdio.
-    Handshake: `initialize`, then `session/new`; a turn ends with the response to `session/prompt`.
-    """
-
-    def __init__(
-        self,
-        config: WatchedAgentConfig,
-        state: JarvisState,
-        executive_filter: ExecutiveFilter,
-    ) -> None:
-        super().__init__(config, state, executive_filter)
-        self._proc: asyncio.subprocess.Process | None = None
-        self._rpc_id: int = 0
-        self._requests: dict[int, str] = {}  # our request id -> method, to match responses
-        self._session_id: str | None = None
-        self._pending_permission: dict[str, Any] | None = None  # the agent's request, until answered
-        self._text: list[str] = []
-
-    async def _write(self, message: dict[str, Any]) -> None:
-        assert self._proc is not None and self._proc.stdin is not None
-        self._proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
-        await self._proc.stdin.drain()
-
-    async def _request(self, method: str, params: dict[str, Any]) -> None:
-        self._rpc_id += 1
-        self._requests[self._rpc_id] = method
-        await self._write({"jsonrpc": "2.0", "id": self._rpc_id, "method": method, "params": params})
-
-    async def _run_loop(self) -> None:
-        cmd = self.config.command or ["pi", "--acp"]
-        try:
-            self._proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=self.config.cwd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                # Nothing reads stderr; a full pipe would freeze the agent.
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            logger.info(f"Started ACP stdio watcher [{self.config.id}]: {' '.join(cmd)}")
-        except FileNotFoundError:
-            logger.warning(f"[{self.config.id}] Command {cmd[0]!r} not found on PATH; watcher idle.")
-            return
-
-        await self._request(
-            "initialize",
-            {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "jarvis", "version": __version__}},
-        )
-        await self._request("session/new", {"cwd": str(Path(self.config.cwd).resolve()), "mcpServers": []})
-
-        assert self._proc.stdout is not None
-        async for raw_line in self._proc.stdout:
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                msg: dict[str, Any] = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            await self._handle_message(msg)
-
-    async def _handle_message(self, msg: dict[str, Any]) -> None:
-        method = msg.get("method")
-        params = msg.get("params", {})
-
-        # Response to one of our requests
-        if method is None and "id" in msg:
-            sent = self._requests.pop(msg["id"], None)
-            result = msg.get("result") or {}
-            if "error" in msg:
-                logger.warning(f"[{self.config.id}] {sent} failed: {msg['error']}")
-            elif sent == "session/new":
-                self._session_id = result.get("sessionId")
-                logger.info(f"[{self.config.id}] ACP session ready: {self._session_id}")
-            if sent == "session/prompt" and self._text:
-                full_turn = "".join(self._text)
-                self._text.clear()
-                await self._handle_raw_event(full_turn, force_decision=result.get("stopReason") != "end_turn")
-            return
-
-        if method == "session/request_permission":
-            self._pending_permission = msg
-            title = params.get("toolCall", {}).get("title") or "a tool call"
-            await self._handle_raw_event(f"Permission requested: {title}", force_decision=True)
-        elif method == "session/update":
-            update = params.get("update", {})
-            if update.get("sessionUpdate") == "agent_message_chunk":
-                self._text.append(update.get("content", {}).get("text", ""))
-        elif "id" in msg:
-            # We declare no client capabilities, so any other agent request gets "method not found".
-            await self._write(
-                {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": f"{method} not supported"}}
-            )
-
-    async def send_instruction(self, instruction: str) -> bool:
-        if not self._proc or not self._proc.stdin:
+    async def answer(self, answer: str) -> bool:
+        if self._question is None or self._question.done():
             return False
+        self._question.set_result(answer)
+        return True
 
-        if self._pending_permission is not None:
-            request, self._pending_permission = self._pending_permission, None
-            wanted = ("allow_once", "allow_always") if is_approval(instruction) else ("reject_once", "reject_always")
-            options = request.get("params", {}).get("options", [])
-            option = next((o for kind in wanted for o in options if o.get("kind") == kind), None)
-            outcome = {"outcome": "selected", "optionId": option["optionId"]} if option else {"outcome": "cancelled"}
-            await self._write({"jsonrpc": "2.0", "id": request["id"], "result": {"outcome": outcome}})
-            return True
-
-        if not self._session_id:
-            logger.warning(f"[{self.config.id}] Cannot send instruction; ACP session not ready.")
+    async def interrupt(self) -> bool:
+        if not self._client:
             return False
-        await self._request(
-            "session/prompt",
-            {"sessionId": self._session_id, "prompt": [{"type": "text", "text": instruction}]},
-        )
+        if self._question is not None and not self._question.done():
+            self._question.set_result(None)
+        self._stopped = self._running
+        await self._client.interrupt()
         return True
 
 
 class OpenCodeSSEAdapter(BaseAgentAdapter):
     """
-    Subscribes to an OpenCode v2 server (`opencode serve`) over Server-Sent Events at `/api/event`.
+    Talks to an OpenCode v2 server (`opencode serve`): events over SSE at `/api/event`, actions over `/api`.
     Auth: HTTP Basic, user `opencode`, password from OPENCODE_SERVER_PASSWORD.
     """
 
@@ -317,17 +262,21 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         self.base_url = (config.url or "http://127.0.0.1:4096").rstrip("/")
         auth = ("opencode", settings.opencode_server_password) if settings.opencode_server_password else None
         self._http = httpx.AsyncClient(base_url=self.base_url, auth=auth, timeout=10.0)
-        self._latest_session_id: str | None = None
+        self._session_id: str | None = None  # latest session seen, or the one Jarvis created
         self._pending_permission: dict[str, Any] | None = None
         self._pending_form: dict[str, Any] | None = None  # a question OpenCode is waiting on
+        self._spoken: set[str] = set()  # request ids already read out, so a resync doesn't repeat them
         self._last_text: dict[str, str] = {}  # session id -> latest finished assistant text
 
     async def _run_loop(self) -> None:
         while True:
             try:
-                async with self._http.stream("GET", "/api/event", timeout=None) as response:
+                # The server sends a heartbeat every 15 s; 45 s of silence means the stream is dead.
+                timeout = httpx.Timeout(10.0, read=45.0)
+                async with self._http.stream("GET", "/api/event", timeout=timeout) as response:
                     response.raise_for_status()
                     logger.info(f"Connected to OpenCode event stream at {self.base_url}/api/event")
+                    await self._resync()
                     async for line in response.aiter_lines():
                         raw_data = line.removeprefix("data:").strip() if line.startswith("data:") else ""
                         if not raw_data:
@@ -340,63 +289,102 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # Reconnect if `opencode serve` is not started yet or dropped the stream
-                logger.debug(f"[{self.config.id}] OpenCode stream unavailable ({exc}); retrying in 10s.")
+                # Reconnect if `opencode serve` is not started yet, dropped the stream, or went silent
+                logger.debug(f"[{self.config.id}] OpenCode stream unavailable ({exc!r}); retrying in 10s.")
                 await asyncio.sleep(10.0)
+
+    async def _resync(self) -> None:
+        """Events are not replayed, so pick up permissions and questions that were asked while disconnected."""
+        for path, on_request in (("/api/permission/request", self._on_permission), ("/api/form", self._on_form)):
+            resp = await self._http.get(path)
+            resp.raise_for_status()
+            for request in resp.json().get("data", []):
+                await on_request(request)
+
+    async def _on_permission(self, request: dict[str, Any]) -> None:
+        self._pending_permission = request
+        self._session_id = request.get("sessionID", self._session_id)
+        if request["id"] not in self._spoken:
+            self._spoken.add(request["id"])
+            what = " ".join([request.get("action", "")] + request.get("resources", [])).strip()
+            await self._handle_raw_event(f"OpenCode needs approval: {what or 'a tool call'}", force_decision=True)
+
+    async def _on_form(self, form: dict[str, Any]) -> None:
+        self._pending_form = form
+        self._session_id = form.get("sessionID", self._session_id)
+        if form["id"] not in self._spoken:
+            self._spoken.add(form["id"])
+            await self._handle_raw_event(f"OpenCode asks: {describe_fields(form.get('fields', []))}", force_decision=True)
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
         ev_type = event.get("type", "")
         data = event.get("data") or {}
         session_id = data.get("sessionID")
         if session_id:
-            self._latest_session_id = session_id
+            self._session_id = session_id
 
         if ev_type == "permission.asked":
-            request = self._pending_permission = _request_of(data)
-            self._latest_session_id = request.get("sessionID", self._latest_session_id)
-            what = " ".join([request.get("action", "")] + request.get("resources", [])).strip()
-            await self._handle_raw_event(f"OpenCode needs approval: {what or 'a tool call'}", force_decision=True)
+            await self._on_permission(_request_of(data))
         elif ev_type == "form.created":
-            form = self._pending_form = _request_of(data)
-            self._latest_session_id = form.get("sessionID", self._latest_session_id)
-            asks = []
-            for field in form.get("fields", []):
-                question = field.get("description") or field.get("title") or ""
-                labels = [o["label"] for o in field.get("options") or []]
-                asks.append(f"{question} Options: {', '.join(labels)}." if labels else question)
-            await self._handle_raw_event(f"OpenCode asks: {' '.join(asks)}", force_decision=True)
+            await self._on_form(_request_of(data))
+        elif ev_type in ("permission.replied", "form.replied", "form.cancelled"):
+            # Answered somewhere else (e.g. the OpenCode UI): stop holding it as pending.
+            request_id = data.get("requestID") or _request_of(data).get("id")
+            if self._pending_permission and self._pending_permission.get("id") == request_id:
+                self._pending_permission = None
+            if self._pending_form and self._pending_form.get("id") == request_id:
+                self._pending_form = None
         elif ev_type == "session.text.ended" and session_id:
             self._last_text[session_id] = data.get("text", "")
+        elif ev_type == "session.execution.interrupted" and session_id:
+            self._last_text.pop(session_id, None)
         elif ev_type in ("session.execution.succeeded", "session.execution.failed") and session_id:
             text = self._last_text.pop(session_id, "")
             if text:
                 await self._handle_raw_event(text, force_decision=ev_type.endswith("failed"))
 
-    async def send_instruction(self, instruction: str) -> bool:
+    async def send_task(self, task: str) -> bool:
+        try:
+            if not self._session_id:
+                # No session seen yet: start one in the folder `opencode serve` runs in.
+                resp = await self._http.post("/api/session", json={"title": "Jarvis"})
+                resp.raise_for_status()
+                self._session_id = resp.json()["data"]["id"]
+            resp = await self._http.post(f"/api/session/{self._session_id}/prompt", json={"text": task})
+            return resp.is_success
+        except httpx.HTTPError as exc:
+            logger.error(f"Failed to send task to OpenCode: {exc}")
+            return False
+
+    async def answer(self, answer: str) -> bool:
         try:
             if self._pending_permission is not None:
                 request, self._pending_permission = self._pending_permission, None
                 resp = await self._http.post(
                     f"/api/session/{request['sessionID']}/permission/{request['id']}/reply",
-                    json={"decision": "once" if is_approval(instruction) else "reject"},
+                    json={"decision": "once" if is_approval(answer) else "reject"},
                 )
                 return resp.is_success
             if self._pending_form is not None:
                 form, self._pending_form = self._pending_form, None
                 resp = await self._http.post(
                     f"/api/session/{form['sessionID']}/form/{form['id']}/reply",
-                    json={"answer": form_answer(form.get("fields", []), instruction)},
+                    json={"answer": form_answer(form.get("fields", []), answer)},
                 )
                 return resp.is_success
-            if not self._latest_session_id:
-                return False
-            resp = await self._http.post(
-                f"/api/session/{self._latest_session_id}/prompt",
-                json={"text": instruction},
-            )
+            return False
+        except httpx.HTTPError as exc:
+            logger.error(f"Failed to answer OpenCode: {exc}")
+            return False
+
+    async def interrupt(self) -> bool:
+        if not self._session_id:
+            return False
+        try:
+            resp = await self._http.post(f"/api/session/{self._session_id}/interrupt")
             return resp.is_success
         except httpx.HTTPError as exc:
-            logger.error(f"Failed to send message to OpenCode: {exc}")
+            logger.error(f"Failed to interrupt OpenCode: {exc}")
             return False
 
     async def stop(self) -> None:
@@ -424,11 +412,11 @@ class AgentOrchestrator:
             if not cfg.enabled:
                 continue
             if cfg.type == "claude_code":
-                self.adapters[cfg.id] = ClaudeCodeStreamAdapter(cfg, self.state, self.executive_filter)
-            elif cfg.type == "acp_stdio":
-                self.adapters[cfg.id] = ACPStdioAdapter(cfg, self.state, self.executive_filter)
+                self.adapters[cfg.id] = ClaudeCodeAdapter(cfg, self.state, self.executive_filter)
             elif cfg.type == "opencode_sse":
                 self.adapters[cfg.id] = OpenCodeSSEAdapter(cfg, self.state, self.executive_filter)
+            else:
+                logger.warning(f"Agent {cfg.id!r} has unknown type {cfg.type!r}; skipped.")
 
         default = settings.default_coding_agent
         if default and default not in self.adapters:
@@ -447,11 +435,10 @@ class AgentOrchestrator:
         """The configured default agent, or the first loaded one when DEFAULT_CODING_AGENT is empty."""
         return settings.default_coding_agent or next(iter(self.adapters), None)
 
-    async def route_user_decision(self, agent_id: str | None, instruction: str) -> str | None:
-        """Send the instruction to agent_id (exact id) or the default agent. Returns the id it went to."""
+    def find(self, agent_id: str | None) -> BaseAgentAdapter | None:
+        """The agent with this exact id, or the default agent when no id is given."""
         target_id = agent_id or self.default_agent_id
         adapter = self.adapters.get(target_id) if target_id else None
-        if not adapter:
+        if adapter is None:
             logger.warning(f"No active agent '{target_id}'; known: {list(self.adapters)}")
-            return None
-        return target_id if await adapter.send_instruction(instruction) else None
+        return adapter
