@@ -48,7 +48,7 @@ flowchart LR
 
 ### A. Real-Time Voice Pipeline Framework
 * **[Pipecat](https://github.com/pipecat-ai/pipecat) (Python) — *Selected***
-  * **Why:** Frame-based architecture makes it trivial to insert custom gates (`JarvisIntentGate`) directly into the audio/transcription stream. Supports instant interruption (`CancelFrame`), raw PCM beep injection (`OutputAudioRawFrame`), and direct TTS synthesis (`TTSSpeakFrame`).
+  * **Why:** Frame-based architecture makes it trivial to insert custom gates (`JarvisIntentGate`) directly into the audio/transcription stream. Supports instant interruption (`InterruptionFrame`), raw PCM beep injection (`OutputAudioRawFrame`), and direct TTS synthesis (`TTSSpeakFrame`).
 * **Alternative:** **[LiveKit Agents](https://github.com/livekit/agents)** (WebRTC-focused with an open-weight Semantic Turn Detector).
 
 ### B. "No Wake Word"
@@ -58,9 +58,9 @@ Without a wake word, two local filtering stages prevent false triggers and API c
 
 ### C. Coding Agent Integration (Claude Code, OpenCode, Pi)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
-1. **Claude Code (`ClaudeCodeStreamAdapter`):** Spawned or attached with `claude -p --output-format stream-json --input-format stream-json --verbose` (or via `@anthropic-ai/claude-code` SDK).
-2. **Pi & ACP Agents (`ACPStdioAdapter`):** Connected via the **[Agent Client Protocol (ACP)](https://agentclientprotocol.com/)** over JSON-RPC 2.0 stdio (`pi --acp`), catching `session/request_permission` and `session/update` events and sending `session/prompt` or permission approvals back.
-3. **OpenCode (`OpenCodeSSEAdapter`):** Subscribes to `opencode serve` HTTP Server-Sent Events (`/event`) and dispatches user decisions via `POST /session/:id/message`.
+1. **Claude Code (`ClaudeCodeStreamAdapter`):** Spawned with `claude -p --output-format stream-json --input-format stream-json --verbose --permission-mode acceptEdits`. Questions and turn results are surfaced; tool permission prompts are not answered yet.
+2. **Pi & ACP Agents (`ACPStdioAdapter`):** Connected via the **[Agent Client Protocol (ACP)](https://agentclientprotocol.com/)** over JSON-RPC 2.0 stdio (`pi --acp`). Jarvis sends `initialize` and `session/new`, prompts with `session/prompt`, collects `agent_message_chunk` updates until the prompt response (`stopReason`) ends the turn, and answers `session/request_permission` by picking an allow or reject option.
+3. **OpenCode (`OpenCodeSSEAdapter`):** Subscribes to the OpenCode v2 server (`opencode serve`) at `GET /api/event` with HTTP Basic auth (`opencode` / `OPENCODE_SERVER_PASSWORD`). Surfaces `permission.asked` and the last text of each finished run (`session.execution.succeeded` / `failed`), answers permissions with `POST /api/session/:id/permission/:requestID/reply`, and sends instructions with `POST /api/session/:id/prompt`.
 
 ### D. Executive Filter & Mute State Machine
 1. **Jargon Stripper (`ExecutiveFilter.evaluate_agent_event`):**

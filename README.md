@@ -36,11 +36,16 @@ Fill in:
 - `ELEVENLABS_API_KEY`: For ultra-low-latency voice output.
 
 ### 3. Configure Watched Coding Agents
-Edit [`agents.json`](agents.json) to point to your active **Claude Code**, **OpenCode** (`opencode serve`), and **Pi** (`pi --acp`) workspaces.
+Edit [`agents.json`](agents.json): set each agent's `cwd` to the project it should work in.
+- **Claude Code** runs with `--permission-mode acceptEdits`: file edits go through without asking, and Jarvis doesn't answer Claude Code permission prompts yet.
+- **OpenCode** needs its v2 server running with the same password Jarvis has in `.env`:
+  `OPENCODE_SERVER_PASSWORD=<same value> opencode serve --port 4096`, started in the project folder.
+- **Pi** (`pi --acp`) is disabled; set `"enabled": true` once `pi` is installed.
 
 ### 4. Run Jarvis
+Use headphones: Jarvis has no echo cancellation, so through speakers it hears and interrupts itself.
 ```bash
-jarvis
+uv run jarvis
 ```
 
 ### Voice Commands

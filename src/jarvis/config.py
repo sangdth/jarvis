@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
     # Agent Watchers
-    opencode_server_url: str = "http://127.0.0.1:4096"
+    # OpenCode v2 `serve` password (it prints a random one at startup unless OPENCODE_SERVER_PASSWORD is set)
+    opencode_server_password: str = ""
     watch_config_path: str = "./agents.json"
 
     # OpenRouter model IDs

@@ -56,7 +56,6 @@ class TestExecutiveFilter(unittest.IsolatedAsyncioTestCase):
         filt = online_filter()
         fake_llm_response = json.dumps({
             "should_interrupt": True,
-            "requires_decision": True,
             "spoken_summary": "OpenCode needs permission to run DB migration.",
         })
         with patch.object(filt, "_call_llm", new=AsyncMock(return_value=fake_llm_response)):
@@ -67,7 +66,6 @@ class TestExecutiveFilter(unittest.IsolatedAsyncioTestCase):
             )
         assert topic is not None
         self.assertEqual(topic.summary, "OpenCode needs permission to run DB migration.")
-        self.assertTrue(topic.requires_decision)
 
     async def test_classify_user_utterance(self) -> None:
         filt = online_filter()

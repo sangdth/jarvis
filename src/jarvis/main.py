@@ -27,7 +27,7 @@ async def run_pipecat_harness() -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
-    from pipecat.frames.frames import CancelFrame, OutputAudioRawFrame, TTSSpeakFrame
+    from pipecat.frames.frames import InterruptionFrame, LLMMessagesAppendFrame, OutputAudioRawFrame, TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -43,6 +43,10 @@ async def run_pipecat_harness() -> None:
 
     async def on_speak(text: str) -> None:
         if "task" in task_ref:
+            # Record what Jarvis said, so the LLM knows which agent the user's next answer is about.
+            await task_ref["task"].queue_frame(
+                LLMMessagesAppendFrame(messages=[{"role": "assistant", "content": text}], run_llm=False)
+            )
             await task_ref["task"].queue_frame(TTSSpeakFrame(text=text))
 
     async def on_beep(pcm_bytes: bytes) -> None:
@@ -53,7 +57,7 @@ async def run_pipecat_harness() -> None:
 
     async def on_interrupt() -> None:
         if "task" in task_ref:
-            await task_ref["task"].queue_frame(CancelFrame())
+            await task_ref["task"].queue_frame(InterruptionFrame())
 
     state = JarvisState(on_speak=on_speak, on_beep=on_beep, on_interrupt=on_interrupt)
     orchestrator = AgentOrchestrator(state=state, executive_filter=executive_filter)
@@ -73,13 +77,9 @@ async def run_pipecat_harness() -> None:
     )
 
     # 2. Local Always-On STT (Faster-Whisper / MLX-Whisper)
-    try:
-        from pipecat.services.whisper.stt import WhisperSTTService
+    from pipecat.services.whisper.stt import WhisperSTTService
 
-        stt = WhisperSTTService(model=settings.whisper_model)
-    except Exception as exc:
-        logger.warning(f"Whisper STT service initialization warning ({exc}).")
-        stt = None
+    stt = WhisperSTTService(model=settings.whisper_model)
 
     # 3. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier)
     intent_gate = JarvisIntentGate(state=state, executive_filter=executive_filter)
@@ -148,18 +148,15 @@ async def run_pipecat_harness() -> None:
     # 5. Text-to-Speech (ElevenLabs if configured)
     processors = [
         transport.input(),
-    ]
-    if stt is not None:
-        processors.append(stt)
-    processors.extend([
+        stt,
         intent_gate,
         context_aggregator.user(),
-    ])
+    ]
     if llm is not None:
         processors.append(llm)
 
     if settings.elevenlabs_api_key:
-        from pipecat.services.elevenlabs import ElevenLabsTTSService
+        from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
         tts = ElevenLabsTTSService(
             api_key=settings.elevenlabs_api_key,
@@ -182,6 +179,7 @@ async def run_pipecat_harness() -> None:
         await runner.run(task)
     finally:
         await orchestrator.stop_all()
+        await executive_filter.aclose()
 
 
 def main() -> None:
