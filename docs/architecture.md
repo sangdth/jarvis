@@ -54,7 +54,7 @@ flowchart LR
 ### B. "No Wake Word"
 Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
-2. **Local Always-On STT + Turn Classifier:** **[Faster-Whisper](https://github.com/SYSTRAN/faster-whisper)** (`distil-large-v3`) transcribes speech locally at $0 cost. A fast classifier then labels the transcript as `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`.
+2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. A fast classifier then labels the transcript as `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`.
 
 ### C. Coding Agent Integration (Claude Code, OpenCode, Pi)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
