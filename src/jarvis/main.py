@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Awaitable, Callable
+from typing import Any
 from loguru import logger
 
 from jarvis.agent_watchers import AgentOrchestrator
 from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
+from jarvis.memory import create_memory_service
 from jarvis.state import JarvisState
 
 
@@ -90,6 +93,28 @@ def agent_tools() -> list:
             required=[],
         ),
     ]
+
+
+def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[Any], Awaitable[None]]]:
+    """Handlers for agent_tools(). Pipecat 1.x calls each with one FunctionCallParams (arguments, result_callback)."""
+
+    def handler(action: Callable[[Any, dict[str, Any]], Awaitable[bool]], ok_status: str, fail_status: str):
+        async def handle(params: Any) -> None:
+            args = params.arguments
+            agent = orchestrator.find(args.get("agent_id"))
+            if agent is None:
+                await params.result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})
+                return
+            ok = await action(agent, args)
+            await params.result_callback({"status": ok_status if ok else fail_status, "agent_id": agent.config.id})
+
+        return handle
+
+    return {
+        "send_agent_task": handler(lambda a, args: a.send_task(args.get("task", "")), "sent", "failed"),
+        "answer_agent": handler(lambda a, args: a.answer(args.get("answer", "")), "answered", "no_pending_question"),
+        "stop_agent": handler(lambda a, args: a.interrupt(), "stopped", "failed"),
+    }
 
 
 async def run_pipecat_harness() -> None:
@@ -183,32 +208,11 @@ async def run_pipecat_harness() -> None:
         logger.warning("No OPENROUTER_API_KEY configured; running in offline mode.")
         llm = None
 
-    # Tools so Jarvis can give work to, answer, and stop Claude Code / OpenCode
-    async def call_agent(args, result_callback, action, ok_status: str, fail_status: str) -> None:
-        agent = orchestrator.find(args.get("agent_id"))
-        if agent is None:
-            await result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})
-            return
-        ok = await action(agent)
-        await result_callback({"status": ok_status if ok else fail_status, "agent_id": agent.config.id})
-
-    async def handle_send_task(function_name, tool_call_id, args, llm_service, context, result_callback):
-        await call_agent(args, result_callback, lambda a: a.send_task(args.get("task", "")), "sent", "failed")
-
-    async def handle_answer(function_name, tool_call_id, args, llm_service, context, result_callback):
-        await call_agent(
-            args, result_callback, lambda a: a.answer(args.get("answer", "")), "answered", "no_pending_question"
-        )
-
-    async def handle_stop(function_name, tool_call_id, args, llm_service, context, result_callback):
-        await call_agent(args, result_callback, lambda a: a.interrupt(), "stopped", "failed")
-
     tools = agent_tools()
 
     if llm is not None:
-        llm.register_function("send_agent_task", handle_send_task)
-        llm.register_function("answer_agent", handle_answer)
-        llm.register_function("stop_agent", handle_stop)
+        for name, handler in agent_tool_handlers(orchestrator).items():
+            llm.register_function(name, handler)
 
     context = LLMContext(
         messages=[{"role": "system", "content": JARVIS_EXECUTIVE_SYSTEM_PROMPT + agent_roster(orchestrator)}],
@@ -233,6 +237,10 @@ async def run_pipecat_harness() -> None:
         intent_gate,
         context_aggregator.user(),
     ]
+    # Long-term memory sits right before the brain: it adds what Jarvis remembers to each request (~22 ms).
+    memory = create_memory_service() if llm is not None else None
+    if memory is not None:
+        processors.append(memory)
     if llm is not None:
         processors.append(llm)
 

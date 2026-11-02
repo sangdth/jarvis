@@ -1,7 +1,7 @@
 [project]
 name = "jarvis-harness"
 version = "0.1.0"
-description = "Always-on voice executive agent harness for orchestrating Claude Code and OpenCode."
+description = "Always-on voice harness that hands work to Claude Code, OpenCode and Hermes Agent."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
     "loguru>=0.7.2",
     "python-dotenv>=1.0.1",
     "claude-agent-sdk>=0.2.176",
+    "mem0ai>=2.2.1",
+    "qdrant-client>=1.12.0",
+    "ollama>=0.4.0",
 ]
 
 [project.optional-dependencies]
