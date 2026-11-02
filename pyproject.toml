@@ -1,0 +1,33 @@
+[project]
+name = "jarvis-harness"
+version = "0.1.0"
+description = "Always-on voice executive agent harness for orchestrating Claude Code, OpenCode, and Pi."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pipecat-ai[silero,whisper,openai,anthropic,elevenlabs,local]>=0.0.50",
+    "pveagle>=1.0.0",
+    "numpy>=1.26.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "httpx>=0.27.0",
+    "loguru>=0.7.2",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+jarvis = "jarvis.main:main"
+jarvis-enroll = "jarvis.enroll:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jarvis"]

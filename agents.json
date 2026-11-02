@@ -1,0 +1,27 @@
+{
+  "agents": [
+    {
+      "id": "claude-auth",
+      "name": "Claude Code (Auth Service)",
+      "type": "claude_code",
+      "cwd": ".",
+      "command": ["claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"],
+      "enabled": true
+    },
+    {
+      "id": "opencode-frontend",
+      "name": "OpenCode (Frontend)",
+      "type": "opencode_sse",
+      "url": "http://127.0.0.1:4096",
+      "enabled": true
+    },
+    {
+      "id": "pi-backend",
+      "name": "Pi Coding Agent",
+      "type": "acp_stdio",
+      "cwd": ".",
+      "command": ["pi", "--acp"],
+      "enabled": true
+    }
+  ]
+}
