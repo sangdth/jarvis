@@ -31,6 +31,7 @@ speech check dropping the sentence, not the conversation model.
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
+| Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.jarvis/memory`)          |
 | Model names, keys                    | `config.py`, `.env`, `.env.example`                    |
 
 Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/userdata/logs/terminals/*.log`).
@@ -58,6 +59,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis.
 - **Voice is ElevenLabs `eleven_v4_turbo` over Text-to-Dialogue** (the plain TTS socket rejects it). Emotion
   tags come from Pipecat's expressive conversation mode; Jarvis writes no tag rules of its own.
+- **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.jarvis/memory`, `bge-m3` embeddings
+  on the Ollama app, fact extraction on `EXECUTIVE_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves
+  only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
 - Mock HTTP and the Claude SDK in unit tests. Live checks against real agents go in a throwaway script, not in `tests/`.
 
 ## Later, not now

@@ -86,7 +86,10 @@ a pending question.
    are spoken as they are. A finished turn (long markdown) goes to the executive LLM as an `AGENT_REPORT_PROMPT`
    message, which retells it in two sentences and calls no tool; approvals never go through the LLM, so it can't
    approve anything on its own. Offline, Jarvis reads the turn's last line.
-2. **Mute / Beep State Machine (`JarvisState`):**
+2. **Long-term memory (`memory.py`):** Pipecat's `Mem0MemoryService` sits just before the executive LLM. Before
+   each reply it searches local Mem0 (Qdrant on disk, Ollama `bge-m3`, ~22 ms) and adds what it finds; after each
+   reply it saves the newest exchange in the background, where `EXECUTIVE_MODEL` picks out the facts.
+3. **Mute / Beep State Machine (`JarvisState`):**
    * **`VOICE` Mode:** Important agent topics are spoken immediately via TTS.
    * **`BEEP_ONLY` Mode (triggered by *"Shut up"* / *"Be quiet"*):** Active TTS is immediately cancelled, a low confirmation tone plays, and incoming agent topics are appended to `pending_topics` while playing a short 880Hz sine chime.
    * **Unmute Digest (triggered by *"You can talk"*):** Restores `VOICE` mode, reads out queued questions, then has the LLM retell queued finished turns.
@@ -100,5 +103,6 @@ a pending question.
 | **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, MLX Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash; also retells finished turns), ElevenLabs `eleven_v4_turbo` via Text-to-Dialogue with Pipecat expressive tags, and Agent Watchers. |
 | **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
 | **Executive Filter** | `src/jarvis/executive_filter.py` | `typesafe/jev-1.14` (`FILTER_MODEL`) classifies whether speech is addressed to Jarvis. |
+| **Memory** | `src/jarvis/memory.py` | Local Mem0 config and `LastExchangeMemory` (saves only the newest exchange). |
 | **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
 | **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter`, and `AgentOrchestrator`. |
