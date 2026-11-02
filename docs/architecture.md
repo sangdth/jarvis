@@ -3,7 +3,7 @@
 ## 1. Core Requirements
 
 1. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
-2. **Multi-Agent Orchestration:** Continuously watch and orchestrate coding agents including **Claude Code** and **OpenCode**.
+2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **Claude Code** (or **OpenCode** when named), everything else to **Hermes Agent**. Jarvis only routes and relays; the work happens in each agent's own harness.
 3. **Plain-Words Reporting:** Agent questions and approval requests are read out as they are. A finished turn is long markdown full of file paths and diffs; Jarvis has its conversation model retell it in two spoken sentences.
 4. **Dynamic Silence / Notification Mode:**
    - Saying **"Shut up"** or **"Be quiet"** immediately silences Jarvis's voice (`BEEP_ONLY` mode), interrupting any active speech and using short audio chimes ("beep") to notify when new agent decisions arrive.
@@ -30,6 +30,7 @@ flowchart LR
     subgraph CodingAgents ["3. Sub-Agent Watcher (SDK / HTTP)"]
         CC["Claude Code (Agent SDK)"] --> Buffer["Agent Watchers"]
         OC["OpenCode (HTTP SSE)"] --> Buffer
+        HA["Hermes Agent (HTTP runs)"] --> Buffer
         Buffer -->|"Questions, approvals, finished turns"| Notify{"Check Mode"}
     end
 
@@ -55,7 +56,7 @@ Without a wake word, two local filtering stages prevent false triggers and API c
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
 2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
 
-### C. Coding Agent Integration (Claude Code, OpenCode)
+### C. Agent Integration (Claude Code, OpenCode, Hermes)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
 Each agent has three actions, one LLM tool each: `send_agent_task` (new work), `answer_agent` (reply to the question
 or approval the agent is waiting on) and `stop_agent`. An answer never becomes a new prompt, and a task never answers
@@ -73,6 +74,13 @@ a pending question.
    Tasks go to the latest session (`POST /api/session/:id/prompt`), or a new one from `POST /api/session`; answers go to
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
 
+3. **Hermes Agent (`HermesAdapter`):** Talks to the Hermes API server (`hermes gateway`, port 8642, Bearer
+   `HERMES_API_KEY`). A task is `POST /v1/runs` with `input`, and later tasks pass the first run's id as
+   `session_id`, so Hermes keeps the conversation. Each run's `GET /v1/runs/:id/events` stream gives
+   `approval.request` (read out; answered with `POST /v1/runs/:id/approval`, `once` or `deny`) and
+   `run.completed` / `run.failed` (retold); `run.cancelled` is silent. If the stream drops, `GET /v1/runs/:id`
+   gives the result. Stop is `POST /v1/runs/:id/stop`. Hermes's guardian model decides which commands need a human.
+
 ### D. Executive Filter & Mute State Machine
 1. **What reaches the user:** Watchers only pass on questions, approvals and finished turns. Questions and approvals
    are spoken as they are. A finished turn (long markdown) goes to the executive LLM as an `AGENT_REPORT_PROMPT`
@@ -89,8 +97,8 @@ a pending question.
 
 | Module | Path | Responsibility |
 | :--- | :--- | :--- |
-| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, MLX Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash; also retells finished turns), ElevenLabs TTS, and Agent Watchers. |
+| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, MLX Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash; also retells finished turns), ElevenLabs `eleven_v4_turbo` via Text-to-Dialogue with Pipecat expressive tags, and Agent Watchers. |
 | **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
 | **Executive Filter** | `src/jarvis/executive_filter.py` | `typesafe/jev-1.14` (`FILTER_MODEL`) classifies whether speech is addressed to Jarvis. |
 | **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
-| **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, and `AgentOrchestrator`. |
+| **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter`, and `AgentOrchestrator`. |
