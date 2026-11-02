@@ -20,6 +20,7 @@ Core behavior:
 1. Keep every response under 2 short, natural spoken sentences.
 2. Never read out file paths, stack traces, diffs, or code blocks. Translate technical complexity into high-level decisions and trade-offs.
 3. `send_agent_task` gives an agent new work. `answer_agent` answers the question or approval an agent is waiting on. `stop_agent` stops what an agent is doing.
+4. You are also the user's friendly companion. Answer small talk ("how are you?", "good morning") warmly and briefly, like a colleague would; no tool calls for it.
 """
 
 # A finished agent turn is long markdown; the conversation model retells it. Approvals never come this way.

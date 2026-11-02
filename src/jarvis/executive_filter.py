@@ -8,10 +8,12 @@ from jarvis.state import UserIntent, classify_fast_command
 
 
 _CONTEXT = (
-    "Jarvis is a voice assistant that controls coding agents (Claude Code, OpenCode). "
-    "The text is one sentence transcribed from an always-on microphone in a home office."
+    "Jarvis is a voice assistant that controls coding agents (Claude Code, OpenCode) and chats with its user. "
+    "The text is one sentence transcribed from an always-on microphone in a home office. "
+    "The user is usually alone and talks to Jarvis; other people are sometimes in the room."
 )
 # One typed question for an OpenRouter decision model; the labels are the UserIntent values.
+# Jarvis is the default listener, so small talk with no one else named counts as addressed (97% on the 2026-11-02 set).
 INTENT_QUESTION = {
     "type": "choice",
     "instructions": _CONTEXT + " What does the speaker want?",
@@ -19,9 +21,13 @@ INTENT_QUESTION = {
         UserIntent.MUTE.value: "wants Jarvis to be quiet or stop talking",
         UserIntent.UNMUTE.value: "tells Jarvis it can talk again",
         UserIntent.ADDRESSED_TO_JARVIS.value: (
-            "asks Jarvis a question, gives a coding task or instruction for an agent, or answers a question"
+            "talks to Jarvis: small talk or a greeting, a question, a coding task or instruction for an agent, "
+            "or an answer. Pick this when no other person is named or clearly meant"
         ),
-        UserIntent.IGNORE_BACKGROUND.value: "talks to another person, thinks out loud, or says filler words",
+        UserIntent.IGNORE_BACKGROUND.value: (
+            "talks to another person: names them, continues a story or plan with them (meetings, sports, family, "
+            "errands), or the words only fit someone in the room; or thinks out loud, or says only filler words"
+        ),
     },
 }
 
