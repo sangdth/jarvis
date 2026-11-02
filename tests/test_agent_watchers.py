@@ -188,28 +188,28 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
         from jarvis.main import agent_roster
 
         self.assertIn("No coding agents", agent_roster(self.orch))
-        self.orch.adapters["opencode-frontend"] = fake_adapter("opencode-frontend")
+        self.orch.adapters["opencode"] = fake_adapter("opencode")
         with patch("jarvis.agent_watchers.settings.default_coding_agent", ""):
             roster = agent_roster(self.orch)
-        self.assertIn("id `opencode-frontend` (DEFAULT): Agent One", roster)
-        self.assertIn("send it to `opencode-frontend`", roster)
+        self.assertIn("id `opencode` (DEFAULT): Agent One", roster)
+        self.assertIn("send it to `opencode`", roster)
 
     async def test_default_agent_gets_unnamed_tasks_and_exact_ids_only(self) -> None:
-        self.orch.adapters["claude-auth"] = fake_adapter("claude-auth")
-        self.orch.adapters["opencode-frontend"] = fake_adapter("opencode-frontend")
-        with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencode-frontend"):
-            self.assertEqual(await self.orch.route_user_decision(None, "build a login page"), "opencode-frontend")
-            self.orch.adapters["opencode-frontend"].send_instruction.assert_awaited_once_with("build a login page")
+        self.orch.adapters["claude"] = fake_adapter("claude")
+        self.orch.adapters["opencode"] = fake_adapter("opencode")
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencode"):
+            self.assertEqual(await self.orch.route_user_decision(None, "build a login page"), "opencode")
+            self.orch.adapters["opencode"].send_instruction.assert_awaited_once_with("build a login page")
             # A guessed id like "code" must not fall onto some agent
             self.assertIsNone(await self.orch.route_user_decision("code", "build it"))
-        self.orch.adapters["claude-auth"].send_instruction.assert_not_awaited()
+        self.orch.adapters["claude"].send_instruction.assert_not_awaited()
 
     def test_unknown_default_stops_startup(self) -> None:
         import json
         import tempfile
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump({"agents": [{"id": "claude-auth", "name": "Claude", "type": "claude_code"}]}, f)
+            json.dump({"agents": [{"id": "claude", "name": "Claude", "type": "claude_code"}]}, f)
         with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencod"):
             with self.assertRaisesRegex(ValueError, "opencod"):
                 self.orch.load_from_file(f.name)

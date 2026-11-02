@@ -43,7 +43,7 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
 
         # 1. In VOICE mode, an agent topic is spoken immediately
         topic1 = AgentTopic(
-            agent_id="claude-auth",
+            agent_id="claude",
             agent_name="Claude Code",
             summary="Should we drop the legacy users table?",
         )
