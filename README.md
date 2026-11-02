@@ -2,7 +2,7 @@
 
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
-It listens continuously without a wake word, watches your coding agents (**Claude Code**, **OpenCode**) in the background, strips out technical jargon, and surfaces only high-level decisions.
+It listens continuously without a wake word, watches your coding agents (**Claude Code**, **OpenCode**) in the background, reads out their questions and approvals, and retells each finished turn in plain words.
 
 ---
 
@@ -13,7 +13,7 @@ It listens continuously without a wake word, watches your coding agents (**Claud
 | **No wake word, respond only when needed** | Silero VAD + MLX Whisper + `JarvisIntentGate` | [`src/jarvis/voice_gates.py`](src/jarvis/voice_gates.py) |
 | **"Shut up" / "Be quiet" -> Beep Mode** | `JarvisState` (`VOICE` vs `BEEP_ONLY` + sine PCM beep synth) | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **"You can talk" -> Unmute & Digest** | `JarvisState.set_unmute()` | [`src/jarvis/state.py`](src/jarvis/state.py) |
-| **Strip technical jargon & routine logs** | `ExecutiveFilter` | [`src/jarvis/executive_filter.py`](src/jarvis/executive_filter.py) |
+| **Hear only speech meant for Jarvis** | `ExecutiveFilter` (decision model) | [`src/jarvis/executive_filter.py`](src/jarvis/executive_filter.py) |
 | **Watch Claude Code, OpenCode** | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter` | [`src/jarvis/agent_watchers.py`](src/jarvis/agent_watchers.py) |
 
 ---
@@ -32,7 +32,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 Fill in:
-- `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`) and the agent-event filter (`FILTER_MODEL`), both `deepseek/deepseek-v4.1-flash` with thinking off, and for the decision model that tells whether a sentence is meant for Jarvis (`CLASSIFIER_MODEL`, `typesafe/jev-1.14`). Left empty, the filter runs on offline keyword heuristics.
+- `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash` with thinking off), which also retells finished agent turns in two sentences, and for the decision model that tells whether a sentence is meant for Jarvis (`FILTER_MODEL`, `typesafe/jev-1.14`). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
 - `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `opencode`) that gets tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `ELEVENLABS_API_KEY`: For ultra-low-latency voice output.
 

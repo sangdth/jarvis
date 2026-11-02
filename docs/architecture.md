@@ -28,9 +28,9 @@ flowchart LR
     end
 
     subgraph CodingAgents ["3. Sub-Agent Watcher (SDK / HTTP)"]
-        CC["Claude Code (Agent SDK)"] --> Buffer["Event Buffer & Jargon Stripper"]
+        CC["Claude Code (Agent SDK)"] --> Buffer["Agent Watchers"]
         OC["OpenCode (HTTP SSE)"] --> Buffer
-        Buffer -->|"Only Blockers / Decisions"| Notify{"Check Mode"}
+        Buffer -->|"Questions, approvals, finished turns"| Notify{"Check Mode"}
     end
 
     Mute -.-> Notify
@@ -74,13 +74,14 @@ a pending question.
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
 
 ### D. Executive Filter & Mute State Machine
-1. **Jargon Stripper (`ExecutiveFilter.evaluate_agent_event`):**
-   * Routine events (file reads, passing tests, intermediate edits) return `should_interrupt: false` and are silently ignored.
-   * Blockers, permission prompts, or architectural trade-offs return `should_interrupt: true` with a 1–2 sentence spoken summary stripped of file paths, stack traces, and code blocks.
+1. **What reaches the user:** Watchers only pass on questions, approvals and finished turns. Questions and approvals
+   are spoken as they are. A finished turn (long markdown) goes to the executive LLM as an `AGENT_REPORT_PROMPT`
+   message, which retells it in two sentences and calls no tool; approvals never go through the LLM, so it can't
+   approve anything on its own. Offline, Jarvis reads the turn's last line.
 2. **Mute / Beep State Machine (`JarvisState`):**
    * **`VOICE` Mode:** Important agent topics are spoken immediately via TTS.
    * **`BEEP_ONLY` Mode (triggered by *"Shut up"* / *"Be quiet"*):** Active TTS is immediately cancelled, a low confirmation tone plays, and incoming agent topics are appended to `pending_topics` while playing a short 880Hz sine chime.
-   * **Unmute Digest (triggered by *"You can talk"*):** Restores `VOICE` mode and immediately reads out all queued topics from `pending_topics`.
+   * **Unmute Digest (triggered by *"You can talk"*):** Restores `VOICE` mode, reads out queued questions, then has the LLM retell queued finished turns.
 
 ---
 
@@ -88,8 +89,8 @@ a pending question.
 
 | Module | Path | Responsibility |
 | :--- | :--- | :--- |
-| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, Faster-Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash), ElevenLabs TTS, and Agent Watchers. |
+| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, MLX Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash; also retells finished turns), ElevenLabs TTS, and Agent Watchers. |
 | **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
-| **Executive Filter** | `src/jarvis/executive_filter.py` | DeepSeek V4.1 Flash via OpenRouter (thinking off) strips technical jargon from agent events; `typesafe/jev-1.14` classifies whether speech is addressed to Jarvis. |
+| **Executive Filter** | `src/jarvis/executive_filter.py` | `typesafe/jev-1.14` (`FILTER_MODEL`) classifies whether speech is addressed to Jarvis. |
 | **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
 | **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, and `AgentOrchestrator`. |

@@ -27,6 +27,13 @@ class AgentTopic:
     agent_id: str
     agent_name: str
     summary: str
+    # A finished turn's full text: the conversation model retells it instead of reading it out.
+    is_report: bool = False
+
+
+def _last_line(text: str) -> str:
+    lines = [line for line in text.strip().splitlines() if line.strip()]
+    return lines[-1][:180] if lines else ""
 
 
 # Fast deterministic regex patterns for instant mute/unmute without waiting on an LLM call
@@ -87,6 +94,7 @@ class JarvisState:
         on_speak: Callable[[str], Awaitable[None]] | None = None,
         on_beep: Callable[[bytes], Awaitable[None]] | None = None,
         on_interrupt: Callable[[], Awaitable[None]] | None = None,
+        on_report: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.mode: JarvisMode = JarvisMode.VOICE
         self.pending_topics: list[AgentTopic] = []
@@ -94,6 +102,7 @@ class JarvisState:
         self.on_speak = on_speak
         self.on_beep = on_beep
         self.on_interrupt = on_interrupt
+        self.on_report = on_report
 
     async def set_mute(self) -> None:
         """Triggered when user says 'Shut up' or 'Be quiet'."""
@@ -106,33 +115,41 @@ class JarvisState:
             await self.on_beep(low_beep)
 
     async def set_unmute(self) -> str:
-        """Triggered when user says 'You can talk'. Returns a digest of queued topics."""
+        """Triggered when user says 'You can talk'. Speaks queued questions, then retells finished turns."""
         self.mode = JarvisMode.VOICE
-        if not self.pending_topics:
+        topics, self.pending_topics = self.pending_topics, []
+        if not topics:
             msg = "I'm back. Nothing urgent came up while I was quiet."
         else:
-            count = len(self.pending_topics)
-            summaries = " ".join(
-                f"{idx + 1}: {t.agent_name} — {t.summary}"
-                for idx, t in enumerate(self.pending_topics)
-            )
-            self.pending_topics.clear()
-            msg = f"I can talk again. While I was quiet, {count} item{'s' if count > 1 else ''} came up. {summaries}"
+            count = len(topics)
+            asks = " ".join(f"{t.agent_name}: {t.summary}" for t in topics if not t.is_report)
+            msg = f"I can talk again. While I was quiet, {count} item{'s' if count > 1 else ''} came up. {asks}".strip()
 
         if self.on_speak:
             await self.on_speak(msg)
+        reports = [t for t in topics if t.is_report]
+        if reports:
+            await self._retell(reports)
         return msg
 
     async def notify_topic(self, topic: AgentTopic) -> None:
-        """Called by the Executive Filter when a coding agent surfaces something important."""
-        self.active_agent_context[topic.agent_id] = topic
+        """Called by an agent watcher when the agent asks something or finishes a turn."""
+        if not topic.is_report:
+            self.active_agent_context[topic.agent_id] = topic
 
         if self.mode == JarvisMode.BEEP_ONLY:
             self.pending_topics.append(topic)
             if self.on_beep:
                 beep_pcm = synthesize_beep_pcm(freq_hz=880.0, duration_ms=160)
                 await self.on_beep(beep_pcm)
-        else:
-            spoken = f"{topic.agent_name}: {topic.summary}"
-            if self.on_speak:
-                await self.on_speak(spoken)
+        elif topic.is_report:
+            await self._retell([topic])
+        elif self.on_speak:
+            await self.on_speak(f"{topic.agent_name}: {topic.summary}")
+
+    async def _retell(self, reports: list[AgentTopic]) -> None:
+        """Finished turns are long markdown; the conversation model shortens them. Offline: last line only."""
+        if self.on_report:
+            await self.on_report("\n\n".join(f"{t.agent_name}: {t.summary}" for t in reports))
+        elif self.on_speak:
+            await self.on_speak(" ".join(f"{t.agent_name}: {_last_line(t.summary)}" for t in reports))
