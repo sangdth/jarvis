@@ -199,14 +199,14 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
     ) -> PermissionResultAllow | PermissionResultDeny:
         if tool_name == "AskUserQuestion":
             fields = claude_question_fields(tool_input.get("questions", []))
-            said = await self._ask(f"Claude Code asks: {describe_fields(fields)}")
+            said = await self._ask(f"asks: {describe_fields(fields)}")
             if said is None:
                 return PermissionResultDeny(message="Stopped by the user.", interrupt=True)
             answers = {k: ", ".join(v) if isinstance(v, list) else str(v) for k, v in form_answer(fields, said).items()}
             return PermissionResultAllow(updated_input={**tool_input, "answers": answers})
 
         what = context.title or tool_input.get("command") or context.description or tool_name
-        said = await self._ask(f"Claude Code needs approval: {what}")
+        said = await self._ask(f"needs approval: {what}")
         if said is None:
             return PermissionResultDeny(message="Stopped by the user.", interrupt=True)
         if is_approval(said):
@@ -298,14 +298,14 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         if request["id"] not in self._spoken:
             self._spoken.add(request["id"])
             what = " ".join([request.get("action", "")] + request.get("resources", [])).strip()
-            await self._surface(f"OpenCode needs approval: {what or 'a tool call'}")
+            await self._surface(f"needs approval: {what or 'a tool call'}")
 
     async def _on_form(self, form: dict[str, Any]) -> None:
         self._pending_form = form
         self._session_id = form.get("sessionID", self._session_id)
         if form["id"] not in self._spoken:
             self._spoken.add(form["id"])
-            await self._surface(f"OpenCode asks: {describe_fields(form.get('fields', []))}")
+            await self._surface(f"asks: {describe_fields(form.get('fields', []))}")
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
         ev_type = event.get("type", "")
