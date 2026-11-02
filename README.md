@@ -32,7 +32,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 Fill in:
-- `OPENROUTER_API_KEY`: used for both Jarvis's conversational brain (`EXECUTIVE_MODEL`) and the filter (`FILTER_MODEL`); both default to `deepseek/deepseek-v4.1-flash` with thinking off. Left empty, the filter runs on offline keyword heuristics.
+- `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`) and the agent-event filter (`FILTER_MODEL`), both `deepseek/deepseek-v4.1-flash` with thinking off, and for the decision model that tells whether a sentence is meant for Jarvis (`CLASSIFIER_MODEL`, `typesafe/jev-1.14`). Left empty, the filter runs on offline keyword heuristics.
 - `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `opencode`) that gets tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `ELEVENLABS_API_KEY`: For ultra-low-latency voice output.
 

@@ -31,17 +31,23 @@ Respond strictly in JSON matching:
 {"should_interrupt": boolean, "spoken_summary": string}
 """
 
-ADDRESSED_CLASSIFIER_SYSTEM_PROMPT = """You are the Always-On Turn Classifier for a voice assistant named Jarvis.
-There is NO wake word required, so you receive everything the user says near their microphone.
-
-Determine if the user is speaking to Jarvis (or answering a question Jarvis just asked about a coding agent), or if they are just muttering to themselves / talking to someone else on a call / reading code aloud.
-
-Respond strictly with one word:
-- `MUTE` if they want Jarvis to be quiet / shut up
-- `UNMUTE` if they tell Jarvis it can talk again
-- `ADDRESSED_TO_JARVIS` if they are asking Jarvis a question, asking Jarvis to code/build something, giving an instruction to an agent, or replying to Jarvis
-- `IGNORE_BACKGROUND` if they are talking to someone else, thinking out loud ("hmm let me see..."), or saying filler words
-"""
+_CONTEXT = (
+    "Jarvis is a voice assistant that controls coding agents (Claude Code, OpenCode). "
+    "The text is one sentence transcribed from an always-on microphone in a home office."
+)
+# One typed question for an OpenRouter decision model; the labels are the UserIntent values.
+INTENT_QUESTION = {
+    "type": "choice",
+    "instructions": _CONTEXT + " What does the speaker want?",
+    "criteria": {
+        UserIntent.MUTE.value: "wants Jarvis to be quiet or stop talking",
+        UserIntent.UNMUTE.value: "tells Jarvis it can talk again",
+        UserIntent.ADDRESSED_TO_JARVIS.value: (
+            "asks Jarvis a question, gives a coding task or instruction for an agent, or answers a question"
+        ),
+        UserIntent.IGNORE_BACKGROUND.value: "talks to another person, thinks out loud, or says filler words",
+    },
+}
 
 
 class ExecutiveFilter:
@@ -55,7 +61,10 @@ class ExecutiveFilter:
     ) -> None:
         self.api_key = settings.openrouter_api_key if api_key is None else api_key
         self.model = model or settings.filter_model
+        self.classifier_model = settings.classifier_model
         self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
+        # shortcut: OpenRouter serves decision models on its alpha API next to /v1; revisit if it moves.
+        self.decisions_url = self.base_url.removesuffix("/v1") + "/alpha/decisions"
         # One long-lived client keeps the TLS connection warm between calls.
         self._http = httpx.AsyncClient(
             timeout=12.0,
@@ -176,21 +185,16 @@ class ExecutiveFilter:
             # When running without an API key, ignore background speech unless explicitly addressed
             return UserIntent.IGNORE_BACKGROUND
 
+        state = {"document": transcript}
+        if recent_jarvis_question:
+            state["jarvis_last_said"] = recent_jarvis_question
         try:
-            user_content = (
-                f"Recent Jarvis Topic/Question: {recent_jarvis_question or 'None'}\n"
-                f"User Utterance: {transcript}"
+            resp = await self._http.post(
+                self.decisions_url,
+                json={"model": self.classifier_model, "state": state, "questions": {"intent": INTENT_QUESTION}},
             )
-            label = await self._call_llm(
-                system_prompt=ADDRESSED_CLASSIFIER_SYSTEM_PROMPT,
-                user_content=user_content,
-                max_tokens=20,
-                temperature=0.0,
-            )
-            label = label.upper()
-            for intent in UserIntent:
-                if intent.value in label:
-                    return intent
+            resp.raise_for_status()
+            return UserIntent(resp.json()["answers"]["intent"]["choice"])
         except Exception as exc:
             logger.warning(f"Turn classifier failed ({exc}); defaulting to IGNORE_BACKGROUND.")
 
