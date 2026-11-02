@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
     # Agent Watchers
+    # Default coding agent to use when user says "build/code X" without naming an agent
+    # Can be an exact agent ID (e.g. "opencode-frontend") or agent type/name ("opencode", "claude")
+    default_coding_agent: str = "opencode-frontend"
+
     # OpenCode v2 `serve` password (it prints a random one at startup unless OPENCODE_SERVER_PASSWORD is set)
     opencode_server_password: str = ""
     watch_config_path: str = "./agents.json"

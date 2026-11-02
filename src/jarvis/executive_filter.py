@@ -39,7 +39,7 @@ Determine if the user is speaking to Jarvis (or answering a question Jarvis just
 Respond strictly with one word:
 - `MUTE` if they want Jarvis to be quiet / shut up
 - `UNMUTE` if they tell Jarvis it can talk again
-- `ADDRESSED_TO_JARVIS` if they are asking Jarvis a question, giving an instruction to an agent, or replying to Jarvis
+- `ADDRESSED_TO_JARVIS` if they are asking Jarvis a question, asking Jarvis to code/build something, giving an instruction to an agent, or replying to Jarvis
 - `IGNORE_BACKGROUND` if they are talking to someone else, thinking out loud ("hmm let me see..."), or saying filler words
 """
 

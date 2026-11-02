@@ -170,7 +170,7 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.post.assert_awaited_once_with("/api/session/ses_1/prompt", json={"text": "Now add dark mode"})
 
 
-class TestAgentRoster(unittest.TestCase):
+class TestAgentRoster(unittest.IsolatedAsyncioTestCase):
     def test_roster_lists_exact_ids(self) -> None:
         from jarvis.agent_watchers import AgentOrchestrator
         from jarvis.main import agent_roster
@@ -179,7 +179,51 @@ class TestAgentRoster(unittest.TestCase):
         self.assertIn("No coding agents", agent_roster(orch))
         orch.adapters["opencode-frontend"] = make(OpenCodeSSEAdapter, "opencode_sse")
         orch.adapters["opencode-frontend"].config.id = "opencode-frontend"
-        self.assertIn("id `opencode-frontend`: Agent One", agent_roster(orch))
+        roster = agent_roster(orch)
+        self.assertIn("id `opencode-frontend` (DEFAULT): Agent One", roster)
+        self.assertIn("Default coding agent: `opencode-frontend`", roster)
+
+    def test_default_agent_resolution(self) -> None:
+        from jarvis.agent_watchers import AgentOrchestrator
+
+        orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
+        orch.adapters["claude-auth"] = make(ClaudeCodeStreamAdapter, "claude_code")
+        orch.adapters["claude-auth"].config.id = "claude-auth"
+        orch.adapters["opencode-frontend"] = make(OpenCodeSSEAdapter, "opencode_sse")
+        orch.adapters["opencode-frontend"].config.id = "opencode-frontend"
+
+        # 1. Matches exact id
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", "claude-auth"):
+            self.assertEqual(orch.default_agent_id, "claude-auth")
+
+        # 2. Matches type alias "opencode"
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencode"):
+            self.assertEqual(orch.default_agent_id, "opencode-frontend")
+
+        # 3. Matches type alias "claude"
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", "claude"):
+            self.assertEqual(orch.default_agent_id, "claude-auth")
+
+        # 4. Empty config falls back to first loaded adapter
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", ""):
+            self.assertEqual(orch.default_agent_id, "claude-auth")
+
+    async def test_route_user_decision_uses_default_agent_when_unspecified(self) -> None:
+        from jarvis.agent_watchers import AgentOrchestrator
+
+        orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
+        mock_adapter = MagicMock()
+        mock_adapter.config.id = "opencode-frontend"
+        mock_adapter.config.type = "opencode_sse"
+        mock_adapter.config.name = "OpenCode"
+        mock_adapter.send_instruction = AsyncMock(return_value=True)
+        orch.adapters["opencode-frontend"] = mock_adapter
+
+        # Calling with None or empty string uses default agent
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencode-frontend"):
+            ok = await orch.route_user_decision(None, "build a login page")
+            self.assertTrue(ok)
+            mock_adapter.send_instruction.assert_awaited_once_with("build a login page")
 
 
 if __name__ == "__main__":
