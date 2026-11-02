@@ -6,7 +6,7 @@ from pipecat.frames.frames import Frame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from jarvis.executive_filter import ExecutiveFilter
-from jarvis.state import JarvisMode, JarvisState, UserIntent
+from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command
 
 
 class JarvisIntentGate(FrameProcessor):
@@ -36,6 +36,10 @@ class JarvisIntentGate(FrameProcessor):
             return
 
         logger.info(f"[User Transcript] ({self.state.mode.value}): {transcript!r}")
+
+        # While muted only "you can talk" matters; skip the paid LLM call for everything else.
+        if self.state.mode == JarvisMode.BEEP_ONLY and classify_fast_command(transcript) is None:
+            return
 
         recent_topic = next(
             (t.summary for t in reversed(list(self.state.active_agent_context.values()))),

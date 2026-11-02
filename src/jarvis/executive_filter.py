@@ -24,10 +24,11 @@ Rules:
 3. When `should_interrupt: true`, write `spoken_summary`:
    - MAXIMUM 2 short conversational sentences meant to be spoken aloud.
    - ZERO file paths, ZERO function names, ZERO code blocks, ZERO markdown, ZERO technical jargon unless essential.
-   - Frame it clearly around the decision needed (e.g., "The auth agent finished the migration, but wants to know if we should drop the legacy session table now or keep it for backwards compatibility.")
+   - Refer to the agent by the exact Agent Name you are given, never by a role you guess.
+   - Frame it clearly around the decision needed (e.g., "<Agent Name> finished the migration, but wants to know if we should drop the legacy session table now or keep it for backwards compatibility.")
 
 Respond strictly in JSON matching:
-{"should_interrupt": boolean, "requires_decision": boolean, "spoken_summary": string}
+{"should_interrupt": boolean, "spoken_summary": string}
 """
 
 ADDRESSED_CLASSIFIER_SYSTEM_PROMPT = """You are the Always-On Turn Classifier for a voice assistant named Jarvis.
@@ -66,6 +67,9 @@ class ExecutiveFilter:
         )
         if not self.api_key:
             logger.warning("OPENROUTER_API_KEY is not set; executive filter runs on offline heuristics.")
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
 
     async def _call_llm(
         self,
@@ -118,8 +122,6 @@ class ExecutiveFilter:
                     agent_id=agent_id,
                     agent_name=agent_name,
                     summary=f"Needs your input: {short}",
-                    raw_context=cleaned,
-                    requires_decision=True,
                 )
             return None
 
@@ -148,8 +150,6 @@ class ExecutiveFilter:
                 agent_id=agent_id,
                 agent_name=agent_name,
                 summary=parsed.get("spoken_summary", "Needs your attention."),
-                raw_context=cleaned,
-                requires_decision=bool(parsed.get("requires_decision", True)),
             )
         except Exception as exc:
             logger.warning(f"Executive filter LLM call failed ({exc}); falling back to heuristic.")
@@ -158,8 +158,6 @@ class ExecutiveFilter:
                     agent_id=agent_id,
                     agent_name=agent_name,
                     summary="Finished a step and is waiting for your decision.",
-                    raw_context=cleaned,
-                    requires_decision=True,
                 )
             return None
 

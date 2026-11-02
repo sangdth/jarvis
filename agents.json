@@ -5,7 +5,17 @@
       "name": "Claude Code (Auth Service)",
       "type": "claude_code",
       "cwd": ".",
-      "command": ["claude", "-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"],
+      "command": [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        "acceptEdits"
+      ],
       "enabled": true
     },
     {
@@ -20,8 +30,11 @@
       "name": "Pi Coding Agent",
       "type": "acp_stdio",
       "cwd": ".",
-      "command": ["pi", "--acp"],
-      "enabled": true
+      "command": [
+        "pi",
+        "--acp"
+      ],
+      "enabled": false
     }
   ]
 }

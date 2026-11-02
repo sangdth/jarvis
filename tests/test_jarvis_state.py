@@ -46,7 +46,6 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
             agent_id="claude-auth",
             agent_name="Claude Code",
             summary="Should we drop the legacy users table?",
-            raw_context="...",
         )
         await state.notify_topic(topic1)
         self.assertEqual(len(spoken_messages), 1)
@@ -64,7 +63,6 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
             agent_id="opencode-fe",
             agent_name="OpenCode",
             summary="Wants approval to install Tailwind v4.",
-            raw_context="...",
         )
         await state.notify_topic(topic2)
         self.assertEqual(len(spoken_messages), 1)  # No new speech while muted

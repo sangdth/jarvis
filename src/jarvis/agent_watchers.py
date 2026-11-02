@@ -2,14 +2,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
 import httpx
 from loguru import logger
 
+from jarvis import __version__
+from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.state import JarvisState
+
+# Refusals are checked first, so "not sure" or "don't allow" never count as approval.
+_REJECT_WORDS = re.compile(r"\b(no|not|don'?t|do not|never|reject|deny|denied|cancel|stop|wait)\b", re.IGNORECASE)
+_APPROVE_WORDS = re.compile(r"\b(yes|yep|yeah|approve|approved|allow|go ahead|sure|do it|ok|okay|proceed)\b", re.IGNORECASE)
+
+
+def is_approval(instruction: str) -> bool:
+    """True only when the user clearly approves and says nothing that sounds like a refusal."""
+    if _REJECT_WORDS.search(instruction):
+        return False
+    return bool(_APPROVE_WORDS.search(instruction))
 
 
 @dataclass
@@ -70,7 +85,9 @@ class BaseAgentAdapter:
 class ClaudeCodeStreamAdapter(BaseAgentAdapter):
     """
     Watches and controls a Claude Code instance via `--output-format stream-json --input-format stream-json`.
-    Surfaces only permission requests, questions, or final turn summaries through the ExecutiveFilter.
+    Surfaces questions and final turn results through the ExecutiveFilter.
+    shortcut: tool permission prompts are not answered; run it with `--permission-mode acceptEdits`
+    (see agents.json) until Jarvis handles Claude Code's control_request messages.
     """
 
     def __init__(
@@ -91,6 +108,8 @@ class ClaudeCodeStreamAdapter(BaseAgentAdapter):
             "--input-format",
             "stream-json",
             "--verbose",
+            "--permission-mode",
+            "acceptEdits",
         ]
         try:
             self._proc = await asyncio.create_subprocess_exec(
@@ -98,7 +117,8 @@ class ClaudeCodeStreamAdapter(BaseAgentAdapter):
                 cwd=self.config.cwd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                # Nothing reads stderr; a full pipe would freeze the agent.
+                stderr=asyncio.subprocess.DEVNULL,
             )
             logger.info(f"Started Claude Code stream watcher [{self.config.id}]: {' '.join(cmd)}")
         except FileNotFoundError:
@@ -114,20 +134,16 @@ class ClaudeCodeStreamAdapter(BaseAgentAdapter):
                 event: dict[str, Any] = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            await self._handle_event(event)
 
-            event_type = event.get("type", "")
-            # Surface assistant completion results or permission prompts
-            if event_type == "result":
-                result_text = event.get("result", "")
-                is_error = bool(event.get("is_error", False))
-                await self._handle_raw_event(result_text, force_decision=is_error)
-            elif event_type == "assistant":
-                msg = event.get("message", {})
-                for block in msg.get("content", []):
-                    if block.get("type") == "text":
-                        text = block.get("text", "")
-                        if "?" in text:
-                            await self._handle_raw_event(text, force_decision=True)
+    async def _handle_event(self, event: dict[str, Any]) -> None:
+        event_type = event.get("type", "")
+        if event_type == "result":
+            await self._handle_raw_event(event.get("result", ""), force_decision=bool(event.get("is_error", False)))
+        elif event_type == "assistant":
+            for block in event.get("message", {}).get("content", []):
+                if block.get("type") == "text" and "?" in block.get("text", ""):
+                    await self._handle_raw_event(block["text"], force_decision=True)
 
     async def send_instruction(self, instruction: str) -> bool:
         if not self._proc or not self._proc.stdin:
@@ -145,8 +161,8 @@ class ClaudeCodeStreamAdapter(BaseAgentAdapter):
 
 class ACPStdioAdapter(BaseAgentAdapter):
     """
-    Watches and orchestrates ACP-compatible agents (Pi, OpenCode ACP, Gemini CLI, etc.)
-    over JSON-RPC 2.0 stdio (`pi --acp` or `opencode acp`).
+    Watches and orchestrates Agent Client Protocol agents (Pi, Gemini CLI, etc.) over JSON-RPC 2.0 stdio.
+    Handshake: `initialize`, then `session/new`; a turn ends with the response to `session/prompt`.
     """
 
     def __init__(
@@ -158,7 +174,20 @@ class ACPStdioAdapter(BaseAgentAdapter):
         super().__init__(config, state, executive_filter)
         self._proc: asyncio.subprocess.Process | None = None
         self._rpc_id: int = 0
-        self._pending_permission_id: int | str | None = None
+        self._requests: dict[int, str] = {}  # our request id -> method, to match responses
+        self._session_id: str | None = None
+        self._pending_permission: dict[str, Any] | None = None  # the agent's request, until answered
+        self._text: list[str] = []
+
+    async def _write(self, message: dict[str, Any]) -> None:
+        assert self._proc is not None and self._proc.stdin is not None
+        self._proc.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+        await self._proc.stdin.drain()
+
+    async def _request(self, method: str, params: dict[str, Any]) -> None:
+        self._rpc_id += 1
+        self._requests[self._rpc_id] = method
+        await self._write({"jsonrpc": "2.0", "id": self._rpc_id, "method": method, "params": params})
 
     async def _run_loop(self) -> None:
         cmd = self.config.command or ["pi", "--acp"]
@@ -168,16 +197,21 @@ class ACPStdioAdapter(BaseAgentAdapter):
                 cwd=self.config.cwd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                # Nothing reads stderr; a full pipe would freeze the agent.
+                stderr=asyncio.subprocess.DEVNULL,
             )
             logger.info(f"Started ACP stdio watcher [{self.config.id}]: {' '.join(cmd)}")
         except FileNotFoundError:
             logger.warning(f"[{self.config.id}] Command {cmd[0]!r} not found on PATH; watcher idle.")
             return
 
-        assert self._proc.stdout is not None
-        text_accumulator: list[str] = []
+        await self._request(
+            "initialize",
+            {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "jarvis", "version": __version__}},
+        )
+        await self._request("session/new", {"cwd": str(Path(self.config.cwd).resolve()), "mcpServers": []})
 
+        assert self._proc.stdout is not None
         async for raw_line in self._proc.stdout:
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
@@ -186,67 +220,68 @@ class ACPStdioAdapter(BaseAgentAdapter):
                 msg: dict[str, Any] = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            await self._handle_message(msg)
 
-            method = msg.get("method", "")
-            params = msg.get("params", {})
+    async def _handle_message(self, msg: dict[str, Any]) -> None:
+        method = msg.get("method")
+        params = msg.get("params", {})
 
-            # ACP permission request -> always surface immediately to Jarvis
-            if method == "session/request_permission":
-                self._pending_permission_id = msg.get("id")
-                title = params.get("permission", {}).get("title", "Tool execution permission")
-                desc = params.get("permission", {}).get("description", "")
-                await self._handle_raw_event(
-                    f"Permission requested: {title}. {desc}",
-                    force_decision=True,
-                )
+        # Response to one of our requests
+        if method is None and "id" in msg:
+            sent = self._requests.pop(msg["id"], None)
+            result = msg.get("result") or {}
+            if "error" in msg:
+                logger.warning(f"[{self.config.id}] {sent} failed: {msg['error']}")
+            elif sent == "session/new":
+                self._session_id = result.get("sessionId")
+                logger.info(f"[{self.config.id}] ACP session ready: {self._session_id}")
+            if sent == "session/prompt" and self._text:
+                full_turn = "".join(self._text)
+                self._text.clear()
+                await self._handle_raw_event(full_turn, force_decision=result.get("stopReason") != "end_turn")
+            return
 
-            # ACP streaming session updates
-            elif method == "session/update":
-                update = params.get("update", {})
-                session_update = update.get("sessionUpdate", "")
-                if session_update == "agent_message_chunk":
-                    chunk = update.get("content", {}).get("text", "")
-                    text_accumulator.append(chunk)
-                elif session_update in ("turn_complete", "idle") and text_accumulator:
-                    full_turn = "".join(text_accumulator)
-                    text_accumulator.clear()
-                    await self._handle_raw_event(full_turn, force_decision=False)
+        if method == "session/request_permission":
+            self._pending_permission = msg
+            title = params.get("toolCall", {}).get("title") or "a tool call"
+            await self._handle_raw_event(f"Permission requested: {title}", force_decision=True)
+        elif method == "session/update":
+            update = params.get("update", {})
+            if update.get("sessionUpdate") == "agent_message_chunk":
+                self._text.append(update.get("content", {}).get("text", ""))
+        elif "id" in msg:
+            # We declare no client capabilities, so any other agent request gets "method not found".
+            await self._write(
+                {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": f"{method} not supported"}}
+            )
 
     async def send_instruction(self, instruction: str) -> bool:
         if not self._proc or not self._proc.stdin:
             return False
 
-        # If waiting on a permission request, resolve it if user said approve/reject
-        if self._pending_permission_id is not None:
-            approved = any(
-                w in instruction.lower()
-                for w in ("yes", "approve", "go ahead", "allow", "sure", "do it")
-            )
-            reply = {
-                "jsonrpc": "2.0",
-                "id": self._pending_permission_id,
-                "result": {"outcome": {"outcome": "selected" if approved else "cancelled"}},
-            }
-            self._pending_permission_id = None
-            self._proc.stdin.write((json.dumps(reply) + "\n").encode("utf-8"))
-            await self._proc.stdin.drain()
+        if self._pending_permission is not None:
+            request, self._pending_permission = self._pending_permission, None
+            wanted = ("allow_once", "allow_always") if is_approval(instruction) else ("reject_once", "reject_always")
+            options = request.get("params", {}).get("options", [])
+            option = next((o for kind in wanted for o in options if o.get("kind") == kind), None)
+            outcome = {"outcome": "selected", "optionId": option["optionId"]} if option else {"outcome": "cancelled"}
+            await self._write({"jsonrpc": "2.0", "id": request["id"], "result": {"outcome": outcome}})
             return True
 
-        self._rpc_id += 1
-        rpc = {
-            "jsonrpc": "2.0",
-            "id": self._rpc_id,
-            "method": "session/prompt",
-            "params": {"prompt": [{"type": "text", "text": instruction}]},
-        }
-        self._proc.stdin.write((json.dumps(rpc) + "\n").encode("utf-8"))
-        await self._proc.stdin.drain()
+        if not self._session_id:
+            logger.warning(f"[{self.config.id}] Cannot send instruction; ACP session not ready.")
+            return False
+        await self._request(
+            "session/prompt",
+            {"sessionId": self._session_id, "prompt": [{"type": "text", "text": instruction}]},
+        )
         return True
 
 
 class OpenCodeSSEAdapter(BaseAgentAdapter):
     """
-    Subscribes to an OpenCode Server (`opencode serve`) over HTTP Server-Sent Events (`/event`).
+    Subscribes to an OpenCode v2 server (`opencode serve`) over Server-Sent Events at `/api/event`.
+    Auth: HTTP Basic, user `opencode`, password from OPENCODE_SERVER_PASSWORD.
     """
 
     def __init__(
@@ -257,61 +292,75 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
     ) -> None:
         super().__init__(config, state, executive_filter)
         self.base_url = (config.url or "http://127.0.0.1:4096").rstrip("/")
+        auth = ("opencode", settings.opencode_server_password) if settings.opencode_server_password else None
+        self._http = httpx.AsyncClient(base_url=self.base_url, auth=auth, timeout=10.0)
         self._latest_session_id: str | None = None
+        self._pending_permission: dict[str, Any] | None = None
+        self._last_text: dict[str, str] = {}  # session id -> latest finished assistant text
 
     async def _run_loop(self) -> None:
-        url = f"{self.base_url}/event"
         while True:
             try:
-                async with httpx.AsyncClient(timeout=None) as client:
-                    async with client.stream("GET", url) as response:
-                        logger.info(f"Connected to OpenCode SSE stream at {url}")
-                        async for line in response.aiter_lines():
-                            if not line.startswith("data:"):
-                                continue
-                            raw_data = line.removeprefix("data:").strip()
-                            if not raw_data:
-                                continue
-                            try:
-                                event = json.loads(raw_data)
-                            except json.JSONDecodeError:
-                                continue
-
-                            ev_type = event.get("type", "")
-                            props = event.get("properties", {})
-                            session_id = props.get("sessionID")
-                            if session_id:
-                                self._latest_session_id = session_id
-
-                            if ev_type == "permission.updated":
-                                title = props.get("title", "Approval needed")
-                                await self._handle_raw_event(
-                                    f"OpenCode needs approval: {title}",
-                                    force_decision=True,
-                                )
-                            elif ev_type == "session.idle":
-                                summary_text = props.get("summary", "")
-                                if summary_text:
-                                    await self._handle_raw_event(summary_text, force_decision=False)
+                async with self._http.stream("GET", "/api/event", timeout=None) as response:
+                    response.raise_for_status()
+                    logger.info(f"Connected to OpenCode event stream at {self.base_url}/api/event")
+                    async for line in response.aiter_lines():
+                        raw_data = line.removeprefix("data:").strip() if line.startswith("data:") else ""
+                        if not raw_data:
+                            continue
+                        try:
+                            event = json.loads(raw_data)
+                        except json.JSONDecodeError:
+                            continue
+                        await self._handle_event(event)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                # Reconnect quietly if `opencode serve` is not started yet
+            except Exception as exc:
+                # Reconnect if `opencode serve` is not started yet or dropped the stream
+                logger.debug(f"[{self.config.id}] OpenCode stream unavailable ({exc}); retrying in 10s.")
                 await asyncio.sleep(10.0)
 
+    async def _handle_event(self, event: dict[str, Any]) -> None:
+        ev_type = event.get("type", "")
+        data = event.get("data") or {}
+        session_id = data.get("sessionID")
+        if session_id:
+            self._latest_session_id = session_id
+
+        if ev_type == "permission.asked":
+            self._pending_permission = data
+            what = " ".join([data.get("action", "")] + data.get("resources", [])).strip()
+            await self._handle_raw_event(f"OpenCode needs approval: {what or 'a tool call'}", force_decision=True)
+        elif ev_type == "session.text.ended" and session_id:
+            self._last_text[session_id] = data.get("text", "")
+        elif ev_type in ("session.execution.succeeded", "session.execution.failed") and session_id:
+            text = self._last_text.pop(session_id, "")
+            if text:
+                await self._handle_raw_event(text, force_decision=ev_type.endswith("failed"))
+
     async def send_instruction(self, instruction: str) -> bool:
-        if not self._latest_session_id:
-            return False
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/session/{self._latest_session_id}/message",
-                    json={"parts": [{"type": "text", "text": instruction}]},
+            if self._pending_permission is not None:
+                request, self._pending_permission = self._pending_permission, None
+                resp = await self._http.post(
+                    f"/api/session/{request['sessionID']}/permission/{request['id']}/reply",
+                    json={"decision": "once" if is_approval(instruction) else "reject"},
                 )
                 return resp.is_success
-        except Exception as exc:
+            if not self._latest_session_id:
+                return False
+            resp = await self._http.post(
+                f"/api/session/{self._latest_session_id}/prompt",
+                json={"text": instruction},
+            )
+            return resp.is_success
+        except httpx.HTTPError as exc:
             logger.error(f"Failed to send message to OpenCode: {exc}")
             return False
+
+    async def stop(self) -> None:
+        await super().stop()
+        await self._http.aclose()
 
 
 class AgentOrchestrator:
@@ -334,9 +383,7 @@ class AgentOrchestrator:
             if not cfg.enabled:
                 continue
             if cfg.type == "claude_code":
-                self.adapters[cfg.id] = ClaudeCodeStreamAdapter(
-                    cfg, self.state, self.executive_filter
-                )
+                self.adapters[cfg.id] = ClaudeCodeStreamAdapter(cfg, self.state, self.executive_filter)
             elif cfg.type == "acp_stdio":
                 self.adapters[cfg.id] = ACPStdioAdapter(cfg, self.state, self.executive_filter)
             elif cfg.type == "opencode_sse":

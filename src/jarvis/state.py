@@ -3,8 +3,7 @@ from __future__ import annotations
 import math
 import re
 import struct
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Awaitable
 
@@ -28,9 +27,6 @@ class AgentTopic:
     agent_id: str
     agent_name: str
     summary: str
-    raw_context: str
-    requires_decision: bool = True
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # Fast deterministic regex patterns for instant mute/unmute without waiting on an LLM call
