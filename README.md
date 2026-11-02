@@ -1,6 +1,6 @@
 # Jarvis — Always-On Voice Executive Harness
 
-Jarvis is an always-on voice harness built on **Pipecat**, **Faster-Whisper**, and **ACP / Claude Code Streams**.
+Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, and **ACP / Claude Code Streams**.
 
 It listens continuously without a wake word, watches your coding agents (**Claude Code**, **OpenCode**, **Pi**) in the background, strips out technical jargon, and surfaces only high-level decisions.
 
@@ -10,7 +10,7 @@ It listens continuously without a wake word, watches your coding agents (**Claud
 
 | Requirement | Component | File |
 | :--- | :--- | :--- |
-| **No wake word, respond only when needed** | Silero VAD + Faster-Whisper + `JarvisIntentGate` | [`src/jarvis/voice_gates.py`](src/jarvis/voice_gates.py) |
+| **No wake word, respond only when needed** | Silero VAD + MLX Whisper + `JarvisIntentGate` | [`src/jarvis/voice_gates.py`](src/jarvis/voice_gates.py) |
 | **"Shut up" / "Be quiet" -> Beep Mode** | `JarvisState` (`VOICE` vs `BEEP_ONLY` + sine PCM beep synth) | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **"You can talk" -> Unmute & Digest** | `JarvisState.set_unmute()` | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **Strip technical jargon & routine logs** | `ExecutiveFilter` | [`src/jarvis/executive_filter.py`](src/jarvis/executive_filter.py) |
@@ -43,7 +43,7 @@ Edit [`agents.json`](agents.json): set each agent's `cwd` to the project it shou
 - **Pi** (`pi --acp`) is disabled; set `"enabled": true` once `pi` is installed.
 
 ### 4. Run Jarvis
-Use headphones: Jarvis has no echo cancellation, so through speakers it hears and interrupts itself.
+On laptop speakers Jarvis ignores the mic while it talks (`MUTE_MIC_WHILE_SPEAKING=true`), so it doesn't hear itself; you can't interrupt it mid-sentence then. With headphones, set it to `false` to cut Jarvis off with "shut up".
 ```bash
 uv run jarvis
 ```

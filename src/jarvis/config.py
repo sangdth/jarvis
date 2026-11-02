@@ -13,7 +13,12 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # Local Always-On STT
-    whisper_model: str = "distil-large-v3"
+    # MLX Whisper on the Apple GPU (Hugging Face repo id)
+    whisper_model: str = "mlx-community/distil-whisper-large-v3"
+
+    # Ignore the mic while Jarvis speaks, so it doesn't hear itself through laptop speakers.
+    # With headphones set false: you can then cut Jarvis off mid-sentence ("shut up").
+    mute_mic_while_speaking: bool = True
 
     # TTS
     elevenlabs_api_key: str = ""

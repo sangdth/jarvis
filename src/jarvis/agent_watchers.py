@@ -20,6 +20,29 @@ _REJECT_WORDS = re.compile(r"\b(no|not|don'?t|do not|never|reject|deny|denied|ca
 _APPROVE_WORDS = re.compile(r"\b(yes|yep|yeah|approve|approved|allow|go ahead|sure|do it|ok|okay|proceed)\b", re.IGNORECASE)
 
 
+def _request_of(data: dict[str, Any]) -> dict[str, Any]:
+    """OpenCode wraps requests in the event data (e.g. `data.form`); return the object holding id and sessionID."""
+    return next((v for v in data.values() if isinstance(v, dict) and "id" in v and "sessionID" in v), data)
+
+
+def form_answer(fields: list[dict[str, Any]], instruction: str) -> dict[str, Any]:
+    """Map a spoken answer onto OpenCode form fields: a named option, yes/no, or the user's own words."""
+    said = instruction.lower()
+    answer: dict[str, Any] = {}
+    for field in fields:
+        if field.get("hidden"):
+            continue
+        options = field.get("options") or []
+        named = [o["value"] for o in options if re.search(rf"\b{re.escape(o['label'].lower())}\b", said)]
+        if field.get("type") == "boolean":
+            answer[field["key"]] = is_approval(instruction)
+        elif field.get("type") == "multiselect":
+            answer[field["key"]] = named or [instruction]
+        else:
+            answer[field["key"]] = named[0] if named else instruction
+    return answer
+
+
 def is_approval(instruction: str) -> bool:
     """True only when the user clearly approves and says nothing that sounds like a refusal."""
     if _REJECT_WORDS.search(instruction):
@@ -296,6 +319,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         self._http = httpx.AsyncClient(base_url=self.base_url, auth=auth, timeout=10.0)
         self._latest_session_id: str | None = None
         self._pending_permission: dict[str, Any] | None = None
+        self._pending_form: dict[str, Any] | None = None  # a question OpenCode is waiting on
         self._last_text: dict[str, str] = {}  # session id -> latest finished assistant text
 
     async def _run_loop(self) -> None:
@@ -328,9 +352,19 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
             self._latest_session_id = session_id
 
         if ev_type == "permission.asked":
-            self._pending_permission = data
-            what = " ".join([data.get("action", "")] + data.get("resources", [])).strip()
+            request = self._pending_permission = _request_of(data)
+            self._latest_session_id = request.get("sessionID", self._latest_session_id)
+            what = " ".join([request.get("action", "")] + request.get("resources", [])).strip()
             await self._handle_raw_event(f"OpenCode needs approval: {what or 'a tool call'}", force_decision=True)
+        elif ev_type == "form.created":
+            form = self._pending_form = _request_of(data)
+            self._latest_session_id = form.get("sessionID", self._latest_session_id)
+            asks = []
+            for field in form.get("fields", []):
+                question = field.get("description") or field.get("title") or ""
+                labels = [o["label"] for o in field.get("options") or []]
+                asks.append(f"{question} Options: {', '.join(labels)}." if labels else question)
+            await self._handle_raw_event(f"OpenCode asks: {' '.join(asks)}", force_decision=True)
         elif ev_type == "session.text.ended" and session_id:
             self._last_text[session_id] = data.get("text", "")
         elif ev_type in ("session.execution.succeeded", "session.execution.failed") and session_id:
@@ -345,6 +379,13 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
                 resp = await self._http.post(
                     f"/api/session/{request['sessionID']}/permission/{request['id']}/reply",
                     json={"decision": "once" if is_approval(instruction) else "reject"},
+                )
+                return resp.is_success
+            if self._pending_form is not None:
+                form, self._pending_form = self._pending_form, None
+                resp = await self._http.post(
+                    f"/api/session/{form['sessionID']}/form/{form['id']}/reply",
+                    json={"answer": form_answer(form.get("fields", []), instruction)},
                 )
                 return resp.is_success
             if not self._latest_session_id:

@@ -5,7 +5,7 @@ description = "Always-on voice executive agent harness for orchestrating Claude 
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pipecat-ai[silero,whisper,openai,elevenlabs,local]>=0.0.50",
+    "pipecat-ai[silero,whisper,mlx-whisper,openai,elevenlabs,local]>=0.0.50",
     "numpy>=1.26.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",

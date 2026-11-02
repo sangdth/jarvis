@@ -24,8 +24,8 @@ Rules:
 3. When `should_interrupt: true`, write `spoken_summary`:
    - MAXIMUM 2 short conversational sentences meant to be spoken aloud.
    - ZERO file paths, ZERO function names, ZERO code blocks, ZERO markdown, ZERO technical jargon unless essential.
-   - Refer to the agent by the exact Agent Name you are given, never by a role you guess.
-   - Frame it clearly around the decision needed (e.g., "<Agent Name> finished the migration, but wants to know if we should drop the legacy session table now or keep it for backwards compatibility.")
+   - Do not start with the agent's name; Jarvis announces it before your summary. Never call the agent by a role you guess (like "the auth agent").
+   - Frame it clearly around the decision needed (e.g., "Finished the migration, and wants to know if we should drop the legacy session table now or keep it for backwards compatibility.")
 
 Respond strictly in JSON matching:
 {"should_interrupt": boolean, "spoken_summary": string}

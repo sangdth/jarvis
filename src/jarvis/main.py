@@ -23,6 +23,14 @@ Core behavior:
 """
 
 
+def agent_roster(orchestrator: AgentOrchestrator) -> str:
+    """List the watched agents so the LLM knows them and uses their exact IDs in send_agent_decision."""
+    if not orchestrator.adapters:
+        return "\nNo coding agents are configured right now."
+    lines = [f"- id `{a.config.id}`: {a.config.name}" for a in orchestrator.adapters.values()]
+    return "\nWatched coding agents (use the exact id with send_agent_decision):\n" + "\n".join(lines)
+
+
 async def run_pipecat_harness() -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -33,8 +41,12 @@ async def run_pipecat_harness() -> None:
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
     from pipecat.processors.aggregators.llm_context import LLMContext
-    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair,
+        LLMUserAggregatorParams,
+    )
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+    from pipecat.turns.user_mute import AlwaysUserMuteStrategy
 
     from jarvis.voice_gates import JarvisIntentGate
 
@@ -63,23 +75,13 @@ async def run_pipecat_harness() -> None:
     orchestrator = AgentOrchestrator(state=state, executive_filter=executive_filter)
     orchestrator.load_from_file(settings.watch_config_path)
 
-    # 1. Local Audio Transport with Silero VAD (Always-on, no wake word)
-    transport = LocalAudioTransport(
-        LocalAudioTransportParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-            vad_enabled=True,
-            vad_audio_passthrough=True,
-            vad_analyzer=SileroVADAnalyzer(
-                params=VADParams(stop_secs=0.6, min_volume=0.5)
-            ),
-        )
-    )
+    # 1. Local mic + speaker (always on, no wake word)
+    transport = LocalAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True))
 
-    # 2. Local Always-On STT (Faster-Whisper / MLX-Whisper)
-    from pipecat.services.whisper.stt import WhisperSTTService
+    # 2. Local Always-On STT (MLX Whisper on the Apple GPU)
+    from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
-    stt = WhisperSTTService(model=settings.whisper_model)
+    stt = WhisperSTTServiceMLX(settings=WhisperSTTServiceMLX.Settings(model=settings.whisper_model))
 
     # 3. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier)
     intent_gate = JarvisIntentGate(state=state, executive_filter=executive_filter)
@@ -125,7 +127,7 @@ async def run_pipecat_harness() -> None:
             properties={
                 "agent_id": {
                     "type": "string",
-                    "description": "ID of the agent (e.g., claude-auth, opencode-frontend, pi-backend)",
+                    "description": "Exact ID of the watched agent, from the list in your instructions",
                 },
                 "instruction": {
                     "type": "string",
@@ -140,10 +142,20 @@ async def run_pipecat_harness() -> None:
         llm.register_function("send_agent_decision", handle_send_agent_decision)
 
     context = LLMContext(
-        messages=[{"role": "system", "content": JARVIS_EXECUTIVE_SYSTEM_PROMPT}],
+        messages=[{"role": "system", "content": JARVIS_EXECUTIVE_SYSTEM_PROMPT + agent_roster(orchestrator)}],
         tools=tools,
     )
-    context_aggregator = LLMContextAggregatorPair(context)
+    # Pipecat 1.x runs voice detection in the user aggregator; it signals speech start/stop
+    # upstream too, which is what tells Whisper when a sentence is complete.
+    context_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            # Smart Turn decides when a sentence is finished; 0.2 s is Pipecat's recommended VAD pause for it.
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2, min_volume=0.5)),
+            # Through laptop speakers the mic hears Jarvis; ignore it while Jarvis talks.
+            user_mute_strategies=[AlwaysUserMuteStrategy()] if settings.mute_mic_while_speaking else [],
+        ),
+    )
 
     # 5. Text-to-Speech (ElevenLabs if configured)
     processors = [
@@ -160,7 +172,7 @@ async def run_pipecat_harness() -> None:
 
         tts = ElevenLabsTTSService(
             api_key=settings.elevenlabs_api_key,
-            voice_id=settings.elevenlabs_voice_id,
+            settings=ElevenLabsTTSService.Settings(voice=settings.elevenlabs_voice_id),
         )
         processors.append(tts)
 

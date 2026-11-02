@@ -6,6 +6,7 @@ from jarvis.agent_watchers import (
     ClaudeCodeStreamAdapter,
     OpenCodeSSEAdapter,
     WatchedAgentConfig,
+    form_answer,
     is_approval,
 )
 
@@ -28,6 +29,38 @@ class TestIsApproval(unittest.TestCase):
 
     def test_words_inside_other_words_do_not_count(self) -> None:
         self.assertFalse(is_approval("I saw that yesterday"))
+
+
+QUESTION_FORM = {
+    "id": "frm_1",
+    "sessionID": "ses_1",
+    "title": "Questions",
+    "fields": [
+        {
+            "key": "q0",
+            "title": "Next step",
+            "description": "Which should come next: tests or docs?",
+            "type": "string",
+            "options": [{"value": "Tests", "label": "Tests"}, {"value": "Docs", "label": "Docs"}],
+            "custom": True,
+        }
+    ],
+}
+
+
+class TestFormAnswer(unittest.TestCase):
+    def test_named_option_wins(self) -> None:
+        self.assertEqual(form_answer(QUESTION_FORM["fields"], "let's do the docs first"), {"q0": "Docs"})
+
+    def test_free_text_when_no_option_named(self) -> None:
+        self.assertEqual(form_answer(QUESTION_FORM["fields"], "skip both for now"), {"q0": "skip both for now"})
+
+    def test_boolean_and_multiselect(self) -> None:
+        fields = [
+            {"key": "ok", "type": "boolean"},
+            {"key": "pick", "type": "multiselect", "options": [{"value": "a", "label": "lint"}, {"value": "b", "label": "tests"}]},
+        ]
+        self.assertEqual(form_answer(fields, "yes, run lint and tests"), {"ok": True, "pick": ["a", "b"]})
 
 
 class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
@@ -117,6 +150,16 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await self.adapter.send_instruction("yes, go ahead"))
         self.post.assert_awaited_once_with("/api/session/ses_1/permission/per_1/reply", json={"decision": "once"})
 
+    async def test_question_form_is_read_out_and_answered(self) -> None:
+        # Shape captured from a live OpenCode v2.2.5 server: the form sits under data.form
+        await self.adapter._handle_event({"type": "form.created", "data": {"form": QUESTION_FORM}})
+        self.adapter._handle_raw_event.assert_awaited_once_with(
+            "OpenCode asks: Which should come next: tests or docs? Options: Tests, Docs.", force_decision=True
+        )
+        with patch.object(self.adapter._http, "post", new=self.post):
+            self.assertTrue(await self.adapter.send_instruction("Tests first"))
+        self.post.assert_awaited_once_with("/api/session/ses_1/form/frm_1/reply", json={"answer": {"q0": "Tests"}})
+
     async def test_finished_turn_is_surfaced_and_next_message_is_a_prompt(self) -> None:
         await self.adapter._handle_event({"type": "session.text.ended", "data": {"sessionID": "ses_1", "text": "All tests pass."}})
         await self.adapter._handle_event({"type": "session.execution.succeeded", "data": {"sessionID": "ses_1"}})
@@ -125,6 +168,18 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.adapter._http, "post", new=self.post):
             await self.adapter.send_instruction("Now add dark mode")
         self.post.assert_awaited_once_with("/api/session/ses_1/prompt", json={"text": "Now add dark mode"})
+
+
+class TestAgentRoster(unittest.TestCase):
+    def test_roster_lists_exact_ids(self) -> None:
+        from jarvis.agent_watchers import AgentOrchestrator
+        from jarvis.main import agent_roster
+
+        orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
+        self.assertIn("No coding agents", agent_roster(orch))
+        orch.adapters["opencode-frontend"] = make(OpenCodeSSEAdapter, "opencode_sse")
+        orch.adapters["opencode-frontend"].config.id = "opencode-frontend"
+        self.assertIn("id `opencode-frontend`: Agent One", agent_roster(orch))
 
 
 if __name__ == "__main__":
