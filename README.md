@@ -33,6 +33,7 @@ cp .env.example .env
 ```
 Fill in:
 - `OPENROUTER_API_KEY`: used for both Jarvis's conversational brain (`EXECUTIVE_MODEL`) and the filter (`FILTER_MODEL`); both default to `deepseek/deepseek-v4.1-flash` with thinking off. Left empty, the filter runs on offline keyword heuristics.
+- `DEFAULT_CODING_AGENT`: default coding agent ID or type (e.g. `opencode-frontend`, `opencode`, `claude-auth`, `claude`). When you tell Jarvis *"build a login screen"* or *"fix this bug"*, it automatically routes to this agent.
 - `ELEVENLABS_API_KEY`: For ultra-low-latency voice output.
 
 ### 3. Configure Watched Coding Agents
@@ -49,5 +50,6 @@ uv run jarvis
 ```
 
 ### Voice Commands
+- **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Dispatches the task directly to your default coding agent without having to say "tell OpenCode...".
 - **"Shut up"** / **"Be quiet"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
 - **"You can talk"** — Switches Jarvis back to `VOICE` mode and immediately reads a concise, jargon-free digest of everything queued while muted.
