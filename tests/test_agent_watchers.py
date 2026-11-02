@@ -170,60 +170,49 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.post.assert_awaited_once_with("/api/session/ses_1/prompt", json={"text": "Now add dark mode"})
 
 
-class TestAgentRoster(unittest.IsolatedAsyncioTestCase):
-    def test_roster_lists_exact_ids(self) -> None:
+def fake_adapter(agent_id: str, name: str = "Agent One") -> MagicMock:
+    adapter = MagicMock()
+    adapter.config.id = agent_id
+    adapter.config.name = name
+    adapter.send_instruction = AsyncMock(return_value=True)
+    return adapter
+
+
+class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
         from jarvis.agent_watchers import AgentOrchestrator
+
+        self.orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
+
+    def test_roster_lists_exact_ids_and_default(self) -> None:
         from jarvis.main import agent_roster
 
-        orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
-        self.assertIn("No coding agents", agent_roster(orch))
-        orch.adapters["opencode-frontend"] = make(OpenCodeSSEAdapter, "opencode_sse")
-        orch.adapters["opencode-frontend"].config.id = "opencode-frontend"
-        roster = agent_roster(orch)
-        self.assertIn("id `opencode-frontend` (DEFAULT): Agent One", roster)
-        self.assertIn("Default coding agent: `opencode-frontend`", roster)
-
-    def test_default_agent_resolution(self) -> None:
-        from jarvis.agent_watchers import AgentOrchestrator
-
-        orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
-        orch.adapters["claude-auth"] = make(ClaudeCodeStreamAdapter, "claude_code")
-        orch.adapters["claude-auth"].config.id = "claude-auth"
-        orch.adapters["opencode-frontend"] = make(OpenCodeSSEAdapter, "opencode_sse")
-        orch.adapters["opencode-frontend"].config.id = "opencode-frontend"
-
-        # 1. Matches exact id
-        with patch("jarvis.agent_watchers.settings.default_coding_agent", "claude-auth"):
-            self.assertEqual(orch.default_agent_id, "claude-auth")
-
-        # 2. Matches type alias "opencode"
-        with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencode"):
-            self.assertEqual(orch.default_agent_id, "opencode-frontend")
-
-        # 3. Matches type alias "claude"
-        with patch("jarvis.agent_watchers.settings.default_coding_agent", "claude"):
-            self.assertEqual(orch.default_agent_id, "claude-auth")
-
-        # 4. Empty config falls back to first loaded adapter
+        self.assertIn("No coding agents", agent_roster(self.orch))
+        self.orch.adapters["opencode-frontend"] = fake_adapter("opencode-frontend")
         with patch("jarvis.agent_watchers.settings.default_coding_agent", ""):
-            self.assertEqual(orch.default_agent_id, "claude-auth")
+            roster = agent_roster(self.orch)
+        self.assertIn("id `opencode-frontend` (DEFAULT): Agent One", roster)
+        self.assertIn("send it to `opencode-frontend`", roster)
 
-    async def test_route_user_decision_uses_default_agent_when_unspecified(self) -> None:
-        from jarvis.agent_watchers import AgentOrchestrator
-
-        orch = AgentOrchestrator(state=MagicMock(), executive_filter=MagicMock())
-        mock_adapter = MagicMock()
-        mock_adapter.config.id = "opencode-frontend"
-        mock_adapter.config.type = "opencode_sse"
-        mock_adapter.config.name = "OpenCode"
-        mock_adapter.send_instruction = AsyncMock(return_value=True)
-        orch.adapters["opencode-frontend"] = mock_adapter
-
-        # Calling with None or empty string uses default agent
+    async def test_default_agent_gets_unnamed_tasks_and_exact_ids_only(self) -> None:
+        self.orch.adapters["claude-auth"] = fake_adapter("claude-auth")
+        self.orch.adapters["opencode-frontend"] = fake_adapter("opencode-frontend")
         with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencode-frontend"):
-            ok = await orch.route_user_decision(None, "build a login page")
-            self.assertTrue(ok)
-            mock_adapter.send_instruction.assert_awaited_once_with("build a login page")
+            self.assertEqual(await self.orch.route_user_decision(None, "build a login page"), "opencode-frontend")
+            self.orch.adapters["opencode-frontend"].send_instruction.assert_awaited_once_with("build a login page")
+            # A guessed id like "code" must not fall onto some agent
+            self.assertIsNone(await self.orch.route_user_decision("code", "build it"))
+        self.orch.adapters["claude-auth"].send_instruction.assert_not_awaited()
+
+    def test_unknown_default_stops_startup(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"agents": [{"id": "claude-auth", "name": "Claude", "type": "claude_code"}]}, f)
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencod"):
+            with self.assertRaisesRegex(ValueError, "opencod"):
+                self.orch.load_from_file(f.name)
 
 
 if __name__ == "__main__":
