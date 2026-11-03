@@ -22,9 +22,7 @@ It listens continuously without a wake word and hands your requests to agents: c
 
 ### 1. Install Dependencies
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync
 ```
 
 ### 2. Configure `.env`

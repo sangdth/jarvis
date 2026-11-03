@@ -143,6 +143,51 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.adapter.send_task("add a login page"))
         self.adapter._client.query.assert_awaited_once_with("add a login page")
 
+    async def test_question_queued_behind_a_stop_is_not_asked(self) -> None:
+        # Two parallel tool calls: the second waits for the first; "stop" must end both.
+        first = asyncio.create_task(self.adapter._can_use_tool("Bash", {"command": "a"}, context()))
+        while self.adapter._question is None:
+            await asyncio.sleep(0)
+        second = asyncio.create_task(self.adapter._can_use_tool("Bash", {"command": "b"}, context()))
+        await asyncio.sleep(0)
+        await self.adapter.interrupt()
+        self.assertIsInstance(await first, PermissionResultDeny)
+        self.assertIsInstance(await second, PermissionResultDeny)
+        self.adapter._surface.assert_awaited_once_with("needs approval: a")  # "b" was never read out
+
+    async def test_a_crashed_claude_process_is_restarted(self) -> None:
+        starts = []
+
+        class Client:
+            def __init__(self, options) -> None:
+                starts.append(options)
+
+            async def __aenter__(self):
+                if len(starts) == 1:
+                    raise RuntimeError("claude exited")
+                return self
+
+            async def __aexit__(self, *exc) -> None:
+                return None
+
+            async def receive_messages(self):
+                await asyncio.sleep(3600)
+                yield
+
+        self.adapter._running = True
+        real_sleep = asyncio.sleep
+        with (
+            patch("jarvis.agent_watchers.ClaudeSDKClient", Client),
+            patch("asyncio.sleep", new=lambda s: real_sleep(0 if s == 10.0 else s)),  # skip the 10 s restart wait
+        ):
+            loop = asyncio.create_task(self.adapter._run_loop())
+            for _ in range(20):
+                await asyncio.sleep(0)
+            self.assertEqual(len(starts), 2)
+            self.assertIsNotNone(self.adapter._client)
+            self.assertFalse(self.adapter.busy)  # the dead turn no longer counts as running
+            loop.cancel()
+
     async def test_stop_then_send_keeps_the_new_task_running(self) -> None:
         # A correction: stop, send the corrected task, then the stopped turn's late result arrives.
         await self.adapter.send_task("look up Hacker Hustle")
@@ -203,6 +248,14 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await self.adapter.answer("Now add dark mode"))
             await self.adapter.send_task("Now add dark mode")
         self.post.assert_awaited_once_with("/api/session/ses_1/prompt", json={"text": "Now add dark mode"})
+
+    async def test_a_sub_agent_session_does_not_end_the_turn(self) -> None:
+        self.adapter._session_id, self.adapter._running = "ses_1", True
+        await self.adapter._handle_event({"type": "session.text.ended", "data": {"sessionID": "ses_child", "text": "x"}})
+        await self.adapter._handle_event({"type": "session.execution.succeeded", "data": {"sessionID": "ses_child"}})
+        self.adapter._surface.assert_not_awaited()
+        self.assertTrue(self.adapter.busy)
+        self.assertEqual(self.adapter._session_id, "ses_1")  # the next task still goes to the main session
 
     async def test_form_answered_elsewhere_is_no_longer_pending(self) -> None:
         await self.adapter._handle_event({"type": "form.created", "data": {"form": QUESTION_FORM}})
@@ -327,6 +380,14 @@ class TestHermesAdapter(unittest.IsolatedAsyncioTestCase):
             patch.object(self.adapter._http, "get", new=get),
         ):
             self.assertFalse(await self.adapter._watch("run_1"))  # still running: look again later
+
+        self.adapter._surface.reset_mock()
+        with (
+            patch.object(self.adapter._http, "stream", side_effect=httpx.ReadError("dropped")),
+            patch.object(self.adapter._http, "get", new=AsyncMock(return_value=MagicMock(status_code=404))),
+        ):
+            self.assertTrue(await self.adapter._watch("run_1"))  # Hermes forgot the run: stop waiting on it
+        self.adapter._surface.assert_awaited_once()
 
     async def test_run_end_events(self) -> None:
         await self.adapter._handle_event({"event": "run.cancelled", "run_id": "run_1"})
