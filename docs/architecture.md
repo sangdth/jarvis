@@ -54,6 +54,7 @@ flowchart LR
 
 ### B. "No Wake Word"
 Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
+0. **Echo cancellation:** [voiceclean](https://github.com/sortstring/voiceclean) (MIT, pure numpy) runs as the mic's `audio_in_filter`; `EchoReference`, placed after `transport.output()`, feeds it what Jarvis just played (resampled to 16 kHz). Jarvis's own voice is suppressed before VAD, so it doesn't answer itself on speakers and can be interrupted.
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
 2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. In the same step, a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker embedding (3D-Speaker ERes2Net, about 100 ms, run alongside Whisper) compares the whole sentence with the enrolled voiceprint (`~/.jarvis/owner_voice.npy`); below `SPEAKER_THRESHOLD` the sentence is dropped, unless it is a mute or unmute phrase. Turns come only from sentences that pass both checks: the user aggregator runs on Pipecat's `ExternalUserTurnStrategies`, and `JarvisIntentGate` wraps each passed sentence in proposed start/stop frames, so background voices never interrupt Jarvis or hold a turn open. Voice detection still cuts Whisper's sentences, at a 0.6 s pause. Research: `docs/research/speaker-verification.md`. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
 
@@ -91,8 +92,8 @@ that asked last, and a stop to the agent that is working.
    only after a 401/403. A task looks up the T3 project holding its folder (`orchestration.subscribeShell`) and
    starts a thread (`orchestration.launchThread`) with the user's T3 default model and runtime mode. The folder is
    `cwd`, or a `project` the conversation model picks from the git repos under `~/Projects/` (`list_projects`); a
-   project folder T3 doesn't know yet is added with `project.create`, and its thread opens with "Sync with the master
-   branch." (followed by the task only when the user named one). Jarvis watches one thread, the newest; later tasks for the same folder are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
+   project folder T3 doesn't know yet is added with `project.create`, and its thread opens with only "Sync with the master
+   branch." (the model's task is not sent; later requests go to that thread). Jarvis watches one thread, the newest; later tasks for the same folder are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
    (resumed with `afterSequence`) gives `run.updated`, finished `assistant_message` items (retold when the run
    completes) and `approval_request` / `user_input_request` items (read out; answered with `runtime-request.respond`).
    Stop is `run.interrupt`. A 426 means T3 changed its protocol version.

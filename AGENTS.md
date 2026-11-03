@@ -34,6 +34,7 @@ speech check dropping the sentence, not the conversation model.
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)    |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |
+| Hears itself through the speakers    | `voice_gates.py` `EchoFilter`, `EchoReference`         |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`      |
 | Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`  |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
@@ -60,8 +61,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
 - **Projects come from a folder list, not an agent.** Git repos one or two levels under `~/Projects/` go into the
-  prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with "Sync with the master
-  branch." (plus "Then: <task>" only when the user named work; Jarvis never invents a task).
+  prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
+  master branch."; the model's task is not sent. Later requests go to that thread.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.

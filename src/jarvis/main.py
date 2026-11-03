@@ -207,11 +207,10 @@ async def run_pipecat_harness() -> None:
         LLMUserAggregatorParams,
     )
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
-    from pipecat.turns.user_mute import AlwaysUserMuteStrategy
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
     from jarvis.speaker import SpeakerEmbedder, load_voiceprint
-    from jarvis.voice_gates import JarvisIntentGate, SpeakerVerifiedWhisperSTT
+    from jarvis.voice_gates import EchoFilter, EchoReference, JarvisIntentGate, SpeakerVerifiedWhisperSTT
 
     # No voiceprint, no start: running unchecked would let any voice in the room give orders.
     try:
@@ -258,8 +257,11 @@ async def run_pipecat_harness() -> None:
     orchestrator = AgentOrchestrator(state=state)
     orchestrator.load_from_file(settings.watch_config_path)
 
-    # 1. Local mic + speaker (always on, no wake word)
-    transport = LocalAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True))
+    # 1. Local mic + speaker (always on, no wake word); the echo filter keeps Jarvis's own voice out of the mic
+    echo = EchoFilter()
+    transport = LocalAudioTransport(
+        LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True, audio_in_filter=echo)
+    )
 
     # 2. Local Always-On STT (MLX Whisper on the Apple GPU), passing on only the owner's voice
     stt = SpeakerVerifiedWhisperSTT(
@@ -315,8 +317,6 @@ async def run_pipecat_harness() -> None:
             # Turns come only from JarvisIntentGate, after the voice and intent checks: raw room sound
             # would let background voices interrupt Jarvis and hold a turn open while they keep talking.
             user_turn_strategies=ExternalUserTurnStrategies(),
-            # Through laptop speakers the mic hears Jarvis; ignore it while Jarvis talks.
-            user_mute_strategies=[AlwaysUserMuteStrategy()] if settings.mute_mic_while_speaking else [],
         ),
         # Jarvis runs all day: older talk is summarized (Pipecat defaults: 8000 tokens or 20 messages), so each
         # reply doesn't resend the whole day. It keeps the system prompt; offline there is no model to summarize.
@@ -348,7 +348,7 @@ async def run_pipecat_harness() -> None:
         )
         processors.append(tts)
 
-    processors.extend([transport.output(), context_aggregator.assistant()])
+    processors.extend([transport.output(), EchoReference(echo), context_aggregator.assistant()])
 
     pipeline = Pipeline(processors)
     task = PipelineTask(

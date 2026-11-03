@@ -1669,6 +1669,7 @@ dependencies = [
     { name = "pydantic-settings", version = "2.16.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "qdrant-client" },
     { name = "sherpa-onnx" },
+    { name = "voiceclean" },
     { name = "websockets", version = "15.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
@@ -1684,6 +1685,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.2.0" },
     { name = "qdrant-client", specifier = ">=1.12.0" },
     { name = "sherpa-onnx", specifier = ">=2.0.1" },
+    { name = "voiceclean", specifier = "==0.3.6" },
     { name = "websockets", specifier = ">=13.0" },
 ]
 
@@ -6010,6 +6012,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
+]
+
+[[package]]
+name = "voiceclean"
+version = "0.3.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "soxr" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e0/9c/89a6d2738b9eb76d292e718979f44a8456250748d3d17ca4ee35f46d7354/voiceclean-0.3.6.tar.gz", hash = "sha256:02cc8cb09577f3944d7f1b3b7671d5bee75297146548682239cd042e283dd36d", size = 21390, upload-time = "2026-05-29T03:53:23.85Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/75/4ca9ad36f3f7abd01c57991e46c1c1c832596cf6b11f227b92e14e32ad63/voiceclean-0.3.6-py3-none-any.whl", hash = "sha256:fdecbaa739c0607d72fe9109da119744cda6dc85f30e35a8330e4ff29450ffdd", size = 20285, upload-time = "2026-05-29T03:53:21.936Z" },
 ]
 
 [[package]]
