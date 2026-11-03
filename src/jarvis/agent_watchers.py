@@ -87,7 +87,7 @@ def is_approval(instruction: str) -> bool:
 class WatchedAgentConfig:
     id: str
     name: str
-    type: str  # "claude_code" | "opencode_sse" | "hermes"
+    type: str  # "claude_code" | "opencode_sse" | "hermes" | "t3"
     cwd: str = "."
     url: str | None = None
     enabled: bool = True
@@ -619,6 +619,10 @@ class AgentOrchestrator:
                 self.adapters[cfg.id] = OpenCodeSSEAdapter(cfg, self.state)
             elif cfg.type == "hermes":
                 self.adapters[cfg.id] = HermesAdapter(cfg, self.state)
+            elif cfg.type == "t3":
+                from jarvis.t3_adapter import T3Adapter  # imported here: t3_adapter imports this module
+
+                self.adapters[cfg.id] = T3Adapter(cfg, self.state)
             else:
                 logger.warning(f"Agent {cfg.id!r} has unknown type {cfg.type!r}; skipped.")
 

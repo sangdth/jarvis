@@ -1,14 +1,15 @@
 # Jarvis
 
 An always-on voice harness (Pipecat) that talks to the user and hands work to agents: coding to Claude Code
-(or OpenCode when named), everything else to Hermes Agent. No wake word. Jarvis stays thin: it routes and
+(or OpenCode or T3 Code when named), everything else to Hermes Agent. No wake word. Jarvis stays thin: it routes and
 relays; the work, tools and memory live in each agent's own harness.
 Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
 
 ## Commands
 
 - Run: `uv run jarvis` (needs `.env`; OpenCode needs `opencode serve --port 4096` with the same password;
-  Hermes needs its gateway service, `hermes gateway status`, with `API_SERVER_ENABLED=true`)
+  Hermes needs its gateway service, `hermes gateway status`, with `API_SERVER_ENABLED=true`; T3 Code needs the
+  T3 app running with the `cwd` folder added as a project)
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
 - Routing benchmark: `uv run python scripts/bench_routing.py` (about 120 paid calls)
@@ -30,6 +31,7 @@ speech check dropping the sentence, not the conversation model.
 | A correction runs as a second task  | `main.py` `send_agent_task` `replace`, each `interrupt` |
 | "Still waiting" timing or wording    | `agent_watchers.py` `remind_while_busy`, `WAITING_LINES` |
 | Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                    |
+| T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)    |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
@@ -53,11 +55,13 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   the reply goes back with `send_agent_task` into the same Hermes session.
 - **Claude Code uses the user's own settings** (`~/.claude/settings.json`, `defaultMode` and allow rules), as in
   their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
+- **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
+  `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
-- **Agent ids are exact** (`claude`, `opencode`, `hermes`), matched as written in `agents.json`. A bad
+- **Agent ids are exact** (`claude`, `opencode`, `t3`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.
 - **Two model settings, one job each:** `EXECUTIVE_MODEL` talks and retells turns; `FILTER_MODEL` (a decision
   model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis.
@@ -70,6 +74,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 
 ## Later, not now
 
-- More agents (Pi, Codex): add an adapter with the same shape as `OpenCodeSSEAdapter` / `HermesAdapter`.
+- More agents (Pi, Codex): add an adapter with the same shape as `OpenCodeSSEAdapter` / `HermesAdapter`, or run
+  them as a T3 Code provider and reach them through `t3`.
 - Speaker verification: use sherpa-onnx, not Picovoice.
 - Laya as a local speech check: parked; it lost to the OpenRouter decision models.

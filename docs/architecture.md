@@ -31,6 +31,7 @@ flowchart LR
         CC["Claude Code (Agent SDK)"] --> Buffer["Agent Watchers"]
         OC["OpenCode (HTTP SSE)"] --> Buffer
         HA["Hermes Agent (HTTP runs)"] --> Buffer
+        T3["T3 Code (WebSocket RPC)"] --> Buffer
         Buffer -->|"Questions, approvals, finished turns"| Notify{"Check Mode"}
     end
 
@@ -56,7 +57,7 @@ Without a wake word, two local filtering stages prevent false triggers and API c
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
 2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
 
-### C. Agent Integration (Claude Code, OpenCode, Hermes)
+### C. Agent Integration (Claude Code, OpenCode, Hermes, T3 Code)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
 Each agent has three actions, one LLM tool each: `send_agent_task` (new work), `answer_agent` (reply to the question
 or approval the agent is waiting on) and `stop_agent`. An answer never becomes a new prompt, and a task never answers
@@ -83,6 +84,16 @@ that asked last, and a stop to the agent that is working.
    `approval.request` (read out; answered with `POST /v1/runs/:id/approval`, `once` or `deny`) and
    `run.completed` / `run.failed` (retold); `run.cancelled` is silent. If the stream drops, `GET /v1/runs/:id`
    gives the result. Stop is `POST /v1/runs/:id/stop`. Hermes's guardian model decides which commands need a human.
+4. **T3 Code (`T3Adapter`, `t3_adapter.py`):** Talks to the running T3 Code app over `ws://127.0.0.1:3773/ws`
+   (`?orchestrationProtocol=2`), the API the T3 window itself uses: Effect RPC messages as JSON (`Request`, `Exit`,
+   `Chunk`, and an `Ack` for every chunk). Auth is a 30-day bearer token from
+   `t3 auth session issue --scope orchestration:read --scope orchestration:operate`, issued once per run and again
+   only after a 401/403. The first task looks up the T3 project holding `cwd` (`orchestration.subscribeShell`) and
+   starts one thread (`orchestration.launchThread`) with the user's T3 default model and runtime mode; later tasks
+   are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
+   (resumed with `afterSequence`) gives `run.updated`, finished `assistant_message` items (retold when the run
+   completes) and `approval_request` / `user_input_request` items (read out; answered with `runtime-request.respond`).
+   Stop is `run.interrupt`. A 426 means T3 changed its protocol version.
 
 ### D. Executive Filter & Mute State Machine
 1. **What reaches the user:** Watchers only pass on questions, approvals and finished turns. Questions and approvals
@@ -108,4 +119,4 @@ that asked last, and a stop to the agent that is working.
 | **Executive Filter** | `src/jarvis/executive_filter.py` | `typesafe/jev-1.14` (`FILTER_MODEL`) classifies whether speech is addressed to Jarvis. |
 | **Memory** | `src/jarvis/memory.py` | Local Mem0 config and `LastExchangeMemory` (saves only the newest exchange). |
 | **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
-| **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter`, and `AgentOrchestrator`. |
+| **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter`, and `AgentOrchestrator`; `T3Adapter` in `t3_adapter.py`. |

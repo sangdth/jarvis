@@ -17,6 +17,15 @@
       "enabled": true
     },
     {
+      "id": "t3",
+      "name": "T3 Code",
+      "type": "t3",
+      "cwd": ".",
+      "url": "http://127.0.0.1:3773",
+      "role": "coding, only when the user names T3 Code",
+      "enabled": true
+    },
+    {
       "id": "hermes",
       "name": "Hermes",
       "type": "hermes",
