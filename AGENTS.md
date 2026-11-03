@@ -13,6 +13,8 @@ Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
 - Routing benchmark: `uv run python scripts/bench_routing.py` (about 120 paid calls)
+- Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
+  https://sangdth.github.io/jarvis/ on every push to master that touches `site/`.
 
 ## Where to fix "Jarvis"
 
