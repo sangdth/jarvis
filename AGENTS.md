@@ -11,7 +11,7 @@ Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
   Hermes needs its gateway service, `hermes gateway status`, with `API_SERVER_ENABLED=true`)
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
-- Routing benchmark: `uv run python scripts/bench_routing.py` (about 90 paid calls)
+- Routing benchmark: `uv run python scripts/bench_routing.py` (about 100 paid calls)
 
 ## Where to fix "Jarvis"
 
@@ -27,6 +27,7 @@ speech check dropping the sentence, not the conversation model.
 | Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`  |
 | Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`         |
 | Answer or stop hits the wrong agent  | `agent_watchers.py` `find_waiting`, `find_busy`        |
+| "Still waiting" timing or wording    | `agent_watchers.py` `remind_while_busy`, `WAITING_LINES` |
 | Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                    |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |

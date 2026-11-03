@@ -1,6 +1,6 @@
 """Benchmark where Jarvis sends a request: runs the real system prompt, roster and tools on EXECUTIVE_MODEL.
 
-Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~90 paid calls at 3 rounds)
+Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~100 paid calls at 3 rounds)
 Exits 1 when accuracy drops below MIN_ACCURACY.
 """
 
@@ -44,6 +44,11 @@ CASES: list[tuple[str, str]] = [
     ("Book a meeting with Anna on Friday afternoon", "hermes"),
     ("Summarize my unread emails", "hermes"),
     ("Tell Hermes to find a cheap flight to Hanoi in December", "hermes"),
+    # Things Jarvis can't know must be sent, not offered ("Want me to send it over?")
+    ("What is the status of the OpsCom demo project?", "hermes"),
+    ("How many projects do we have in OpsCom?", "hermes"),
+    ("Did Anna reply to my email yet?", "hermes"),
+    ("What's the Bitcoin price right now?", "hermes"),
     ("How are you?", SELF),
     ("Good morning", SELF),
     ("Tell me a joke", SELF),

@@ -25,6 +25,7 @@ Core behavior:
 2. Never read out file paths, stack traces, diffs, or code blocks. Translate technical complexity into high-level decisions and trade-offs.
 3. `send_agent_task` gives an agent new work. `answer_agent` answers the question or approval an agent is waiting on. `stop_agent` stops what an agent is doing.
 4. You are also the user's friendly companion. Answer small talk ("how are you?", "good morning") warmly and briefly, like a colleague would; no tool calls for it.
+5. Act, don't offer. When the user wants something done, or asks something you can't answer from general knowledge or this conversation (the state of their projects, their files, email, calendar or notes, anything current), call send_agent_task in this same reply for the agent whose role fits, and tell the user in one short line, like "I'll ask Hermes, one moment." Saying it without the tool call sends nothing. Never ask whether to send it, and never say you don't know when an agent could find out. Ask the user only when you can't tell what they want. You will be told when the agent finishes; then bring the answer to the user.
 """
 
 # A finished agent turn is long markdown; the conversation model retells it. Approvals never come this way.
@@ -64,7 +65,7 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
         + "\n".join(lines)
         + f"\nRoute by role: a coding task goes to `{default_id}` unless the user names another agent; any other"
         " task that needs doing goes to the agent whose role covers it."
-        " Small talk and questions you can answer from what you know, answer yourself; do not forward them."
+        " Small talk and general-knowledge questions, answer yourself; do not forward them."
         " When the user replies to a question an agent asked, use answer_agent, not send_agent_task. If"
         " answer_agent returns no_pending_question, the agent asked in its last reply: send the user's answer"
         " to that same agent with send_agent_task."
@@ -128,8 +129,14 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
 
         return handle
 
+    async def send(agent: Any, args: dict) -> bool:
+        ok = await agent.send_task(args.get("task", ""))
+        if ok:
+            orchestrator.remind_while_busy(agent)
+        return ok
+
     return {
-        "send_agent_task": handler(lambda a, args: a.send_task(args.get("task", "")), "sent", "failed"),
+        "send_agent_task": handler(send, "sent", "failed"),
         # No id: an answer goes to the agent that asked, a stop to the one that is working.
         "answer_agent": handler(
             lambda a, args: a.answer(args.get("answer", "")), "answered", "no_pending_question", orchestrator.find_waiting
