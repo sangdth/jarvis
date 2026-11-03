@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from jarvis.agent_watchers import WatchedAgentConfig
-from jarvis.t3_adapter import PROJECTS, T3Adapter, find_project, list_projects, t3_question_fields
+from jarvis.t3_adapter import PROJECTS, PROJECTS_LABEL, T3Adapter, find_project, list_projects, t3_question_fields
 
 RUN = "run:thread:t1:ordinal:1"
 
@@ -139,7 +139,7 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launched[1]["initialMessage"]["text"], "Sync with the master branch.")
             a._command.assert_not_awaited()  # the task is not sent to a new thread
             self.assertEqual(a._thread_id, "t9")
-            self.assertTrue(await a.open_project("~/Projects/huggerhustle/platform-v2", "now the tests"))  # same project
+            self.assertTrue(await a.open_project(f"{PROJECTS_LABEL}/huggerhustle/platform-v2", "now the tests"))  # same project
         self.assertEqual(a._command.await_args.args[0]["text"], "now the tests")
         self.assertEqual(a._call.await_count, 2)  # no second thread
 

@@ -13,13 +13,15 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import InvalidStatus
 
 from jarvis.agent_watchers import BaseAgentAdapter, WatchedAgentConfig, describe_fields, form_answer, is_approval
+from jarvis.soul import load_soul
 from jarvis.state import JarvisState
 
 T3_HOME = Path.home() / ".t3"
 PROTOCOL = 2  # T3's ORCHESTRATION_PROTOCOL_VERSION; the server answers 426 to any other
 _ACTIVE = {"preparing", "queued", "starting", "running", "waiting"}
 _ASKS = {"approval_request", "user_input_request"}
-PROJECTS = Path.home() / "Projects"  # every project of the user's lives here, one or two folders deep
+PROJECTS_LABEL = load_soul().projects_dir  # as written in SOUL.md, e.g. "~/Projects"; also what the model sees
+PROJECTS = Path(PROJECTS_LABEL).expanduser()  # every project of the user's lives here, one or two folders deep
 SYNC_MASTER = "Sync with the master branch"
 
 
@@ -274,9 +276,9 @@ class T3Adapter(BaseAgentAdapter):
         return await self._launch(self.config.cwd, task)
 
     async def open_project(self, folder: str, task: str) -> bool:
-        """Work in a project under ~/Projects: a new thread there that syncs with master first, or the current one."""
+        """Work in a project under PROJECTS: a new thread there that syncs with master first, or the current one."""
         # Only a listed folder: the model never picks an arbitrary path. Case-blind, like the macOS file system.
-        listed = {f.lower(): f for f in list_projects()}.get(folder.removeprefix("~/Projects/").strip("/").lower())
+        listed = {f.lower(): f for f in list_projects()}.get(folder.removeprefix(f"{PROJECTS_LABEL}/").strip("/").lower())
         if listed is None:
             logger.warning(f"[{self.config.id}] {folder!r} is not a project under {PROJECTS}.")
             return False

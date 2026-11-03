@@ -3,6 +3,8 @@ name = "jarvis-harness"
 version = "0.1.0"
 description = "Always-on voice harness that hands work to Claude Code, OpenCode and Hermes Agent."
 readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "pipecat-ai[silero,whisper,mlx-whisper,openai,elevenlabs,local]>=0.0.50",
@@ -21,6 +23,7 @@ dependencies = [
 [project.scripts]
 jarvis = "jarvis.main:main"
 jarvis-enroll = "jarvis.enroll:main"
+jarvis-init = "jarvis.soul:main"
 
 [build-system]
 requires = ["hatchling"]

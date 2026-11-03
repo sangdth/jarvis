@@ -1,5 +1,9 @@
 # Jarvis — Always-On Voice Executive Harness
 
+> [!WARNING]
+> Jarvis is at an early stage. Commands, settings and file formats (like `~/.jarvis/SOUL.md`) can change
+> dramatically between versions, without a migration path.
+
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sherpa-onnx**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
 It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
@@ -65,7 +69,7 @@ Jarvis what to send it.
   `~/.hermes/.env`, then `hermes gateway install` (port 8642). Hermes's own approval settings decide what it asks.
 - **T3 Code** (the default) needs the T3 Code app running (port 3773). Jarvis gets its own token through the `t3`
   CLI. Say "continue working on the Hugger Hustle platform" and Jarvis picks the folder from your git repos one or
-  two levels under `~/Projects/` (read at startup), adds it to T3 as a project if it isn't one, and starts a "Jarvis"
+  two levels under your projects folder (`~/Projects/` unless `SOUL.md` says otherwise; read at startup), adds it to T3 as a project if it isn't one, and starts a "Jarvis"
   thread there whose only first message is "Sync with the master branch." Tell it what to do next; later requests
   go to that thread. Coding with no project named runs in `cwd` from `agents.json`. Threads use your T3 default
   model and mode; Jarvis watches only its newest thread.
@@ -75,12 +79,16 @@ Jarvis remembers facts about you between runs (local [Mem0](https://github.com/m
 `~/.jarvis/memory`). It needs the Ollama app running with the embedding model: `ollama pull bge-m3`. Without Ollama,
 Jarvis still runs, just without memory.
 
-### 5. Enroll Your Voice
-Jarvis acts only on your voice and won't start until you enroll:
+### 5. Set Up Jarvis and Enroll Your Voice
 ```bash
-uv run jarvis-enroll
+uv run jarvis-init
 ```
-Read the three lines it shows, with the mic Jarvis will use. It downloads the speaker model (25 MB) to
+It asks a few questions (Jarvis's personality, what to call you, where you keep your projects, default
+`~/Projects`) and saves the answers to `~/.jarvis/SOUL.md`. Edit that file by hand any time; Jarvis reads it at
+startup. The personality sets tone only, and the name stays Jarvis. Without the file, Jarvis uses its defaults.
+
+Then it records your voice: Jarvis acts only on your voice and won't start until you enroll
+(`uv run jarvis-enroll` records the voice alone). Read the three lines it shows, with the mic Jarvis will use. It downloads the speaker model (25 MB) to
 `~/.jarvis/models/` and saves your voiceprint to `~/.jarvis/owner_voice.npy`. Anyone can still say "shut up" or
 "you can talk". Enroll close to the mic in a quiet moment: background voices in the recording weaken the voiceprint.
 Run it again any time to replace the voiceprint.
@@ -112,3 +120,7 @@ it, Whisper hears both voices.
 - **Talking over Jarvis** — Cuts its reply off. Only your voice does this.
 - **"Shut up"** / **"Be quiet"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
 - **"You can talk"** — Switches Jarvis back to `VOICE` mode and immediately reads a concise, jargon-free digest of everything queued while muted.
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).

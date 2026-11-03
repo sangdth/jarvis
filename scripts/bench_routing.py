@@ -16,7 +16,9 @@ import httpx
 
 from jarvis.agent_watchers import AgentOrchestrator
 from jarvis.config import settings
-from jarvis.main import JARVIS_EXECUTIVE_SYSTEM_PROMPT, agent_roster, agent_tools
+from jarvis.main import agent_tools, system_prompt
+from jarvis.soul import load_soul
+from jarvis.t3_adapter import PROJECTS_LABEL
 from jarvis.state import JarvisState
 
 MIN_ACCURACY = 0.95  # 99% on 2026-11-03 (DeepSeek V4.1 Flash, thinking off)
@@ -105,7 +107,7 @@ def outcome(message: dict, default_id: str | None) -> str:
     if not calls:
         return SELF
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
-    project = f"@{args['project'].removeprefix('~/Projects/').strip('/').lower()}" if args.get("project") else ""
+    project = f"@{args['project'].removeprefix(f'{PROJECTS_LABEL}/').strip('/').lower()}" if args.get("project") else ""
     # Opening a project names work only when the user did ("+task"); an invented task is a miss.
     task = "+task" if project and args.get("task", "").strip() else ""
     return (args.get("agent_id") or default_id or "?") + project + task + ("+replace" if args.get("replace") else "")
@@ -117,7 +119,7 @@ async def main(rounds: int) -> int:
         return 2
     orchestrator = AgentOrchestrator(state=JarvisState())
     orchestrator.load_from_file(settings.watch_config_path)
-    system = JARVIS_EXECUTIVE_SYSTEM_PROMPT + agent_roster(orchestrator)
+    system = system_prompt(orchestrator, load_soul().personality)
     tools = [{"type": "function", "function": t.to_default_dict()} for t in agent_tools()]
     misses: dict[str, str] = {}
     hits = calls = 0
