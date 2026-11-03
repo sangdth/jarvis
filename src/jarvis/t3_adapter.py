@@ -19,6 +19,8 @@ T3_HOME = Path.home() / ".t3"
 PROTOCOL = 2  # T3's ORCHESTRATION_PROTOCOL_VERSION; the server answers 426 to any other
 _ACTIVE = {"preparing", "queued", "starting", "running", "waiting"}
 _ASKS = {"approval_request", "user_input_request"}
+PROJECTS = Path.home() / "Projects"  # every project of the user's lives here, one or two folders deep
+SYNC_FIRST = "Sync with the master branch first."
 
 
 def t3_question_fields(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -43,6 +45,22 @@ def find_project(projects: list[dict[str, Any]], cwd: str) -> dict[str, Any] | N
         and folder.is_relative_to(Path(p["workspaceRoot"]).expanduser().resolve())
     ]
     return max(holding, key=lambda p: len(p["workspaceRoot"]), default=None)
+
+
+def list_projects(root: Path = PROJECTS) -> list[str]:
+    """Git repos one or two folders under root, as relative paths ("HuggerHustle/platform-v2")."""
+    found: list[str] = []
+    for top in sorted(root.iterdir()) if root.is_dir() else []:
+        if top.name.startswith(".") or not top.is_dir():
+            continue
+        if (top / ".git").exists():
+            found.append(top.name)
+            continue
+        try:
+            found += [f"{top.name}/{sub.name}" for sub in sorted(top.iterdir()) if (sub / ".git").exists()]
+        except OSError:
+            continue  # unreadable folder: not a project Jarvis can open
+    return found
 
 
 def t3_defaults() -> dict[str, Any]:
@@ -71,6 +89,7 @@ class T3Adapter(BaseAgentAdapter):
         self._calls: dict[str, asyncio.Future[dict[str, Any]]] = {}  # request id -> its Exit
         self._sub_id: str | None = None  # the thread subscription's request id
         self._thread_id: str | None = None
+        self._root: str | None = None  # the project folder of the current thread
         self._sequence: int | None = None  # last event seen, to resume after a reconnect
         self._runs: dict[str, str] = {}  # active run id -> status
         self._last_text: dict[str, str] = {}  # run id -> latest finished assistant text
@@ -174,7 +193,7 @@ class T3Adapter(BaseAgentAdapter):
             payload["afterSequence"] = self._sequence
         self._sub_id = await self._request("orchestration.subscribeThread", payload)
 
-    async def _find_project(self) -> dict[str, Any] | None:
+    async def _find_project(self, cwd: str) -> dict[str, Any] | None:
         """Read T3's project list from a short-lived shell subscription."""
         async with self._connect() as ws:
             await ws.send(json.dumps({"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell", "payload": {}, "headers": []}))
@@ -184,7 +203,7 @@ class T3Adapter(BaseAgentAdapter):
                     raise RuntimeError(f"T3 shell subscription failed: {json.dumps(msg)[:300]}")
                 for item in msg.get("values", []) if msg.get("_tag") == "Chunk" else []:
                     if item.get("kind") == "snapshot":
-                        return find_project(item["snapshot"].get("projects", []), self.config.cwd)
+                        return find_project(item["snapshot"].get("projects", []), cwd)
         return None
 
     async def _on_stream_item(self, item: dict[str, Any]) -> None:
@@ -252,26 +271,58 @@ class T3Adapter(BaseAgentAdapter):
                 "messageId": str(uuid.uuid4()), "text": task, "attachments": [],
                 "deliveryIntent": "auto", "dispatchMode": {"type": "queue_after_active"},
             })
+        return await self._launch(self.config.cwd, task)
+
+    async def open_project(self, folder: str, task: str) -> bool:
+        """Work in a project under ~/Projects: a new thread there that syncs with master first, or the current one."""
+        # Only a listed folder: the model never picks an arbitrary path. Case-blind, like the macOS file system.
+        listed = {f.lower(): f for f in list_projects()}.get(folder.removeprefix("~/Projects/").strip("/").lower())
+        if listed is None:
+            logger.warning(f"[{self.config.id}] {folder!r} is not a project under {PROJECTS}.")
+            return False
+        root = str(PROJECTS / listed)
+        if self._thread_id and self._root == root:
+            return await self.send_task(task)
+        if self._ws is None:
+            logger.warning(f"[{self.config.id}] Cannot open {folder}; T3 Code is not connected.")
+            return False
+        return await self._launch(root, f"{SYNC_FIRST} Then: {task}", create=True)
+
+    async def _launch(self, cwd: str, text: str, create: bool = False) -> bool:
+        """Start a T3 thread in the project holding cwd (made first when create is set) and watch it."""
         try:
-            project = await self._find_project()
+            project = await self._find_project(cwd)
         except Exception as exc:
             logger.error(f"[{self.config.id}] Could not read T3 projects: {exc!r}")
             return False
+        if project is None and create:
+            project = {"id": str(uuid.uuid4()), "workspaceRoot": cwd}
+            created = await self._call("orchestration.dispatchCommand", {
+                "type": "project.create", "commandId": str(uuid.uuid4()), "projectId": project["id"],
+                "title": Path(cwd).name, "workspaceRoot": cwd,
+            })
+            if created is None:
+                return False
         defaults = t3_defaults()
         model = (project or {}).get("defaultModelSelection") or defaults.get("defaultModelSelection")
         if not project or not model:
-            logger.error(f"[{self.config.id}] No T3 project holds {self.config.cwd}, or T3 has no default model; set it in T3.")
+            logger.error(f"[{self.config.id}] No T3 project holds {cwd}, or T3 has no default model; set it in T3.")
             return False
         thread_id = str(uuid.uuid4())
         launched = await self._call("orchestration.launchThread", {
             "commandId": str(uuid.uuid4()), "threadId": thread_id, "projectId": project["id"], "title": "Jarvis",
             "modelSelection": model, "runtimeMode": defaults.get("defaultRuntimeMode") or "auto",  # T3's own default
             "interactionMode": "default", "workspaceStrategy": {"type": "root"},
-            "initialMessage": {"text": task, "attachments": []},
+            "initialMessage": {"text": text, "attachments": []},
         })
         if launched is None:
             return False
-        self._thread_id = launched.get("threadId") or thread_id
+        # shortcut: Jarvis watches one thread; the previous one keeps running in T3 unwatched. Track several if needed.
+        self._thread_id, self._root, self._sequence = launched.get("threadId") or thread_id, cwd, None
+        self._runs, self._last_text = {}, {}
+        if self._pending:  # a question on the old thread can no longer be answered from here
+            self._pending = None
+            self._question_settled()
         await self._subscribe()
         logger.info(f"Started T3 thread {self._thread_id} in {project['workspaceRoot']}")
         return True

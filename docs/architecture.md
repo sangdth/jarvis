@@ -88,9 +88,11 @@ that asked last, and a stop to the agent that is working.
    (`?orchestrationProtocol=2`), the API the T3 window itself uses: Effect RPC messages as JSON (`Request`, `Exit`,
    `Chunk`, and an `Ack` for every chunk). Auth is a 30-day bearer token from
    `t3 auth session issue --scope orchestration:read --scope orchestration:operate`, issued once per run and again
-   only after a 401/403. The first task looks up the T3 project holding `cwd` (`orchestration.subscribeShell`) and
-   starts one thread (`orchestration.launchThread`) with the user's T3 default model and runtime mode; later tasks
-   are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
+   only after a 401/403. A task looks up the T3 project holding its folder (`orchestration.subscribeShell`) and
+   starts a thread (`orchestration.launchThread`) with the user's T3 default model and runtime mode. The folder is
+   `cwd`, or a `project` the conversation model picks from the git repos under `~/Projects/` (`list_projects`); a
+   project folder T3 doesn't know yet is added with `project.create`, and its thread opens with "Sync with the master
+   branch first." Jarvis watches one thread, the newest; later tasks for the same folder are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
    (resumed with `afterSequence`) gives `run.updated`, finished `assistant_message` items (retold when the run
    completes) and `approval_request` / `user_input_request` items (read out; answered with `runtime-request.respond`).
    Stop is `run.interrupt`. A 426 means T3 changed its protocol version.

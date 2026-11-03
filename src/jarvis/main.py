@@ -18,7 +18,7 @@ from jarvis.memory import NOT_THE_USER, create_memory_service
 from jarvis.state import JarvisState
 
 
-JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, a voice assistant that hands the user's work to agents: coding to Claude Code or OpenCode, everything else (research, email, calendar, notes) to Hermes.
+JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, a voice assistant that hands the user's work to agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else (research, email, calendar, notes) to Hermes.
 
 Core behavior:
 1. Keep every response under 2 short, natural spoken sentences.
@@ -70,6 +70,23 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
         " When the user replies to a question an agent asked, use answer_agent, not send_agent_task. If"
         " answer_agent returns no_pending_question, the agent asked in its last reply: send the user's answer"
         " to that same agent with send_agent_task."
+        + project_list(orchestrator)
+    )
+
+
+def project_list(orchestrator: AgentOrchestrator) -> str:
+    """The user's project folders, for agents that can open one (T3 Code), so a spoken name maps to a folder."""
+    from jarvis.t3_adapter import list_projects  # imported here: t3_adapter imports agent_watchers
+
+    openers = [a.config.id for a in orchestrator.adapters.values() if hasattr(a, "open_project")]
+    if not openers:
+        return ""
+    # shortcut: read once at startup; a repo cloned while Jarvis runs shows up after a restart.
+    return (
+        f"\n\nThe user's projects (folders under ~/Projects). When the user wants to work on one (\"continue on the"
+        f" Hugger Hustle platform\"), send the task to `{openers[0]}` with `project` set to the folder exactly as"
+        " listed; speech recognition mishears names, so pick the closest one. Coding with no project named needs"
+        " no `project`.\n" + "\n".join(f"- {folder}" for folder in list_projects())
     )
 
 
@@ -94,6 +111,11 @@ def agent_tools() -> list:
             properties={
                 "agent_id": agent_id_property,
                 "task": {"type": "string", "description": "The task, in clear words"},
+                "project": {
+                    "type": "string",
+                    "description": "A folder from the user's project list (e.g. huggerhustle/platform-v2) when the"
+                    " user names a project to work on. Omit otherwise.",
+                },
                 "replace": {
                     "type": "boolean",
                     "description": (
@@ -144,7 +166,9 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
     async def send(agent: Any, args: dict) -> bool:
         if args.get("replace") and agent.busy:
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
-        ok = await agent.send_task(args.get("task", ""))
+        task, project = args.get("task", ""), args.get("project")
+        # Only T3 Code opens a project; the others work in their configured folder.
+        ok = await (agent.open_project(project, task) if project and hasattr(agent, "open_project") else agent.send_task(task))
         if ok:
             orchestrator.remind_while_busy(agent)
         return ok
