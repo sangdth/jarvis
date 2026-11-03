@@ -34,6 +34,8 @@ speech check dropping the sentence, not the conversation model.
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)    |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |
+| Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`      |
+| Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`  |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
 | Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.jarvis/memory`)          |
 | Model names, keys                    | `config.py`, `.env`, `.env.example`                    |
@@ -73,11 +75,14 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.jarvis/memory`, `bge-m3` embeddings
   on the Ollama app, fact extraction on `EXECUTIVE_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves
   only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
+- **Jarvis acts only on the owner's voice.** `SpeakerVerifiedWhisperSTT` scores each whole Whisper sentence
+  against `~/.jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass from any
+  voice. No voiceprint stops Jarvis at startup (`uv run jarvis-enroll`). User turns come only from
+  `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
 - Mock HTTP and the Claude SDK in unit tests. Live checks against real agents go in a throwaway script, not in `tests/`.
 
 ## Later, not now
 
 - More agents (Pi, Codex): add an adapter with the same shape as `OpenCodeSSEAdapter` / `HermesAdapter`, or run
   them as a T3 Code provider and reach them through `t3-code`.
-- Speaker verification: use sherpa-onnx, not Picovoice.
 - Laya as a local speech check: parked; it lost to the OpenRouter decision models.

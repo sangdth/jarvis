@@ -1,12 +1,53 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncGenerator
+
+import numpy as np
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TranscriptionFrame
+from pipecat.frames.frames import (
+    Frame,
+    ProposedUserStartedSpeakingFrame,
+    ProposedUserStoppedSpeakingFrame,
+    TranscriptionFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from jarvis.executive_filter import ExecutiveFilter
+from jarvis.speaker import SpeakerEmbedder, cosine
 from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command
+
+
+class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
+    """
+    MLX Whisper that only passes on the owner's sentences.
+    Pipecat hands run_stt one whole VAD sentence; the voice score runs alongside Whisper, so it adds no delay.
+    Mute / unmute phrases pass from any voice: the worst case is that someone else silences Jarvis.
+    """
+
+    def __init__(self, *, embedder: SpeakerEmbedder, voiceprint: np.ndarray, threshold: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._embedder = embedder
+        self._voiceprint = voiceprint
+        self._threshold = threshold
+
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        score_task = asyncio.create_task(asyncio.to_thread(self._score, audio))
+        frames = [frame async for frame in super().run_stt(audio)]
+        score = await score_task
+        for frame in frames:
+            if isinstance(frame, TranscriptionFrame):
+                owner = score >= self._threshold
+                passed = owner or classify_fast_command(frame.text) is not None
+                logger.info(f"[Speaker] score={score:.2f} {'pass' if passed else 'drop'}: {frame.text!r}")
+                if not passed:
+                    continue
+            yield frame
+
+    def _score(self, audio: bytes) -> float:
+        return cosine(self._embedder.embed(audio), self._voiceprint)
 
 
 class JarvisIntentGate(FrameProcessor):
@@ -68,5 +109,8 @@ class JarvisIntentGate(FrameProcessor):
             logger.debug(f"Ignored self-talk / unaddressed speech: {transcript!r}")
             return
 
-        # User is addressing Jarvis while in VOICE mode — push transcription downstream to Executive LLM
+        # User is addressing Jarvis: this sentence is the whole user turn. The aggregator runs on
+        # ExternalUserTurnStrategies, so only these frames start a turn (and interrupt Jarvis).
+        await self.push_frame(ProposedUserStartedSpeakingFrame(), direction)
         await self.push_frame(frame, direction)
+        await self.push_frame(ProposedUserStoppedSpeakingFrame(), direction)

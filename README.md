@@ -13,6 +13,7 @@ It listens continuously without a wake word and hands your requests to agents: c
 | **No wake word, respond only when needed** | Silero VAD + MLX Whisper + `JarvisIntentGate` | [`src/jarvis/voice_gates.py`](src/jarvis/voice_gates.py) |
 | **"Shut up" / "Be quiet" -> Beep Mode** | `JarvisState` (`VOICE` vs `BEEP_ONLY` + sine PCM beep synth) | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **"You can talk" -> Unmute & Digest** | `JarvisState.set_unmute()` | [`src/jarvis/state.py`](src/jarvis/state.py) |
+| **Act only on the owner's voice** | `SpeakerVerifiedWhisperSTT` (sherpa-onnx ERes2Net) | [`src/jarvis/voice_gates.py`](src/jarvis/voice_gates.py) |
 | **Hear only speech meant for Jarvis** | `ExecutiveFilter` (decision model) | [`src/jarvis/executive_filter.py`](src/jarvis/executive_filter.py) |
 | **Drive Claude Code, OpenCode, Hermes** | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter` | [`src/jarvis/agent_watchers.py`](src/jarvis/agent_watchers.py) |
 | **Drive T3 Code** | `T3Adapter` | [`src/jarvis/t3_adapter.py`](src/jarvis/t3_adapter.py) |
@@ -57,7 +58,17 @@ Jarvis remembers facts about you between runs (local [Mem0](https://github.com/m
 `~/.jarvis/memory`). It needs the Ollama app running with the embedding model: `ollama pull bge-m3`. Without Ollama,
 Jarvis still runs, just without memory.
 
-### 5. Run Jarvis
+### 5. Enroll Your Voice
+Jarvis acts only on your voice and won't start until you enroll:
+```bash
+uv run jarvis-enroll
+```
+Read the three lines it shows, with the mic Jarvis will use. It downloads the speaker model (25 MB) to
+`~/.jarvis/models/` and saves your voiceprint to `~/.jarvis/owner_voice.npy`. Anyone can still say "shut up" or
+"you can talk". Each sentence logs `[Speaker] score=0.71 pass`; if your own sentences get dropped (or others get
+through), set `SPEAKER_THRESHOLD` in `.env` between the two groups of scores (default 0.5).
+
+### 6. Run Jarvis
 On laptop speakers Jarvis ignores the mic while it talks (`MUTE_MIC_WHILE_SPEAKING=true`), so it doesn't hear itself; you can't interrupt it mid-sentence then. With headphones, set it to `false` to cut Jarvis off with "shut up".
 ```bash
 uv run jarvis

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # With headphones set false: you can then cut Jarvis off mid-sentence ("shut up").
     mute_mic_while_speaking: bool = True
 
+    # Owner voice check (sherpa-onnx ERes2Net): sentences scoring below this are dropped.
+    # Tune it from the "[Speaker] score=" lines in the log; enroll with `uv run jarvis-enroll`.
+    speaker_threshold: float = 0.5
+
     # TTS
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"

@@ -200,8 +200,17 @@ async def run_pipecat_harness() -> None:
     )
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
     from pipecat.turns.user_mute import AlwaysUserMuteStrategy
+    from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
-    from jarvis.voice_gates import JarvisIntentGate
+    from jarvis.speaker import SpeakerEmbedder, load_voiceprint
+    from jarvis.voice_gates import JarvisIntentGate, SpeakerVerifiedWhisperSTT
+
+    # No voiceprint, no start: running unchecked would let any voice in the room give orders.
+    try:
+        voiceprint = load_voiceprint()
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
+        sys.exit(1)
 
     executive_filter = ExecutiveFilter()
     task_ref: dict[str, PipelineTask] = {}
@@ -244,10 +253,13 @@ async def run_pipecat_harness() -> None:
     # 1. Local mic + speaker (always on, no wake word)
     transport = LocalAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True))
 
-    # 2. Local Always-On STT (MLX Whisper on the Apple GPU)
-    from pipecat.services.whisper.stt import WhisperSTTServiceMLX
-
-    stt = WhisperSTTServiceMLX(settings=WhisperSTTServiceMLX.Settings(model=settings.whisper_model))
+    # 2. Local Always-On STT (MLX Whisper on the Apple GPU), passing on only the owner's voice
+    stt = SpeakerVerifiedWhisperSTT(
+        embedder=SpeakerEmbedder(),
+        voiceprint=voiceprint,
+        threshold=settings.speaker_threshold,
+        settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model),
+    )
 
     # 3. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier)
     intent_gate = JarvisIntentGate(state=state, executive_filter=executive_filter)
@@ -290,8 +302,11 @@ async def run_pipecat_harness() -> None:
     context_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            # Smart Turn decides when a sentence is finished; 0.2 s is Pipecat's recommended VAD pause for it.
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2, min_volume=0.5)),
+            # A 0.6 s pause ends a Whisper sentence; shorter splits one sentence into two turns.
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.6, min_volume=0.5)),
+            # Turns come only from JarvisIntentGate, after the voice and intent checks: raw room sound
+            # would let background voices interrupt Jarvis and hold a turn open while they keep talking.
+            user_turn_strategies=ExternalUserTurnStrategies(),
             # Through laptop speakers the mic hears Jarvis; ignore it while Jarvis talks.
             user_mute_strategies=[AlwaysUserMuteStrategy()] if settings.mute_mic_while_speaking else [],
         ),
