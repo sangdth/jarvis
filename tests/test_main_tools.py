@@ -45,6 +45,7 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         p = params({"agent_id": "hermes", "task": "check my calendar"})
         await self.handlers["send_agent_task"](p)
         self.agent.send_task.assert_awaited_once_with("check my calendar")
+        self.assertIn("hermes", self.orch._reminders)  # a sent task starts the "still waiting" reminders
         p.result_callback.assert_awaited_once_with({"status": "sent", "agent_id": "hermes"})
 
         p = params({"agent_id": "hermes", "answer": "yes"})

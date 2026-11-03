@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,7 @@ from claude_agent_sdk import (
 )
 
 from jarvis.config import settings
-from jarvis.state import AgentTopic, JarvisState
+from jarvis.state import AgentTopic, JarvisMode, JarvisState
 
 # Refusals are checked first, so "not sure" or "don't allow" never count as approval.
 _REJECT_WORDS = re.compile(r"\b(no|not|don'?t|do not|never|reject|deny|denied|cancel|stop|wait)\b", re.IGNORECASE)
@@ -545,12 +546,30 @@ class HermesAdapter(BaseAgentAdapter):
         await self._http.aclose()
 
 
+# Fixed lines, no LLM: free, instant, and nothing an agent wrote can slip in. {name} is the agent.
+WAITING_LINES = (
+    "Still waiting on {name}.",
+    "{name} is still on it.",
+    "Still working on it. {name} hasn't come back yet.",
+    "Hang tight, {name} is still digging.",
+    "No news from {name} yet. I haven't forgotten.",
+    "{name} is still busy. I'm keeping an eye on it.",
+    "Still here, still waiting on {name}.",
+    "{name} is taking its time. Good work usually does.",
+    "Still waiting. If {name} were a kettle, it'd be almost boiling.",
+    "{name} is thinking hard. I can almost hear the fans.",
+    "Still on it. I'd make coffee, but I don't have hands.",
+    "{name} is still going. Patience is my only skill that never crashes.",
+)
+
+
 class AgentOrchestrator:
     """Manages all coding agent watchers and routes user verbal decisions back to the right agent."""
 
     def __init__(self, state: JarvisState) -> None:
         self.state = state
         self.adapters: dict[str, BaseAgentAdapter] = {}
+        self._reminders: dict[str, asyncio.Task] = {}
 
     def load_from_file(self, config_path: str | Path) -> None:
         path = Path(config_path)
@@ -583,6 +602,26 @@ class AgentOrchestrator:
     async def stop_all(self) -> None:
         for adapter in self.adapters.values():
             await adapter.stop()
+
+    def remind_while_busy(self, agent: BaseAgentAdapter) -> None:
+        """After a task is sent: say "Still waiting on X" while X works, so the user knows it isn't forgotten."""
+        old = self._reminders.pop(agent.config.id, None)
+        if old:
+            old.cancel()  # a new task restarts the count
+        self._reminders[agent.config.id] = asyncio.create_task(self._remind(agent))
+
+    async def _remind(self, agent: BaseAgentAdapter) -> None:
+        wait, next_wait = 8, 13  # Fibonacci seconds: 8, 13, 21, 34, 55, 89, 144, ...
+        last = None
+        while True:
+            await asyncio.sleep(wait)
+            if not agent.busy:
+                return
+            waiting_on_user = agent.config.id in self.state.active_agent_context  # it asked something
+            if not waiting_on_user and self.state.mode == JarvisMode.VOICE and self.state.on_speak:
+                last = random.choice([t for t in WAITING_LINES if t != last])  # never the same twice in a row
+                await self.state.on_speak(last.format(name=agent.config.name))
+            wait, next_wait = next_wait, wait + next_wait
 
     @property
     def default_agent_id(self) -> str | None:

@@ -9,6 +9,7 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, Result
 from jarvis.state import AgentTopic, JarvisState
 from jarvis.agent_watchers import (
     AgentOrchestrator,
+    WAITING_LINES,
     ClaudeCodeAdapter,
     HermesAdapter,
     OpenCodeSSEAdapter,
@@ -365,3 +366,35 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
+    async def test_fibonacci_waits_and_skips_while_agent_asks(self) -> None:
+        from jarvis.state import JarvisMode
+
+        state = JarvisState(on_speak=AsyncMock())
+        orch = AgentOrchestrator(state=state)
+        agent = MagicMock()
+        agent.config.id, agent.config.name = "hermes", "Hermes"
+        busy = iter([True, True, True, True, False])  # done at the 5th check
+        type(agent).busy = property(lambda _: next(busy))
+        waits: list[int] = []
+
+        async def fake_sleep(seconds: int) -> None:
+            waits.append(seconds)
+            if len(waits) == 2:  # agent asks the user something: no "still waiting" then
+                state.active_agent_context["hermes"] = AgentTopic("hermes", "Hermes", "asks: ?")
+            elif len(waits) == 3:
+                state.active_agent_context.clear()
+                state.mode = JarvisMode.BEEP_ONLY  # muted: no reminder
+            elif len(waits) == 4:
+                state.mode = JarvisMode.VOICE
+
+        with patch("jarvis.agent_watchers.asyncio.sleep", fake_sleep):
+            await orch._remind(agent)
+
+        self.assertEqual(waits, [8, 13, 21, 34, 55])
+        self.assertEqual(state.on_speak.await_count, 2)  # after 8s and after 34s
+        first, second = (c.args[0] for c in state.on_speak.await_args_list)
+        self.assertNotEqual(first, second)  # varied, never the same line twice in a row
+        self.assertLessEqual({first, second}, {t.format(name="Hermes") for t in WAITING_LINES})
