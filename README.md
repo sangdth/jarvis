@@ -14,6 +14,8 @@ What it does:
   and a short digest when you say "you can talk".
 - **Remembers you** between runs, locally (Mem0 + Qdrant + Ollama).
 
+Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source in [`site/`](site/)).
+
 ---
 
 ## Architecture
