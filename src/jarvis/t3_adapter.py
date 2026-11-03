@@ -286,8 +286,9 @@ class T3Adapter(BaseAgentAdapter):
         if self._ws is None:
             logger.warning(f"[{self.config.id}] Cannot open {folder}; T3 Code is not connected.")
             return False
-        # The first message is the user's own words only: no task means just the sync.
-        return await self._launch(root, f"{SYNC_MASTER} first. Then: {task}" if task else f"{SYNC_MASTER}.", create=True)
+        # A new thread gets only the sync. The model's task is dropped: for "continue on X" it restates the
+        # request, and the user's next words go to this thread anyway.
+        return await self._launch(root, f"{SYNC_MASTER}.", create=True)
 
     async def _launch(self, cwd: str, text: str, create: bool = False) -> bool:
         """Start a T3 thread in the project holding cwd (made first when create is set) and watch it."""

@@ -136,7 +136,8 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
             root = str(PROJECTS / "huggerhustle/platform-v2")
             self.assertEqual((created[1]["type"], created[1]["workspaceRoot"]), ("project.create", root))
             self.assertEqual(launched[1]["projectId"], created[1]["projectId"])
-            self.assertEqual(launched[1]["initialMessage"]["text"], "Sync with the master branch first. Then: fix the login")
+            self.assertEqual(launched[1]["initialMessage"]["text"], "Sync with the master branch.")
+            a._command.assert_not_awaited()  # the task is not sent to a new thread
             self.assertEqual(a._thread_id, "t9")
             self.assertTrue(await a.open_project("~/Projects/huggerhustle/platform-v2", "now the tests"))  # same project
         self.assertEqual(a._command.await_args.args[0]["text"], "now the tests")

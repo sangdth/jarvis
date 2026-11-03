@@ -120,3 +120,35 @@ class TestVoiceprint(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEchoReference(unittest.IsolatedAsyncioTestCase):
+    """Played audio reaches the echo remover at the mic rate, whatever rate it was played at."""
+
+    def setUp(self) -> None:
+        from jarvis.voice_gates import EchoFilter, EchoReference
+
+        self.echo = EchoFilter()
+        self.echo.aec.feed_reference = MagicMock()
+        self.ref = EchoReference(self.echo)
+
+    def test_tts_at_24k_and_beeps_at_16k_both_land_at_16k(self) -> None:
+        import numpy as np
+
+        tone = lambda rate: (np.sin(np.arange(rate // 10) * 0.1) * 10000).astype(np.int16).tobytes()  # 100 ms
+        out24 = self.ref.to_mic_rate(tone(24000), 24000)
+        out16 = self.ref.to_mic_rate(tone(16000), 16000)
+        self.assertAlmostEqual(len(out24) / 2, 1600, delta=200)  # 100 ms at 16 kHz; the stream holds back ~8 ms
+        self.assertEqual(len(out16) / 2, 1600)
+
+    async def test_played_frames_feed_the_reference_and_pass_on(self) -> None:
+        from pipecat.frames.frames import OutputAudioRawFrame
+
+        self.ref.push_frame = AsyncMock()
+        patcher = patch.object(FrameProcessor, "process_frame", new=AsyncMock())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        frame = OutputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16000, num_channels=1)
+        await self.ref.process_frame(frame, FrameDirection.DOWNSTREAM)
+        self.echo.aec.feed_reference.assert_called_once_with(frame.audio)
+        self.ref.push_frame.assert_awaited_once_with(frame, FrameDirection.DOWNSTREAM)

@@ -69,7 +69,7 @@ Read the three lines it shows, with the mic Jarvis will use. It downloads the sp
 through), set `SPEAKER_THRESHOLD` in `.env` between the two groups of scores (default 0.5).
 
 ### 6. Run Jarvis
-On laptop speakers Jarvis ignores the mic while it talks (`MUTE_MIC_WHILE_SPEAKING=true`), so it doesn't hear itself; you can't interrupt it mid-sentence then. With headphones, set it to `false` to cut Jarvis off with "shut up".
+Jarvis filters its own voice out of the mic (echo cancellation), so on laptop speakers it doesn't answer itself, and you can cut it off mid-sentence with "shut up".
 ```bash
 uv run jarvis
 ```
