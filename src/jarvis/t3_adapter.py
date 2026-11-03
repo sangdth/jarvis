@@ -20,7 +20,7 @@ PROTOCOL = 2  # T3's ORCHESTRATION_PROTOCOL_VERSION; the server answers 426 to a
 _ACTIVE = {"preparing", "queued", "starting", "running", "waiting"}
 _ASKS = {"approval_request", "user_input_request"}
 PROJECTS = Path.home() / "Projects"  # every project of the user's lives here, one or two folders deep
-SYNC_FIRST = "Sync with the master branch first."
+SYNC_MASTER = "Sync with the master branch"
 
 
 def t3_question_fields(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -282,11 +282,12 @@ class T3Adapter(BaseAgentAdapter):
             return False
         root = str(PROJECTS / listed)
         if self._thread_id and self._root == root:
-            return await self.send_task(task)
+            return await self.send_task(task) if task else True  # already open; nothing new to say
         if self._ws is None:
             logger.warning(f"[{self.config.id}] Cannot open {folder}; T3 Code is not connected.")
             return False
-        return await self._launch(root, f"{SYNC_FIRST} Then: {task}", create=True)
+        # The first message is the user's own words only: no task means just the sync.
+        return await self._launch(root, f"{SYNC_MASTER} first. Then: {task}" if task else f"{SYNC_MASTER}.", create=True)
 
     async def _launch(self, cwd: str, text: str, create: bool = False) -> bool:
         """Start a T3 thread in the project holding cwd (made first when create is set) and watch it."""

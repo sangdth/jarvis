@@ -41,13 +41,14 @@ def greeting_prompt(now: datetime, memories: list[str]) -> str:
     """What the brain gets at startup so Jarvis speaks first: the local time and a few things it remembers."""
     remembered = (
         " Things you remember about the user: " + "; ".join(memories) + ". Mention one only if it is timely"
-        " (today or the next day or two); otherwise mention none."
+        " (today or the next day or two), in one more sentence of at most eight words; otherwise mention none."
         if memories
         else ""
     )
     return (
-        f"{NOT_THE_USER} Jarvis just started. It is {now:%A %H:%M}.] Greet the user first, in one or two short spoken sentences"
-        f" that fit the time of day, and let them know you're listening.{remembered} Do not call any tool."
+        f"{NOT_THE_USER} Jarvis just started. It is {now:%A %H:%M}.] Greet the user first in at most five words that fit"
+        f" the time of day, like \"Evening. I'm listening.\" Don't say the time or ask how they are.{remembered}"
+        " Do not call any tool."
     )
 
 
@@ -84,9 +85,10 @@ def project_list(orchestrator: AgentOrchestrator) -> str:
     # shortcut: read once at startup; a repo cloned while Jarvis runs shows up after a restart.
     return (
         f"\n\nThe user's projects (folders under ~/Projects). When the user wants to work on one (\"continue on the"
-        f" Hugger Hustle platform\"), send the task to `{openers[0]}` with `project` set to the folder exactly as"
-        " listed; speech recognition mishears names, so pick the closest one. Coding with no project named needs"
-        " no `project`.\n" + "\n".join(f"- {folder}" for folder in list_projects())
+        f" Hugger Hustle platform\"), call send_agent_task for `{openers[0]}` with `project` set to the folder exactly"
+        " as listed; speech recognition mishears names, so pick the closest one. Give a `task` only when the user"
+        " says what to do there; \"continue on X\" or \"open X\" alone has no task. Coding with no project named"
+        " needs no `project`.\n" + "\n".join(f"- {folder}" for folder in list_projects())
     )
 
 
@@ -110,7 +112,11 @@ def agent_tools() -> list:
             ),
             properties={
                 "agent_id": agent_id_property,
-                "task": {"type": "string", "description": "The task, in clear words"},
+                "task": {
+                    "type": "string",
+                    "description": "The task, in clear words. With `project`, omit it when the user only opens the"
+                    " project and names no work; never invent one.",
+                },
                 "project": {
                     "type": "string",
                     "description": "A folder from the user's project list (e.g. huggerhustle/platform-v2) when the"
@@ -125,7 +131,7 @@ def agent_tools() -> list:
                     ),
                 },
             },
-            required=["task"],
+            required=[],
         ),
         FunctionSchema(
             name="answer_agent",
@@ -166,7 +172,9 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
     async def send(agent: Any, args: dict) -> bool:
         if args.get("replace") and agent.busy:
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
-        task, project = args.get("task", ""), args.get("project")
+        task, project = args.get("task", "").strip(), args.get("project")
+        if not task and not project:
+            return False  # nothing to send
         # Only T3 Code opens a project; the others work in their configured folder.
         ok = await (agent.open_project(project, task) if project and hasattr(agent, "open_project") else agent.send_task(task))
         if ok:

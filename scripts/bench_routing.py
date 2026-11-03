@@ -53,7 +53,8 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Have Claude Code add a dark mode toggle", "claude"),
     # A named project opens it in T3 Code; the folder comes from the project list (names are often misheard)
     ("Continue working on the Hugger Hustle platform", "t3-code@huggerhustle/platform-v2"),
-    ("Let's work on the Hacker Hustle platform v2 and fix the signup form", "t3-code@huggerhustle/platform-v2"),
+    ("Let's work on the Hacker Hustle platform v2 and fix the signup form", "t3-code@huggerhustle/platform-v2+task"),
+    ("Open a new session in the Hugger Hustle platform project", "t3-code@huggerhustle/platform-v2"),
     ("Open the OpsCom status project", "t3-code@opscom/status"),
     ("I want to work on Jarvis today", "t3-code@jarvis"),
     ("What's on my calendar tomorrow?", "hermes"),
@@ -105,7 +106,9 @@ def outcome(message: dict, default_id: str | None) -> str:
         return SELF
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
     project = f"@{args['project'].removeprefix('~/Projects/').strip('/').lower()}" if args.get("project") else ""
-    return (args.get("agent_id") or default_id or "?") + project + ("+replace" if args.get("replace") else "")
+    # Opening a project names work only when the user did ("+task"); an invented task is a miss.
+    task = "+task" if project and args.get("task", "").strip() else ""
+    return (args.get("agent_id") or default_id or "?") + project + task + ("+replace" if args.get("replace") else "")
 
 
 async def main(rounds: int) -> int:

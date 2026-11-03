@@ -61,7 +61,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
 - **Projects come from a folder list, not an agent.** Git repos one or two levels under `~/Projects/` go into the
   prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with "Sync with the master
-  branch first."
+  branch." (plus "Then: <task>" only when the user named work; Jarvis never invents a task).
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.

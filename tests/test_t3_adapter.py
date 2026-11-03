@@ -142,6 +142,20 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a._command.await_args.args[0]["text"], "now the tests")
         self.assertEqual(a._call.await_count, 2)  # no second thread
 
+    async def test_opening_a_project_without_a_task_only_syncs(self) -> None:
+        a = make()
+        a._ws = MagicMock()
+        a._ws.send = AsyncMock()
+        a._find_project = AsyncMock(return_value=None)
+        a._call = AsyncMock(side_effect=[{}, {"threadId": "t9"}])
+        with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2"]), \
+                patch("jarvis.t3_adapter.t3_defaults", return_value={"defaultModelSelection": {"instanceId": "c", "model": "g"}}):
+            self.assertTrue(await a.open_project("huggerhustle/platform-v2", ""))
+            self.assertEqual(a._call.await_args.args[1]["initialMessage"]["text"], "Sync with the master branch.")
+            a._command = AsyncMock()
+            self.assertTrue(await a.open_project("huggerhustle/platform-v2", ""))  # already open
+        a._command.assert_not_awaited()
+
     async def test_folder_outside_projects_is_refused(self) -> None:
         a = make()
         a._call = AsyncMock()
