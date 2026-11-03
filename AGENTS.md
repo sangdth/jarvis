@@ -14,34 +14,34 @@ Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
 - Routing benchmark: `uv run python scripts/bench_routing.py` (about 120 paid calls)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
-  https://sangdth.github.io/jarvis/ on every push to master that touches `site/`.
+  <https://sangdth.github.io/jarvis/> on every push to master that touches `site/`.
 
 ## Where to fix "Jarvis"
 
 Start from what the user heard or didn't. The obvious file is often wrong: "Jarvis ignores me" is usually the
 speech check dropping the sentence, not the conversation model.
 
-| Symptom                              | Where                                                  |
-| :----------------------------------- | :----------------------------------------------------- |
-| Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`                |
-| Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`        |
-| Reacts, but the reply is wrong       | `main.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`             |
-| Says something wrong about an agent  | `agent_watchers.py` `_surface` call sites              |
-| Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`  |
-| Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`         |
-| Answer or stop hits the wrong agent  | `agent_watchers.py` `find_waiting`, `find_busy`        |
-| A correction runs as a second task  | `main.py` `send_agent_task` `replace`, each `interrupt` |
-| "Still waiting" timing or wording    | `agent_watchers.py` `remind_while_busy`, `WAITING_LINES` |
-| Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                    |
-| T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)    |
-| Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
-| Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |
-| Hears itself through the speakers    | `voice_gates.py` `EchoFilter`, `EchoReference`         |
-| Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`      |
-| Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`  |
+| Symptom                              | Where                                                         |
+| :----------------------------------- | :------------------------------------------------------------ |
+| Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`                       |
+| Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`               |
+| Reacts, but the reply is wrong       | `main.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`                    |
+| Says something wrong about an agent  | `agent_watchers.py` `_surface` call sites                     |
+| Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`         |
+| Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`                |
+| Answer or stop hits the wrong agent  | `agent_watchers.py` `find_waiting`, `find_busy`               |
+| A correction runs as a second task   | `main.py` `send_agent_task` `replace`, each `interrupt`       |
+| "Still waiting" timing or wording    | `agent_watchers.py` `remind_while_busy`, `WAITING_LINES`      |
+| Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                           |
+| T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)           |
+| Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                                      |
+| Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                          |
+| Hears itself through the speakers    | `voice_gates.py` `EchoFilter`, `EchoReference`                |
+| Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`             |
+| Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`         |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
-| Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.jarvis/memory`)          |
-| Model names, keys                    | `config.py`, `.env`, `.env.example`                    |
+| Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.jarvis/memory`)                 |
+| Model names, keys                    | `config.py`, `.env`, `.env.example`                           |
 
 Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/userdata/logs/terminals/*.log`).
 `[User Transcript]` shows what Whisper heard; the lines after it show whether the sentence was passed on or ignored.
@@ -62,8 +62,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
-- **Projects come from a folder list, not an agent.** Git repos one or two levels under `~/Projects/` go into the
-  prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
+- **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir` (`SOUL.md`, default
+  `~/Projects`) go into the prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
   master branch."; the model's task is not sent. Later requests go to that thread.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
@@ -82,6 +82,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   against `~/.jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass from any
   voice. No voiceprint stops Jarvis at startup (`uv run jarvis-enroll`). User turns come only from
   `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
+- **`~/.jarvis/SOUL.md` is the user's own setup** (`uv run jarvis-init`, `soul.py`): front matter holds settings
+  (`projects_dir`), the body is personality, added to the system prompt as tone only. The name is always Jarvis.
 - Mock HTTP and the Claude SDK in unit tests. Live checks against real agents go in a throwaway script, not in `tests/`.
 
 ## Later, not now

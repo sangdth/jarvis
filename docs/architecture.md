@@ -91,7 +91,7 @@ that asked last, and a stop to the agent that is working.
    `t3 auth session issue --scope orchestration:read --scope orchestration:operate`, issued once per run and again
    only after a 401/403. A task looks up the T3 project holding its folder (`orchestration.subscribeShell`) and
    starts a thread (`orchestration.launchThread`) with the user's T3 default model and runtime mode. The folder is
-   `cwd`, or a `project` the conversation model picks from the git repos under `~/Projects/` (`list_projects`); a
+   `cwd`, or a `project` the conversation model picks from the git repos under `projects_dir` from `~/.jarvis/SOUL.md`, default `~/Projects/` (`list_projects`); a
    project folder T3 doesn't know yet is added with `project.create`, and its thread opens with only "Sync with the master
    branch." (the model's task is not sent; later requests go to that thread). Jarvis watches one thread, the newest; later tasks for the same folder are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
    (resumed with `afterSequence`) gives `run.updated`, finished `assistant_message` items (retold when the run

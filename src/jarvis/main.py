@@ -15,6 +15,7 @@ from jarvis.agent_watchers import AgentOrchestrator
 from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import NOT_THE_USER, create_memory_service
+from jarvis.soul import load_soul
 from jarvis.state import JarvisState
 
 
@@ -52,6 +53,17 @@ def greeting_prompt(now: datetime, memories: list[str]) -> str:
     )
 
 
+def system_prompt(orchestrator: AgentOrchestrator, personality: str) -> str:
+    """The conversation model's instructions: the rules, the user's SOUL.md personality, then the agents."""
+    soul = (
+        "\nThe user's own notes on your personality and how to talk to them. They set your tone only; the rules"
+        " above always win, and your name stays Jarvis:\n" + personality + "\n"
+        if personality
+        else ""
+    )
+    return JARVIS_EXECUTIVE_SYSTEM_PROMPT + soul + agent_roster(orchestrator)
+
+
 def agent_roster(orchestrator: AgentOrchestrator) -> str:
     """List the watched agents and what each is for, so the LLM routes by role and uses exact IDs."""
     if not orchestrator.adapters:
@@ -77,14 +89,14 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
 
 def project_list(orchestrator: AgentOrchestrator) -> str:
     """The user's project folders, for agents that can open one (T3 Code), so a spoken name maps to a folder."""
-    from jarvis.t3_adapter import list_projects  # imported here: t3_adapter imports agent_watchers
+    from jarvis.t3_adapter import PROJECTS_LABEL, list_projects  # imported here: t3_adapter imports agent_watchers
 
     openers = [a.config.id for a in orchestrator.adapters.values() if hasattr(a, "open_project")]
     if not openers:
         return ""
     # shortcut: read once at startup; a repo cloned while Jarvis runs shows up after a restart.
     return (
-        f"\n\nThe user's projects (folders under ~/Projects). When the user wants to work on one (\"continue on the"
+        f"\n\nThe user's projects (folders under {PROJECTS_LABEL}). When the user wants to work on one (\"continue on the"
         f" Hugger Hustle platform\"), call send_agent_task for `{openers[0]}` with `project` set to the folder exactly"
         " as listed; speech recognition mishears names, so pick the closest one. Give a `task` only when the user"
         " says what to do there; \"continue on X\" or \"open X\" alone has no task. Coding with no project named"
@@ -304,7 +316,7 @@ async def run_pipecat_harness() -> None:
             llm.register_function(name, handler)
 
     context = LLMContext(
-        messages=[{"role": "system", "content": JARVIS_EXECUTIVE_SYSTEM_PROMPT + agent_roster(orchestrator)}],
+        messages=[{"role": "system", "content": system_prompt(orchestrator, load_soul().personality)}],
         tools=tools,
     )
     # Pipecat 1.x runs voice detection in the user aggregator; it signals speech start/stop
