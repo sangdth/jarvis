@@ -3,133 +3,401 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jarvis: stop sitting at your laptop just to press Enter</title>
+<title>Jarvis: Stop sitting at your laptop just to press Enter</title>
 <meta name="description" content="An always-on voice harness that talks only with you and hands your work to T3 Code, Claude Code, OpenCode and Hermes Agent.">
 <style>
   :root {
-    --bg: #000; --bg-card: #0d0d0d; --fg: #f5f5f5; --fg-muted: #a3a3a3; --fg-dim: #737373;
-    --border: #ffffff14; --border-strong: #ffffff24;
-    --accent: #4f39f6; --accent-soft: #8f9dff; --ok: oklch(72% .16 150); --warn: oklch(76% .15 75);
+    --bg: #060907;
+    --bg-surface: #0a110d;
+    --bg-card: #0d1612;
+    --bg-card-hover: #121e18;
+    --fg: #f0fdf4;
+    --fg-muted: #8da496;
+    --fg-dim: #4e6b5a;
+    --border: rgba(0, 240, 144, 0.14);
+    --border-strong: rgba(0, 240, 144, 0.3);
+    --accent: #00e599;
+    --accent-glow: rgba(0, 229, 153, 0.22);
+    --accent-soft: #5eead4;
+    --accent-dim: rgba(0, 229, 153, 0.08);
+    --ok: #00e599;
+    --warn: #fbbf24;
+    --danger: #f87171;
     --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
-    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, ui-monospace, monospace;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { color-scheme: dark; scroll-behavior: smooth; }
-  body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.5;
-         -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  body {
+    background-color: var(--bg);
+    background-image: 
+      radial-gradient(circle at 50% 0%, rgba(0, 229, 153, 0.12) 0%, transparent 50%),
+      radial-gradient(rgba(0, 240, 144, 0.05) 1px, transparent 1px);
+    background-size: 100% 100%, 28px 28px;
+    color: var(--fg);
+    font-family: var(--sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
   a { color: inherit; text-decoration: none; }
-  :focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 2px; border-radius: 4px; }
-  .container { max-width: 1120px; margin: 0 auto; padding: 0 28px; }
-  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
-             color: var(--fg-dim); }
-  .display { font-weight: 600; letter-spacing: -.03em; line-height: 1.05; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .container { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .eyebrow::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+  }
+  .display { font-weight: 600; letter-spacing: -.03em; line-height: 1.08; }
   .muted { color: var(--fg-muted); }
-  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 10px;
-         font-size: 15px; font-weight: 500; transition: transform .18s, background .18s, border-color .18s; }
-  .btn-primary { background: var(--accent); color: #fff; font-weight: 600; }
-  .btn-primary:hover { background: #6450ff; transform: translateY(-1px); }
-  .btn-ghost { border: 1px solid var(--border); color: var(--fg-muted); }
-  .btn-ghost:hover { border-color: var(--border-strong); color: var(--fg); }
-  .tile { border: 1px solid var(--border); border-radius: 14px; background: var(--bg-card); }
+  .glow-text {
+    color: var(--accent);
+    text-shadow: 0 0 24px rgba(0, 229, 153, 0.35);
+    font-style: normal;
+  }
+  
+  /* Brand */
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--fg);
+    transition: color .15s;
+  }
+  .brand:hover { color: var(--accent); }
+  .robot-logo { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); }
+  .status-tag {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: .12em;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 4px;
+  }
+  
+  /* Navigation */
+  nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    background: rgba(6, 9, 7, 0.85);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 24px;
+    max-width: 1120px;
+    margin: 0 auto;
+  }
+  .nav-links { display: flex; align-items: center; gap: 24px; font-size: 13px; color: var(--fg-muted); }
+  .nav-links a { transition: color .15s; }
+  .nav-links a:hover { color: var(--accent); }
 
-  /* nav */
-  nav { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(18px);
-        background: color-mix(in srgb, #000 75%, transparent); border-bottom: 1px solid var(--border); }
-  .nav-inner { display: flex; justify-content: space-between; align-items: center; padding: 14px 28px;
-               max-width: 1120px; margin: 0 auto; }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.02em; }
-  .orb { width: 18px; height: 18px; border-radius: 50%;
-         background: radial-gradient(circle at 35% 35%, #c6d2ff, var(--accent) 60%, #1b1060); }
-  .nav-links { display: flex; gap: 22px; font-size: 13px; color: var(--fg-muted); }
-  .nav-links a:hover { color: var(--fg); }
+  /* Hero */
+  .hero { position: relative; text-align: center; padding: 76px 24px 60px; }
+  .hero h1 { font-size: clamp(38px, 6vw, 68px); margin: 20px auto 22px; max-width: 920px; font-weight: 650; }
+  .hero p.lead { font-size: 18px; max-width: 660px; margin: 0 auto 34px; line-height: 1.6; }
+  
+  /* Buttons */
+  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 8px;
+    font-size: 14.5px;
+    font-weight: 550;
+    transition: all .18s ease;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #040805;
+    font-weight: 650;
+    box-shadow: 0 0 20px var(--accent-glow);
+  }
+  .btn-primary:hover {
+    background: #1affad;
+    box-shadow: 0 0 28px rgba(0, 229, 153, 0.45);
+    transform: translateY(-1px);
+  }
+  .btn-ghost {
+    background: var(--bg-card);
+    border: 1px solid var(--border-strong);
+    color: var(--fg);
+  }
+  .btn-ghost:hover {
+    border-color: var(--accent);
+    background: var(--bg-card-hover);
+    color: var(--accent);
+  }
 
-  /* hero */
-  .hero { position: relative; text-align: center; padding: 110px 28px 70px; }
-  .hero::before { content: ""; position: absolute; inset: -120px 0 auto; height: 520px; z-index: -1;
-                  background: radial-gradient(600px 300px at 50% 30%, #4f39f633, transparent 70%); }
-  .hero h1 { font-size: clamp(40px, 7vw, 76px); margin: 18px auto 20px; max-width: 900px; }
-  .hero h1 em { font-style: normal; color: var(--accent-soft); }
-  .hero p.lead { font-size: 19px; max-width: 640px; margin: 0 auto 32px; }
-  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-  .install { margin: 26px auto 0; display: inline-flex; gap: 10px; font-family: var(--mono); font-size: 13px;
-             color: var(--fg-muted); padding: 10px 16px; }
-  .install b { color: var(--accent-soft); font-weight: 400; }
-  .agents { margin-top: 46px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
-  .chip { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); padding: 6px 12px;
-          border: 1px solid var(--border); border-radius: 999px; }
+  /* Audio Scope / Waveform */
+  .acoustic-hud {
+    display: inline-flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 18px;
+    background: rgba(13, 22, 18, 0.6);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    margin-bottom: 24px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .acoustic-bars { display: flex; align-items: center; gap: 3px; height: 18px; }
+  .acoustic-bars span {
+    width: 2.5px;
+    background: var(--accent);
+    border-radius: 2px;
+    animation: soundbar 1.3s ease-in-out infinite;
+  }
+  @keyframes soundbar {
+    0%, 100% { height: 4px; opacity: .4; }
+    50% { height: 16px; opacity: 1; box-shadow: 0 0 6px var(--accent); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .acoustic-bars span { animation: none; height: 10px; }
+  }
+  .hud-meta { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--fg-muted); }
+  .hud-meta b { color: var(--accent); font-weight: 500; }
 
-  /* wave */
-  .wave { display: flex; gap: 4px; justify-content: center; align-items: center; height: 40px; margin: 0 auto 8px; }
-  .wave span { width: 4px; border-radius: 4px; background: var(--accent-soft); animation: pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { height: 6px; opacity: .5; } 50% { height: 34px; opacity: 1; } }
-  @media (prefers-reduced-motion: reduce) { .wave span { animation: none; height: 14px; } }
+  /* Install Command Box */
+  .install-box {
+    margin: 32px auto 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    padding: 11px 20px;
+    border-radius: 10px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--fg-muted);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .install-box b { color: var(--accent); font-weight: 600; }
+  .install-box code { color: var(--fg); white-space: nowrap; }
 
-  /* transcript */
-  section { padding: 70px 0; }
-  .section-head { text-align: center; margin-bottom: 40px; }
-  .section-head h2 { font-size: clamp(30px, 4.5vw, 46px); margin-top: 12px; }
-  .section-head p { max-width: 620px; margin: 14px auto 0; }
-  .term { max-width: 760px; margin: 0 auto; overflow: hidden; }
-  .term-bar { display: flex; gap: 7px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-  .term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #ffffff1f; }
-  .term-body { padding: 20px 22px; font-family: var(--mono); font-size: 13.5px; line-height: 1.9; }
-  .you { color: var(--fg); }
-  .jarvis { color: var(--accent-soft); }
-  .drop { color: var(--fg-dim); text-decoration: line-through; }
-  .tag { display: inline-block; min-width: 76px; color: var(--fg-dim); }
-  .ok { color: var(--ok); } .warn { color: var(--warn); }
+  /* Chips */
+  .agents { margin-top: 38px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .06em;
+    color: var(--fg-muted);
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(13, 22, 18, 0.4);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .chip::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--fg-dim); }
+  .chip.active::before { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 
-  /* problem */
+  /* Section Styling */
+  section { padding: 76px 0; }
+  .section-head { text-align: center; margin-bottom: 44px; }
+  .section-head h2 { font-size: clamp(28px, 4.2vw, 44px); margin-top: 14px; font-weight: 650; }
+  .section-head p { max-width: 620px; margin: 14px auto 0; font-size: 15.5px; }
+
+  /* Terminal & HUD Panels */
+  .tile {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-card);
+    position: relative;
+    overflow: hidden;
+  }
+  .tile::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+  }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .term { overflow: hidden; background: #070e0a; }
+  .term-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    background: rgba(0, 240, 144, 0.04);
+    border-bottom: 1px solid var(--border);
+  }
+  .dots { display: flex; gap: 6px; }
+  .dots i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.12); }
+  .term-title { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--fg-dim); }
+  .term-body { padding: 22px; font-family: var(--mono); font-size: 13px; line-height: 1.85; }
+  .log-row { margin-bottom: 9px; display: flex; gap: 10px; align-items: baseline; }
+  .tag {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    min-width: 80px;
+    flex-shrink: 0;
+    font-weight: 600;
+  }
+  .tag.jarvis { color: var(--accent); }
+  .tag.you { color: #5eead4; }
+  .tag.drop { color: var(--fg-dim); }
+  .tag.warn { color: var(--warn); }
+  .tag.t3 { color: #38bdf8; }
+  .msg-drop { color: var(--fg-dim); text-decoration: line-through; opacity: 0.65; }
+  .badge-drop {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--danger);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    margin-left: 6px;
+  }
+  .badge-pass {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(0, 229, 153, 0.1);
+    color: var(--accent);
+    border: 1px solid rgba(0, 229, 153, 0.25);
+    margin-left: 6px;
+  }
+
   .wall { font-size: 12.5px; line-height: 1.75; color: var(--fg-muted); }
-  .wall div { margin-bottom: 6px; }
-  /* the report fades out, so the question it ends on stays in view */
-  .wall-log { max-height: 250px; overflow: hidden; margin-bottom: 10px;
-              -webkit-mask-image: linear-gradient(#000 55%, transparent);
-              mask-image: linear-gradient(#000 55%, transparent); }
-  .wins { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--border); }
-  .wins div { padding: 18px 20px; border-right: 1px solid var(--border); }
+  .wall-log {
+    max-height: 250px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    -webkit-mask-image: linear-gradient(#000 55%, transparent);
+    mask-image: linear-gradient(#000 55%, transparent);
+  }
+  .wall-log div { margin-bottom: 6px; }
+
+  /* Comparison stats */
+  .wins { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--border); background: rgba(0,0,0,0.25); }
+  .wins div { padding: 16px 18px; border-right: 1px solid var(--border); }
   .wins div:last-child { border-right: 0; }
-  .wins b { display: block; font-size: 20px; letter-spacing: -.02em; color: var(--fg); }
-  .wins span { font-size: 13px; color: var(--fg-muted); }
+  .wins b { display: block; font-size: 18px; letter-spacing: -.02em; color: var(--accent); }
+  .wins span { font-size: 12px; color: var(--fg-muted); }
 
-  /* features */
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-  .feature { padding: 26px; }
-  .feature h3 { font-size: 17px; letter-spacing: -.01em; margin: 14px 0 8px; }
-  .feature p { font-size: 14.5px; color: var(--fg-muted); }
-  .icon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
-          background: #4f39f622; color: var(--accent-soft); font-family: var(--mono); font-size: 15px; }
+  /* Features Grid */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .feature {
+    padding: 26px;
+    transition: transform .18s, border-color .18s;
+  }
+  .feature:hover {
+    border-color: var(--border-strong);
+    transform: translateY(-2px);
+  }
+  .feature-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .feature-num { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--accent); }
+  .feature-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: var(--accent-dim);
+    border: 1px solid var(--border);
+    display: grid;
+    place-items: center;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .feature h3 { font-size: 16.5px; margin-bottom: 8px; font-weight: 600; color: var(--fg); }
+  .feature p { font-size: 13.5px; color: var(--fg-muted); line-height: 1.6; }
 
-  /* pipeline */
+  /* Pipeline */
   .pipe { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; }
-  .stage { padding: 14px 16px; min-width: 132px; text-align: center; }
-  .stage b { display: block; font-size: 14px; font-weight: 600; }
-  .stage small { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); }
-  .arrow { color: var(--fg-dim); font-family: var(--mono); }
-  .stage.hot { border-color: #4f39f666; background: #4f39f610; }
+  .stage {
+    padding: 14px 16px;
+    min-width: 132px;
+    text-align: center;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .stage b { display: block; font-size: 13.5px; font-weight: 600; color: var(--fg); }
+  .stage small { font-family: var(--mono); font-size: 10.5px; color: var(--fg-muted); }
+  .stage.hot {
+    border-color: var(--accent);
+    background: rgba(0, 229, 153, 0.08);
+    box-shadow: 0 0 16px rgba(0, 229, 153, 0.12);
+  }
+  .stage.hot b { color: var(--accent); }
+  .arrow { color: var(--accent); font-family: var(--mono); font-size: 13px; }
 
-  /* commands + start */
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .list { padding: 28px; }
-  .list li { list-style: none; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 14.5px; }
+  /* Say it list */
+  .list { padding: 26px; }
+  .list-head { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--accent); text-transform: uppercase; margin-bottom: 14px; }
+  .list ul { list-style: none; }
+  .list li {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13.5px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
   .list li:last-child { border-bottom: 0; }
-  .list q { color: var(--fg); quotes: "\201C" "\201D"; }
-  .list span { color: var(--fg-muted); }
+  .list q { color: var(--fg); quotes: "\201C" "\201D"; font-weight: 500; }
+  .list span { color: var(--fg-muted); font-size: 12px; font-family: var(--mono); }
   pre { font-family: var(--mono); font-size: 13px; line-height: 1.9; color: var(--fg-muted); white-space: pre-wrap; }
-  pre .c { color: var(--fg-dim); } pre .p { color: var(--accent-soft); }
+  pre .c { color: var(--fg-dim); }
+  pre .p { color: var(--accent); font-weight: 600; }
+  pre .cmd { color: var(--fg); }
 
-  .closing { text-align: center; padding: 100px 28px 110px; }
-  .closing h2 { font-size: clamp(34px, 5vw, 56px); margin-bottom: 16px; }
-  footer { border-top: 1px solid var(--border); padding: 30px 0; font-size: 13px; color: var(--fg-dim); }
-  .foot { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+  /* Closing */
+  .closing { text-align: center; padding: 90px 24px 100px; }
+  .closing h2 { font-size: clamp(32px, 5vw, 52px); margin-bottom: 16px; font-weight: 650; }
+
+  /* Footer */
+  footer { border-top: 1px solid var(--border); padding: 32px 0; font-size: 13px; color: var(--fg-dim); }
+  .foot { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
 
   @media (max-width: 860px) {
     .grid, .two { grid-template-columns: 1fr; }
     .nav-links { display: none; }
     .arrow { display: none; }
+    .pipe { flex-direction: column; align-items: stretch; }
     .wins { grid-template-columns: 1fr; }
     .wins div { border-right: 0; border-bottom: 1px solid var(--border); }
-    .install { font-size: 11.5px; }
+    .install-box { font-size: 11.5px; }
+    .list li { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .foot { flex-direction: column; text-align: center; }
   }
 </style>
 </head>
@@ -137,7 +405,19 @@
 
 <nav>
   <div class="nav-inner">
-    <a class="brand" href="#"><span class="orb" aria-hidden="true"></span>Jarvis</a>
+    <a class="brand" href="#">
+      <svg class="robot-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M12 1.5V3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <rect x="1" y="8" width="2" height="7" rx="1" fill="currentColor"/>
+        <rect x="21" y="8" width="2" height="7" rx="1" fill="currentColor"/>
+        <path d="M6 4.5H18L20.5 7V17.5L18 20H6L3.5 17.5V7L6 4.5Z" fill="currentColor"/>
+        <rect x="6" y="8.5" width="5" height="2.5" rx="0.5" fill="#060907"/>
+        <rect x="13" y="8.5" width="5" height="2.5" rx="0.5" fill="#060907"/>
+        <path d="M7.5 15H16.5" stroke="#060907" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span>Jarvis</span>
+      <span class="status-tag">SYS.ONLINE</span>
+    </a>
     <div class="nav-links">
       <a href="#why">Why</a>
       <a href="#how">How it works</a>
@@ -150,24 +430,38 @@
 
 <main>
   <header class="hero container">
-    <div class="wave" aria-hidden="true">
-      <span style="animation-delay:0s"></span><span style="animation-delay:.15s"></span>
-      <span style="animation-delay:.3s"></span><span style="animation-delay:.45s"></span>
-      <span style="animation-delay:.6s"></span><span style="animation-delay:.45s"></span>
-      <span style="animation-delay:.3s"></span><span style="animation-delay:.15s"></span>
+    <div class="acoustic-hud">
+      <div class="acoustic-bars" aria-hidden="true">
+        <span style="animation-delay:0s"></span>
+        <span style="animation-delay:.15s"></span>
+        <span style="animation-delay:.3s"></span>
+        <span style="animation-delay:.45s"></span>
+        <span style="animation-delay:.6s"></span>
+        <span style="animation-delay:.45s"></span>
+        <span style="animation-delay:.3s"></span>
+        <span style="animation-delay:.15s"></span>
+      </div>
+      <div class="hud-meta">ACOUSTIC LINK ACTIVE <b>16kHz</b> · ZERO WAKE WORD</div>
     </div>
-    <div class="eyebrow">Always on · No wake word · Runs on your Mac</div>
-    <h1 class="display">Stop sitting at your laptop <em>just to press Enter.</em></h1>
-    <p class="lead muted">Coding agents write walls of text, then wait for your "yes". Jarvis reads the wall for you,
-      tells you what happened in two sentences, and takes your "yes" from across the room.</p>
+    
+    <div class="eyebrow">Always on · Voice-gated · Runs locally on Mac</div>
+    <h1 class="display">Stop sitting at your laptop <span class="glow-text">just to press Enter.</span></h1>
+    <p class="lead muted">Coding agents write walls of text, then wait for your "yes". Jarvis monitors the terminal, digests progress in two sentences, and takes your voice approval from across the room.</p>
+    
     <div class="cta">
       <a class="btn btn-primary" href="#start">Get started</a>
       <a class="btn btn-ghost" href="https://github.com/sangdth/jarvis">View on GitHub</a>
     </div>
-    <div class="install tile"><b>$</b> uv sync &amp;&amp; uv run jarvis-enroll &amp;&amp; uv run jarvis</div>
+
+    <div class="install-box">
+      <b>$</b> <code>uv sync &amp;&amp; uv run jarvis-enroll &amp;&amp; uv run jarvis</code>
+    </div>
+
     <div class="agents">
-      <span class="chip">T3 Code</span><span class="chip">Claude Code</span>
-      <span class="chip">OpenCode</span><span class="chip">Hermes Agent</span>
+      <span class="chip active">T3 Code</span>
+      <span class="chip active">Claude Code</span>
+      <span class="chip active">OpenCode</span>
+      <span class="chip active">Hermes Agent</span>
     </div>
   </header>
 
@@ -176,39 +470,52 @@
       <div class="section-head">
         <div class="eyebrow">The problem</div>
         <h2 class="display">Agents work for minutes. Then they wait for you.</h2>
-        <p class="muted">A long run ends in a long report and one question. You either sit and watch, or come back to
-          find it stopped ten minutes ago, waiting for "y".</p>
+        <p class="muted">A long run ends in a long report and one question. You either sit and watch, or come back to find it stopped ten minutes ago, waiting for "y".</p>
       </div>
       <div class="two">
         <div class="tile term">
-          <div class="term-bar"><i></i><i></i><i></i><span class="eyebrow" style="margin-left:8px">Without Jarvis</span></div>
+          <div class="term-bar">
+            <div class="dots"><i></i><i></i><i></i></div>
+            <span class="term-title">STDERR // WITHOUT JARVIS</span>
+          </div>
           <div class="term-body wall">
             <div class="wall-log">
-            <div>● I'll start by exploring the signup flow to understand how validation is wired.</div>
-            <div>● Read <span class="muted">src/routes/signup/+page.svelte</span> (214 lines)</div>
-            <div>● Read <span class="muted">src/lib/validation/email.ts</span> (88 lines)</div>
-            <div>● Search for <span class="muted">"isValidEmail"</span> in 31 files</div>
-            <div>● The issue is that the regex accepts addresses without a top-level domain, and the
-              server-side check in <span class="muted">hooks.server.ts</span> trusts the client value. I'll update
-              both, add a shared schema, and extend the existing tests to cover the missing cases, including
-              plus-addressing, uppercase domains and trailing whitespace…</div>
-            <div>● Update <span class="muted">src/lib/validation/email.ts</span> (+24 −9)</div>
-            <div>● Update <span class="muted">src/hooks.server.ts</span> (+11 −3)</div>
-            <div>● The tests need a schema change. Running the migration will modify the
-              <span class="muted">users</span> table…</div>
+              <div>● I'll start by exploring the signup flow to understand how validation is wired.</div>
+              <div>● Read <span class="muted">src/routes/signup/+page.svelte</span> (214 lines)</div>
+              <div>● Read <span class="muted">src/lib/validation/email.ts</span> (88 lines)</div>
+              <div>● Search for <span class="muted">"isValidEmail"</span> in 31 files</div>
+              <div>● The issue is that the regex accepts addresses without a top-level domain, and the server-side check in <span class="muted">hooks.server.ts</span> trusts the client value. I'll update both, add a shared schema, and extend the existing tests to cover the missing cases, including plus-addressing, uppercase domains and trailing whitespace…</div>
+              <div>● Update <span class="muted">src/lib/validation/email.ts</span> (+24 −9)</div>
+              <div>● Update <span class="muted">src/hooks.server.ts</span> (+11 −3)</div>
+              <div>● The tests need a schema change. Running the migration will modify the <span class="muted">users</span> table…</div>
             </div>
-            <div class="warn">Do you want to run <span class="muted">pnpm db:migrate</span>?</div>
-            <div class="you">❯ 1. Yes &nbsp; 2. Yes, and don't ask again &nbsp; 3. No</div>
+            <div class="tag warn" style="display:block; margin-bottom: 4px;">▲ ACTION REQUIRED</div>
+            <div style="color:var(--warn); margin-bottom: 6px;">Do you want to run <span class="muted">pnpm db:migrate</span>?</div>
+            <div style="color:var(--fg)">❯ 1. Yes &nbsp; 2. Yes, and don't ask again &nbsp; 3. No</div>
           </div>
         </div>
         <div class="tile term">
-          <div class="term-bar"><i></i><i></i><i></i><span class="eyebrow" style="margin-left:8px">With Jarvis</span></div>
+          <div class="term-bar">
+            <div class="dots"><i></i><i></i><i></i></div>
+            <span class="term-title">HUD // WITH JARVIS</span>
+          </div>
           <div class="term-body">
-            <div class="jarvis"><span class="tag">jarvis</span>T3 Code fixed the email check on the signup form,
-              and it covers the server side now.</div>
-            <div class="jarvis"><span class="tag">jarvis</span>It needs approval: run the database migration?</div>
-            <div class="you"><span class="tag">you</span>Yes, go ahead. <span class="muted">(from the kitchen)</span></div>
-            <div class="jarvis"><span class="tag">jarvis</span>Done. The tests pass.</div>
+            <div class="log-row">
+              <span class="tag jarvis">jarvis</span>
+              <div>T3 Code fixed the email check on the signup form, and it covers the server side now.</div>
+            </div>
+            <div class="log-row">
+              <span class="tag jarvis">jarvis</span>
+              <div>It needs approval: run the database migration?</div>
+            </div>
+            <div class="log-row">
+              <span class="tag you">you</span>
+              <div>Yes, go ahead. <span class="muted">(from the kitchen)</span> <span class="badge-pass">VOICEPRINT MATCH</span></div>
+            </div>
+            <div class="log-row">
+              <span class="tag jarvis">jarvis</span>
+              <div>Done. The tests pass.</div>
+            </div>
           </div>
           <div class="wins">
             <div><b>2 sentences</b><span>instead of the whole report</span></div>
@@ -223,24 +530,56 @@
   <section>
     <div class="container">
       <div class="section-head">
-        <div class="eyebrow">A morning with Jarvis</div>
+        <div class="eyebrow">Acoustic filtering</div>
         <h2 class="display">It knows who's talking.</h2>
-        <p class="muted">The TV, the family in the next room and Jarvis's own voice all reach the mic. Only you
-          reach Jarvis.</p>
+        <p class="muted">The TV, the family in the next room and Jarvis's own voice all reach the mic. Only you reach Jarvis.</p>
       </div>
       <div class="term tile" role="img" aria-label="Example log: Jarvis acts on the owner's sentences and drops background voices">
-        <div class="term-bar"><i></i><i></i><i></i></div>
+        <div class="term-bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="term-title">LIVE ACOUSTIC TELEMETRY // COSINE MATCH &gt; 0.62</span>
+        </div>
         <div class="term-body">
-          <div class="jarvis"><span class="tag">jarvis</span>Morning. I'm listening.</div>
-          <div class="drop"><span class="tag">tv</span>…and then we will cook the water</div>
-          <div class="you"><span class="tag">you</span>Continue working on the Hugger Hustle platform.</div>
-          <div class="jarvis"><span class="tag">jarvis</span>Opened it in T3 Code. Syncing with master.</div>
-          <div class="drop"><span class="tag">kitchen</span>Can't you feel that?</div>
-          <div class="you"><span class="tag">you</span>Fix the signup form, the email check is broken.</div>
-          <div class="jarvis"><span class="tag">jarvis</span>On it.</div>
-          <div class="warn"><span class="tag">t3 code</span>needs approval: run the database migration?</div>
-          <div class="you"><span class="tag">you</span>Yes, go ahead.</div>
-          <div class="jarvis"><span class="tag">jarvis</span>Done. The email check now rejects missing domains, and the tests pass.</div>
+          <div class="log-row">
+            <span class="tag jarvis">jarvis</span>
+            <div>Morning. I'm listening.</div>
+          </div>
+          <div class="log-row">
+            <span class="tag drop">tv</span>
+            <div class="msg-drop">…and then we will cook the water <span class="badge-drop">DROPPED</span></div>
+          </div>
+          <div class="log-row">
+            <span class="tag you">you</span>
+            <div>Continue working on the Hugger Hustle platform. <span class="badge-pass">SCORE 0.88</span></div>
+          </div>
+          <div class="log-row">
+            <span class="tag jarvis">jarvis</span>
+            <div>Opened it in T3 Code. Syncing with master.</div>
+          </div>
+          <div class="log-row">
+            <span class="tag drop">kitchen</span>
+            <div class="msg-drop">Can't you feel that? <span class="badge-drop">DROPPED</span></div>
+          </div>
+          <div class="log-row">
+            <span class="tag you">you</span>
+            <div>Fix the signup form, the email check is broken. <span class="badge-pass">SCORE 0.91</span></div>
+          </div>
+          <div class="log-row">
+            <span class="tag jarvis">jarvis</span>
+            <div>On it.</div>
+          </div>
+          <div class="log-row">
+            <span class="tag warn">t3 code</span>
+            <div>needs approval: run the database migration?</div>
+          </div>
+          <div class="log-row">
+            <span class="tag you">you</span>
+            <div>Yes, go ahead. <span class="badge-pass">SCORE 0.89</span></div>
+          </div>
+          <div class="log-row">
+            <span class="tag jarvis">jarvis</span>
+            <div>Done. The email check now rejects missing domains, and the tests pass.</div>
+          </div>
         </div>
       </div>
     </div>
@@ -254,23 +593,54 @@
         <p class="muted">Jarvis routes and relays. The work, the tools and the memory stay in each agent's own harness.</p>
       </div>
       <div class="grid">
-        <div class="feature tile"><div class="icon">◉</div><h3>Your voice only</h3>
-          <p>Every sentence is checked against your enrolled voiceprint, locally. Other voices are dropped and can't
-            interrupt Jarvis or keep it waiting.</p></div>
-        <div class="feature tile"><div class="icon">?</div><h3>Answers when you mean it</h3>
-          <p>No wake word. A fast decision model tells talk aimed at Jarvis from talk around it, in about 230 ms.</p></div>
-        <div class="feature tile"><div class="icon">→</div><h3>Right agent, every time</h3>
-          <p>Coding goes to T3 Code by default, or to Claude Code or OpenCode when you name them. Everything else
-            goes to Hermes Agent.</p></div>
-        <div class="feature tile"><div class="icon">/</div><h3>Projects by name</h3>
-          <p>"Continue on the Hugger Hustle platform" finds the repo under ~/Projects and opens a T3 Code thread that
-            syncs with master.</p></div>
-        <div class="feature tile"><div class="icon">!</div><h3>Approvals stay yours</h3>
-          <p>Agent questions and approvals are read to you word for word. No model ever approves anything on your
-            behalf.</p></div>
-        <div class="feature tile"><div class="icon">♪</div><h3>Quiet when you need it</h3>
-          <p>"Shut up" switches to soft beeps and queues what happens. "You can talk" brings a short digest of what
-            you missed.</p></div>
+        <div class="feature tile">
+          <div class="feature-top">
+            <span class="feature-num">[ 01 ]</span>
+            <div class="feature-icon">◎</div>
+          </div>
+          <h3>Your voice only</h3>
+          <p>Every sentence is checked against your enrolled voiceprint locally using sherpa-onnx. Other voices are dropped and cannot interrupt or keep Jarvis waiting.</p>
+        </div>
+        <div class="feature tile">
+          <div class="feature-top">
+            <span class="feature-num">[ 02 ]</span>
+            <div class="feature-icon">?</div>
+          </div>
+          <h3>Answers when you mean it</h3>
+          <p>No wake word. A fast decision model distinguishes conversation aimed at Jarvis from background talk around it in roughly 230 milliseconds.</p>
+        </div>
+        <div class="feature tile">
+          <div class="feature-top">
+            <span class="feature-num">[ 03 ]</span>
+            <div class="feature-icon">→</div>
+          </div>
+          <h3>Right agent, every time</h3>
+          <p>Coding prompts route to T3 Code by default, or Claude Code / OpenCode when named. Ambient research, calendar, and general tasks route to Hermes Agent.</p>
+        </div>
+        <div class="feature tile">
+          <div class="feature-top">
+            <span class="feature-num">[ 04 ]</span>
+            <div class="feature-icon">/</div>
+          </div>
+          <h3>Projects by name</h3>
+          <p>"Continue on the Hugger Hustle platform" locates the project repository under ~/Projects and opens a T3 Code thread synced with master.</p>
+        </div>
+        <div class="feature tile">
+          <div class="feature-top">
+            <span class="feature-num">[ 05 ]</span>
+            <div class="feature-icon">!</div>
+          </div>
+          <h3>Approvals stay yours</h3>
+          <p>Agent questions and dangerous tool executions are read to you word for word. No autonomous model ever approves anything on your behalf.</p>
+        </div>
+        <div class="feature tile">
+          <div class="feature-top">
+            <span class="feature-num">[ 06 ]</span>
+            <div class="feature-icon">♪</div>
+          </div>
+          <h3>Quiet when you need it</h3>
+          <p>"Shut up" switches output to soft beeps and queues background events. "You can talk" brings a consolidated spoken digest of what you missed.</p>
+        </div>
       </div>
     </div>
   </section>
@@ -278,18 +648,22 @@
   <section id="how">
     <div class="container">
       <div class="section-head">
-        <div class="eyebrow">How it works</div>
+        <div class="eyebrow">System Architecture</div>
         <h2 class="display">Built on Pipecat. Local where it counts.</h2>
-        <p class="muted">Speech recognition and the voice check run on your Mac's GPU and CPU. Only your own sentences
-          leave the machine.</p>
+        <p class="muted">Speech recognition and the voice check run on your Mac's GPU and CPU. Only your own validated sentences leave the machine.</p>
       </div>
       <div class="pipe">
-        <div class="stage tile"><b>Mic</b><small>always on</small></div><span class="arrow">→</span>
-        <div class="stage tile"><b>Echo filter</b><small>drops its own voice</small></div><span class="arrow">→</span>
-        <div class="stage tile"><b>Whisper</b><small>MLX, on device</small></div><span class="arrow">→</span>
-        <div class="stage tile hot"><b>Voice check</b><small>sherpa-onnx</small></div><span class="arrow">→</span>
-        <div class="stage tile hot"><b>Meant for me?</b><small>decision model</small></div><span class="arrow">→</span>
-        <div class="stage tile"><b>Agents</b><small>T3 · Claude · Hermes</small></div>
+        <div class="stage tile"><b>Mic Stream</b><small>always-on 16kHz</small></div>
+        <span class="arrow">➔</span>
+        <div class="stage tile"><b>Echo Canceller</b><small>drops Jarvis voice</small></div>
+        <span class="arrow">➔</span>
+        <div class="stage tile"><b>Whisper STT</b><small>MLX, on Apple Silicon</small></div>
+        <span class="arrow">➔</span>
+        <div class="stage tile hot"><b>Voice Check</b><small>sherpa-onnx local</small></div>
+        <span class="arrow">➔</span>
+        <div class="stage tile hot"><b>Intent Gate</b><small>decision model ~230ms</small></div>
+        <span class="arrow">➔</span>
+        <div class="stage tile"><b>Agent Matrix</b><small>T3 · Claude · Hermes</small></div>
       </div>
     </div>
   </section>
@@ -297,34 +671,36 @@
   <section id="start">
     <div class="container two">
       <div class="list tile">
-        <div class="eyebrow" style="margin-bottom:10px">Say it</div>
+        <div class="list-head">Say it</div>
         <ul>
-          <li><q>Build a login page with email and password</q> <span>— your default coding agent</span></li>
-          <li><q>What's on my calendar tomorrow?</q> <span>— Hermes Agent</span></li>
-          <li><q>Yes, use Postgres</q> <span>— answers the agent that asked</span></li>
-          <li><q>No, I meant the status page</q> <span>— replaces the running task</span></li>
-          <li><q>Stop that</q> <span>— stops the agent's turn</span></li>
-          <li><q>Shut up</q> / <q>You can talk</q> <span>— beeps only, then a digest</span></li>
+          <li><q>Build a login page with email and password</q> <span>[T3 Code]</span></li>
+          <li><q>What's on my calendar tomorrow?</q> <span>[Hermes Agent]</span></li>
+          <li><q>Yes, use Postgres</q> <span>[Active Agent]</span></li>
+          <li><q>No, I meant the status page</q> <span>[Replace Task]</span></li>
+          <li><q>Stop that</q> <span>[Interrupt Turn]</span></li>
+          <li><q>Shut up</q> / <q>You can talk</q> <span>[Beeps &amp; Digest]</span></li>
         </ul>
       </div>
       <div class="list tile">
-        <div class="eyebrow" style="margin-bottom:14px">Get started</div>
-<pre><span class="c"># 1. install</span>
-<span class="p">$</span> uv sync
-<span class="c"># 2. keys: OpenRouter, ElevenLabs, Hermes</span>
-<span class="p">$</span> cp .env.example .env
-<span class="c"># 3. teach Jarvis your voice (three sentences)</span>
-<span class="p">$</span> uv run jarvis-enroll
-<span class="c"># 4. talk</span>
-<span class="p">$</span> uv run jarvis</pre>
+        <div class="list-head">Get started</div>
+<pre><span class="c"># 1. install dependencies</span>
+<span class="p">$</span> <span class="cmd">uv sync</span>
+
+<span class="c"># 2. configure api keys (OpenRouter, ElevenLabs, Hermes)</span>
+<span class="p">$</span> <span class="cmd">cp .env.example .env</span>
+
+<span class="c"># 3. enroll your local voiceprint (three sentences)</span>
+<span class="p">$</span> <span class="cmd">uv run jarvis-enroll</span>
+
+<span class="c"># 4. launch jarvis voice harness</span>
+<span class="p">$</span> <span class="cmd">uv run jarvis</span></pre>
       </div>
     </div>
   </section>
 
   <section class="closing container">
     <h2 class="display">Let the agents work. Go live your day.</h2>
-    <p class="muted" style="margin-bottom:28px">Jarvis keeps you in the loop in two sentences, and waits for your
-      "yes" wherever you are.</p>
+    <p class="muted" style="margin-bottom:28px">Jarvis keeps you in the loop in two sentences, and waits for your "yes" wherever you are.</p>
     <div class="cta">
       <a class="btn btn-primary" href="#start">Get started</a>
       <a class="btn btn-ghost" href="https://github.com/sangdth/jarvis">Read the source</a>
@@ -334,8 +710,19 @@
 
 <footer>
   <div class="container foot">
-    <span class="brand" style="font-weight:500"><span class="orb" aria-hidden="true"></span>Jarvis</span>
-    <span>Built with Pipecat, MLX Whisper, sherpa-onnx and ElevenLabs.</span>
+    <a class="brand" href="#" style="font-weight:500">
+      <svg class="robot-logo" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M12 1.5V3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <rect x="1" y="8" width="2" height="7" rx="1" fill="currentColor"/>
+        <rect x="21" y="8" width="2" height="7" rx="1" fill="currentColor"/>
+        <path d="M6 4.5H18L20.5 7V17.5L18 20H6L3.5 17.5V7L6 4.5Z" fill="currentColor"/>
+        <rect x="6" y="8.5" width="5" height="2.5" rx="0.5" fill="#060907"/>
+        <rect x="13" y="8.5" width="5" height="2.5" rx="0.5" fill="#060907"/>
+        <path d="M7.5 15H16.5" stroke="#060907" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+      <span>Jarvis</span>
+    </a>
+    <span>Built with Pipecat, MLX Whisper, sherpa-onnx, and ElevenLabs.</span>
   </div>
 </footer>
 
