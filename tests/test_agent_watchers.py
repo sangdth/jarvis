@@ -143,6 +143,18 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.adapter.send_task("add a login page"))
         self.adapter._client.query.assert_awaited_once_with("add a login page")
 
+    async def test_stop_then_send_keeps_the_new_task_running(self) -> None:
+        # A correction: stop, send the corrected task, then the stopped turn's late result arrives.
+        await self.adapter.send_task("look up Hacker Hustle")
+        await self.adapter.interrupt()
+        await self.adapter.send_task("look up HuggerHustle")
+        await self.adapter._handle_message(MagicMock(spec=ResultMessage, result=None, is_error=True, subtype="x"))
+        self.assertTrue(self.adapter.busy)  # still working on the corrected task
+        self.adapter._surface.assert_not_awaited()
+        await self.adapter._handle_message(MagicMock(spec=ResultMessage, result="HuggerHustle is fine.", is_error=False))
+        self.adapter._surface.assert_awaited_once_with("HuggerHustle is fine.", is_report=True)
+        self.assertFalse(self.adapter.busy)
+
 
 class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -222,6 +234,18 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await self.adapter.interrupt())
         self.post.assert_awaited_once_with("/api/session/ses_1/interrupt")
 
+    async def test_stop_then_send_keeps_the_new_task_running(self) -> None:
+        self.adapter._session_id = "ses_1"
+        with patch.object(self.adapter._http, "post", new=self.post):
+            await self.adapter.send_task("look up Hacker Hustle")
+            await self.adapter.interrupt()
+            await self.adapter.send_task("look up HuggerHustle")
+        await self.adapter._handle_event({"type": "session.execution.interrupted", "data": {"sessionID": "ses_1"}})
+        self.assertTrue(self.adapter.busy)
+        # Stopped in the OpenCode UI instead: the turn is over.
+        await self.adapter._handle_event({"type": "session.execution.interrupted", "data": {"sessionID": "ses_1"}})
+        self.assertFalse(self.adapter.busy)
+
 
 class TestHermesAdapter(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -271,6 +295,15 @@ class TestHermesAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.adapter._run_id, "run_2")  # run_1 ending did not wipe it
             self.assertTrue(self.adapter.busy)
             loop.cancel()
+
+    async def test_stop_also_cancels_queued_runs(self) -> None:
+        self.adapter._run_id = "run_1"
+        await self.adapter._runs.put("run_2")
+        post = AsyncMock(return_value=MagicMock(is_success=True))
+        with patch.object(self.adapter._http, "post", new=post):
+            self.assertTrue(await self.adapter.interrupt())
+        self.assertEqual([c.args[0] for c in post.await_args_list], ["/v1/runs/run_1/stop", "/v1/runs/run_2/stop"])
+        self.assertTrue(self.adapter._runs.empty())  # the queued run will not be watched or retold
 
     async def test_failed_approval_reply_keeps_the_request(self) -> None:
         await self.adapter._handle_event({"event": "approval.request", "run_id": "run_1", "command": "rm x"})

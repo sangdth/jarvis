@@ -11,7 +11,7 @@ Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
   Hermes needs its gateway service, `hermes gateway status`, with `API_SERVER_ENABLED=true`)
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
-- Routing benchmark: `uv run python scripts/bench_routing.py` (about 100 paid calls)
+- Routing benchmark: `uv run python scripts/bench_routing.py` (about 120 paid calls)
 
 ## Where to fix "Jarvis"
 
@@ -27,6 +27,7 @@ speech check dropping the sentence, not the conversation model.
 | Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`  |
 | Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`         |
 | Answer or stop hits the wrong agent  | `agent_watchers.py` `find_waiting`, `find_busy`        |
+| A correction runs as a second task  | `main.py` `send_agent_task` `replace`, each `interrupt` |
 | "Still waiting" timing or wording    | `agent_watchers.py` `remind_while_busy`, `WAITING_LINES` |
 | Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                    |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
@@ -50,6 +51,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Hermes decides its own approvals.** Its guardian model (`approvals` in `~/.hermes/config.yaml`) lets safe
   commands run; only flagged ones reach Jarvis as `approval.request`. A question Hermes asks ends its turn, so
   the reply goes back with `send_agent_task` into the same Hermes session.
+- **Claude Code uses the user's own settings** (`~/.claude/settings.json`, `defaultMode` and allow rules), as in
+  their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.

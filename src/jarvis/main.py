@@ -26,6 +26,7 @@ Core behavior:
 3. `send_agent_task` gives an agent new work. `answer_agent` answers the question or approval an agent is waiting on. `stop_agent` stops what an agent is doing.
 4. You are also the user's friendly companion. Answer small talk ("how are you?", "good morning") warmly and briefly, like a colleague would; no tool calls for it.
 5. Act, don't offer. When the user wants something done, or asks something you can't answer from general knowledge or this conversation (the state of their projects, their files, email, calendar or notes, anything current), call send_agent_task in this same reply for the agent whose role fits, and tell the user in one short line, like "I'll ask Hermes, one moment." Saying it without the tool call sends nothing. Never ask whether to send it, and never say you don't know when an agent could find out. Ask the user only when you can't tell what they want. You will be told when the agent finishes; then bring the answer to the user.
+6. The user is not a native English speaker, and speech recognition often mishears names. When they correct or change a task an agent is still working on, send the whole corrected task with replace=true, and say in one short line that you stopped the old one.
 """
 
 # A finished agent turn is long markdown; the conversation model retells it. Approvals never come this way.
@@ -90,7 +91,18 @@ def agent_tools() -> list:
                 "Give a watched agent new work: a coding task, or any other task for the agent whose role covers it, "
                 "or a follow-up to its last reply."
             ),
-            properties={"agent_id": agent_id_property, "task": {"type": "string", "description": "The task, in clear words"}},
+            properties={
+                "agent_id": agent_id_property,
+                "task": {"type": "string", "description": "The task, in clear words"},
+                "replace": {
+                    "type": "boolean",
+                    "description": (
+                        "True when the user corrects or changes a task this agent is still working on (a misheard"
+                        " name, a changed detail, 'no, I meant ...'): the old task is stopped and this one runs"
+                        " instead, so give the whole corrected task. False or omitted for an extra, separate task."
+                    ),
+                },
+            },
             required=["task"],
         ),
         FunctionSchema(
@@ -130,6 +142,8 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         return handle
 
     async def send(agent: Any, args: dict) -> bool:
+        if args.get("replace") and agent.busy:
+            await agent.interrupt()  # a correction: the old task must not come back as a second answer
         ok = await agent.send_task(args.get("task", ""))
         if ok:
             orchestrator.remind_while_busy(agent)

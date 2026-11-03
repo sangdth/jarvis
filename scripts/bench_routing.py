@@ -1,6 +1,6 @@
 """Benchmark where Jarvis sends a request: runs the real system prompt, roster and tools on EXECUTIVE_MODEL.
 
-Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~100 paid calls at 3 rounds)
+Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~120 paid calls at 3 rounds)
 Exits 1 when accuracy drops below MIN_ACCURACY.
 """
 
@@ -22,7 +22,22 @@ from jarvis.state import JarvisState
 MIN_ACCURACY = 0.95  # 99% on 2026-11-02 (DeepSeek V4.1 Flash, thinking off)
 
 SELF = "answer yourself"  # no tool call
-CASES: list[tuple[str, str]] = [
+
+
+def after(first: str, agent_id: str, task: str, then: str) -> list[dict]:
+    """A second sentence said while `agent_id` still works on `task` (sent for the first sentence)."""
+    call = {"id": "call_1", "type": "function",
+            "function": {"name": "send_agent_task", "arguments": json.dumps({"agent_id": agent_id, "task": task})}}
+    return [
+        {"role": "user", "content": first},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps({"status": "sent", "agent_id": agent_id})},
+        {"role": "assistant", "content": "On it, one moment."},
+        {"role": "user", "content": then},
+    ]
+
+
+CASES: list[tuple[str | list[dict], str]] = [
     ("Build a login page with email and password", "claude"),
     ("Fix the bug in the navbar", "claude"),
     ("Add unit tests for the payment module", "claude"),
@@ -58,6 +73,21 @@ CASES: list[tuple[str, str]] = [
     ("I'm tired today", SELF),
     ("Who wrote Pride and Prejudice?", SELF),
     ("Are you there?", SELF),
+    # A correction stops the old task and resends it whole; an extra task does not
+    (after("Check the status of the Hacker Hustle platform", "hermes", "Check the status of the Hacker Hustle platform",
+           "No, not Hacker Hustle, it's HuggerHustle"), "hermes+replace"),
+    (after("Email Minh that I'll be late", "hermes", "Email Minh that the user will be late",
+           "Sorry, I said it wrong, it's Linh, not Minh"), "hermes+replace"),
+    (after("Fix the login bug in the dashboard", "claude", "Fix the login bug in the dashboard",
+           "I meant the admin dashboard, not the main one"), "claude+replace"),
+    (after("What's the status of the OpsCom demo project?", "hermes", "Find the status of the OpsCom demo project",
+           "Not the demo, the status page project"), "hermes+replace"),
+    (after("Check the weather in Helsinki this weekend", "hermes", "Check the weather in Helsinki this weekend",
+           "Also remind me to call the bank at 3pm"), "hermes"),
+    (after("Add unit tests for the payment module", "claude", "Add unit tests for the payment module",
+           "And after that, update the README too"), "claude"),
+    (after("Look up flights to Hanoi in December", "hermes", "Look up flights to Hanoi in December",
+           "What does idempotent mean?"), SELF),
 ]
 
 
@@ -66,7 +96,7 @@ def outcome(message: dict, default_id: str | None) -> str:
     if not calls:
         return SELF
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
-    return args.get("agent_id") or default_id or "?"
+    return (args.get("agent_id") or default_id or "?") + ("+replace" if args.get("replace") else "")
 
 
 async def main(rounds: int) -> int:
@@ -88,7 +118,8 @@ async def main(rounds: int) -> int:
                     f"{settings.openrouter_base_url.rstrip('/')}/chat/completions",
                     json={
                         "model": settings.executive_model,
-                        "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}],
+                        "messages": [{"role": "system", "content": system},
+                                     *([{"role": "user", "content": text}] if isinstance(text, str) else text)],
                         "tools": tools,
                         "reasoning": {"enabled": False},  # same as main.py
                         "provider": {"sort": "latency"},
@@ -101,7 +132,7 @@ async def main(rounds: int) -> int:
                 if got == want:
                     hits += 1
                 else:
-                    misses[text] = f"{got} (want {want})"
+                    misses[text if isinstance(text, str) else text[-1]["content"]] = f"{got} (want {want})"
     for adapter in orchestrator.adapters.values():
         await adapter.stop()
 

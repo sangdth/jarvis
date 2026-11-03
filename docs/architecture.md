@@ -64,7 +64,7 @@ a pending question. With no agent named, a task goes to the default coding agent
 that asked last, and a stop to the agent that is working.
 
 1. **Claude Code (`ClaudeCodeAdapter`):** One long-lived `ClaudeSDKClient` (Python `claude-agent-sdk`) with
-   `permission_mode="acceptEdits"` and the user's Claude settings. Tool permissions and `AskUserQuestion` arrive in
+   the user's own Claude settings and permission mode (Jarvis sets none). Tool permissions and `AskUserQuestion` arrive in
    `can_use_tool`; Jarvis reads them out and the agent waits for `answer_agent`. A turn ends with a `ResultMessage`.
    `stop_agent` calls `interrupt()` and denies any pending question.
 2. **OpenCode (`OpenCodeSSEAdapter`):** Talks to a user-started `opencode serve` with HTTP Basic auth (`opencode` /
