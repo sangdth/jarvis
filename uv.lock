@@ -1668,6 +1668,8 @@ dependencies = [
     { name = "pydantic-settings", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pydantic-settings", version = "2.16.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "qdrant-client" },
+    { name = "websockets", version = "15.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "websockets", version = "17.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
 
 [package.metadata]
@@ -1680,6 +1682,7 @@ requires-dist = [
     { name = "pipecat-ai", extras = ["silero", "whisper", "mlx-whisper", "openai", "elevenlabs", "local"], specifier = ">=0.0.50" },
     { name = "pydantic-settings", specifier = ">=2.2.0" },
     { name = "qdrant-client", specifier = ">=1.12.0" },
+    { name = "websockets", specifier = ">=13.0" },
 ]
 
 [[package]]

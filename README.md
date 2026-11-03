@@ -2,7 +2,7 @@
 
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
-It listens continuously without a wake word and hands your requests to agents: coding to **Claude Code** (or **OpenCode** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
+It listens continuously without a wake word and hands your requests to agents: coding to **Claude Code** (or **OpenCode** or **T3 Code** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
 
 ---
 
@@ -15,6 +15,7 @@ It listens continuously without a wake word and hands your requests to agents: c
 | **"You can talk" -> Unmute & Digest** | `JarvisState.set_unmute()` | [`src/jarvis/state.py`](src/jarvis/state.py) |
 | **Hear only speech meant for Jarvis** | `ExecutiveFilter` (decision model) | [`src/jarvis/executive_filter.py`](src/jarvis/executive_filter.py) |
 | **Drive Claude Code, OpenCode, Hermes** | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter` | [`src/jarvis/agent_watchers.py`](src/jarvis/agent_watchers.py) |
+| **Drive T3 Code** | `T3Adapter` | [`src/jarvis/t3_adapter.py`](src/jarvis/t3_adapter.py) |
 
 ---
 
@@ -45,6 +46,9 @@ Jarvis what to send it.
   `OPENCODE_SERVER_PASSWORD=<same value> opencode serve --port 4096`, started in the project folder.
 - **Hermes Agent** needs its API server: `API_SERVER_ENABLED=true` and an `API_SERVER_KEY` of 16+ characters in
   `~/.hermes/.env`, then `hermes gateway install` (port 8642). Hermes's own approval settings decide what it asks.
+- **T3 Code** needs the T3 Code app running (port 3773) with the Jarvis folder (`cwd` in `agents.json`) added as a
+  project. Jarvis gets its own token through the `t3` CLI. Say "ask T3 Code to ..." and the task runs as a "Jarvis"
+  thread you can watch in T3, with your T3 default model and mode.
 
 ### 4. Memory
 Jarvis remembers facts about you between runs (local [Mem0](https://github.com/mem0ai/mem0) with Qdrant in

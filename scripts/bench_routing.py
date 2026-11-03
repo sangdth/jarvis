@@ -48,6 +48,8 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Have OpenCode add dark mode", "opencode"),
     ("Ask OpenCode to update the README", "opencode"),
     ("Tell Claude to run the tests", "claude"),
+    ("Ask T3 Code to fix the navbar", "t3"),
+    ("Have T3 add a dark mode toggle", "t3"),
     ("What's on my calendar tomorrow?", "hermes"),
     ("Email Minh that I'll be ten minutes late", "hermes"),
     ("Find me the best rated ramen place nearby", "hermes"),
