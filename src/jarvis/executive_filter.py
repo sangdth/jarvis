@@ -8,7 +8,8 @@ from jarvis.state import UserIntent, classify_fast_command
 
 
 _CONTEXT = (
-    "Jarvis is a voice assistant that controls coding agents (Claude Code, OpenCode) and chats with its user. "
+    "Jarvis is a voice assistant that hands work to agents (coding, research, email, calendar, notes) "
+    "and chats with its user. "
     "The text is one sentence transcribed from an always-on microphone in a home office. "
     "The user is usually alone and talks to Jarvis; other people are sometimes in the room."
 )

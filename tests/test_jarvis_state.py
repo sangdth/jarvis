@@ -17,6 +17,8 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_fast_command("Okay you can talk now"), UserIntent.UNMUTE)
         self.assertEqual(classify_fast_command("   "), UserIntent.IGNORE_BACKGROUND)
         self.assertIsNone(classify_fast_command("Tell Claude Code to use Postgres"))
+        self.assertIsNone(classify_fast_command("Fix the silence threshold in the VAD"))
+        self.assertEqual(classify_fast_command("Don't be quiet, you can talk now"), UserIntent.UNMUTE)
 
     def test_beep_pcm_synthesis(self) -> None:
         pcm = synthesize_beep_pcm(freq_hz=880.0, duration_ms=100, sample_rate=16000)
@@ -106,6 +108,13 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         await state.notify_topic(AgentTopic("claude", "Claude Code", "x" * 5000, is_report=True))
         self.assertTrue(reports[-1].startswith("Claude Code: xxx"))
         self.assertEqual(len(reports[-1]), len("Claude Code: ") + 3000)
+
+        # A finished turn ends the agent's question, so the speech check stops hearing about it
+        await state.notify_topic(AgentTopic("claude", "Claude Code", "asks: Postgres or SQLite?"))
+        self.assertIn("claude", state.active_agent_context)
+        state.mode = JarvisMode.VOICE
+        await state.notify_topic(AgentTopic("claude", "Claude Code", "Done.", is_report=True))
+        self.assertNotIn("claude", state.active_agent_context)
 
         # Offline (no conversation model): only the last line is spoken
         offline = JarvisState(on_speak=on_speak)

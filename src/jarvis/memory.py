@@ -19,11 +19,13 @@ from jarvis.config import settings
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 MEMORY_DIR = Path.home() / ".jarvis" / "memory"
-USER_ID = "sang"  # one user; Mem0 needs an id to file memories under
+USER_ID = "sang"
+NOT_THE_USER = "[Not the user speaking:"  # marks notes Jarvis writes as user-role messages (the greeting)  # one user; Mem0 needs an id to file memories under
 
 
-def mem0_config(memory_dir: Path = MEMORY_DIR) -> dict[str, Any]:
+def mem0_config(memory_dir: Path | None = None) -> dict[str, Any]:
     """Mem0 local config: memories and history stay in memory_dir; only fact extraction calls OpenRouter."""
+    memory_dir = memory_dir or MEMORY_DIR  # read at call time, so a patched MEMORY_DIR (tests) is honored
     return {
         "vector_store": {
             "provider": "qdrant",
@@ -63,9 +65,15 @@ def create_memory_service() -> Any | None:
 
         _last_saved: list[Any] | None = None
 
+        async def _enhance_context_with_memories(self, context, query):  # type: ignore[override]
+            if not query.startswith(NOT_THE_USER):  # Jarvis's own notes (the greeting) are not a memory query
+                await super()._enhance_context_with_memories(context, query)
+
         async def _store_messages(self, messages):  # type: ignore[override]
             newest = messages[-2:]
-            if newest == self._last_saved:
+            if newest == self._last_saved or any(
+                m.get("role") == "user" and str(m.get("content", "")).startswith(NOT_THE_USER) for m in newest
+            ):
                 return
             self._last_saved = newest
             await super()._store_messages(newest)

@@ -41,7 +41,8 @@ def form_answer(fields: list[dict[str, Any]], instruction: str) -> dict[str, Any
         if field.get("hidden"):
             continue
         options = field.get("options") or []
-        named = [o["value"] for o in options if re.search(rf"\b{re.escape(o['label'].lower())}\b", said)]
+        # (?<!\w)/(?!\w), not \b: a label like "C++" or ".env" has no word edge at its punctuation.
+        named = [o["value"] for o in options if re.search(rf"(?<!\w){re.escape(o['label'].lower())}(?!\w)", said)]
         if field.get("type") == "boolean":
             answer[field["key"]] = is_approval(instruction)
         elif field.get("type") == "multiselect":
@@ -129,6 +130,15 @@ class BaseAgentAdapter:
     async def interrupt(self) -> bool:
         """Stop the agent's current turn."""
         raise NotImplementedError
+
+    @property
+    def busy(self) -> bool:
+        """A turn is running, so a stop with no agent named goes here."""
+        return False
+
+    def _question_settled(self) -> None:
+        """The agent's question was answered, cancelled or stopped: stop telling the speech check about it."""
+        self.state.active_agent_context.pop(self.config.id, None)
 
     async def _surface(self, text: str, is_report: bool = False) -> None:
         """Tell the user: a question or approval is spoken as is; a finished turn (is_report) gets retold."""
@@ -223,10 +233,15 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         logger.info(f"Sent task to {self.config.name}: {task!r}")
         return True
 
+    @property
+    def busy(self) -> bool:
+        return self._running
+
     async def answer(self, answer: str) -> bool:
         if self._question is None or self._question.done():
             return False
         self._question.set_result(answer)
+        self._question_settled()
         return True
 
     async def interrupt(self) -> bool:
@@ -234,6 +249,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             return False
         if self._question is not None and not self._question.done():
             self._question.set_result(None)
+        self._question_settled()
         self._stopped = self._running
         await self._client.interrupt()
         return True
@@ -259,6 +275,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         self._pending_form: dict[str, Any] | None = None  # a question OpenCode is waiting on
         self._spoken: set[str] = set()  # request ids already read out, so a resync doesn't repeat them
         self._last_text: dict[str, str] = {}  # session id -> latest finished assistant text
+        self._running = False  # a task Jarvis sent has not finished yet
 
     async def _run_loop(self) -> None:
         while True:
@@ -324,13 +341,17 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
             request_id = data.get("requestID") or _request_of(data).get("id")
             if self._pending_permission and self._pending_permission.get("id") == request_id:
                 self._pending_permission = None
+                self._question_settled()
             if self._pending_form and self._pending_form.get("id") == request_id:
                 self._pending_form = None
+                self._question_settled()
         elif ev_type == "session.text.ended" and session_id:
             self._last_text[session_id] = data.get("text", "")
         elif ev_type == "session.execution.interrupted" and session_id:
+            self._running = False
             self._last_text.pop(session_id, None)
         elif ev_type in ("session.execution.succeeded", "session.execution.failed") and session_id:
+            self._running = False
             text = self._last_text.pop(session_id, "")
             if text:
                 await self._surface(("The turn failed. " if ev_type.endswith("failed") else "") + text, is_report=True)
@@ -343,6 +364,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
                 resp.raise_for_status()
                 self._session_id = resp.json()["data"]["id"]
             resp = await self._http.post(f"/api/session/{self._session_id}/prompt", json={"text": task})
+            self._running = resp.is_success
             return resp.is_success
         except httpx.HTTPError as exc:
             logger.error(f"Failed to send task to OpenCode: {exc}")
@@ -350,30 +372,43 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
 
     async def answer(self, answer: str) -> bool:
         try:
+            # Clear a request only once OpenCode took the reply, so a network error leaves it answerable.
             if self._pending_permission is not None:
-                request, self._pending_permission = self._pending_permission, None
+                request = self._pending_permission
                 resp = await self._http.post(
                     f"/api/session/{request['sessionID']}/permission/{request['id']}/reply",
                     json={"decision": "once" if is_approval(answer) else "reject"},
                 )
+                if resp.is_success:
+                    self._pending_permission = None
+                    self._question_settled()
                 return resp.is_success
             if self._pending_form is not None:
-                form, self._pending_form = self._pending_form, None
+                form = self._pending_form
                 resp = await self._http.post(
                     f"/api/session/{form['sessionID']}/form/{form['id']}/reply",
                     json={"answer": form_answer(form.get("fields", []), answer)},
                 )
+                if resp.is_success:
+                    self._pending_form = None
+                    self._question_settled()
                 return resp.is_success
             return False
         except httpx.HTTPError as exc:
             logger.error(f"Failed to answer OpenCode: {exc}")
             return False
 
+    @property
+    def busy(self) -> bool:
+        return self._running
+
     async def interrupt(self) -> bool:
         if not self._session_id:
             return False
         try:
             resp = await self._http.post(f"/api/session/{self._session_id}/interrupt")
+            if resp.is_success:
+                self._question_settled()
             return resp.is_success
         except httpx.HTTPError as exc:
             logger.error(f"Failed to interrupt OpenCode: {exc}")
@@ -407,6 +442,7 @@ class HermesAdapter(BaseAgentAdapter):
     async def _run_loop(self) -> None:
         while True:
             run_id = await self._runs.get()
+            self._run_id = run_id  # set and cleared only here, so a queued task can't be wiped by the run before it
             while not await self._watch(run_id):
                 await asyncio.sleep(5.0)  # stream dropped mid-run; the run goes on in Hermes, so look again
             self._run_id = None
@@ -449,6 +485,7 @@ class HermesAdapter(BaseAgentAdapter):
             await self._surface(f"needs approval: {what}")
         elif kind == "approval.responded":
             self._pending_approval = None  # answered here or in another Hermes client
+            self._question_settled()
         elif kind == "run.completed" and event.get("output"):
             await self._surface(event["output"], is_report=True)
         elif kind == "run.failed":
@@ -467,29 +504,37 @@ class HermesAdapter(BaseAgentAdapter):
             logger.error(f"Failed to send task to Hermes: {exc}")
             return False
         self._session_id = self._session_id or run_id  # a new session is keyed by its first run
-        self._run_id = run_id
         await self._runs.put(run_id)
         return True
 
     async def answer(self, answer: str) -> bool:
         if self._pending_approval is None:
             return False
-        request, self._pending_approval = self._pending_approval, None
+        request = self._pending_approval
         body: dict[str, Any] = {"choice": "once" if is_approval(answer) else "deny"}
         if request.get("request_id"):
             body["request_id"] = request["request_id"]
         try:
             resp = await self._http.post(f"/v1/runs/{request['run_id']}/approval", json=body)
+            if resp.is_success:  # cleared only once Hermes took it, so a network error leaves it answerable
+                self._pending_approval = None
+                self._question_settled()
             return resp.is_success
         except httpx.HTTPError as exc:
             logger.error(f"Failed to answer Hermes: {exc}")
             return False
+
+    @property
+    def busy(self) -> bool:
+        return self._run_id is not None or not self._runs.empty()
 
     async def interrupt(self) -> bool:
         if not self._run_id:
             return False
         try:
             resp = await self._http.post(f"/v1/runs/{self._run_id}/stop")
+            if resp.is_success:
+                self._question_settled()
             return resp.is_success
         except httpx.HTTPError as exc:
             logger.error(f"Failed to stop Hermes: {exc}")
@@ -543,6 +588,19 @@ class AgentOrchestrator:
     def default_agent_id(self) -> str | None:
         """The configured default agent, or the first loaded one when DEFAULT_CODING_AGENT is empty."""
         return settings.default_coding_agent or next(iter(self.adapters), None)
+
+    def find_waiting(self, agent_id: str | None) -> BaseAgentAdapter | None:
+        """For an answer: the named agent, else the one that asked last, else the default."""
+        if not agent_id:
+            asked = [a for a in reversed(list(self.state.active_agent_context)) if a in self.adapters]
+            agent_id = asked[0] if asked else None
+        return self.find(agent_id)
+
+    def find_busy(self, agent_id: str | None) -> BaseAgentAdapter | None:
+        """For a stop: the named agent, else one with a running turn, else the default."""
+        if not agent_id:
+            agent_id = next((a.config.id for a in self.adapters.values() if a.busy), None)
+        return self.find(agent_id)
 
     def find(self, agent_id: str | None) -> BaseAgentAdapter | None:
         """The agent with this exact id, or the default agent when no id is given."""

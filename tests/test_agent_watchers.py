@@ -1,10 +1,14 @@
 import asyncio
 import unittest
+
+import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
 
+from jarvis.state import AgentTopic, JarvisState
 from jarvis.agent_watchers import (
+    AgentOrchestrator,
     ClaudeCodeAdapter,
     HermesAdapter,
     OpenCodeSSEAdapter,
@@ -52,6 +56,11 @@ QUESTION_FORM = {
 
 
 class TestFormAnswer(unittest.TestCase):
+    def test_labels_with_punctuation_match(self) -> None:
+        fields = [{"key": "q", "options": [{"value": "cpp", "label": "C++"}, {"value": "env", "label": ".env"}]}]
+        self.assertEqual(form_answer(fields, "let's go with C++"), {"q": "cpp"})
+        self.assertEqual(form_answer(fields, "put it in .env please"), {"q": "env"})
+
     def test_named_option_wins(self) -> None:
         self.assertEqual(form_answer(QUESTION_FORM["fields"], "let's do the docs first"), {"q0": "Docs"})
 
@@ -152,9 +161,15 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
             "needs approval: read /etc/hosts"
         )
 
+        failing = AsyncMock(side_effect=httpx.ConnectError("down"))
+        with patch.object(self.adapter._http, "post", new=failing):
+            self.assertFalse(await self.adapter.answer("yes"))
+        self.assertIsNotNone(self.adapter._pending_permission)  # still answerable after the network error
+
         with patch.object(self.adapter._http, "post", new=self.post):
             self.assertTrue(await self.adapter.answer("yes, go ahead"))
         self.post.assert_awaited_once_with("/api/session/ses_1/permission/per_1/reply", json={"decision": "once"})
+        self.adapter.state.active_agent_context.pop.assert_called_with("a1", None)  # speech check forgets it
 
     async def test_question_form_is_read_out_and_answered(self) -> None:
         # Shape captured from a live OpenCode v2.2.5 server: the form sits under data.form
@@ -235,6 +250,50 @@ class TestHermesAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(post.call_args.args[0], "/v1/runs/run_1/approval")
         self.assertEqual(post.call_args.kwargs["json"], {"choice": "once", "request_id": "apr_1"})
 
+    async def test_stop_reaches_a_queued_run_after_the_one_before_ends(self) -> None:
+        post = AsyncMock(return_value=MagicMock(json=MagicMock(side_effect=[{"run_id": "run_1"}, {"run_id": "run_2"}])))
+        with patch.object(self.adapter._http, "post", new=post):
+            await self.adapter.send_task("X")
+            await self.adapter.send_task("Y")
+        watched = []
+
+        async def watch(run_id: str) -> bool:
+            watched.append(run_id)
+            if run_id == "run_2":
+                await asyncio.sleep(3600)  # still running
+            return True
+
+        with patch.object(self.adapter, "_watch", new=watch):
+            loop = asyncio.create_task(self.adapter._run_loop())
+            await asyncio.sleep(0.05)
+            self.assertEqual(watched, ["run_1", "run_2"])
+            self.assertEqual(self.adapter._run_id, "run_2")  # run_1 ending did not wipe it
+            self.assertTrue(self.adapter.busy)
+            loop.cancel()
+
+    async def test_failed_approval_reply_keeps_the_request(self) -> None:
+        await self.adapter._handle_event({"event": "approval.request", "run_id": "run_1", "command": "rm x"})
+        with patch.object(self.adapter._http, "post", new=AsyncMock(side_effect=httpx.ConnectError("down"))):
+            self.assertFalse(await self.adapter.answer("yes"))
+        self.assertIsNotNone(self.adapter._pending_approval)
+
+    async def test_dropped_stream_falls_back_to_run_status(self) -> None:
+        get = AsyncMock(return_value=MagicMock(json=MagicMock(return_value={"status": "completed", "output": "Done."})))
+        with (
+            patch.object(self.adapter._http, "stream", side_effect=httpx.ReadError("dropped")),
+            patch.object(self.adapter._http, "get", new=get),
+        ):
+            self.assertTrue(await self.adapter._watch("run_1"))
+        get.assert_awaited_once_with("/v1/runs/run_1")
+        self.adapter._surface.assert_awaited_once_with("Done.", is_report=True)
+
+        get.return_value = MagicMock(json=MagicMock(return_value={"status": "running"}))
+        with (
+            patch.object(self.adapter._http, "stream", side_effect=httpx.ReadError("dropped")),
+            patch.object(self.adapter._http, "get", new=get),
+        ):
+            self.assertFalse(await self.adapter._watch("run_1"))  # still running: look again later
+
     async def test_run_end_events(self) -> None:
         await self.adapter._handle_event({"event": "run.cancelled", "run_id": "run_1"})
         self.adapter._surface.assert_not_awaited()  # the user stopped it
@@ -283,11 +342,25 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
         import json
         import tempfile
 
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
             json.dump({"agents": [{"id": "claude", "name": "Claude", "type": "claude_code"}]}, f)
-        with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencod"):
-            with self.assertRaisesRegex(ValueError, "opencod"):
-                self.orch.load_from_file(f.name)
+            f.flush()
+            with patch("jarvis.agent_watchers.settings.default_coding_agent", "opencod"):
+                with self.assertRaisesRegex(ValueError, "opencod"):
+                    self.orch.load_from_file(f.name)
+
+    def test_answer_and_stop_without_id_find_the_right_agent(self) -> None:
+        state = JarvisState()
+        orch = AgentOrchestrator(state=state)
+        claude, hermes = fake_adapter("claude"), fake_adapter("hermes")
+        claude.busy, hermes.busy = False, True
+        orch.adapters.update(claude=claude, hermes=hermes)
+        with patch("jarvis.agent_watchers.settings.default_coding_agent", "claude"):
+            self.assertIs(orch.find_waiting(None), claude)  # nobody asked: the default
+            state.active_agent_context["hermes"] = AgentTopic("hermes", "Hermes", "needs approval: rm x")
+            self.assertIs(orch.find_waiting(None), hermes)  # Hermes asked, so "yes" is for Hermes
+            self.assertIs(orch.find_busy(None), hermes)  # Hermes is the one working
+            self.assertIs(orch.find_waiting("claude"), claude)  # a named agent always wins
 
 
 if __name__ == "__main__":

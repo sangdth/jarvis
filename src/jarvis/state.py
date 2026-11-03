@@ -38,7 +38,7 @@ def _last_line(text: str) -> str:
 
 # Fast deterministic regex patterns for instant mute/unmute without waiting on an LLM call
 _MUTE_PATTERNS = re.compile(
-    r"\b(shut\s*up|be\s*quiet|stay\s*quiet|mute\s*yourself|silence|stop\s*talking|hush)\b",
+    r"\b(shut\s*up|be\s*quiet|stay\s*quiet|mute\s*yourself|stop\s*talking|hush)\b",
     re.IGNORECASE,
 )
 _UNMUTE_PATTERNS = re.compile(
@@ -52,10 +52,11 @@ def classify_fast_command(transcript: str) -> UserIntent | None:
     cleaned = transcript.strip()
     if not cleaned:
         return UserIntent.IGNORE_BACKGROUND
-    if _MUTE_PATTERNS.search(cleaned):
-        return UserIntent.MUTE
+    # Unmute first: "don't be quiet, you can talk" holds a mute phrase but means unmute.
     if _UNMUTE_PATTERNS.search(cleaned):
         return UserIntent.UNMUTE
+    if _MUTE_PATTERNS.search(cleaned):
+        return UserIntent.MUTE
     return None
 
 
@@ -134,7 +135,9 @@ class JarvisState:
 
     async def notify_topic(self, topic: AgentTopic) -> None:
         """Called by an agent watcher when the agent asks something or finishes a turn."""
-        if not topic.is_report:
+        if topic.is_report:
+            self.active_agent_context.pop(topic.agent_id, None)  # the turn is over, so is its question
+        else:
             self.active_agent_context[topic.agent_id] = topic
 
         if self.mode == JarvisMode.BEEP_ONLY:

@@ -11,7 +11,7 @@ from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_comm
 
 class JarvisIntentGate(FrameProcessor):
     """
-    Pipecat FrameProcessor placed right after local STT (Faster-Whisper).
+    Pipecat FrameProcessor placed right after local STT (MLX Whisper).
     1. Immediately catches 'Shut up' / 'Be quiet' -> switches Jarvis to BEEP_ONLY mode.
     2. Immediately catches 'You can talk' -> restores VOICE mode and reads queued topics.
     3. When in BEEP_ONLY mode, suppresses all normal conversational responses.
