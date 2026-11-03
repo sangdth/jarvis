@@ -19,7 +19,7 @@ from jarvis.config import settings
 from jarvis.main import JARVIS_EXECUTIVE_SYSTEM_PROMPT, agent_roster, agent_tools
 from jarvis.state import JarvisState
 
-MIN_ACCURACY = 0.95  # 99% on 2026-11-02 (DeepSeek V4.1 Flash, thinking off)
+MIN_ACCURACY = 0.95  # 99% on 2026-11-03 (DeepSeek V4.1 Flash, thinking off)
 
 SELF = "answer yourself"  # no tool call
 
@@ -38,18 +38,24 @@ def after(first: str, agent_id: str, task: str, then: str) -> list[dict]:
 
 
 CASES: list[tuple[str | list[dict], str]] = [
-    ("Build a login page with email and password", "claude"),
-    ("Fix the bug in the navbar", "claude"),
-    ("Add unit tests for the payment module", "claude"),
-    ("Refactor the auth service to use JWT", "claude"),
-    ("Why is the build failing?", "claude"),
-    ("Rename the user table column to email_address", "claude"),
-    ("Write a Python script that resizes all images in a folder", "claude"),
+    ("Build a login page with email and password", "t3-code"),
+    ("Fix the bug in the navbar", "t3-code"),
+    ("Add unit tests for the payment module", "t3-code"),
+    ("Refactor the auth service to use JWT", "t3-code"),
+    ("Why is the build failing?", "t3-code"),
+    ("Rename the user table column to email_address", "t3-code"),
+    ("Write a Python script that resizes all images in a folder", "t3-code"),
     ("Have OpenCode add dark mode", "opencode"),
     ("Ask OpenCode to update the README", "opencode"),
     ("Tell Claude to run the tests", "claude"),
-    ("Ask T3 Code to fix the navbar", "t3"),
-    ("Have T3 add a dark mode toggle", "t3"),
+    ("Ask T3 Code to fix the navbar", "t3-code"),
+    ("Have T3 add a dark mode toggle", "t3-code"),
+    ("Have Claude Code add a dark mode toggle", "claude"),
+    # A named project opens it in T3 Code; the folder comes from the project list (names are often misheard)
+    ("Continue working on the Hugger Hustle platform", "t3-code@huggerhustle/platform-v2"),
+    ("Let's work on the Hacker Hustle platform v2 and fix the signup form", "t3-code@huggerhustle/platform-v2"),
+    ("Open the OpsCom status project", "t3-code@opscom/status"),
+    ("I want to work on Jarvis today", "t3-code@jarvis"),
     ("What's on my calendar tomorrow?", "hermes"),
     ("Email Minh that I'll be ten minutes late", "hermes"),
     ("Find me the best rated ramen place nearby", "hermes"),
@@ -80,14 +86,14 @@ CASES: list[tuple[str | list[dict], str]] = [
            "No, not Hacker Hustle, it's HuggerHustle"), "hermes+replace"),
     (after("Email Minh that I'll be late", "hermes", "Email Minh that the user will be late",
            "Sorry, I said it wrong, it's Linh, not Minh"), "hermes+replace"),
-    (after("Fix the login bug in the dashboard", "claude", "Fix the login bug in the dashboard",
-           "I meant the admin dashboard, not the main one"), "claude+replace"),
+    (after("Fix the login bug in the dashboard", "t3-code", "Fix the login bug in the dashboard",
+           "I meant the admin dashboard, not the main one"), "t3-code+replace"),
     (after("What's the status of the OpsCom demo project?", "hermes", "Find the status of the OpsCom demo project",
            "Not the demo, the status page project"), "hermes+replace"),
     (after("Check the weather in Helsinki this weekend", "hermes", "Check the weather in Helsinki this weekend",
            "Also remind me to call the bank at 3pm"), "hermes"),
-    (after("Add unit tests for the payment module", "claude", "Add unit tests for the payment module",
-           "And after that, update the README too"), "claude"),
+    (after("Add unit tests for the payment module", "t3-code", "Add unit tests for the payment module",
+           "And after that, update the README too"), "t3-code"),
     (after("Look up flights to Hanoi in December", "hermes", "Look up flights to Hanoi in December",
            "What does idempotent mean?"), SELF),
 ]
@@ -98,7 +104,8 @@ def outcome(message: dict, default_id: str | None) -> str:
     if not calls:
         return SELF
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
-    return (args.get("agent_id") or default_id or "?") + ("+replace" if args.get("replace") else "")
+    project = f"@{args['project'].removeprefix('~/Projects/').strip('/').lower()}" if args.get("project") else ""
+    return (args.get("agent_id") or default_id or "?") + project + ("+replace" if args.get("replace") else "")
 
 
 async def main(rounds: int) -> int:

@@ -2,7 +2,7 @@
 
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
-It listens continuously without a wake word and hands your requests to agents: coding to **Claude Code** (or **OpenCode** or **T3 Code** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
+It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
 
 ---
 
@@ -32,7 +32,7 @@ cp .env.example .env
 ```
 Fill in:
 - `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash` with thinking off), which also retells finished agent turns in two sentences, and for the decision model that tells whether a sentence is meant for Jarvis (`FILTER_MODEL`, `typesafe/jev-1.14`). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
-- `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `claude`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
+- `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `t3-code`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
 - `ELEVENLABS_API_KEY`: voice output with `eleven_v4_turbo` (about 100 ms to first audio; it laughs and sighs when the brain tags a reply).
 
@@ -46,9 +46,11 @@ Jarvis what to send it.
   `OPENCODE_SERVER_PASSWORD=<same value> opencode serve --port 4096`, started in the project folder.
 - **Hermes Agent** needs its API server: `API_SERVER_ENABLED=true` and an `API_SERVER_KEY` of 16+ characters in
   `~/.hermes/.env`, then `hermes gateway install` (port 8642). Hermes's own approval settings decide what it asks.
-- **T3 Code** needs the T3 Code app running (port 3773) with the Jarvis folder (`cwd` in `agents.json`) added as a
-  project. Jarvis gets its own token through the `t3` CLI. Say "ask T3 Code to ..." and the task runs as a "Jarvis"
-  thread you can watch in T3, with your T3 default model and mode.
+- **T3 Code** (the default) needs the T3 Code app running (port 3773). Jarvis gets its own token through the `t3`
+  CLI. Say "continue working on the Hugger Hustle platform" and Jarvis picks the folder from your git repos one or
+  two levels under `~/Projects/` (read at startup), adds it to T3 as a project if it isn't one, and starts a "Jarvis"
+  thread there that first syncs with master. Coding with no project named runs in `cwd` from `agents.json`. Threads
+  use your T3 default model and mode; Jarvis watches only its newest thread.
 
 ### 4. Memory
 Jarvis remembers facts about you between runs (local [Mem0](https://github.com/mem0ai/mem0) with Qdrant in

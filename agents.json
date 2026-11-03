@@ -5,7 +5,7 @@
       "name": "Claude Code",
       "type": "claude_code",
       "cwd": ".",
-      "role": "coding: write, fix, test and explain code",
+      "role": "coding, only when the user names Claude Code or Claude",
       "enabled": true
     },
     {
@@ -17,12 +17,12 @@
       "enabled": true
     },
     {
-      "id": "t3",
+      "id": "t3-code",
       "name": "T3 Code",
       "type": "t3",
       "cwd": ".",
       "url": "http://127.0.0.1:3773",
-      "role": "coding, only when the user names T3 Code",
+      "role": "coding: write, fix, test and explain code, in the user's projects",
       "enabled": true
     },
     {

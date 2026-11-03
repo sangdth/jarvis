@@ -1,15 +1,17 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from jarvis.agent_watchers import WatchedAgentConfig
-from jarvis.t3_adapter import T3Adapter, find_project, t3_question_fields
+from jarvis.t3_adapter import PROJECTS, T3Adapter, find_project, list_projects, t3_question_fields
 
 RUN = "run:thread:t1:ordinal:1"
 
 
 def make() -> T3Adapter:
-    adapter = T3Adapter(WatchedAgentConfig(id="t3", name="T3 Code", type="t3", cwd="/tmp"), state=MagicMock())
+    adapter = T3Adapter(WatchedAgentConfig(id="t3-code", name="T3 Code", type="t3", cwd="/tmp"), state=MagicMock())
     adapter._surface = AsyncMock()
     adapter._command = AsyncMock(return_value=True)
     adapter._thread_id = "t1"
@@ -120,6 +122,33 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         payload = a._call.await_args.args[1]
         self.assertEqual((payload["modelSelection"]["model"], payload["runtimeMode"]), ("g", "auto-accept-edits"))
 
+    async def test_new_project_is_created_and_synced_first(self) -> None:
+        a = make()
+        a._ws = MagicMock()
+        a._ws.send = AsyncMock()
+        a._find_project = AsyncMock(return_value=None)
+        a._call = AsyncMock(side_effect=[{}, {"threadId": "t9"}])  # project.create, then launchThread
+        defaults = {"defaultModelSelection": {"instanceId": "claudeAgent", "model": "g"}}
+        with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2"]), \
+                patch("jarvis.t3_adapter.t3_defaults", return_value=defaults):
+            self.assertTrue(await a.open_project("HuggerHustle/platform-v2", "fix the login"))
+            created, launched = (c.args for c in a._call.await_args_list)
+            root = str(PROJECTS / "huggerhustle/platform-v2")
+            self.assertEqual((created[1]["type"], created[1]["workspaceRoot"]), ("project.create", root))
+            self.assertEqual(launched[1]["projectId"], created[1]["projectId"])
+            self.assertEqual(launched[1]["initialMessage"]["text"], "Sync with the master branch first. Then: fix the login")
+            self.assertEqual(a._thread_id, "t9")
+            self.assertTrue(await a.open_project("~/Projects/huggerhustle/platform-v2", "now the tests"))  # same project
+        self.assertEqual(a._command.await_args.args[0]["text"], "now the tests")
+        self.assertEqual(a._call.await_count, 2)  # no second thread
+
+    async def test_folder_outside_projects_is_refused(self) -> None:
+        a = make()
+        a._call = AsyncMock()
+        with patch("jarvis.t3_adapter.list_projects", return_value=["HuggerHustle/platform-v2"]):
+            self.assertFalse(await a.open_project("../../etc", "read it"))
+        a._call.assert_not_awaited()
+
     async def test_resubscribe_resumes_after_last_sequence(self) -> None:
         a = make()
         a._ws = MagicMock()
@@ -135,6 +164,13 @@ class TestHelpers(unittest.TestCase):
                     {"id": "c", "workspaceRoot": "/tmp/x/y", "archivedAt": "2026-01-01"}]
         self.assertEqual(find_project(projects, "/tmp/x/y/z")["id"], "b")
         self.assertIsNone(find_project(projects, "/var"))
+
+    def test_projects_are_repos_one_or_two_folders_deep(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for repo in ("solo/.git", "Org/app/.git", "Org/notes", ".hidden/x/.git", "Org/app/deep/.git"):
+                (root / repo).mkdir(parents=True)
+            self.assertEqual(list_projects(root), ["Org/app", "solo"])
 
     def test_question_fields_use_value_or_label(self) -> None:
         fields = t3_question_fields(QUESTION["questions"])
