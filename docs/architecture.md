@@ -92,7 +92,7 @@ that asked last, and a stop to the agent that is working.
    starts a thread (`orchestration.launchThread`) with the user's T3 default model and runtime mode. The folder is
    `cwd`, or a `project` the conversation model picks from the git repos under `~/Projects/` (`list_projects`); a
    project folder T3 doesn't know yet is added with `project.create`, and its thread opens with "Sync with the master
-   branch first." Jarvis watches one thread, the newest; later tasks for the same folder are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
+   branch." (followed by the task only when the user named one). Jarvis watches one thread, the newest; later tasks for the same folder are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
    (resumed with `afterSequence`) gives `run.updated`, finished `assistant_message` items (retold when the run
    completes) and `approval_request` / `user_input_request` items (read out; answered with `runtime-request.respond`).
    Stop is `run.interrupt`. A 426 means T3 changed its protocol version.
