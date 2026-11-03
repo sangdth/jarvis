@@ -14,11 +14,11 @@ from loguru import logger
 from jarvis.agent_watchers import AgentOrchestrator
 from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
-from jarvis.memory import create_memory_service
+from jarvis.memory import NOT_THE_USER, create_memory_service
 from jarvis.state import JarvisState
 
 
-JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, an executive voice harness orchestrating coding agents (Claude Code, OpenCode) for the user.
+JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, a voice assistant that hands the user's work to agents: coding to Claude Code or OpenCode, everything else (research, email, calendar, notes) to Hermes.
 
 Core behavior:
 1. Keep every response under 2 short, natural spoken sentences.
@@ -44,7 +44,7 @@ def greeting_prompt(now: datetime, memories: list[str]) -> str:
         else ""
     )
     return (
-        f"[Not the user speaking: Jarvis just started. It is {now:%A %H:%M}.] Greet the user first, in one or two short spoken sentences"
+        f"{NOT_THE_USER} Jarvis just started. It is {now:%A %H:%M}.] Greet the user first, in one or two short spoken sentences"
         f" that fit the time of day, and let them know you're listening.{remembered} Do not call any tool."
     )
 
@@ -77,7 +77,10 @@ def agent_tools() -> list:
 
     agent_id_property = {
         "type": "string",
-        "description": "Exact ID of the watched agent, from the list in your instructions. Omit for the default coding agent.",
+        "description": (
+            "Exact ID of the watched agent, from the list in your instructions. If omitted: a task goes to the"
+            " default coding agent, an answer to the agent that asked, a stop to the agent that is working."
+        ),
     }
     return [
         FunctionSchema(
@@ -113,10 +116,10 @@ def agent_tools() -> list:
 def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[Any], Awaitable[None]]]:
     """Handlers for agent_tools(). Pipecat 1.x calls each with one FunctionCallParams (arguments, result_callback)."""
 
-    def handler(action: Callable[[Any, dict[str, Any]], Awaitable[bool]], ok_status: str, fail_status: str):
+    def handler(action, ok_status: str, fail_status: str, find=orchestrator.find):
         async def handle(params: Any) -> None:
             args = params.arguments
-            agent = orchestrator.find(args.get("agent_id"))
+            agent = find(args.get("agent_id"))
             if agent is None:
                 await params.result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})
                 return
@@ -127,8 +130,11 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
 
     return {
         "send_agent_task": handler(lambda a, args: a.send_task(args.get("task", "")), "sent", "failed"),
-        "answer_agent": handler(lambda a, args: a.answer(args.get("answer", "")), "answered", "no_pending_question"),
-        "stop_agent": handler(lambda a, args: a.interrupt(), "stopped", "failed"),
+        # No id: an answer goes to the agent that asked, a stop to the one that is working.
+        "answer_agent": handler(
+            lambda a, args: a.answer(args.get("answer", "")), "answered", "no_pending_question", orchestrator.find_waiting
+        ),
+        "stop_agent": handler(lambda a, args: a.interrupt(), "stopped", "failed", orchestrator.find_busy),
     }
 
 

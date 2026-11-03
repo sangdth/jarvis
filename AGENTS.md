@@ -26,7 +26,7 @@ speech check dropping the sentence, not the conversation model.
 | Says something wrong about an agent  | `agent_watchers.py` `_surface` call sites              |
 | Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`  |
 | Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`         |
-| Right agent, wrong id or no answer   | `agent_watchers.py` `AgentOrchestrator.find`           |
+| Answer or stop hits the wrong agent  | `agent_watchers.py` `find_waiting`, `find_busy`        |
 | Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                    |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                               |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                   |

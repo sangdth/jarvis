@@ -17,7 +17,7 @@
 flowchart LR
     subgraph Input ["1. Always-On Ear"]
         Mic["Mic Input"] --> VAD["Silero VAD"]
-        VAD --> STT["Local STT (Faster-Whisper)"]
+        VAD --> STT["Local STT (MLX Whisper)"]
     end
 
     subgraph Brain ["2. Jarvis Executive Filter"]
@@ -60,7 +60,8 @@ Without a wake word, two local filtering stages prevent false triggers and API c
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
 Each agent has three actions, one LLM tool each: `send_agent_task` (new work), `answer_agent` (reply to the question
 or approval the agent is waiting on) and `stop_agent`. An answer never becomes a new prompt, and a task never answers
-a pending question.
+a pending question. With no agent named, a task goes to the default coding agent, an answer to the agent
+that asked last, and a stop to the agent that is working.
 
 1. **Claude Code (`ClaudeCodeAdapter`):** One long-lived `ClaudeSDKClient` (Python `claude-agent-sdk`) with
    `permission_mode="acceptEdits"` and the user's Claude settings. Tool permissions and `AskUserQuestion` arrive in
