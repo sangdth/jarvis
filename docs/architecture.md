@@ -17,7 +17,7 @@
 flowchart LR
     subgraph Input ["1. Always-On Ear"]
         Mic["Mic Input"] --> VAD["Silero VAD"]
-        VAD --> STT["Local STT (MLX Whisper)"]
+        VAD --> STT["Local STT (MLX Whisper) + owner voice check"]
     end
 
     subgraph Brain ["2. Jarvis Executive Filter"]
@@ -55,7 +55,7 @@ flowchart LR
 ### B. "No Wake Word"
 Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
-2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
+2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/distil-whisper-large-v3`) transcribes speech locally on the Apple GPU at $0 cost. In the same step, a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker embedding (3D-Speaker ERes2Net, about 100 ms, run alongside Whisper) compares the whole sentence with the enrolled voiceprint (`~/.jarvis/owner_voice.npy`); below `SPEAKER_THRESHOLD` the sentence is dropped, unless it is a mute or unmute phrase. Turns come only from sentences that pass both checks: the user aggregator runs on Pipecat's `ExternalUserTurnStrategies`, and `JarvisIntentGate` wraps each passed sentence in proposed start/stop frames, so background voices never interrupt Jarvis or hold a turn open. Voice detection still cuts Whisper's sentences, at a 0.6 s pause. Research: `docs/research/speaker-verification.md`. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
 
 ### C. Agent Integration (Claude Code, OpenCode, Hermes, T3 Code)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
@@ -120,5 +120,5 @@ that asked last, and a stop to the agent that is working.
 | **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
 | **Executive Filter** | `src/jarvis/executive_filter.py` | `typesafe/jev-1.14` (`FILTER_MODEL`) classifies whether speech is addressed to Jarvis. |
 | **Memory** | `src/jarvis/memory.py` | Local Mem0 config and `LastExchangeMemory` (saves only the newest exchange). |
-| **Voice Gates** | `src/jarvis/voice_gates.py` | Pipecat `FrameProcessor` implementation: `JarvisIntentGate`. |
+| **Voice Gates** | `src/jarvis/voice_gates.py` | `SpeakerVerifiedWhisperSTT` (owner voice check on each Whisper sentence) and `JarvisIntentGate`. |
 | **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter`, and `AgentOrchestrator`; `T3Adapter` in `t3_adapter.py`. |
