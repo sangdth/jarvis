@@ -47,10 +47,15 @@ _UNMUTE_PATTERNS = re.compile(
 )
 
 
+# Whisper writes these on near-silence and noise. Alone they are dropped, so noise can't answer "okay" to an
+# approval; a real answer is "yes" or "go ahead".
+_WHISPER_FILLERS = {"okay", "ok", "thank you", "thanks", "thank you for watching", "you", "bye"}
+
+
 def classify_fast_command(transcript: str) -> UserIntent | None:
     """Deterministic zero-latency check for 'shut up' / 'you can talk' commands."""
     cleaned = transcript.strip()
-    if not cleaned:
+    if not cleaned or cleaned.lower().strip(" .!?,") in _WHISPER_FILLERS:
         return UserIntent.IGNORE_BACKGROUND
     # Unmute first: "don't be quiet, you can talk" holds a mute phrase but means unmute.
     if _UNMUTE_PATTERNS.search(cleaned):

@@ -72,7 +72,9 @@ that asked last, and a stop to the agent that is working.
    means a dead stream and a reconnect. After each connect it re-reads `GET /api/permission/request` and
    `GET /api/form`, since events are not replayed. It surfaces `permission.asked`, `form.created` and the last text of
    each finished run, and drops a pending request on `permission.replied`, `form.replied` or `form.cancelled`.
-   Tasks go to the latest session (`POST /api/session/:id/prompt`), or a new one from `POST /api/session`; answers go to
+   Jarvis follows one session: the first it sees, or a new one from `POST /api/session`. Events from other
+   sessions (sub-agents run in child sessions) do not end the turn. Tasks go to that session
+   (`POST /api/session/:id/prompt`); answers go to
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
 
 3. **Hermes Agent (`HermesAdapter`):** Talks to the Hermes API server (`hermes gateway`, port 8642, Bearer

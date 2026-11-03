@@ -20,6 +20,13 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(classify_fast_command("Fix the silence threshold in the VAD"))
         self.assertEqual(classify_fast_command("Don't be quiet, you can talk now"), UserIntent.UNMUTE)
 
+    def test_whisper_noise_phrases_are_dropped(self) -> None:
+        # Whisper writes these on silence; alone they must not reach the model as an answer to an approval.
+        for noise in ("Okay.", "Thank you.", " you ", "Thanks!"):
+            self.assertEqual(classify_fast_command(noise), UserIntent.IGNORE_BACKGROUND, noise)
+        self.assertIsNone(classify_fast_command("Yes, okay"))
+        self.assertIsNone(classify_fast_command("Thanks, that's great"))
+
     def test_beep_pcm_synthesis(self) -> None:
         pcm = synthesize_beep_pcm(freq_hz=880.0, duration_ms=100, sample_rate=16000)
         # 100ms at 16kHz, 16-bit mono = 1600 samples * 2 bytes = 3200 bytes

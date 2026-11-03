@@ -166,6 +166,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         self._ask_lock = asyncio.Lock()  # parallel tool calls are asked one at a time
         self._running = False  # a turn is in progress (a task was sent and its result has not arrived)
         self._stopped = False  # the user stopped this turn, so its error result is not news
+        self._stops = 0  # counts stops, so a question queued before a stop is not asked after it
 
     async def _run_loop(self) -> None:
         options = ClaudeAgentOptions(
@@ -175,16 +176,25 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
             setting_sources=["user", "project", "local"],
             stderr=lambda line: logger.debug(f"[{self.config.id}] {line}"),
         )
-        try:
-            async with ClaudeSDKClient(options) as client:
-                self._client = client
-                logger.info(f"Started Claude Code [{self.config.id}] in {self.config.cwd}")
-                async for message in client.receive_messages():
-                    await self._handle_message(message)
-        except CLINotFoundError:
-            logger.warning(f"[{self.config.id}] `claude` CLI not found on PATH; watcher idle.")
-        finally:
-            self._client = None
+        while True:
+            try:
+                async with ClaudeSDKClient(options) as client:
+                    self._client = client
+                    logger.info(f"Started Claude Code [{self.config.id}] in {self.config.cwd}")
+                    async for message in client.receive_messages():
+                        await self._handle_message(message)
+            except CLINotFoundError:
+                logger.warning(f"[{self.config.id}] `claude` CLI not found on PATH; watcher idle.")
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(f"[{self.config.id}] Claude Code stopped ({exc!r}); restarting in 10s.")
+            finally:
+                self._client = None
+            # The turn in flight died with the process: no result will come, so it is not running any more.
+            self._running = self._stopped = False
+            await asyncio.sleep(10.0)
 
     async def _handle_message(self, message: Any) -> None:
         if isinstance(message, ResultMessage):
@@ -197,7 +207,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
                 await self._surface(text, is_report=True)
 
     async def _ask(self, spoken: str) -> str | None:
+        stops = self._stops
         async with self._ask_lock:
+            if stops != self._stops:  # the user stopped the turn while this question waited its turn
+                return None
             self._question = asyncio.get_running_loop().create_future()
             try:
                 await self._surface(spoken)
@@ -250,6 +263,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         if self._question is not None and not self._question.done():
             self._question.set_result(None)
         self._question_settled()
+        self._stops += 1
         self._stopped, self._running = self._running, False
         await self._client.interrupt()
         return True
@@ -313,7 +327,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
 
     async def _on_permission(self, request: dict[str, Any]) -> None:
         self._pending_permission = request
-        self._session_id = request.get("sessionID", self._session_id)
+        self._session_id = self._session_id or request.get("sessionID")
         if request["id"] not in self._spoken:
             self._spoken.add(request["id"])
             what = " ".join([request.get("action", "")] + request.get("resources", [])).strip()
@@ -321,7 +335,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
 
     async def _on_form(self, form: dict[str, Any]) -> None:
         self._pending_form = form
-        self._session_id = form.get("sessionID", self._session_id)
+        self._session_id = self._session_id or form.get("sessionID")
         if form["id"] not in self._spoken:
             self._spoken.add(form["id"])
             await self._surface(f"asks: {describe_fields(form.get('fields', []))}")
@@ -330,8 +344,11 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         ev_type = event.get("type", "")
         data = event.get("data") or {}
         session_id = data.get("sessionID")
-        if session_id:
-            self._session_id = session_id
+        # One session: the first seen, or the one Jarvis created. Sub-agents run in child sessions,
+        # and their "done" is not the turn being done.
+        self._session_id = self._session_id or session_id
+        if ev_type.startswith("session.") and session_id and session_id != self._session_id:
+            return
 
         if ev_type == "permission.asked":
             await self._on_permission(_request_of(data))
@@ -473,6 +490,9 @@ class HermesAdapter(BaseAgentAdapter):
             logger.debug(f"[{self.config.id}] Hermes event stream for {run_id} dropped ({exc!r}).")
         try:
             resp = await self._http.get(f"/v1/runs/{run_id}")
+            if resp.status_code == 404:  # gone (e.g. Hermes restarted): no result will ever come
+                await self._surface("The task was lost: Hermes no longer knows this run.", is_report=True)
+                return True
             resp.raise_for_status()
             run = resp.json()
         except httpx.HTTPError:
