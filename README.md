@@ -40,8 +40,9 @@ Fill in:
 ### 3. Configure Watched Coding Agents
 Edit [`agents.json`](agents.json): set each agent's `cwd` to the project it should work in. Each agent's `role` tells
 Jarvis what to send it.
-- **Claude Code** runs through the Agent SDK with `acceptEdits`: file edits go through without asking. Other tools your
-  Claude settings don't allow, and Claude's own questions, are read out, and Claude waits for your answer.
+- **Claude Code** runs through the Agent SDK with your own Claude settings (`defaultMode`, allow rules), the same as
+  in your terminal. Whatever those settings would ask you, and Claude's own questions, are read out, and Claude waits
+  for your answer.
 - **OpenCode** needs its v2 server running with the same password Jarvis has in `.env`:
   `OPENCODE_SERVER_PASSWORD=<same value> opencode serve --port 4096`, started in the project folder.
 - **Hermes Agent** needs its API server: `API_SERVER_ENABLED=true` and an `API_SERVER_KEY` of 16+ characters in

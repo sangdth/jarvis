@@ -170,8 +170,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
     async def _run_loop(self) -> None:
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
-            # File edits go through; Bash and other tools not allowed in the user's settings ask first.
-            permission_mode="acceptEdits",
+            # No permission_mode: the user's own settings decide, the same as their Claude Code anywhere else.
             can_use_tool=self._can_use_tool,
             setting_sources=["user", "project", "local"],
             stderr=lambda line: logger.debug(f"[{self.config.id}] {line}"),
@@ -189,10 +188,10 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
 
     async def _handle_message(self, message: Any) -> None:
         if isinstance(message, ResultMessage):
-            self._running = False
-            if self._stopped:
+            if self._stopped:  # the stopped turn's result; a task sent since then is still running
                 self._stopped = False
                 return
+            self._running = False
             text = message.result or ("" if not message.is_error else f"The turn failed ({message.subtype}).")
             if text:
                 await self._surface(text, is_report=True)
@@ -251,7 +250,7 @@ class ClaudeCodeAdapter(BaseAgentAdapter):
         if self._question is not None and not self._question.done():
             self._question.set_result(None)
         self._question_settled()
-        self._stopped = self._running
+        self._stopped, self._running = self._running, False
         await self._client.interrupt()
         return True
 
@@ -277,6 +276,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         self._spoken: set[str] = set()  # request ids already read out, so a resync doesn't repeat them
         self._last_text: dict[str, str] = {}  # session id -> latest finished assistant text
         self._running = False  # a task Jarvis sent has not finished yet
+        self._stopped = False  # Jarvis stopped the turn; its interrupted event is not news
 
     async def _run_loop(self) -> None:
         while True:
@@ -349,7 +349,10 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         elif ev_type == "session.text.ended" and session_id:
             self._last_text[session_id] = data.get("text", "")
         elif ev_type == "session.execution.interrupted" and session_id:
-            self._running = False
+            if self._stopped:  # Jarvis stopped it; a task sent since then is still running
+                self._stopped = False
+            else:
+                self._running = False  # stopped in the OpenCode UI
             self._last_text.pop(session_id, None)
         elif ev_type in ("session.execution.succeeded", "session.execution.failed") and session_id:
             self._running = False
@@ -410,6 +413,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
             resp = await self._http.post(f"/api/session/{self._session_id}/interrupt")
             if resp.is_success:
                 self._question_settled()
+                self._stopped, self._running = self._running, False
             return resp.is_success
         except httpx.HTTPError as exc:
             logger.error(f"Failed to interrupt OpenCode: {exc}")
@@ -530,16 +534,23 @@ class HermesAdapter(BaseAgentAdapter):
         return self._run_id is not None or not self._runs.empty()
 
     async def interrupt(self) -> bool:
-        if not self._run_id:
+        """Stop the run in progress and every run queued behind it (Hermes queues them per session)."""
+        queued = []
+        while not self._runs.empty():
+            queued.append(self._runs.get_nowait())
+        run_ids = [r for r in (self._run_id, *queued) if r]
+        if not run_ids:
             return False
-        try:
-            resp = await self._http.post(f"/v1/runs/{self._run_id}/stop")
-            if resp.is_success:
-                self._question_settled()
-            return resp.is_success
-        except httpx.HTTPError as exc:
-            logger.error(f"Failed to stop Hermes: {exc}")
-            return False
+        stopped = False
+        for run_id in run_ids:
+            try:
+                resp = await self._http.post(f"/v1/runs/{run_id}/stop")
+                stopped = stopped or resp.is_success
+            except httpx.HTTPError as exc:
+                logger.error(f"Failed to stop Hermes run {run_id}: {exc}")
+        if stopped:
+            self._question_settled()
+        return stopped
 
     async def stop(self) -> None:
         await super().stop()
