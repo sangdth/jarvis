@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "pipecat": {
+      "source": "itechmeat/llm-code",
+      "sourceType": "github",
+      "skillPath": "skills/pipecat/SKILL.md",
+      "computedHash": "e8a989a7642644cb644e7d830b019cea55d4686f5909a7c6db5239519a7f434f"
+    },
     "python-design-patterns": {
       "source": "wshobson/agents",
       "sourceType": "github",

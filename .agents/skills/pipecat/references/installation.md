@@ -1,0 +1,46 @@
+# Installation (framework, extras, CLI, cloud SDK)
+
+This skill assumes Pipecat is already installed.
+Use this page only when you need to set up a fresh environment or add provider/feature extras.
+
+## Prereqs
+
+- Python 3.10+
+
+## Framework: `pipecat-ai`
+
+Base install:
+
+- `pip install pipecat-ai`
+
+Provider/feature extras (pattern used throughout the docs):
+
+- `pip install "pipecat-ai[openai]"`
+- `pip install "pipecat-ai[runner]"` (runner utilities)
+- `pip install "pipecat-ai[moq]"` (`1.6.0`; Media over QUIC transport, `MOQTransport`)
+- You can combine extras if needed (keep them explicit).
+
+`1.3.0` packaging notes:
+
+- `transformers` is no longer a base dependency. Install the relevant extras (`local-smart-turn`, `moondream`, or other service extras) only when those features are used.
+- Services/transports imported without their optional dependency now raise `ImportError` with the original `ModuleNotFoundError` as `__cause__`; wrap optional imports with `except ImportError` instead of broad `except Exception`.
+- The `deepgram` extra allows `deepgram-sdk>=6.1.1,<8`, and the `websockets-base` extra no longer caps the upper bound beyond `websockets>=13.1`.
+
+## CLI: `pipecat-ai-cli`
+
+Recommended for scaffolding/ops (`pipecat init`, `pipecat tail`, `pipecat cloud ...`).
+
+- `uv tool install pipecat-ai-cli`
+  - or `pipx install pipecat-ai-cli`
+
+## Pipecat Cloud SDK: `pipecatcloud`
+
+Install when you want to start sessions via Python code:
+
+- `pip install pipecatcloud`
+
+## Verification
+
+- CLI: `pipecat --version`
+- Python import sanity check:
+  - `python -c "import pipecat"`
