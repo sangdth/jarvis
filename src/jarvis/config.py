@@ -1,11 +1,35 @@
+import json
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Everything of the user's lives here: .env, agents.json, SOUL.md, the voiceprint, models and memory. Never the
-# current folder: Jarvis runs from any project, and a project's own .env must not leak in.
-JARVIS_HOME = Path("~/.config/jarvis").expanduser()
+PACKAGE = "jarvis-harness"
+# The installed Jarvis keeps its state here; every Jarvis, dev or installed, keeps the one-mic lock here.
+SHARED_HOME = Path("~/.config/jarvis").expanduser()
+
+
+def install_info() -> dict:
+    """pip's direct_url.json for Jarvis: `vcs_info` for a GitHub install, a file:// `url` for a checkout."""
+    try:
+        return json.loads(distribution(PACKAGE).read_text("direct_url.json") or "{}")
+    except (PackageNotFoundError, ValueError):
+        return {}
+
+
+def checkout_root(info: dict | None = None) -> Path | None:
+    """The checkout whose code is running (`uv run jarvis`), or None for the installed Jarvis."""
+    info = install_info() if info is None else info
+    if info.get("vcs_info"):
+        return None
+    url = info.get("url", "")
+    return Path(url.removeprefix("file://")) if url.startswith("file://") else Path(__file__).resolve().parents[2]
+
+
+# Jarvis's state: .env, agents.json, SOUL.md, the voiceprint, models and memory. The installed Jarvis uses
+# SHARED_HOME; a dev checkout uses its own folder (found from the running code, never the current folder).
+JARVIS_HOME = checkout_root() or SHARED_HOME
 
 
 class Settings(BaseSettings):

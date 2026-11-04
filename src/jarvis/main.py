@@ -265,11 +265,12 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         LLMContextAggregatorPair,
         LLMUserAggregatorParams,
     )
-    from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+    from pipecat.transports.base_transport import TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
     from jarvis.speaker import SpeakerEmbedder, load_voiceprint
-    from jarvis.voice_gates import EchoFilter, EchoReference, JarvisIntentGate, SpeakerVerifiedWhisperSTT
+    from jarvis.mac_audio import MacVoiceTransport
+    from jarvis.voice_gates import JarvisIntentGate, SpeakerVerifiedWhisperSTT
 
     # No voiceprint, no start: running unchecked would let any voice in the room give orders.
     try:
@@ -317,11 +318,9 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     orchestrator.load_from_file(settings.watch_config_path)
     thread = await pick_thread(orchestrator) if connect else None
 
-    # 1. Local mic + speaker (always on, no wake word); the echo filter keeps Jarvis's own voice out of the mic
-    echo = EchoFilter()
-    transport = LocalAudioTransport(
-        LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True, audio_in_filter=echo)
-    )
+    # 1. Local mic + speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
+    # voice so the user can talk over it on speakers
+    transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True))
 
     # 2. Local Always-On STT (MLX Whisper on the Apple GPU), passing on only the owner's voice
     stt = SpeakerVerifiedWhisperSTT(
@@ -408,7 +407,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         )
         processors.append(tts)
 
-    processors.extend([transport.output(), EchoReference(echo), context_aggregator.assistant()])
+    processors.extend([transport.output(), context_aggregator.assistant()])
 
     pipeline = Pipeline(processors)
     task = PipelineTask(

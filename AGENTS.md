@@ -40,7 +40,7 @@ speech check dropping the sentence, not the conversation model.
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)           |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                                      |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                          |
-| Hears itself through the speakers    | `voice_gates.py` `EchoFilter`, `EchoReference`                |
+| Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)       |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`             |
 | Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`         |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
@@ -73,9 +73,11 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
   at all: it is the user's work in progress. T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
-- **All user state lives in `JARVIS_HOME`** (`config.py`, `~/.config/jarvis`): `.env`, `agents.json`, `SOUL.md`,
-  the voiceprint, models, memory. Never the current folder: `jarvis` runs from any project, and a project's own
-  `.env` must not leak in. A relative `WATCH_CONFIG_PATH` counts from there. `jarvis init` copies the defaults from
+- **All user state lives in `JARVIS_HOME`** (`config.py`): `.env`, `agents.json`, `SOUL.md`, the voiceprint,
+  models, memory. The installed `jarvis` uses `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's
+  folder (`checkout_root`, found from the running code, never the current folder; gitignored) and stops without its
+  `.env`. The T3 setup script copies that state into new worktrees. The one-mic lock stays in `~/.config/jarvis`
+  for both. A relative `WATCH_CONFIG_PATH` counts from `JARVIS_HOME`. `jarvis init` copies the defaults from
   `src/jarvis/defaults/` (shipped in the package); a change to the shipped agents only reaches users who copy it.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls

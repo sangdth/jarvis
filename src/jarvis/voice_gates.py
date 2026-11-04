@@ -5,69 +5,14 @@ from collections.abc import AsyncGenerator
 
 import numpy as np
 from loguru import logger
-
-import soxr
-from pipecat.audio.filters.base_audio_filter import BaseAudioFilter
 from pipecat.frames.frames import (
-    FilterControlFrame,
     Frame,
-    OutputAudioRawFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
-from voiceclean.aec import AEC
-
-MIC_RATE = 16000
-
-
-class EchoFilter(BaseAudioFilter):
-    """Takes Jarvis's own voice out of the mic (voiceclean AEC), so it doesn't hear itself through speakers."""
-
-    def __init__(self) -> None:
-        self.aec = AEC(sample_rate=MIC_RATE)
-
-    async def start(self, sample_rate: int) -> None:
-        if sample_rate != MIC_RATE:
-            raise ValueError(f"EchoFilter runs at {MIC_RATE} Hz, the mic gives {sample_rate}")
-
-    async def stop(self) -> None:
-        pass
-
-    async def process_frame(self, frame: FilterControlFrame) -> None:
-        pass
-
-    async def filter(self, audio: bytes) -> bytes:
-        return self.aec.process(audio)  # b"" while it gathers a 40 ms chunk; Pipecat skips empty frames
-
-
-class EchoReference(FrameProcessor):
-    """
-    Feeds what Jarvis plays to the EchoFilter. Sits after transport.output(), which passes a frame on only
-    once it has gone to the speaker, so the reference lines up with what the mic hears.
-    """
-
-    def __init__(self, echo: EchoFilter) -> None:
-        super().__init__()
-        self._aec = echo.aec
-        self._resampler: soxr.ResampleStream | None = None
-        self._rate = 0
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
-        await super().process_frame(frame, direction)
-        if isinstance(frame, OutputAudioRawFrame):
-            self._aec.feed_reference(self.to_mic_rate(frame.audio, frame.sample_rate))
-        await self.push_frame(frame, direction)
-
-    def to_mic_rate(self, audio: bytes, rate: int) -> bytes:
-        """TTS plays at 24 kHz, beeps at 16 kHz: one streaming resampler per rate, so frame edges don't click."""
-        if rate == MIC_RATE:
-            return audio
-        if rate != self._rate:
-            self._resampler, self._rate = soxr.ResampleStream(rate, MIC_RATE, 1, dtype="int16"), rate
-        return self._resampler.resample_chunk(np.frombuffer(audio, dtype=np.int16)).tobytes()
 
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.speaker import SpeakerEmbedder, cosine

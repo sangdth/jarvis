@@ -1,3 +1,9 @@
 .env
 .venv/
 __pycache__/
+# A dev checkout keeps its own Jarvis state here (`uv run jarvis`); the installed one uses ~/.config/jarvis
+/agents.json
+/SOUL.md
+/owner_voice.npy
+/models/
+/memory/
