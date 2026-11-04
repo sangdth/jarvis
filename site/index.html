@@ -886,9 +886,9 @@
         <a href="#start" class="btn btn-primary type-mono-label">Get started</a>
         <a href="#orchestration" class="btn btn-outline type-mono-label">Inspect pipeline</a>
       </div>
-      <button type="button" class="cli-pill slide-fill" onclick="navigator.clipboard.writeText('uv sync && uv run jarvis-enroll && uv run jarvis'); this.querySelector('.cmd-txt').textContent='Copied to clipboard!'; setTimeout(()=>this.querySelector('.cmd-txt').textContent='uv sync && uv run jarvis-enroll && uv run jarvis', 1800)">
+      <button type="button" class="cli-pill slide-fill" onclick="navigator.clipboard.writeText('uv tool install --editable . && jarvis init && jarvis'); this.querySelector('.cmd-txt').textContent='Copied to clipboard!'; setTimeout(()=>this.querySelector('.cmd-txt').textContent='uv tool install --editable . && jarvis init && jarvis', 1800)">
         <b>~</b>
-        <span class="cmd-txt">uv sync &amp;&amp; uv run jarvis-enroll &amp;&amp; uv run jarvis</span>
+        <span class="cmd-txt">uv tool install --editable . &amp;&amp; jarvis init &amp;&amp; jarvis</span>
       </button>
     </div>
   </section>
@@ -1145,7 +1145,7 @@
               </button>
             </h3>
             <div class="acc-content">
-              <p>Run <code>uv run jarvis-enroll</code> and speak three natural sentences. Jarvis extracts a local speaker embedding vector with sherpa-onnx so only your voice can trigger or interrupt agents.</p>
+              <p>Run <code>jarvis init</code> (again later: <code>jarvis enroll</code>) and speak three natural sentences. Jarvis extracts a local speaker embedding vector with sherpa-onnx so only your voice can trigger or interrupt agents.</p>
             </div>
           </div>
           <div class="acc-item" data-panel="1">
@@ -1193,19 +1193,16 @@
               </button>
             </figcaption>
             <pre class="code-pre" id="code-panel-body"><span class="c"># 1. Install dependencies</span>
-<span class="g">$</span> uv sync
+<span class="g">$</span> uv tool install --editable .
 
-<span class="c"># 2. Configure API keys (OpenRouter, ElevenLabs, Hermes)</span>
-<span class="g">$</span> cp .env.example .env
-
-<span class="c"># 3. Teach Jarvis your voice (three sentences, local sherpa-onnx)</span>
-<span class="g">$</span> uv run jarvis-enroll
+<span class="c"># 2. Set up ~/.config/jarvis and teach Jarvis your voice (local sherpa-onnx)</span>
+<span class="g">$</span> jarvis init
 <span class="g">✓</span> Recorded sample 1/3 (cosine stability 0.94)
 <span class="g">✓</span> Recorded sample 2/3 (cosine stability 0.96)
-<span class="g">✓</span> Saved voiceprint to ~/.jarvis/voiceprint.npy
+<span class="g">✓</span> Saved voiceprint to ~/.config/jarvis/owner_voice.npy
 
-<span class="c"># 4. Start the always-on voice harness</span>
-<span class="g">$</span> uv run jarvis
+<span class="c"># 3. Add API keys to ~/.config/jarvis/.env, then start the always-on voice harness</span>
+<span class="g">$</span> jarvis
 <span class="q">▸</span> <span class="g">[jarvis]</span> Morning. I'm listening.</pre>
           </figure>
           <div style="margin-top:1.75rem;display:flex;align-items:center;gap:1.5rem">
@@ -1418,7 +1415,7 @@
             <h2>Four commands to launch</h2>
             <p>Install with <code>uv</code>, add your OpenRouter and ElevenLabs keys, enroll three spoken sentences, and run <code>jarvis</code>.</p>
             <div class="cta-pane-actions">
-              <button type="button" class="btn btn-primary type-mono-label" onclick="navigator.clipboard.writeText('uv sync && cp .env.example .env && uv run jarvis-enroll && uv run jarvis'); this.textContent='Copied setup commands!'; setTimeout(()=>this.textContent='Copy setup commands', 1800)">Copy setup commands</button>
+              <button type="button" class="btn btn-primary type-mono-label" onclick="navigator.clipboard.writeText('uv tool install --editable . && jarvis init && jarvis'); this.textContent='Copied setup commands!'; setTimeout(()=>this.textContent='Copy setup commands', 1800)">Copy setup commands</button>
             </div>
           </div>
         </div>
@@ -1732,21 +1729,18 @@
     const panels = [
       {
         title: "terminal — jarvis quickstart",
-        copy: "uv sync && cp .env.example .env && uv run jarvis-enroll && uv run jarvis",
+        copy: "uv tool install --editable . && jarvis init && jarvis",
         html: `<span class="c"># 1. Install dependencies</span>
-<span class="g">$</span> uv sync
+<span class="g">$</span> uv tool install --editable .
 
-<span class="c"># 2. Configure API keys (OpenRouter, ElevenLabs, Hermes)</span>
-<span class="g">$</span> cp .env.example .env
-
-<span class="c"># 3. Teach Jarvis your voice (three sentences, local sherpa-onnx)</span>
-<span class="g">$</span> uv run jarvis-enroll
+<span class="c"># 2. Set up ~/.config/jarvis and teach Jarvis your voice (local sherpa-onnx)</span>
+<span class="g">$</span> jarvis init
 <span class="g">✓</span> Recorded sample 1/3 (cosine stability 0.94)
 <span class="g">✓</span> Recorded sample 2/3 (cosine stability 0.96)
-<span class="g">✓</span> Saved voiceprint to ~/.jarvis/voiceprint.npy
+<span class="g">✓</span> Saved voiceprint to ~/.config/jarvis/owner_voice.npy
 
-<span class="c"># 4. Start the always-on voice harness</span>
-<span class="g">$</span> uv run jarvis
+<span class="c"># 3. Add API keys to ~/.config/jarvis/.env, then start the always-on voice harness</span>
+<span class="g">$</span> jarvis
 <span class="q">▸</span> <span class="g">[jarvis]</span> Morning. I'm listening.`
       },
       {
@@ -1766,7 +1760,7 @@
       },
       {
         title: "src/jarvis/main.py — pipecat voice pipeline",
-        copy: "uv run jarvis",
+        copy: "jarvis",
         html: `<span class="c"># Frame-level Pipecat pipeline on Apple Silicon</span>
 pipeline = Pipeline([
     transport.input(),            <span class="c"># Always-on 16kHz mic stream</span>

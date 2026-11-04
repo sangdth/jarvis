@@ -12,13 +12,14 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
+from jarvis.config import JARVIS_HOME
+
 SAMPLE_RATE = 16000
 MODEL_NAME = "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx"
 MODEL_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/{MODEL_NAME}"
 MODEL_SHA256 = "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5"
-JARVIS_DIR = Path("~/.jarvis").expanduser()
-MODEL_PATH = JARVIS_DIR / "models" / MODEL_NAME
-VOICEPRINT_PATH = JARVIS_DIR / "owner_voice.npy"
+MODEL_PATH = JARVIS_HOME / "models" / MODEL_NAME
+VOICEPRINT_PATH = JARVIS_HOME / "owner_voice.npy"
 
 
 def ensure_model(path: Path = MODEL_PATH) -> Path:
@@ -77,5 +78,5 @@ def save_voiceprint(embeddings: list[np.ndarray], path: Path = VOICEPRINT_PATH) 
 
 def load_voiceprint(path: Path = VOICEPRINT_PATH) -> np.ndarray:
     if not path.exists():
-        raise FileNotFoundError(f"No owner voiceprint at {path}. Run `uv run jarvis-enroll` first.")
+        raise FileNotFoundError(f"No owner voiceprint at {path}. Run `jarvis enroll` first.")
     return np.load(path)

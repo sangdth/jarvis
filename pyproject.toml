@@ -22,8 +22,6 @@ dependencies = [
 
 [project.scripts]
 jarvis = "jarvis.main:main"
-jarvis-enroll = "jarvis.enroll:main"
-jarvis-init = "jarvis.soul:main"
 
 [build-system]
 requires = ["hatchling"]

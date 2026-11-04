@@ -7,9 +7,11 @@ Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
 
 ## Commands
 
-- Run: `uv run jarvis` (needs `.env`; OpenCode needs `opencode serve --port 4096` with the same password;
-  Hermes needs its gateway service, `hermes gateway status`, with `API_SERVER_ENABLED=true`; T3 Code needs the
-  T3 app running)
+- Install: `uv tool install --editable .` puts `jarvis` on the PATH. Commands: `jarvis` (listen), `jarvis connect`
+  (continue a T3 thread; as a T3 project script, the thread it runs in), `jarvis init` (set up, then enroll),
+  `jarvis enroll` (voiceprint again). `uv run jarvis …` works the same in the repo.
+- Needs: OpenCode `opencode serve --port 4096` with the same password; Hermes its gateway service
+  (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
 - Routing benchmark: `uv run python scripts/bench_routing.py` (about 120 paid calls)
@@ -40,8 +42,8 @@ speech check dropping the sentence, not the conversation model.
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`             |
 | Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`         |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
-| Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.jarvis/memory`)                 |
-| Model names, keys                    | `config.py`, `.env`, `.env.example`                           |
+| Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.config/jarvis/memory`)          |
+| Model names, keys                    | `config.py`, `~/.config/jarvis/.env`, `.env.example`          |
 
 Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/userdata/logs/terminals/*.log`).
 `[User Transcript]` shows what Whisper heard; the lines after it show whether the sentence was passed on or ignored.
@@ -65,6 +67,12 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir` (`SOUL.md`, default
   `~/Projects`) go into the prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
   master branch."; the model's task is not sent. Later requests go to that thread.
+  A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
+  at all: it is the user's work in progress. T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
+  `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
+- **All user state lives in `JARVIS_HOME`** (`config.py`, `~/.config/jarvis`): `.env`, `agents.json`, `SOUL.md`,
+  the voiceprint, models, memory. Never the current folder: `jarvis` runs from any project, and a project's own
+  `.env` must not leak in. A relative `WATCH_CONFIG_PATH` counts from there.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.
@@ -75,14 +83,14 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis.
 - **Voice is ElevenLabs `eleven_v4_turbo` over Text-to-Dialogue** (the plain TTS socket rejects it). Emotion
   tags come from Pipecat's expressive conversation mode; Jarvis writes no tag rules of its own.
-- **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.jarvis/memory`, `bge-m3` embeddings
+- **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.config/jarvis/memory`, `bge-m3` embeddings
   on the Ollama app, fact extraction on `EXECUTIVE_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves
   only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
 - **Jarvis acts only on the owner's voice.** `SpeakerVerifiedWhisperSTT` scores each whole Whisper sentence
-  against `~/.jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass from any
-  voice. No voiceprint stops Jarvis at startup (`uv run jarvis-enroll`). User turns come only from
+  against `~/.config/jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass from any
+  voice. No voiceprint stops Jarvis at startup (`jarvis enroll`). User turns come only from
   `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
-- **`~/.jarvis/SOUL.md` is the user's own setup** (`uv run jarvis-init`, `soul.py`): front matter holds settings
+- **`~/.config/jarvis/SOUL.md` is the user's own setup** (`jarvis init`, `soul.py`): front matter holds settings
   (`projects_dir`), the body is personality, added to the system prompt as tone only. The name is always Jarvis.
 - Mock HTTP and the Claude SDK in unit tests. Live checks against real agents go in a throwaway script, not in `tests/`.
 

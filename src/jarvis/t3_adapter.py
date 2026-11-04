@@ -65,6 +65,42 @@ def list_projects(root: Path = PROJECTS) -> list[str]:
     return found
 
 
+def recent_threads(snapshot: dict[str, Any], limit: int | None = 15) -> list[dict[str, Any]]:
+    """Threads the user started in T3 (not imports or agent children), newest first, with their folder."""
+    projects = {p["id"]: p for p in snapshot.get("projects", []) if p.get("workspaceRoot")}
+    mine = [
+        t for t in snapshot.get("threads", [])
+        if t.get("createdBy") == "user" and not t.get("archivedAt") and t.get("projectId") in projects
+    ]
+    mine.sort(key=lambda t: t.get("updatedAt") or "", reverse=True)
+    return [
+        {
+            "id": t["id"], "title": t.get("title") or "Untitled", "status": t.get("status") or "idle",
+            "updatedAt": t.get("updatedAt") or "",
+            "project": projects[t["projectId"]].get("title") or Path(projects[t["projectId"]]["workspaceRoot"]).name,
+            "root": t.get("worktreePath") or projects[t["projectId"]]["workspaceRoot"],
+            "worktree": bool(t.get("worktreePath")), "visitedAt": t.get("lastVisitedAt") or t.get("updatedAt") or "",
+        }
+        for t in mine[:limit]
+    ]
+
+
+def current_thread(snapshot: dict[str, Any], project_root: str, worktree_path: str | None) -> dict[str, Any] | None:
+    """
+    The thread a T3 project script runs in. T3 gives scripts only folders (T3CODE_PROJECT_ROOT, T3CODE_WORKTREE_PATH):
+    a worktree belongs to its one thread; on the project root, take the thread viewed last, the one just clicked.
+    """
+    def same(a: str, b: str) -> bool:
+        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+
+    threads = recent_threads(snapshot, limit=None)
+    if worktree_path:
+        matches = [t for t in threads if t["worktree"] and same(t["root"], worktree_path)]
+    else:
+        matches = [t for t in threads if not t["worktree"] and same(t["root"], project_root)]
+    return max(matches, key=lambda t: t["visitedAt"], default=None)
+
+
 def t3_defaults() -> dict[str, Any]:
     """The user's own T3 settings: the model and runtime mode a thread started in the T3 window gets."""
     # shortcut: ignores per-project overrides in T3 settings; read them here if Jarvis ever targets such a project.
@@ -196,7 +232,11 @@ class T3Adapter(BaseAgentAdapter):
         self._sub_id = await self._request("orchestration.subscribeThread", payload)
 
     async def _find_project(self, cwd: str) -> dict[str, Any] | None:
-        """Read T3's project list from a short-lived shell subscription."""
+        return find_project((await self.shell_snapshot()).get("projects", []), cwd)
+
+    async def shell_snapshot(self) -> dict[str, Any]:
+        """T3's projects and threads, read from a short-lived shell subscription."""
+        self._token = self._token or await self._issue_token()
         async with self._connect() as ws:
             await ws.send(json.dumps({"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell", "payload": {}, "headers": []}))
             async for raw in ws:
@@ -205,8 +245,8 @@ class T3Adapter(BaseAgentAdapter):
                     raise RuntimeError(f"T3 shell subscription failed: {json.dumps(msg)[:300]}")
                 for item in msg.get("values", []) if msg.get("_tag") == "Chunk" else []:
                     if item.get("kind") == "snapshot":
-                        return find_project(item["snapshot"].get("projects", []), cwd)
-        return None
+                        return item["snapshot"]
+        raise RuntimeError("T3 shell subscription closed before its snapshot")
 
     async def _on_stream_item(self, item: dict[str, Any]) -> None:
         if item.get("kind") == "snapshot":  # first item, and again if T3 can't resume from our sequence
@@ -321,15 +361,19 @@ class T3Adapter(BaseAgentAdapter):
         })
         if launched is None:
             return False
+        self.attach(launched.get("threadId") or thread_id, cwd)
+        await self._subscribe()
+        logger.info(f"Started T3 thread {self._thread_id} in {project['workspaceRoot']}")
+        return True
+
+    def attach(self, thread_id: str, root: str) -> None:
+        """Watch this thread from now on; it gets no message. Subscribes on the next connect, or call _subscribe."""
         # shortcut: Jarvis watches one thread; the previous one keeps running in T3 unwatched. Track several if needed.
-        self._thread_id, self._root, self._sequence = launched.get("threadId") or thread_id, cwd, None
+        self._thread_id, self._root, self._sequence = thread_id, root, None
         self._runs, self._last_text = {}, {}
         if self._pending:  # a question on the old thread can no longer be answered from here
             self._pending = None
             self._question_settled()
-        await self._subscribe()
-        logger.info(f"Started T3 thread {self._thread_id} in {project['workspaceRoot']}")
-        return True
 
     @property
     def busy(self) -> bool:
