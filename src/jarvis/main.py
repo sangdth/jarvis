@@ -34,6 +34,7 @@ Core behavior:
 
 # A finished agent turn is long markdown; the conversation model retells it. Approvals never come this way.
 # It goes in as a system message: agent output is not the user's voice and must not be able to drive a tool call.
+# Not "developer": Pipecat's OpenRouter service sends developer messages as role user.
 AGENT_REPORT_PROMPT = (
     f"{NOT_THE_USER} an agent finished its turn.] Tell the user the outcome in one short spoken sentence for"
     " each finished turn below, never skipping one, about ten words each, as your own work (\"I pushed it\"): did"
@@ -297,7 +298,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         if "task" in task_ref:
             await task_ref["task"].queue_frame(
                 LLMMessagesAppendFrame(
-                    messages=[{"role": "developer", "content": AGENT_REPORT_PROMPT + text}], run_llm=True
+                    messages=[{"role": "system", "content": AGENT_REPORT_PROMPT + text}], run_llm=True
                 )
             )
 
