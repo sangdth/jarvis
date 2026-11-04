@@ -1,31 +1,28 @@
 """
 The `jarvis` command. Production is installed from GitHub master (`uv tool install git+...`) and updated with
-`jarvis update`; a dev checkout runs its own code with `uv run jarvis`. Both share ~/.config/jarvis, so only one
-may listen at a time.
+`jarvis update` and keeps its state in ~/.config/jarvis; a dev checkout runs its own code with `uv run jarvis` and
+keeps its state in the checkout. One mic, so only one may listen at a time.
 """
 
 from __future__ import annotations
 
 import asyncio
 import fcntl
-import json
 import os
 import shutil
 import subprocess
 import sys
-from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import IO
 
 from loguru import logger
 
-from jarvis.config import JARVIS_HOME
+from jarvis.config import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, install_info
 
-PACKAGE = "jarvis-harness"
 USAGE = """usage: jarvis [command]
   (none)     listen and hand work to the agents
   connect    continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
-  init       set up ~/.config/jarvis: .env, agents.json, SOUL.md, then your voiceprint
+  init       set up Jarvis's home (~/.config/jarvis; the checkout in dev): .env, agents.json, SOUL.md, voiceprint
   enroll     record your voiceprint again
   update     update the installed Jarvis to the latest GitHub master
   --version  show which Jarvis this is: master @ commit, or dev and its folder"""
@@ -33,14 +30,11 @@ USAGE = """usage: jarvis [command]
 
 def version() -> str:
     """`master @ abc1234` for a git install, `dev (<folder>)` for a checkout (pip's direct_url.json says which)."""
-    try:
-        info = json.loads(distribution(PACKAGE).read_text("direct_url.json") or "{}")
-    except (PackageNotFoundError, ValueError):
-        info = {}
+    info = install_info()
     vcs = info.get("vcs_info")
     if vcs:
         return f"{vcs.get('requested_revision') or 'git'} @ {vcs.get('commit_id', '?')[:7]}"
-    return f"dev ({info.get('url', '').removeprefix('file://') or Path(__file__).resolve().parents[2]})"
+    return f"dev ({checkout_root(info)})"
 
 
 def update() -> None:
@@ -57,7 +51,7 @@ def update() -> None:
     print(f"Jarvis is up to date: {after}." if after == before else f"Updated Jarvis: {before} -> {after}.")
 
 
-def hold_lock(home: Path = JARVIS_HOME) -> IO[str]:
+def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
     """One listening Jarvis per machine: two would share the mic and Qdrant's memory folder. Keep the file open."""
     home.mkdir(parents=True, exist_ok=True)
     lock = (home / "jarvis.lock").open("a+")
@@ -89,6 +83,8 @@ def main() -> None:
         return enroll()
     if args not in ([], ["connect"]):
         sys.exit(USAGE)
+    if checkout_root() and not (JARVIS_HOME / ".env").exists():
+        sys.exit(f"No .env in {JARVIS_HOME}: a dev checkout uses its own. Run the T3 setup script or `uv run jarvis init`.")
     lock = hold_lock()  # noqa: F841 (held until exit)
     logger.info(f"Jarvis {version()}")
     from jarvis.main import run_pipecat_harness  # imported here: loads Pipecat

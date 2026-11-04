@@ -29,7 +29,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | No wake word, answer when needed  | Silero VAD, MLX Whisper, `JarvisIntentGate` | `voice_gates.py`      |
 | Act only on your voice            | `SpeakerVerifiedWhisperSTT` (sherpa-onnx)   | `voice_gates.py`      |
 | Background voices never interrupt | `ExternalUserTurnStrategies`                | `voice_gates.py`      |
-| Don't hear its own voice          | `EchoFilter`, `EchoReference`               | `voice_gates.py`      |
+| Don't hear its own voice          | `MacVoiceTransport` (macOS voice processing) | `mac_audio.py`       |
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
 | Claude Code, OpenCode, Hermes     | `*Adapter` classes                          | `agent_watchers.py`   |
@@ -51,8 +51,18 @@ master and prints the commit it went from and to; `jarvis --version` shows the o
 Everything of yours lives in `~/.config/jarvis/`, never in the folder you run it from.
 
 **Developing Jarvis:** in a checkout, `uv sync`, then `uv run jarvis` runs that checkout's code
-(`jarvis --version` there says `dev (<folder>)`). It shares `~/.config/jarvis` with the installed one, so only one
-runs at a time: a second one stops at startup with "Jarvis is already running (pid ...)".
+(`jarvis --version` there says `dev (<folder>)`). It keeps its own state in the checkout, not `~/.config/jarvis`:
+`.env`, `agents.json`, `SOUL.md`, `owner_voice.npy`, `models/` and `memory/` (all gitignored), and it stops at startup
+without its `.env`. Fill them with `uv run jarvis init`, or copy them in with a T3 setup script for new worktrees:
+```sh
+set -e
+for f in .env agents.json SOUL.md owner_voice.npy models; do
+  [ -e "$f" ] || cp -R "$T3CODE_PROJECT_ROOT/$f" "$f"
+done
+uv sync
+```
+Dev and installed still share one mic, so only one runs at a time: a second one stops at startup with "Jarvis is
+already running (pid ...)".
 
 ### 2. Set Up Jarvis
 ```bash
@@ -102,9 +112,9 @@ Ollama, Jarvis still runs, just without memory.
 ```bash
 jarvis
 ```
-Jarvis greets you in a few words and listens. Use headphones for now. On speakers the mic also hears Jarvis, and
-the current echo filter removes little of it: the voice check drops Jarvis's own sentences, but when you talk over
-it, Whisper hears both voices.
+Jarvis greets you in a few words and listens. Speakers work: the mic and speaker run through macOS voice
+processing (the echo canceller FaceTime uses), so you can talk over Jarvis. Enroll your voice again after
+updating from an older version (`jarvis enroll`): it now records through the same processing.
 
 ### Continue a T3 Code thread away from the keyboard
 ```bash

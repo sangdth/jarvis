@@ -17,12 +17,12 @@ class CliTest(unittest.TestCase):
     def test_version_of_a_git_install_names_branch_and_commit(self) -> None:
         url = {"url": "https://github.com/sangdth/jarvis", "vcs_info": {"vcs": "git", "requested_revision": "master",
                                                                        "commit_id": "0fbc724abcdef"}}
-        with patch.object(cli, "distribution", return_value=dist(url)):
+        with patch("jarvis.config.distribution", return_value=dist(url)):
             self.assertEqual(cli.version(), "master @ 0fbc724")
 
     def test_version_of_a_checkout_is_dev_with_its_folder(self) -> None:
         url = {"url": "file:///Users/me/jarvis", "dir_info": {"editable": True}}
-        with patch.object(cli, "distribution", return_value=dist(url)):
+        with patch("jarvis.config.distribution", return_value=dist(url)):
             self.assertEqual(cli.version(), "dev (/Users/me/jarvis)")
 
     def test_update_refuses_a_dev_checkout(self) -> None:
@@ -39,6 +39,14 @@ class CliTest(unittest.TestCase):
             self.assertIn("already running", str(stopped.exception))
             first.close()  # released: the next one starts
             cli.hold_lock(Path(tmp)).close()
+
+    def test_dev_checkout_without_its_env_stops_before_listening(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.object(cli.sys, "argv", ["jarvis"]), \
+                patch.object(cli, "checkout_root", return_value=Path(tmp)), patch.object(cli, "JARVIS_HOME", Path(tmp)), \
+                patch.object(cli, "hold_lock") as lock, self.assertRaises(SystemExit) as stopped:
+            cli.main()
+        self.assertIn("No .env", str(stopped.exception))
+        lock.assert_not_called()
 
     def test_unknown_command_prints_usage(self) -> None:
         with patch.object(cli.sys, "argv", ["jarvis", "bogus"]), self.assertRaises(SystemExit) as stopped:

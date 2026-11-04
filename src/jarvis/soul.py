@@ -1,5 +1,5 @@
 """
-`jarvis init`: set up ~/.config/jarvis. Copies .env and agents.json there, writes SOUL.md (personality and a
+`jarvis init`: set up Jarvis's home (~/.config/jarvis; the checkout in dev). Copies .env and agents.json there, writes SOUL.md (personality and a
 few settings) from a short interview, then records the voiceprint. The name stays "Jarvis"; the speech check and
 the mute phrases depend on it.
 """
