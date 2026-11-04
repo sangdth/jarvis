@@ -44,19 +44,22 @@ Files are in [`src/jarvis/`](src/jarvis/).
 
 ### 1. Install
 ```bash
-uv sync
-uv tool install --editable .
+uv tool install "git+https://github.com/sangdth/jarvis@master"
 ```
-This puts the `jarvis` command on your PATH, so it runs from any folder. It is editable: changes in this checkout
-apply without reinstalling, so install from the checkout you keep, not a throwaway worktree. Everything of yours
-lives in `~/.config/jarvis/`, never in the folder you run it from.
+This puts the `jarvis` command on your PATH, so it runs from any folder. `jarvis update` moves it to the newest
+master and prints the commit it went from and to; `jarvis --version` shows the one you have (`master @ 0fbc724`).
+Everything of yours lives in `~/.config/jarvis/`, never in the folder you run it from.
+
+**Developing Jarvis:** in a checkout, `uv sync`, then `uv run jarvis` runs that checkout's code
+(`jarvis --version` there says `dev (<folder>)`). It shares `~/.config/jarvis` with the installed one, so only one
+runs at a time: a second one stops at startup with "Jarvis is already running (pid ...)".
 
 ### 2. Set Up Jarvis
 ```bash
 jarvis init
 ```
-It creates `~/.config/jarvis/` with your `.env` (this repo's `.env` if you have one, else a copy of `.env.example`)
-and `agents.json`; it never overwrites them. Then it asks a few questions (Jarvis's personality, what to call you,
+It creates `~/.config/jarvis/` with a `.env` and an `agents.json` from
+[`src/jarvis/defaults/`](src/jarvis/defaults/); it never overwrites them. Then it asks a few questions (Jarvis's personality, what to call you,
 where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
 file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
 
@@ -74,7 +77,7 @@ Fill in `~/.config/jarvis/.env`:
 - `ELEVENLABS_API_KEY`: voice output with `eleven_v4_turbo` (about 100 ms to first audio; it laughs and sighs when the brain tags a reply).
 
 ### 4. Configure Watched Coding Agents
-Edit `~/.config/jarvis/agents.json` (copied from [`agents.json`](agents.json)). Each agent's `role` tells Jarvis
+Edit `~/.config/jarvis/agents.json`. Each agent's `role` tells Jarvis
 what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path to pin an agent to one project.
 - **Claude Code** runs through the Agent SDK with your own Claude settings (`defaultMode`, allow rules), the same as
   in your terminal. Whatever those settings would ask you, and Claude's own questions, are read out, and Claude waits
@@ -108,7 +111,8 @@ it, Whisper hears both voices.
 jarvis connect
 ```
 Add it once as a project script in T3 Code (Settings, default project scripts, command `jarvis connect`), then run
-it from the thread you are in: Jarvis continues that thread. T3 tells a script only its folder, so a thread in its
+it from the thread you are in: Jarvis continues that thread. While developing Jarvis, give the jarvis project its own
+script, `uv run jarvis connect`: T3 runs it in the thread's worktree, so it runs that worktree's code. T3 tells a script only its folder, so a thread in its
 own worktree is found exactly; on a project's root folder, Jarvis takes the thread you viewed last there. It says
 "Connected to *title*" so you know which one. Run in a normal terminal, it lists your 15 newest threads (the ones
 you started; imports and agent sub-threads are left out) to pick from by number.

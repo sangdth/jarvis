@@ -13,8 +13,7 @@ from pathlib import Path
 from jarvis.config import JARVIS_HOME
 
 SOUL_PATH = JARVIS_HOME / "SOUL.md"
-# shortcut: the templates are read from the repo, so this needs the editable install (`uv tool install --editable`).
-REPO = Path(__file__).resolve().parents[2]
+DEFAULTS = Path(__file__).parent / "defaults"  # ships in the package, so a git install has it too
 DEFAULT_PROJECTS_DIR = "~/Projects"
 
 
@@ -59,13 +58,12 @@ def ask(question: str, default: str = "") -> str:
     return answer or default
 
 
-def copy_config(home: Path = JARVIS_HOME, repo: Path = REPO) -> list[Path]:
-    """Put .env and agents.json in home when missing: the repo's own .env if there is one, else the example."""
+def copy_config(home: Path = JARVIS_HOME, defaults: Path = DEFAULTS) -> list[Path]:
+    """Put the default .env and agents.json in home when missing; never overwrites the user's."""
     copied = []
-    for name, sources in ((".env", (".env", ".env.example")), ("agents.json", ("agents.json",))):
+    for name, source in ((".env", defaults / "env.example"), ("agents.json", defaults / "agents.json")):
         target = home / name
-        source = next((repo / s for s in sources if (repo / s).is_file()), None)
-        if target.exists() or source is None:
+        if target.exists():
             continue
         home.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)

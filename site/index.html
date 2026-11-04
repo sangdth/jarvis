@@ -886,9 +886,9 @@
         <a href="#start" class="btn btn-primary type-mono-label">Get started</a>
         <a href="#orchestration" class="btn btn-outline type-mono-label">Inspect pipeline</a>
       </div>
-      <button type="button" class="cli-pill slide-fill" onclick="navigator.clipboard.writeText('uv tool install --editable . && jarvis init && jarvis'); this.querySelector('.cmd-txt').textContent='Copied to clipboard!'; setTimeout(()=>this.querySelector('.cmd-txt').textContent='uv tool install --editable . && jarvis init && jarvis', 1800)">
+      <button type="button" class="cli-pill slide-fill" onclick="navigator.clipboard.writeText('uv tool install git+https://github.com/sangdth/jarvis@master && jarvis init && jarvis'); this.querySelector('.cmd-txt').textContent='Copied to clipboard!'; setTimeout(()=>this.querySelector('.cmd-txt').textContent='uv tool install git+https://github.com/sangdth/jarvis@master && jarvis init && jarvis', 1800)">
         <b>~</b>
-        <span class="cmd-txt">uv tool install --editable . &amp;&amp; jarvis init &amp;&amp; jarvis</span>
+        <span class="cmd-txt">uv tool install git+https://github.com/sangdth/jarvis@master &amp;&amp; jarvis init &amp;&amp; jarvis</span>
       </button>
     </div>
   </section>
@@ -1193,7 +1193,7 @@
               </button>
             </figcaption>
             <pre class="code-pre" id="code-panel-body"><span class="c"># 1. Install dependencies</span>
-<span class="g">$</span> uv tool install --editable .
+<span class="g">$</span> uv tool install git+https://github.com/sangdth/jarvis@master
 
 <span class="c"># 2. Set up ~/.config/jarvis and teach Jarvis your voice (local sherpa-onnx)</span>
 <span class="g">$</span> jarvis init
@@ -1415,7 +1415,7 @@
             <h2>Four commands to launch</h2>
             <p>Install with <code>uv</code>, add your OpenRouter and ElevenLabs keys, enroll three spoken sentences, and run <code>jarvis</code>.</p>
             <div class="cta-pane-actions">
-              <button type="button" class="btn btn-primary type-mono-label" onclick="navigator.clipboard.writeText('uv tool install --editable . && jarvis init && jarvis'); this.textContent='Copied setup commands!'; setTimeout(()=>this.textContent='Copy setup commands', 1800)">Copy setup commands</button>
+              <button type="button" class="btn btn-primary type-mono-label" onclick="navigator.clipboard.writeText('uv tool install git+https://github.com/sangdth/jarvis@master && jarvis init && jarvis'); this.textContent='Copied setup commands!'; setTimeout(()=>this.textContent='Copy setup commands', 1800)">Copy setup commands</button>
             </div>
           </div>
         </div>
@@ -1729,9 +1729,9 @@
     const panels = [
       {
         title: "terminal — jarvis quickstart",
-        copy: "uv tool install --editable . && jarvis init && jarvis",
+        copy: "uv tool install git+https://github.com/sangdth/jarvis@master && jarvis init && jarvis",
         html: `<span class="c"># 1. Install dependencies</span>
-<span class="g">$</span> uv tool install --editable .
+<span class="g">$</span> uv tool install git+https://github.com/sangdth/jarvis@master
 
 <span class="c"># 2. Set up ~/.config/jarvis and teach Jarvis your voice (local sherpa-onnx)</span>
 <span class="g">$</span> jarvis init

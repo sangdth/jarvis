@@ -7,9 +7,11 @@ Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
 
 ## Commands
 
-- Install: `uv tool install --editable .` puts `jarvis` on the PATH. Commands: `jarvis` (listen), `jarvis connect`
-  (continue a T3 thread; as a T3 project script, the thread it runs in), `jarvis init` (set up, then enroll),
-  `jarvis enroll` (voiceprint again). `uv run jarvis …` works the same in the repo.
+- Production: `uv tool install "git+https://github.com/sangdth/jarvis@master"`; `jarvis update` upgrades it,
+  `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
+  Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
+  in), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again). One listens at a time
+  (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
 - Needs: OpenCode `opencode serve --port 4096` with the same password; Hermes its gateway service
   (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
@@ -43,7 +45,7 @@ speech check dropping the sentence, not the conversation model.
 | Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`         |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
 | Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.config/jarvis/memory`)          |
-| Model names, keys                    | `config.py`, `~/.config/jarvis/.env`, `.env.example`          |
+| Model names, keys                    | `config.py`, `~/.config/jarvis/.env`, `defaults/env.example`  |
 
 Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/userdata/logs/terminals/*.log`).
 `[User Transcript]` shows what Whisper heard; the lines after it show whether the sentence was passed on or ignored.
@@ -72,7 +74,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
 - **All user state lives in `JARVIS_HOME`** (`config.py`, `~/.config/jarvis`): `.env`, `agents.json`, `SOUL.md`,
   the voiceprint, models, memory. Never the current folder: `jarvis` runs from any project, and a project's own
-  `.env` must not leak in. A relative `WATCH_CONFIG_PATH` counts from there.
+  `.env` must not leak in. A relative `WATCH_CONFIG_PATH` counts from there. `jarvis init` copies the defaults from
+  `src/jarvis/defaults/` (shipped in the package); a change to the shipped agents only reaches users who copy it.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.

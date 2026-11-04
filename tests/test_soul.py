@@ -41,29 +41,16 @@ class SoulTest(unittest.TestCase):
             self.assertEqual(load_soul(path).projects_dir, tmp)
             self.assertIn("warm, playful", load_soul(path).personality)
 
-    def test_init_copies_the_repo_env_and_agents_once(self):
+    def test_init_copies_the_defaults_once(self):
         with tempfile.TemporaryDirectory() as tmp:
-            repo, home = Path(tmp) / "repo", Path(tmp) / "home"
-            repo.mkdir()
-            (repo / ".env").write_text("KEY=real")
-            (repo / ".env.example").write_text("KEY=")
-            (repo / "agents.json").write_text("{}")
-            self.assertEqual(sorted(p.name for p in soul.copy_config(home, repo)), [".env", "agents.json"])
-            self.assertEqual((home / ".env").read_text(), "KEY=real")
+            home = Path(tmp) / "home"
+            self.assertEqual(sorted(p.name for p in soul.copy_config(home)), [".env", "agents.json"])
+            self.assertIn("OPENROUTER_API_KEY=", (home / ".env").read_text())
+            self.assertIn('"t3-code"', (home / "agents.json").read_text())
             self.assertEqual((home / ".env").stat().st_mode & 0o777, 0o600)
             (home / ".env").write_text("KEY=mine")
-            self.assertEqual(soul.copy_config(home, repo), [])  # never overwrites
+            self.assertEqual(soul.copy_config(home), [])  # never overwrites
             self.assertEqual((home / ".env").read_text(), "KEY=mine")
-
-    def test_init_falls_back_to_the_example_env(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo, home = Path(tmp) / "repo", Path(tmp) / "home"
-            repo.mkdir()
-            (repo / ".env.example").write_text("KEY=")
-            soul.copy_config(home, repo)
-            self.assertEqual((home / ".env").read_text(), "KEY=")
-            self.assertFalse((home / "agents.json").exists())
-
 
 if __name__ == "__main__":
     unittest.main()
