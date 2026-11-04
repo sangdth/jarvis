@@ -1,7 +1,7 @@
 """
 Record the owner's voiceprint so Jarvis acts only on your voice.
 Usage:
-    uv run jarvis-enroll
+    jarvis enroll   (also the last step of `jarvis init`)
 """
 
 from __future__ import annotations

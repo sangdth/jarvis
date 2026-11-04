@@ -5,6 +5,7 @@ Jarvis Always-On Voice Executive Harness (Pipecat Pipeline).
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from datetime import datetime
 from collections.abc import Awaitable, Callable
@@ -203,7 +204,42 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
     }
 
 
-async def run_pipecat_harness() -> None:
+async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
+    """`jarvis connect`: attach T3 Code to the thread this runs in (a T3 project script), else to one picked here."""
+    from jarvis.t3_adapter import T3Adapter, current_thread, recent_threads
+
+    t3 = next((a for a in orchestrator.adapters.values() if isinstance(a, T3Adapter)), None)
+    if t3 is None:
+        sys.exit("jarvis connect needs a T3 Code agent enabled in agents.json.")
+    try:
+        snapshot = await t3.shell_snapshot()
+    except Exception as exc:
+        sys.exit(f"Could not read T3 threads; is the T3 app running? ({exc!r})")
+    root = os.environ.get("T3CODE_PROJECT_ROOT")  # set only in a T3 project script
+    thread = current_thread(snapshot, root, os.environ.get("T3CODE_WORKTREE_PATH")) if root else None
+    if thread:
+        print(f"Continuing this T3 Code thread: {thread['project']}: {thread['title']}")
+        t3.attach(thread["id"], thread["root"])
+        return thread
+    threads = recent_threads(snapshot)
+    if not threads:
+        sys.exit("No T3 threads to connect to.")
+    print("\n=== Your recent T3 Code threads ===\n")
+    for n, t in enumerate(threads, 1):
+        when = datetime.fromisoformat(t["updatedAt"]).astimezone().strftime("%b %d %H:%M") if t["updatedAt"] else ""
+        print(f"{n:>2}. {t['project']}: {t['title']}  ({t['status']}, {when})")
+    choice = ""
+    while not (choice.isdigit() and 1 <= int(choice) <= len(threads)):
+        try:  # blocking is fine: nothing else runs before the pipeline starts
+            choice = input(f"\nThread to continue (1-{len(threads)}): ").strip()
+        except EOFError:
+            sys.exit(0)
+    thread = threads[int(choice) - 1]
+    t3.attach(thread["id"], thread["root"])  # its waiting question, if any, is read out once T3 Code connects
+    return thread
+
+
+async def run_pipecat_harness(connect: bool = False) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -268,6 +304,7 @@ async def run_pipecat_harness() -> None:
     )
     orchestrator = AgentOrchestrator(state=state)
     orchestrator.load_from_file(settings.watch_config_path)
+    thread = await pick_thread(orchestrator) if connect else None
 
     # 1. Local mic + speaker (always on, no wake word); the echo filter keeps Jarvis's own voice out of the mic
     echo = EchoFilter()
@@ -376,6 +413,9 @@ async def run_pipecat_harness() -> None:
 
     @task.event_handler("on_pipeline_started")
     async def greet(task: PipelineTask, frame) -> None:
+        if thread:  # back from the keyboard mid-work: say where we are, skip the small talk
+            await on_speak(f"Connected to {thread['title']} in {thread['project']}.")
+            return
         if llm is None:
             await on_speak("Jarvis here. I'm listening.")
             return
@@ -402,9 +442,27 @@ async def run_pipecat_harness() -> None:
         await executive_filter.aclose()
 
 
+USAGE = """usage: jarvis [command]
+  (none)    listen and hand work to the agents
+  connect   continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
+  init      set up ~/.config/jarvis: .env, agents.json, SOUL.md, then your voiceprint
+  enroll    record your voiceprint again"""
+
+
 def main() -> None:
+    args = sys.argv[1:]
+    if args == ["init"]:
+        from jarvis.soul import main as init
+
+        return init()
+    if args == ["enroll"]:
+        from jarvis.enroll import main as enroll  # imported here: loads the speaker model
+
+        return enroll()
+    if args not in ([], ["connect"]):
+        sys.exit(USAGE)
     try:
-        asyncio.run(run_pipecat_harness())
+        asyncio.run(run_pipecat_harness(connect=args == ["connect"]))
     except KeyboardInterrupt:
         logger.info("Jarvis stopped.")
         sys.exit(0)

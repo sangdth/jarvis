@@ -1,7 +1,7 @@
 # Jarvis — Always-On Voice Executive Harness
 
 > [!WARNING]
-> Jarvis is at an early stage. Commands, settings and file formats (like `~/.jarvis/SOUL.md`) can change
+> Jarvis is at an early stage. Commands, settings and file formats (like `~/.config/jarvis/SOUL.md`) can change
 > dramatically between versions, without a migration path.
 
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sherpa-onnx**, the **Claude Agent SDK** and the **OpenCode v2 API**.
@@ -42,24 +42,40 @@ Files are in [`src/jarvis/`](src/jarvis/).
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Install
 ```bash
 uv sync
+uv tool install --editable .
 ```
+This puts the `jarvis` command on your PATH, so it runs from any folder. It is editable: changes in this checkout
+apply without reinstalling, so install from the checkout you keep, not a throwaway worktree. Everything of yours
+lives in `~/.config/jarvis/`, never in the folder you run it from.
 
-### 2. Configure `.env`
+### 2. Set Up Jarvis
 ```bash
-cp .env.example .env
+jarvis init
 ```
-Fill in:
+It creates `~/.config/jarvis/` with your `.env` (this repo's `.env` if you have one, else a copy of `.env.example`)
+and `agents.json`; it never overwrites them. Then it asks a few questions (Jarvis's personality, what to call you,
+where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
+file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
+
+Last, it records your voice: Jarvis acts only on your voice and won't start until you enroll. Read the three lines
+it shows, with the mic Jarvis will use. It downloads the speaker model (25 MB) to `~/.config/jarvis/models/` and
+saves your voiceprint to `~/.config/jarvis/owner_voice.npy`. Anyone can still say "shut up" or "you can talk".
+Enroll close to the mic in a quiet moment: background voices in the recording weaken the voiceprint. Record it
+again any time with `jarvis enroll`.
+
+### 3. Configure `.env`
+Fill in `~/.config/jarvis/.env`:
 - `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash` with thinking off), which also retells finished agent turns in two sentences, and for the decision model that tells whether a sentence is meant for Jarvis (`FILTER_MODEL`, `typesafe/jev-1.14`). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
 - `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `t3-code`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
 - `ELEVENLABS_API_KEY`: voice output with `eleven_v4_turbo` (about 100 ms to first audio; it laughs and sighs when the brain tags a reply).
 
-### 3. Configure Watched Coding Agents
-Edit [`agents.json`](agents.json): set each agent's `cwd` to the project it should work in. Each agent's `role` tells
-Jarvis what to send it.
+### 4. Configure Watched Coding Agents
+Edit `~/.config/jarvis/agents.json` (copied from [`agents.json`](agents.json)). Each agent's `role` tells Jarvis
+what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path to pin an agent to one project.
 - **Claude Code** runs through the Agent SDK with your own Claude settings (`defaultMode`, allow rules), the same as
   in your terminal. Whatever those settings would ask you, and Claude's own questions, are read out, and Claude waits
   for your answer.
@@ -74,32 +90,33 @@ Jarvis what to send it.
   go to that thread. Coding with no project named runs in `cwd` from `agents.json`. Threads use your T3 default
   model and mode; Jarvis watches only its newest thread.
 
-### 4. Memory
+### 5. Memory
 Jarvis remembers facts about you between runs (local [Mem0](https://github.com/mem0ai/mem0) with Qdrant in
-`~/.jarvis/memory`). It needs the Ollama app running with the embedding model: `ollama pull bge-m3`. Without Ollama,
-Jarvis still runs, just without memory.
-
-### 5. Set Up Jarvis and Enroll Your Voice
-```bash
-uv run jarvis-init
-```
-It asks a few questions (Jarvis's personality, what to call you, where you keep your projects, default
-`~/Projects`) and saves the answers to `~/.jarvis/SOUL.md`. Edit that file by hand any time; Jarvis reads it at
-startup. The personality sets tone only, and the name stays Jarvis. Without the file, Jarvis uses its defaults.
-
-Then it records your voice: Jarvis acts only on your voice and won't start until you enroll
-(`uv run jarvis-enroll` records the voice alone). Read the three lines it shows, with the mic Jarvis will use. It downloads the speaker model (25 MB) to
-`~/.jarvis/models/` and saves your voiceprint to `~/.jarvis/owner_voice.npy`. Anyone can still say "shut up" or
-"you can talk". Enroll close to the mic in a quiet moment: background voices in the recording weaken the voiceprint.
-Run it again any time to replace the voiceprint.
+`~/.config/jarvis/memory`). It needs the Ollama app running with the embedding model: `ollama pull bge-m3`. Without
+Ollama, Jarvis still runs, just without memory.
 
 ### 6. Run Jarvis
 ```bash
-uv run jarvis
+jarvis
 ```
 Jarvis greets you in a few words and listens. Use headphones for now. On speakers the mic also hears Jarvis, and
 the current echo filter removes little of it: the voice check drops Jarvis's own sentences, but when you talk over
 it, Whisper hears both voices.
+
+### Continue a T3 Code thread away from the keyboard
+```bash
+jarvis connect
+```
+Add it once as a project script in T3 Code (Settings, default project scripts, command `jarvis connect`), then run
+it from the thread you are in: Jarvis continues that thread. T3 tells a script only its folder, so a thread in its
+own worktree is found exactly; on a project's root folder, Jarvis takes the thread you viewed last there. It says
+"Connected to *title*" so you know which one. Run in a normal terminal, it lists your 15 newest threads (the ones
+you started; imports and agent sub-threads are left out) to pick from by number.
+
+Once connected, what you say goes to that thread, a question or approval it is waiting on is read out right away,
+and its finished turns are retold. Nothing is sent to the thread when you connect. Stop Jarvis (Ctrl+C) when you
+are back at the keyboard, or it reads out the replies to what you type too. As a project script, Jarvis runs
+inside the T3 Code app, so macOS asks whether T3 Code may use the microphone; allow it.
 
 ### Tuning and Troubleshooting
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence
@@ -107,8 +124,8 @@ it, Whisper hears both voices.
 - **Your voice gets dropped, or others get through.** Every sentence logs `[Speaker] score=0.71 pass`. Set
   `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.5), or enroll again.
 - **Jarvis splits one sentence into two.** A pause over 0.6 s ends a sentence; raise `stop_secs` in `main.py`.
-- **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when it can't find `.env`: run it from the folder that
-  has the file.
+- **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
+  key: run `jarvis init`, then fill it in.
 
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.

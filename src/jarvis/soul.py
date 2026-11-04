@@ -1,16 +1,20 @@
 """
-The user's own Jarvis: personality and a few settings in ~/.jarvis/SOUL.md, written by a short interview.
-The name stays "Jarvis"; the speech check and the mute phrases depend on it.
-Usage:
-    uv run jarvis-init
+`jarvis init`: set up ~/.config/jarvis. Copies .env and agents.json there, writes SOUL.md (personality and a
+few settings) from a short interview, then records the voiceprint. The name stays "Jarvis"; the speech check and
+the mute phrases depend on it.
 """
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-SOUL_PATH = Path("~/.jarvis/SOUL.md").expanduser()
+from jarvis.config import JARVIS_HOME
+
+SOUL_PATH = JARVIS_HOME / "SOUL.md"
+# shortcut: the templates are read from the repo, so this needs the editable install (`uv tool install --editable`).
+REPO = Path(__file__).resolve().parents[2]
 DEFAULT_PROJECTS_DIR = "~/Projects"
 
 
@@ -55,8 +59,25 @@ def ask(question: str, default: str = "") -> str:
     return answer or default
 
 
+def copy_config(home: Path = JARVIS_HOME, repo: Path = REPO) -> list[Path]:
+    """Put .env and agents.json in home when missing: the repo's own .env if there is one, else the example."""
+    copied = []
+    for name, sources in ((".env", (".env", ".env.example")), ("agents.json", ("agents.json",))):
+        target = home / name
+        source = next((repo / s for s in sources if (repo / s).is_file()), None)
+        if target.exists() or source is None:
+            continue
+        home.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o600 if name == ".env" else 0o644)  # .env holds API keys
+        copied.append(target)
+    return copied
+
+
 def main() -> None:
     print("\n=== Jarvis setup ===\n")
+    for path in copy_config():
+        print(f"Created {path}. Fill in or check it before you run Jarvis.")
     write = not SOUL_PATH.exists() or ask(f"{SOUL_PATH} exists. Replace it? y/N", "n").lower().startswith("y")
     if write:
         personality = ask("Jarvis's personality, in a few words", "calm, dry wit, concise").rstrip(".")
@@ -69,7 +90,7 @@ def main() -> None:
         SOUL_PATH.write_text(render_soul(personality, user_name, projects_dir, extra), encoding="utf-8")
         print(f"\nSaved {SOUL_PATH}. Edit it by hand any time; Jarvis reads it at startup.\n")
 
-    if ask("Record your voice now? Jarvis won't start without it. Y/n", "y").lower().startswith("y"):
+    if ask("Record your voice now? Jarvis won't start without it (later: `jarvis enroll`). Y/n", "y").lower().startswith("y"):
         from jarvis.enroll import main as enroll  # imported here: loads the speaker model
 
         enroll()

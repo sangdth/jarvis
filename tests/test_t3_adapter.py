@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from jarvis.agent_watchers import WatchedAgentConfig
-from jarvis.t3_adapter import PROJECTS, PROJECTS_LABEL, T3Adapter, find_project, list_projects, t3_question_fields
+from jarvis.t3_adapter import PROJECTS, PROJECTS_LABEL, T3Adapter, current_thread, find_project, list_projects, recent_threads, t3_question_fields
 
 RUN = "run:thread:t1:ordinal:1"
 
@@ -172,6 +172,18 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         await a._subscribe()
         self.assertEqual(json.loads(a._ws.send.await_args.args[0])["payload"], {"threadId": "t1", "afterSequence": 42})
 
+    async def test_attached_thread_reads_out_its_waiting_question_but_sends_nothing(self) -> None:
+        a = make()
+        a.attach("t9", "/tmp/repo")
+        a._ws = MagicMock()
+        a._ws.send = AsyncMock()
+        await a._subscribe()
+        self.assertEqual(json.loads(a._ws.send.await_args.args[0])["payload"], {"threadId": "t9"})
+        await a._on_stream_item({"kind": "snapshot", "snapshotSequence": 3, "projection": {"turnItems": [APPROVAL]}})
+        a._surface.assert_awaited_once()
+        self.assertTrue(a._surface.await_args.args[0].startswith("needs approval:"))
+        a._command.assert_not_awaited()
+
 
 class TestHelpers(unittest.TestCase):
     def test_deepest_live_project_holds_cwd(self) -> None:
@@ -186,6 +198,39 @@ class TestHelpers(unittest.TestCase):
             for repo in ("solo/.git", "Org/app/.git", "Org/notes", ".hidden/x/.git", "Org/app/deep/.git"):
                 (root / repo).mkdir(parents=True)
             self.assertEqual(list_projects(root), ["Org/app", "solo"])
+
+    def test_recent_threads_are_the_users_own_newest_first(self) -> None:
+        snapshot = {
+            "projects": [{"id": "p1", "title": "jarvis", "workspaceRoot": "/r/jarvis"}],
+            "threads": [
+                {"id": "old", "projectId": "p1", "createdBy": "user", "title": "Old", "updatedAt": "2026-01-01T00:00:00Z"},
+                {"id": "new", "projectId": "p1", "createdBy": "user", "title": "New", "status": "running",
+                 "updatedAt": "2026-02-01T00:00:00Z", "worktreePath": "/wt/new"},
+                {"id": "child", "projectId": "p1", "createdBy": "agent", "updatedAt": "2026-03-01T00:00:00Z"},
+                {"id": "import", "projectId": "p1", "createdBy": "system", "updatedAt": "2026-03-01T00:00:00Z"},
+                {"id": "gone", "projectId": "p1", "createdBy": "user", "archivedAt": "x", "updatedAt": "2026-03-01"},
+                {"id": "orphan", "projectId": "p2", "createdBy": "user", "updatedAt": "2026-03-01T00:00:00Z"},
+            ],
+        }
+        threads = recent_threads(snapshot)
+        self.assertEqual([t["id"] for t in threads], ["new", "old"])
+        self.assertEqual((threads[0]["root"], threads[1]["root"]), ("/wt/new", "/r/jarvis"))
+        self.assertEqual((threads[0]["project"], threads[1]["status"]), ("jarvis", "idle"))
+        self.assertEqual(len(recent_threads(snapshot, limit=1)), 1)
+
+    def test_project_script_finds_the_thread_it_runs_in(self) -> None:
+        def thread(id_: str, visited: str, worktree: str | None = None) -> dict:
+            return {"id": id_, "projectId": "p1", "createdBy": "user", "updatedAt": "2026-01-01T00:00:00Z",
+                    "lastVisitedAt": visited, "worktreePath": worktree}
+        snapshot = {
+            "projects": [{"id": "p1", "workspaceRoot": "/r/jarvis"}],
+            "threads": [thread("wt", "2026-03-01", "/wt/a"), thread("root-old", "2026-01-01"),
+                        thread("root-seen", "2026-02-01"), thread("wt-b", "2026-04-01", "/wt/b")],
+        }
+        self.assertEqual(current_thread(snapshot, "/r/jarvis", "/wt/a")["id"], "wt")  # a worktree is exact
+        self.assertEqual(current_thread(snapshot, "/r/jarvis", None)["id"], "root-seen")  # root: viewed last
+        self.assertIsNone(current_thread(snapshot, "/r/jarvis", "/wt/gone"))
+        self.assertIsNone(current_thread(snapshot, "/r/other", None))
 
     def test_question_fields_use_value_or_label(self) -> None:
         fields = t3_question_fields(QUESTION["questions"])
