@@ -440,33 +440,3 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     finally:
         await orchestrator.stop_all()
         await executive_filter.aclose()
-
-
-USAGE = """usage: jarvis [command]
-  (none)    listen and hand work to the agents
-  connect   continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
-  init      set up ~/.config/jarvis: .env, agents.json, SOUL.md, then your voiceprint
-  enroll    record your voiceprint again"""
-
-
-def main() -> None:
-    args = sys.argv[1:]
-    if args == ["init"]:
-        from jarvis.soul import main as init
-
-        return init()
-    if args == ["enroll"]:
-        from jarvis.enroll import main as enroll  # imported here: loads the speaker model
-
-        return enroll()
-    if args not in ([], ["connect"]):
-        sys.exit(USAGE)
-    try:
-        asyncio.run(run_pipecat_harness(connect=args == ["connect"]))
-    except KeyboardInterrupt:
-        logger.info("Jarvis stopped.")
-        sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()

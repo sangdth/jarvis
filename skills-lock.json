@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "python-design-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/python-development/skills/python-design-patterns/SKILL.md",
+      "computedHash": "e9340dc302515d844fb5c4d6a14da72bed62ef50ab8b56540dd80a1a22a3c059"
+    },
+    "python-project-structure": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/python-development/skills/python-project-structure/SKILL.md",
+      "computedHash": "2f4f560964af8ecad4d54666c044baa54671d0abd1136c848b539befe24db170"
+    },
+    "python-testing-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/python-development/skills/python-testing-patterns/SKILL.md",
+      "computedHash": "cfec3cbf4023ac0336f37bb28991824d87cc9e92758e4615e1e5d85c5f2ceeed"
+    }
+  }
+}

@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jarvis = "jarvis.main:main"
+jarvis = "jarvis.cli:main"
 
 [build-system]
 requires = ["hatchling"]
