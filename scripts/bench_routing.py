@@ -18,7 +18,7 @@ from jarvis.agent_watchers import AgentOrchestrator
 from jarvis.config import settings
 from jarvis.main import agent_tools, system_prompt
 from jarvis.soul import load_soul
-from jarvis.t3_adapter import PROJECTS_LABEL
+from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
 from jarvis.state import JarvisState
 
 MIN_ACCURACY = 0.95  # 99% on 2026-11-03 (DeepSeek V4.1 Flash, thinking off)
@@ -60,6 +60,10 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Open the OpsCom status project", "t3-code@opscom/status"),
     ("I want to work on Jarvis today", "t3-code@jarvis"),
     ("Continue to work with hugger hustle platform", "t3-code@huggerhustle/platform-v2"),
+    # A vague or shared name picks the project worked on most recently (live: depends on the machine's repos)
+    ("Continue where I left off", f"t3-code@{list_projects()[0].lower()}"),
+    ("Continue on Hugger Hustle", f"t3-code@{next(p for p in list_projects() if p.startswith('huggerhustle/'))}"),
+    ("Let's work on the Hugger Hustle blog", "t3-code@huggerhustle/simple-blog"),
     # Questions about the project list itself are answered from the list in the prompt, not sent to an agent
     ("How many projects do we have in Happy Voxel?", SELF),
     ("How many projects do we have in OpsCom?", SELF),

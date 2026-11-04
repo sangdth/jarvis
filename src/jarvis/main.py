@@ -108,7 +108,9 @@ def project_list(orchestrator: AgentOrchestrator) -> str:
         " says what to do there; \"continue on X\" or \"open X\" alone has no task. Set `project` also when the"
         " user names it in a reply to your question. Coding with no project named needs no `project`. Questions"
         " about the projects themselves (which exist, how many, what is in a group) you answer from this list"
-        " yourself, with no tool.\n" + "\n".join(f"- {folder}" for folder in list_projects())
+        " yourself, with no tool. The list is newest first: when a name fits more than one folder, or the user says"
+        " \"where I left off\", pick the newest that fits.\n"
+        + "\n".join(f"- {folder}{' (recent)' if i < 5 else ''}" for i, folder in enumerate(list_projects()))
     )
 
 

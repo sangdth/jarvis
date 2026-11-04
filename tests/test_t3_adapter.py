@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -197,7 +198,10 @@ class TestHelpers(unittest.TestCase):
             root = Path(tmp)
             for repo in ("solo/.git", "Org/app/.git", "Org/notes", ".hidden/x/.git", "Org/app/deep/.git"):
                 (root / repo).mkdir(parents=True)
+            os.utime(root / "solo/.git", (1, 1))
             self.assertEqual(list_projects(root), ["Org/app", "solo"])
+            (root / "solo/.git/index").touch()  # git wrote the index just now: solo is the newest
+            self.assertEqual(list_projects(root), ["solo", "Org/app"])
 
     def test_recent_threads_are_the_users_own_newest_first(self) -> None:
         snapshot = {

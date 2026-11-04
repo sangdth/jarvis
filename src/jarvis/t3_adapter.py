@@ -49,8 +49,14 @@ def find_project(projects: list[dict[str, Any]], cwd: str) -> dict[str, Any] | N
     return max(holding, key=lambda p: len(p["workspaceRoot"]), default=None)
 
 
+def _last_touched(repo: Path) -> float:
+    """When git last wrote the repo's index (commit, checkout, add, pull); a new repo has only `.git`."""
+    git = repo / ".git"
+    return (git / "index").stat().st_mtime if (git / "index").exists() else git.stat().st_mtime
+
+
 def list_projects(root: Path = PROJECTS) -> list[str]:
-    """Git repos one or two folders under root, as relative paths ("HuggerHustle/platform-v2")."""
+    """Git repos one or two folders under root, as relative paths ("HuggerHustle/platform-v2"), newest first."""
     found: list[str] = []
     for top in sorted(root.iterdir()) if root.is_dir() else []:
         if top.name.startswith(".") or not top.is_dir():
@@ -62,7 +68,7 @@ def list_projects(root: Path = PROJECTS) -> list[str]:
             found += [f"{top.name}/{sub.name}" for sub in sorted(top.iterdir()) if (sub / ".git").exists()]
         except OSError:
             continue  # unreadable folder: not a project Jarvis can open
-    return found
+    return sorted(found, key=lambda folder: _last_touched(root / folder), reverse=True)
 
 
 def recent_threads(snapshot: dict[str, Any], limit: int | None = 15) -> list[dict[str, Any]]:
