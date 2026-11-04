@@ -1,0 +1,85 @@
+# Server Utilities: runner (development runner + transport utils)
+
+## What a runner is
+
+Server docs describe a “bot runner” as an HTTP gateway that:
+
+- creates transport sessions (rooms/tokens)
+- spawns a bot process per user session
+- passes connection details to the bot
+- manages lifecycle and cleanup
+
+## Development runner: why it matters
+
+- Lets you run the same bot logic across multiple transports.
+- Handles setup for WebRTC (local), Daily rooms/tokens, and telephony webhooks.
+- Encourages a pattern: keep core bot logic transport-agnostic, create the transport in the entry point based on runner args.
+- `1.0.0` exports a module-level FastAPI `app` from the development runner, so you can register custom routes/middleware before calling `main()`.
+
+## Installation (extras)
+
+Runner support is provided via the `pipecat-ai[runner]` extra.
+See: `references/installation.md`.
+
+## CLI patterns
+
+Docs show a single entry point you run with transport selection flags:
+
+- WebRTC local: `-t webrtc`
+- Daily rooms: `-t daily`
+- Telephony: `-t twilio|telnyx|plivo|exotel` (requires a public proxy hostname)
+
+`1.3.0` runner update:
+
+- Omitting `-t` now enables all supported transports instead of defaulting to WebRTC only.
+- `POST /start` accepts a `transport` field to select WebRTC, Daily, telephony, or plain WebSocket per request.
+- Plain WebSocket clients can connect through `/ws-client`, which is useful for browser apps using protobuf framing or non-telephony WebSocket clients.
+- `GET /status` reports which transports the running instance accepts and helps client bootstraps choose the correct path.
+- The Daily browser redirect route moved from `GET /` to `GET /daily`.
+
+The runner also documents extra switches for direct Daily testing and dial-in webhook handling.
+
+`1.6.0` adds MoQ transport flags: `--moq-serve` and `--moq-bind` configure the bot's built-in MoQ server, and `--moq-tls-generate` / `--moq-tls-cert` / `--moq-tls-key` control the TLS material QUIC requires for local dev. See `references/transports.md` for what `MOQTransport` provides.
+
+The development runner also now prints a bordered startup banner on launch, flagging it as development-only and linking to the deployment docs — a reminder not to run it as-is in production.
+
+## Runner arguments (what your bot receives)
+
+The runner passes transport-specific data to the bot entry point, e.g.:
+
+- Daily room URL and token
+- WebRTC connection object
+- WebSocket stream for telephony
+
+`1.2.0` note:
+
+- Runner arguments now carry a `session_id` consistently across local development flows, Daily `/start`, and dial-in style entry points. Reuse that id for logs, traces, and cross-service correlation instead of minting a second session identifier in user code.
+
+Implementation note: some signal-handling args are development-only and not available on Pipecat Cloud.
+
+## Built-in endpoints and RTVI `/start`
+
+Docs mention an RTVI-compatible `POST /start` endpoint for Daily flows that:
+
+- creates room + token
+- spawns a bot instance with request body data
+- returns connection info to the client
+
+Use this pattern to keep provider secrets on the server.
+
+Security note from the `1.2.0` line: if you expose file-download helpers around the development runner, validate resolved paths against the allowed base directory; the upstream runner patched a traversal issue in its `/files/{filename:path}` endpoint.
+
+## Transport utilities (for custom runners)
+
+Docs describe utilities for advanced setups:
+
+- `create_transport(runner_args, transport_params)`: build the correct transport without manual conditionals
+- `parse_telephony_websocket(websocket)`: detect provider from initial messages and extract call/session data
+- daily/livekit `configure()` helpers to create rooms and tokens
+- helper functions to get transport-specific client ids and optionally capture participant camera/screen when supported
+
+## Practical checklist
+
+- Start with the development runner, then build a custom runner only if you need custom auth/endpoints.
+- Treat telephony/provider credentials as required configuration; validate them explicitly.
+- Use lazy imports inside transport-specific branches to keep optional dependencies truly optional.

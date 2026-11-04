@@ -101,7 +101,7 @@ that asked last, and a stop to the agent that is working.
 ### D. Executive Filter & Mute State Machine
 1. **What reaches the user:** Watchers only pass on questions, approvals and finished turns. Questions and approvals
    are spoken as they are. A finished turn (long markdown) goes to the executive LLM as an `AGENT_REPORT_PROMPT`
-   message, which retells it in two sentences and calls no tool; approvals never go through the LLM, so it can't
+   message, which retells it as one short first-person outcome per turn and calls no tool; approvals never go through the LLM, so it can't
    approve anything on its own. Offline, Jarvis reads the turn's last line.
 2. **Long-term memory (`memory.py`):** Pipecat's `Mem0MemoryService` sits just before the executive LLM. Before
    each reply it searches local Mem0 (Qdrant on disk, Ollama `bge-m3`, ~22 ms) and adds what it finds; after each

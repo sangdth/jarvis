@@ -1,0 +1,108 @@
+# Server APIs: pipeline/worker/params
+
+This reference summarizes the Server API pages for operating pipelines.
+
+## WorkerParams / PipelineParams (worker-wide knobs)
+
+`1.3.0` renames `PipelineTaskParams` toward `WorkerParams`; older docs and examples may still say `PipelineParams` / task params. Treat the old names as migration aliases that emit deprecation warnings.
+
+Highlights from the reference:
+
+- Audio:
+  - `audio_in_sample_rate` (input)
+  - `audio_out_sample_rate` (output)
+    Setting these at the pipeline/task level helps keep all services consistent.
+
+- Metrics:
+  - `enable_metrics`
+  - `enable_usage_metrics`
+  - `report_only_initial_ttfb`
+  - `send_initial_empty_metrics`
+
+- Heartbeats:
+  - `enable_heartbeats`
+  - `heartbeats_period_secs`
+
+- `start_metadata`: arbitrary serializable metadata attached to the start frame.
+
+- `allow_interruptions`: deprecated (use user turn strategies / `enable_interruptions` on start strategies instead).
+
+## PipelineWorker (execution + lifecycle)
+
+The Server API describes `PipelineWorker` (previously `PipelineTask`) as the center of execution:
+
+- Queue work:
+  - `queue_frame()` / `queue_frames()`
+- Stop and cancel:
+  - `stop_when_done()` (graceful end after queued frames)
+  - `cancel()` (immediate shutdown)
+  - `has_finished()`
+
+### Idle detection settings (task-level)
+
+The task supports:
+
+- `idle_timeout_secs` (disable by setting to `None`)
+- `idle_timeout_frames` (what counts as “activity”)
+- `cancel_on_idle_timeout` (if true, auto-cancel after handler runs)
+
+### Event handlers
+
+Docs list events such as:
+
+- `on_pipeline_started` / `on_pipeline_finished`
+- `on_pipeline_error` (fatal errors may cancel after handler)
+- `on_idle_timeout`
+- reached-upstream / reached-downstream events for registered frame types
+
+This is useful for cleanup, logging, instrumentation, and debugging frame flow.
+
+## Pipeline idle detection (semantics)
+
+Server docs describe idle detection as a safeguard against leaked sessions:
+
+- Activity is determined by a set of frame types.
+- Timer resets when an activity frame occurs.
+- You can choose to auto-cancel or handle it yourself (e.g., speak a prompt then end gracefully).
+
+## Heartbeats (stall detection)
+
+Server docs describe periodic `HeartbeatFrame`s traversing the entire pipeline:
+
+- Enable via PipelineParams.
+- Warnings are logged when heartbeats stop returning within a threshold, indicating a stall/blockage.
+
+## ParallelPipeline (branching)
+
+Server docs describe `ParallelPipeline` as:
+
+- multiple branches that each receive the same downstream frames
+- branch results merged back into a single stream
+- system frames (start/end) synchronized across branches
+
+Common patterns:
+
+- multi-agent branching
+- redundancy/failover paths
+- cross-branch communication via producer/consumer style processors
+
+## OTel GenAI span attribute renames (breaking, 1.6.0)
+
+Tracing span attributes were updated to the current OpenTelemetry GenAI semantic conventions. Update any dashboards or saved queries that filter on the old names:
+
+- `gen_ai.provider.name` values changed: `azure.ai.openai` (was `az.ai.openai`) for `AzureLLMService`, `x_ai` (was `xai`) for `GrokLLMService`, `mistral_ai` (was `mistral`) for `MistralLLMService`.
+- Reasoning token usage moved from `gen_ai.usage.reasoning_tokens` to `gen_ai.usage.reasoning.output_tokens`.
+- OpenAI Realtime `llm_response` spans: the non-standard `tokens.prompt` / `tokens.completion` / `tokens.total` are now `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`, plus new cached/audio breakdown attributes (`gen_ai.usage.audio.input_tokens`, `gen_ai.usage.audio.output_tokens`, `gen_ai.usage.audio.cache_read.input_tokens`).
+- Gemini Live `llm_response` spans: the same non-standard `tokens.*` attributes were removed in favor of the standard `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` attributes already present on the spans; Gemini Live spans also now include cached and reasoning token counts.
+- See `references/llm-inference.md` for the corresponding `LLMTokenUsage` audio-token fields that feed these span attributes.
+
+## Latency breakdown (1.9.0)
+
+`LatencyBreakdown.contributions` is a timeline of the user-to-bot interval whose durations sum to the measured latency. It attributes the time no service reports on its own: VAD silence, turn detection, turn-completion markers and holds, sentence aggregation, and function handlers. Use it to explain a high measured latency before blaming the LLM or TTS service.
+
+## Practical checklist
+
+- Turn on metrics/usage metrics early in development to spot latency regressions.
+- Use heartbeats when you suspect stalls or processors blocking.
+- Keep idle detection enabled unless you have a managed external lifecycle.
+- Prefer turn strategies for interruption behavior (do not rely on deprecated flags).

@@ -68,7 +68,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
 - **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir` (`SOUL.md`, default
   `~/Projects`) go into the prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
-  master branch."; the model's task is not sent. Later requests go to that thread.
+  master branch."; the model's task is not sent. Later requests go to that thread. Questions about the list
+  itself ("how many projects in OpsCom?") are answered from it, with no agent.
   A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
   at all: it is the user's work in progress. T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
@@ -79,6 +80,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.
+- **Jarvis speaks as one assistant.** Replies and retold turns say "I pushed it", "I'm searching", never which
+  agent does the work, unless the user asks. A retold turn is the outcome against the user's request in about ten
+  words (`AGENT_REPORT_PROMPT`); the full text stays in the LLM context for follow-up questions.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.

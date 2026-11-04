@@ -59,6 +59,15 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Open a new session in the Hugger Hustle platform project", "t3-code@huggerhustle/platform-v2"),
     ("Open the OpsCom status project", "t3-code@opscom/status"),
     ("I want to work on Jarvis today", "t3-code@jarvis"),
+    ("Continue to work with hugger hustle platform", "t3-code@huggerhustle/platform-v2"),
+    # Questions about the project list itself are answered from the list in the prompt, not sent to an agent
+    ("How many projects do we have in Happy Voxel?", SELF),
+    ("How many projects do we have in OpsCom?", SELF),
+    ("What projects are in Hugger Hustle?", SELF),
+    # The project named in a reply to Jarvis's question still opens it (misheard, 2026-11-03)
+    ([{"role": "user", "content": "Open a new session on..."},
+      {"role": "assistant", "content": "Which project should the new session go in?"},
+      {"role": "user", "content": "the hacker hustle platform"}], "t3-code@huggerhustle/platform-v2"),
     ("What's on my calendar tomorrow?", "hermes"),
     ("Email Minh that I'll be ten minutes late", "hermes"),
     ("Find me the best rated ramen place nearby", "hermes"),
@@ -72,7 +81,6 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Tell Hermes to find a cheap flight to Hanoi in December", "hermes"),
     # Things Jarvis can't know must be sent, not offered ("Want me to send it over?")
     ("What is the status of the OpsCom demo project?", "hermes"),
-    ("How many projects do we have in OpsCom?", "hermes"),
     ("Did Anna reply to my email yet?", "hermes"),
     ("What's the Bitcoin price right now?", "hermes"),
     ("How are you?", SELF),
