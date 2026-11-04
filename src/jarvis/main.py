@@ -289,17 +289,15 @@ async def run_pipecat_harness(connect: bool = False) -> None:
 
     async def on_speak(text: str) -> None:
         if "task" in task_ref:
-            # Record what Jarvis said, so the LLM knows which agent the user's next answer is about.
-            await task_ref["task"].queue_frame(
-                LLMMessagesAppendFrame(messages=[{"role": "assistant", "content": text}], run_llm=False)
-            )
+            # TTSSpeakFrame saves the line to the context as spoken (cut short if interrupted),
+            # so the LLM knows which agent the user's next answer is about.
             await task_ref["task"].queue_frame(TTSSpeakFrame(text=text))
 
     async def on_report(text: str) -> None:
         if "task" in task_ref:
             await task_ref["task"].queue_frame(
                 LLMMessagesAppendFrame(
-                    messages=[{"role": "system", "content": AGENT_REPORT_PROMPT + text}], run_llm=True
+                    messages=[{"role": "developer", "content": AGENT_REPORT_PROMPT + text}], run_llm=True
                 )
             )
 
@@ -347,6 +345,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
             base_url=settings.openrouter_base_url,
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
+                system_instruction=system_prompt(orchestrator, load_soul().personality),
                 # DeepSeek thinks by default, which more than doubles time to first word;
                 # sort=latency routes to whichever provider currently answers fastest.
                 extra={"extra_body": {"reasoning": {"enabled": False}, "provider": {"sort": "latency"}}},
@@ -367,10 +366,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         for name, handler in agent_tool_handlers(orchestrator).items():
             llm.register_function(name, handler)
 
-    context = LLMContext(
-        messages=[{"role": "system", "content": system_prompt(orchestrator, load_soul().personality)}],
-        tools=tools,
-    )
+    context = LLMContext(tools=tools)
     # Pipecat 1.x runs voice detection in the user aggregator; it signals speech start/stop
     # upstream too, which is what tells Whisper when a sentence is complete.
     context_aggregator = LLMContextAggregatorPair(
@@ -383,7 +379,8 @@ async def run_pipecat_harness(connect: bool = False) -> None:
             user_turn_strategies=ExternalUserTurnStrategies(),
         ),
         # Jarvis runs all day: older talk is summarized (Pipecat defaults: 8000 tokens or 20 messages), so each
-        # reply doesn't resend the whole day. It keeps the system prompt; offline there is no model to summarize.
+        # reply doesn't resend the whole day. The system prompt (system_instruction) sits outside the context, so
+        # summaries never touch it; offline there is no model to summarize.
         assistant_params=LLMAssistantAggregatorParams(enable_auto_context_summarization=llm is not None),
     )
 

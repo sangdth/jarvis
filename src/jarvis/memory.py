@@ -80,7 +80,12 @@ def create_memory_service() -> Any | None:
 
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        return LastExchangeMemory(local_config=mem0_config(), user_id=USER_ID)
+        return LastExchangeMemory(
+            local_config=mem0_config(),
+            user_id=USER_ID,
+            # The system prompt is not in the context, so memories go first.
+            params=Mem0MemoryService.InputParams(position=0),
+        )
     except Exception as exc:
         # Usually Ollama is not running: the embedder checks for bge-m3 at startup.
         logger.warning(f"Long-term memory is off ({exc!r}). Start Ollama (with bge-m3) and restart Jarvis.")
