@@ -56,6 +56,13 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         await self.handlers["stop_agent"](p)
         p.result_callback.assert_awaited_once_with({"status": "stopped", "agent_id": "hermes"})
 
+    async def test_stop_with_nothing_running_says_so(self) -> None:
+        self.agent.busy = False
+        p = params({"agent_id": "hermes"})
+        await self.handlers["stop_agent"](p)
+        self.agent.interrupt.assert_not_awaited()
+        p.result_callback.assert_awaited_once_with({"status": "nothing_running", "agent_id": "hermes"})
+
     async def test_replace_stops_a_busy_agent_before_sending(self) -> None:
         order: list[str] = []
         self.agent.interrupt = AsyncMock(side_effect=lambda: order.append("stop"))

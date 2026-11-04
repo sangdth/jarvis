@@ -50,6 +50,17 @@ CASES: list[tuple[str, UserIntent]] = [
     ("Hmm, let me think", I),
     ("um yeah okay", I),
     ("Yeah babe, I'll be down in five minutes", I),
+    # "Stop" stops the agent's work, it does not mute Jarvis. Written as Whisper writes them: with the period,
+    # "Stop it." was MUTE 5/5 (2026-11-04, live "Stop that section." muted Jarvis instead of stopping T3)
+    ("Stop.", A),
+    ("Stop it.", A),
+    ("Stop that.", A),
+    ("No, stop that.", A),
+    ("Stop that section.", A),
+    ("Stop the T3 session.", A),
+    ("Cancel that.", A),
+    ("Shut up.", M),
+    ("Be quiet.", M),
     ("Jarvis, be quiet for a while", M),
     ("Stop talking please", M),
     ("Okay Jarvis, you can speak again", U),
@@ -72,8 +83,9 @@ async def main(rounds: int) -> int:
                 got = await filt.classify_user_utterance(text)
                 latencies.append((time.perf_counter() - start) * 1000)
                 calls += 1
-                # What matters is whether the sentence reaches Jarvis, so MUTE/UNMUTE/ADDRESSED all count as "heard".
-                if (got != I) == (want != I):
+                # Heard vs ignored is what matters most; on top, mute and unmute must be exact: "Stop it." read as
+                # MUTE silences Jarvis instead of stopping the agent, and a missed "shut up" keeps it talking.
+                if (got != I) == (want != I) and (got == M) == (want == M) and (got == U) == (want == U):
                     hits += 1
                 else:
                     misses[text] = got.value
