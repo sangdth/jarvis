@@ -109,6 +109,11 @@ CASES: list[tuple[str | list[dict], str]] = [
            "Also remind me to call the bank at 3pm"), "hermes"),
     (after("Add unit tests for the payment module", "t3-code", "Add unit tests for the payment module",
            "And after that, update the README too"), "t3-code"),
+    # "Stop" while an agent works stops it (the speech check no longer mutes Jarvis for it)
+    (after("Fix the login bug in the dashboard", "t3-code", "Fix the login bug in the dashboard", "Stop it."), "stop"),
+    (after("Fix the login bug in the dashboard", "t3-code", "Fix the login bug in the dashboard", "No, stop that."), "stop"),
+    (after("Find me a cheap flight to Hanoi", "hermes", "Find a cheap flight to Hanoi", "Cancel that."), "stop"),
+    (after("Open the neuroparticles project", "t3-code", "Sync with master", "Stop that section."), "stop"),
     (after("Look up flights to Hanoi in December", "hermes", "Look up flights to Hanoi in December",
            "What does idempotent mean?"), SELF),
 ]
@@ -118,6 +123,8 @@ def outcome(message: dict, default_id: str | None) -> str:
     calls = message.get("tool_calls") or []
     if not calls:
         return SELF
+    if calls[0]["function"]["name"] == "stop_agent":
+        return "stop"  # stop_agent finds the busy agent itself when no id is given
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
     project = f"@{args['project'].removeprefix(f'{PROJECTS_LABEL}/').strip('/').lower()}" if args.get("project") else ""
     # Opening a project names work only when the user did ("+task"); an invented task is a miss.

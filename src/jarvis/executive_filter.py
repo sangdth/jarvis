@@ -19,11 +19,15 @@ INTENT_QUESTION = {
     "type": "choice",
     "instructions": _CONTEXT + " What does the speaker want?",
     "criteria": {
-        UserIntent.MUTE.value: "wants Jarvis to be quiet or stop talking",
+        UserIntent.MUTE.value: (
+            "tells Jarvis itself to be quiet: shut up, be quiet, hush, stop talking. A plain \"stop\", \"stop it\","
+            " \"stop that\" or \"cancel that\" is not this: it stops the work an agent is doing"
+        ),
         UserIntent.UNMUTE.value: "tells Jarvis it can talk again",
         UserIntent.ADDRESSED_TO_JARVIS.value: (
             "talks to Jarvis: small talk or a greeting, a question, a coding task or instruction for an agent, "
-            "or an answer. Pick this when no other person is named or clearly meant"
+            "an answer, or tells it to stop or cancel the work an agent is doing. Pick this when no other person "
+            "is named or clearly meant"
         ),
         UserIntent.IGNORE_BACKGROUND.value: (
             "talks to another person: names them, continues a story or plan with them (meetings, sports, family, "

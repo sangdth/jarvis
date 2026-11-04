@@ -79,6 +79,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `.env`. The T3 setup script copies that state into new worktrees. The one-mic lock stays in `~/.config/jarvis`
   for both. A relative `WATCH_CONFIG_PATH` counts from `JARVIS_HOME`. `jarvis init` copies the defaults from
   `src/jarvis/defaults/` (shipped in the package); a change to the shipped agents only reaches users who copy it.
+- **"Stop" stops the work, "shut up" mutes Jarvis.** "Stop it.", "stop that", "cancel that" reach the
+  conversation model, which calls `stop_agent` (`nothing_running` when idle); only "shut up" / "be quiet" (and
+  "stop talking", "hush") mute, and agents keep working while muted. `bench_intent.py` scores mute exactly.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.

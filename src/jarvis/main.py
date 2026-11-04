@@ -188,8 +188,9 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             if agent is None:
                 await params.result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})
                 return
-            ok = await action(agent, args)
-            await params.result_callback({"status": ok_status if ok else fail_status, "agent_id": agent.config.id})
+            ok = await action(agent, args)  # True, False, or a status of its own
+            status = ok if isinstance(ok, str) else ok_status if ok else fail_status
+            await params.result_callback({"status": status, "agent_id": agent.config.id})
 
         return handle
 
@@ -205,13 +206,17 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             orchestrator.remind_while_busy(agent)
         return ok
 
+    async def stop(agent: Any, args: dict) -> bool | str:
+        # Nothing running: say so, instead of a "failed" the model would read out as "I couldn't stop it".
+        return await agent.interrupt() if agent.busy else "nothing_running"
+
     return {
         "send_agent_task": handler(send, "sent", "failed"),
         # No id: an answer goes to the agent that asked, a stop to the one that is working.
         "answer_agent": handler(
             lambda a, args: a.answer(args.get("answer", "")), "answered", "no_pending_question", orchestrator.find_waiting
         ),
-        "stop_agent": handler(lambda a, args: a.interrupt(), "stopped", "failed", orchestrator.find_busy),
+        "stop_agent": handler(stop, "stopped", "failed", orchestrator.find_busy),
     }
 
 
