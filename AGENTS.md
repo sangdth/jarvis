@@ -67,7 +67,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
 - **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir` (`SOUL.md`, default
-  `~/Projects`) go into the prompt; `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
+  `~/Projects`) go into the prompt, newest first (`.git/index` time, `_last_touched`); `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
   master branch."; the model's task is not sent. Later requests go to that thread. Questions about the list
   itself ("how many projects in OpsCom?") are answered from it, with no agent.
   A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message

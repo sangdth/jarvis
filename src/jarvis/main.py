@@ -101,6 +101,7 @@ def project_list(orchestrator: AgentOrchestrator) -> str:
     if not openers:
         return ""
     # shortcut: read once at startup; a repo cloned while Jarvis runs shows up after a restart.
+    projects = list_projects()
     return (
         f"\n\nThe user's projects (folders under {PROJECTS_LABEL}). When the user wants to work on one (\"continue on the"
         f" Hugger Hustle platform\"), call send_agent_task for `{openers[0]}` with `project` set to the folder exactly"
@@ -108,9 +109,10 @@ def project_list(orchestrator: AgentOrchestrator) -> str:
         " says what to do there; \"continue on X\" or \"open X\" alone has no task. Set `project` also when the"
         " user names it in a reply to your question. Coding with no project named needs no `project`. Questions"
         " about the projects themselves (which exist, how many, what is in a group) you answer from this list"
-        " yourself, with no tool. The list is newest first: when a name fits more than one folder, or the user says"
-        " \"where I left off\", pick the newest that fits.\n"
-        + "\n".join(f"- {folder}{' (recent)' if i < 5 else ''}" for i, folder in enumerate(list_projects()))
+        " yourself, with no tool. The list is newest first. When a name fits more than one folder, pick the one that"
+        " comes first in the list; \"where I left off\" means the first folder.\n"
+        + f"Worked on most recently, newest first: {', '.join(projects[:5])}.\n"
+        + "\n".join(f"- {folder}" for folder in projects)
     )
 
 
