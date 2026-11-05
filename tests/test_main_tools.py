@@ -63,6 +63,13 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         self.agent.interrupt.assert_not_awaited()
         p.result_callback.assert_awaited_once_with({"status": "nothing_running", "agent_id": "hermes"})
 
+    async def test_send_with_nothing_to_send_says_so(self) -> None:
+        p = params({"agent_id": "hermes"})
+        await self.handlers["send_agent_task"](p)
+        self.agent.send_task.assert_not_awaited()
+        self.assertNotIn("hermes", self.orch._reminders)  # nothing went out, so no "still waiting"
+        p.result_callback.assert_awaited_once_with({"status": "nothing_to_send", "agent_id": "hermes"})
+
     async def test_replace_stops_a_busy_agent_before_sending(self) -> None:
         order: list[str] = []
         self.agent.interrupt = AsyncMock(side_effect=lambda: order.append("stop"))

@@ -166,8 +166,8 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2", "jarvis"]):
             self.assertTrue(await a.open_project("huggerhustle/platform-v2", "ok go ahead"))
             self.assertTrue(await a.open_project("jarvis", "and the tests"))  # another project: still this thread
-            self.assertEqual(await a.open_project("jarvis", ""), "kept_connected_thread")
-            self.assertEqual(await a.open_project("misheard", ""), "kept_connected_thread")
+            self.assertEqual(await a.open_project("jarvis", ""), "nothing_to_send")
+            self.assertEqual(await a.open_project("misheard", ""), "nothing_to_send")
         self.assertFalse(await a._launch("/tmp", "x", create=True))
         a._call.assert_not_awaited()  # no project.create, no launchThread
         self.assertEqual([c.args[0]["text"] for c in a._command.await_args_list], ["ok go ahead", "and the tests"])

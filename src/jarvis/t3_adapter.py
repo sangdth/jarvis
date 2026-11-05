@@ -325,7 +325,7 @@ class T3Adapter(BaseAgentAdapter):
     async def open_project(self, folder: str, task: str) -> bool | str:
         """Work in a project under PROJECTS: a new thread there that syncs with master first, or the current one."""
         if self._connected:  # the user's own thread: a project name is no reason to leave it
-            return await self.send_task(task) if task else "kept_connected_thread"
+            return await self.send_task(task) if task else "nothing_to_send"
         # Only a listed folder: the model never picks an arbitrary path. Case-blind, like the macOS file system.
         listed = {f.lower(): f for f in list_projects()}.get(folder.removeprefix(f"{PROJECTS_LABEL}/").strip("/").lower())
         if listed is None:

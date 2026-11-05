@@ -31,7 +31,7 @@ class SoulTest(unittest.TestCase):
 
     def test_prompt_names_the_connected_thread_only_when_connected(self):
         orchestrator = MagicMock(adapters={})
-        self.assertNotIn("connected", system_prompt(orchestrator, ""))
+        self.assertNotIn("You are connected to", system_prompt(orchestrator, ""))
         thread = {"title": "Fix login", "project": "platform-v2", "agent_id": "t3-code"}
         prompt = system_prompt(orchestrator, "", thread)
         self.assertIn('"Fix login" in platform-v2', prompt)
