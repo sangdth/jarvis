@@ -13,11 +13,15 @@ import numpy as np
 
 from jarvis.speaker import SAMPLE_RATE, SpeakerEmbedder, cosine, save_voiceprint
 
-SECONDS_PER_CLIP = 6
+SECONDS_PER_CLIP = 4
+# (where to face, what to say): head turned each way, then straight on, so the voiceprint covers how the mic hears
+# you at an angle too. Counting is short; the straight-on lines add everyday speech sounds.
 PROMPTS = [
-    "Hey Jarvis, open the jarvis project and run the tests, then tell me what failed.",
-    "What's on my calendar tomorrow, and did anyone reply to the invoice email?",
-    "Tell Hermes to book a table for two on Friday evening, somewhere near the office.",
+    ("Turn your head to the left", "One, two, three, four, five."),
+    ("Turn your head to the right", "One, two, three, four, five."),
+    ("Face the screen", "Hey Jarvis, open the jarvis project and run the tests."),
+    ("Face the screen", "What's on my calendar tomorrow?"),
+    ("Face the screen", "Tell Hermes to book a table for two on Friday."),
 ]
 
 
@@ -33,8 +37,8 @@ def main() -> None:
     print("\n=== Jarvis owner voice enrollment ===")
     print("Use the mic Jarvis will use. Read each line in your normal voice.\n")
     embeddings = []
-    for i, prompt in enumerate(PROMPTS, 1):
-        input(f"[{i}/{len(PROMPTS)}] Press Enter, then read:\n    {prompt}\n")
+    for i, (pose, prompt) in enumerate(PROMPTS, 1):
+        input(f"[{i}/{len(PROMPTS)}] {pose}. Press Enter, then say:\n    {prompt}\n")
         print(f"Recording {SECONDS_PER_CLIP} s...")
         clip.clear()
         time.sleep(SECONDS_PER_CLIP)

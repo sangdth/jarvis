@@ -88,6 +88,7 @@ def ask_api_keys(env: Path = ENV_PATH) -> None:
         text = env.read_text(encoding="utf-8")
         line = re.search(rf"^{name}=(.*)$", text, re.MULTILINE)
         if line and line.group(1).strip():
+            print(f"{name} is already set in {env}; keeping it.")
             continue
         key = getpass(f"{question} (hidden, Enter to skip): ").strip()
         if not key:

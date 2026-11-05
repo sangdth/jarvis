@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # Owner voice check (sherpa-onnx ERes2Net): sentences scoring below this are dropped.
     # Tune it from the "[Speaker] score=" lines in the log; enroll with `jarvis enroll`.
-    speaker_threshold: float = 0.5
+    speaker_threshold: float = 0.4
 
     # TTS
     elevenlabs_api_key: str = ""
