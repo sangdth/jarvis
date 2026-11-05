@@ -80,8 +80,9 @@ already set is never asked again. Then it asks a few questions (Jarvis's persona
 where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
 file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
 
-Last, it records your voice: Jarvis acts only on your voice and won't start until you enroll. Read the three lines
-it shows, with the mic Jarvis will use. It downloads the speaker model (25 MB) to `~/.config/jarvis/models/` and
+Last, it records your voice: Jarvis acts only on your voice and won't start until you enroll. Say five short lines (4 s
+each) with the mic Jarvis will use: counting with your head turned left, then right, then three lines facing the
+screen. It downloads the speaker model (25 MB) to `~/.config/jarvis/models/` and
 saves your voiceprint to `~/.config/jarvis/owner_voice.npy`. Anyone can still say "shut up" or "you can talk".
 Enroll close to the mic in a quiet moment: background voices in the recording weaken the voiceprint. Record it
 again any time with `jarvis enroll`.
@@ -144,7 +145,7 @@ inside the T3 Code app, so macOS asks whether T3 Code may use the microphone; al
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence
   was passed on or ignored. T3 Code keeps terminal logs in `~/.t3/userdata/logs/terminals/*.log`.
 - **Your voice gets dropped, or others get through.** Every sentence logs `[Speaker] score=0.71 pass`. Set
-  `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.5), or enroll again.
+  `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.4), or enroll again.
 - **Jarvis splits one sentence into two.** A pause over 0.6 s ends a sentence; raise `stop_secs` in `main.py`.
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
   key: run `jarvis init` again; it asks only for the keys still empty.
