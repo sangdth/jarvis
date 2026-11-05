@@ -65,15 +65,27 @@ def greeting_prompt(now: datetime, memories: list[str]) -> str:
     )
 
 
-def system_prompt(orchestrator: AgentOrchestrator, personality: str) -> str:
-    """The conversation model's instructions: the rules, the user's SOUL.md personality, then the agents."""
+def system_prompt(orchestrator: AgentOrchestrator, personality: str, thread: dict[str, Any] | None = None) -> str:
+    """The conversation model's instructions: the rules, the user's SOUL.md personality, the agents, the thread."""
     soul = (
         "\nThe user's own notes on your personality and how to talk to them. They set your tone only; the rules"
         " above always win, and your name stays Jarvis:\n" + personality + "\n"
         if personality
         else ""
     )
-    return JARVIS_EXECUTIVE_SYSTEM_PROMPT + soul + agent_roster(orchestrator)
+    return JARVIS_EXECUTIVE_SYSTEM_PROMPT + soul + agent_roster(orchestrator) + connected_thread(thread)
+
+
+def connected_thread(thread: dict[str, Any] | None) -> str:
+    """`jarvis connect`: name the thread, so the model keeps every coding task there for the whole session."""
+    if not thread:
+        return ""
+    return (
+        f"\n\nYou are connected to the user's T3 Code thread \"{thread['title']}\" in {thread['project']}. Every"
+        f" coding task and follow-up goes to that thread with send_agent_task for `{thread['agent_id']}`; never set"
+        " `project`, even when the user names one: this overrides the project instructions above. Asked which thread"
+        " or project you are on, name this one."
+    )
 
 
 def agent_roster(orchestrator: AgentOrchestrator) -> str:
@@ -228,7 +240,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
 
 async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
     """`jarvis connect`: attach T3 Code to the thread this runs in (a T3 project script), else to one picked here."""
-    from jarvis.t3_adapter import T3Adapter, current_thread, recent_threads
+    from jarvis.t3_adapter import T3Adapter, current_thread
 
     t3 = next((a for a in orchestrator.adapters.values() if isinstance(a, T3Adapter)), None)
     if t3 is None:
@@ -241,8 +253,17 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
     thread = current_thread(snapshot, root, os.environ.get("T3CODE_WORKTREE_PATH")) if root else None
     if thread:
         print(f"Continuing this T3 Code thread: {thread['project']}: {thread['title']}")
-        t3.attach(thread["id"], thread["root"], connected=True)
-        return thread
+    else:
+        thread = choose_thread(snapshot)
+    t3.attach(thread["id"], thread["root"], connected=True)  # its waiting question, if any, is read out once T3 Code connects
+    logger.info(f"Connected to T3 thread {thread['id']} ({thread['title']}, {thread['root']})")
+    return {**thread, "agent_id": t3.config.id}
+
+
+def choose_thread(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Ask at the keyboard which recent T3 thread to continue."""
+    from jarvis.t3_adapter import recent_threads
+
     threads = recent_threads(snapshot)
     if not threads:
         sys.exit("No T3 threads to connect to.")
@@ -256,9 +277,7 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
             choice = input(f"\nThread to continue (1-{len(threads)}): ").strip()
         except EOFError:
             sys.exit(0)
-    thread = threads[int(choice) - 1]
-    t3.attach(thread["id"], thread["root"], connected=True)  # its waiting question, if any, is read out once T3 Code connects
-    return thread
+    return threads[int(choice) - 1]
 
 
 async def run_pipecat_harness(connect: bool = False) -> None:
@@ -351,7 +370,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
             base_url=settings.openrouter_base_url,
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
-                system_instruction=system_prompt(orchestrator, load_soul().personality),
+                system_instruction=system_prompt(orchestrator, load_soul().personality, thread),
                 # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever provider currently answers fastest.
                 extra={
                     "extra_body": {
