@@ -1,13 +1,15 @@
-# Jarvis — Architecture & Technology Plan
+# Jarvis — Architecture
 
 ## 1. Core Requirements
 
 1. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
-2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **Claude Code** (or **OpenCode** when named), everything else to **Hermes Agent**. Jarvis only routes and relays; the work happens in each agent's own harness.
-3. **Plain-Words Reporting:** Agent questions and approval requests are read out as they are. A finished turn is long markdown full of file paths and diffs; Jarvis has its conversation model retell it in two spoken sentences.
+2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **T3 Code** (or **Claude Code** or **OpenCode** when named), everything else to **Hermes Agent**. Jarvis only routes and relays; the work happens in each agent's own harness.
+3. **Plain-Words Reporting:** Agent questions and approval requests are read out as they are. A finished turn is long markdown full of file paths and diffs; Jarvis has its conversation model retell it as one short first-person outcome, about ten words (`AGENT_REPORT_PROMPT`).
 4. **Dynamic Silence / Notification Mode:**
    - Saying **"Shut up"** or **"Be quiet"** immediately silences Jarvis's voice (`BEEP_ONLY` mode), interrupting any active speech and using short audio chimes ("beep") to notify when new agent decisions arrive.
    - Saying **"You can talk"** restores `VOICE` mode and reads out a concise digest of queued topics.
+   - **"Stop" stops the work, "shut up" mutes Jarvis.** "Stop it", "stop that" and "cancel that" reach the
+     conversation model, which calls `stop_agent`; agents keep working while Jarvis is muted.
 
 ---
 
@@ -45,12 +47,11 @@ flowchart LR
 
 ---
 
-## 3. Recommended Stack & Rationale
+## 3. Stack
 
 ### A. Real-Time Voice Pipeline Framework
-* **[Pipecat](https://github.com/pipecat-ai/pipecat) (Python) — *Selected***
+* **[Pipecat](https://github.com/pipecat-ai/pipecat) (Python)**
   * **Why:** Frame-based architecture makes it trivial to insert custom gates (`JarvisIntentGate`) directly into the audio/transcription stream. Supports instant interruption (`InterruptionFrame`), raw PCM beep injection (`OutputAudioRawFrame`), and direct TTS synthesis (`TTSSpeakFrame`).
-* **Alternative:** **[LiveKit Agents](https://github.com/livekit/agents)** (WebRTC-focused with an open-weight Semantic Turn Detector).
 
 ### B. "No Wake Word"
 Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
@@ -102,24 +103,34 @@ that asked last, and a stop to the agent that is working.
 1. **What reaches the user:** Watchers only pass on questions, approvals and finished turns. Questions and approvals
    are spoken as they are. A finished turn (long markdown) goes to the executive LLM as an `AGENT_REPORT_PROMPT`
    message, which retells it as one short first-person outcome per turn and calls no tool; approvals never go through the LLM, so it can't
-   approve anything on its own. Offline, Jarvis reads the turn's last line.
+   approve anything on its own. Offline, Jarvis reads the turn's last line. While a sent task runs,
+   `remind_while_busy` says a short "still working on it" line now and then; a new task restarts the count.
 2. **Long-term memory (`memory.py`):** Pipecat's `Mem0MemoryService` sits just before the executive LLM. Before
    each reply it searches local Mem0 (Qdrant on disk, Ollama `bge-m3`, ~22 ms) and adds what it finds; after each
    reply it saves the newest exchange in the background, where `EXECUTIVE_MODEL` picks out the facts.
 3. **Mute / Beep State Machine (`JarvisState`):**
    * **`VOICE` Mode:** Important agent topics are spoken immediately via TTS.
-   * **`BEEP_ONLY` Mode (triggered by *"Shut up"* / *"Be quiet"*):** Active TTS is immediately cancelled, a low confirmation tone plays, and incoming agent topics are appended to `pending_topics` while playing a short 880Hz sine chime.
+   * **`BEEP_ONLY` Mode (triggered by *"Shut up"*, *"Be quiet"*, *"Stop talking"*, *"Hush"*):** Active TTS is immediately cancelled, a low confirmation tone plays, and incoming agent topics are appended to `pending_topics` while playing a short 880Hz sine chime.
    * **Unmute Digest (triggered by *"You can talk"*):** Restores `VOICE` mode, reads out queued questions, then has the LLM retell queued finished turns.
 
 ---
 
 ## 4. Codebase Mapping
 
-| Module | Path | Responsibility |
-| :--- | :--- | :--- |
-| **Main Pipeline** | `src/jarvis/main.py` | Wires Silero VAD, MLX Whisper, Intent Gate, Executive LLM (OpenRouter, DeepSeek V4.1 Flash; also retells finished turns), ElevenLabs `eleven_v4_turbo` via Text-to-Dialogue with Pipecat expressive tags, and Agent Watchers. |
-| **State & Beep Synth** | `src/jarvis/state.py` | `JarvisState` (`VOICE` vs `BEEP_ONLY`), regex fast-intent detection, and 16-bit PCM sine beep generator. |
-| **Executive Filter** | `src/jarvis/executive_filter.py` | `typesafe/jev-1.14` (`FILTER_MODEL`) classifies whether speech is addressed to Jarvis. |
-| **Memory** | `src/jarvis/memory.py` | Local Mem0 config and `LastExchangeMemory` (saves only the newest exchange). |
-| **Voice Gates** | `src/jarvis/voice_gates.py` | `SpeakerVerifiedWhisperSTT` (owner voice check on each Whisper sentence) and `JarvisIntentGate`. |
-| **Agent Watchers** | `src/jarvis/agent_watchers.py` | `ClaudeCodeAdapter`, `OpenCodeSSEAdapter`, `HermesAdapter`, and `AgentOrchestrator`; `T3Adapter` in `t3_adapter.py`. |
+All files are in `src/jarvis/`.
+
+| File                  | What it holds                                                              |
+| :-------------------- | :------------------------------------------------------------------------- |
+| `main.py`             | Pipeline wiring, system prompt, agent tools, retell prompt, TTS            |
+| `cli.py`              | `jarvis` commands (`init`, `enroll`, `connect`, `update`), one-mic lock    |
+| `config.py`           | `Settings` from `.env`, `JARVIS_HOME`, dev checkout vs. installed          |
+| `soul.py`             | `jarvis init` questions, `SOUL.md` read and write                          |
+| `mac_audio.py`        | `MacVoiceTransport`: mic and speaker through macOS voice processing        |
+| `voice_gates.py`      | `SpeakerVerifiedWhisperSTT`, `JarvisIntentGate`                            |
+| `speaker.py`          | sherpa-onnx speaker embeddings, voiceprint load and save, model download   |
+| `enroll.py`           | `jarvis enroll`: records the owner's voiceprint                            |
+| `executive_filter.py` | `ExecutiveFilter`: decision model, `INTENT_QUESTION`                       |
+| `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`), mute and unmute patterns, beep synth |
+| `agent_watchers.py`   | Claude Code, OpenCode and Hermes adapters, `AgentOrchestrator`             |
+| `t3_adapter.py`       | `T3Adapter`, project list, `jarvis connect` thread lookup                  |
+| `memory.py`           | Local Mem0 config, `LastExchangeMemory` (saves only the newest exchange)   |

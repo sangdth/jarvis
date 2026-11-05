@@ -13,9 +13,11 @@ What it does:
   voice are dropped, and they can't interrupt Jarvis or keep it waiting.
 - **Answers only when you mean it.** A decision model tells talk aimed at Jarvis from talk around it.
 - **Opens your projects by name.** "Continue working on the Hugger Hustle platform" starts a T3 Code thread in that
-  repo that syncs with master; then you say what to do.
+  repo that syncs with master; then you say what to do. Questions about the list itself ("how many projects in
+  OpsCom?") are answered right away, with no agent.
 - **Stays out of the way.** A two-to-five-word greeting at startup, beeps instead of speech when you say "shut up",
-  and a short digest when you say "you can talk".
+  and a short digest when you say "you can talk". While an agent works, a short "still working on it" now and then,
+  so you know the task isn't forgotten.
 - **Remembers you** between runs, locally (Mem0 + Qdrant + Ollama).
 
 Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source in [`site/`](site/)).
@@ -29,7 +31,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | No wake word, answer when needed  | Silero VAD, MLX Whisper, `JarvisIntentGate` | `voice_gates.py`      |
 | Act only on your voice            | `SpeakerVerifiedWhisperSTT` (sherpa-onnx)   | `voice_gates.py`      |
 | Background voices never interrupt | `ExternalUserTurnStrategies`                | `voice_gates.py`      |
-| Don't hear its own voice          | `MacVoiceTransport` (macOS voice processing) | `mac_audio.py`       |
+| Don't hear its own voice          | `MacVoiceTransport` (voice processing)      | `mac_audio.py`        |
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
 | Claude Code, OpenCode, Hermes     | `*Adapter` classes                          | `agent_watchers.py`   |
@@ -146,10 +148,11 @@ inside the T3 Code app, so macOS asks whether T3 Code may use the microphone; al
 - **"Continue working on [project]" / "Open [project]"** — Starts a T3 Code thread in that repo that syncs with master.
 - **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Hermes.
 - **Answering an agent** ("yes", "use Postgres") — Goes to the question or approval the agent is waiting on.
-- **"Stop Claude"** / **"Stop that"** — Stops the agent's current turn.
+- **"Stop it"** / **"Stop that"** / **"Cancel that"** / **"Stop Claude"** — Stops the agent's current turn; with
+  nothing running, Jarvis says so. "Stop" stops the work, "shut up" mutes Jarvis.
 - **"No, I meant..."** — Replaces a task an agent is still working on, instead of starting a second one.
 - **Talking over Jarvis** — Cuts its reply off. Only your voice does this.
-- **"Shut up"** / **"Be quiet"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
+- **"Shut up"** / **"Be quiet"** / **"Stop talking"** / **"Hush"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
 - **"You can talk"** — Switches Jarvis back to `VOICE` mode and immediately reads a concise, jargon-free digest of everything queued while muted.
 
 ## License
