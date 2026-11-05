@@ -19,7 +19,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
-- Routing benchmark: `uv run python scripts/bench_routing.py` (about 120 paid calls)
+- Routing benchmark: `uv run python scripts/bench_routing.py` (about 180 paid calls; `bench_routing.py 1` runs one round, 60)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
   <https://sangdth.github.io/jarvis/> on every push to master that touches `site/`.
 
@@ -96,13 +96,13 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.
-- **Two model settings, one job each:** `EXECUTIVE_MODEL` talks and retells turns; `FILTER_MODEL` (a decision
-  model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis.
+- **Three model settings, one job each:** `EXECUTIVE_MODEL` talks and retells turns, thinking always on;
+  `FILTER_MODEL` (a decision model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis;
+  `EXTRACTION_MODEL` picks memory facts, a fast model with thinking always off.
 - **Voice is ElevenLabs `eleven_v4_turbo` over Text-to-Dialogue** (the plain TTS socket rejects it). Emotion
   tags come from Pipecat's expressive conversation mode; Jarvis writes no tag rules of its own.
 - **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.config/jarvis/memory`, `bge-m3` embeddings
-  on the Ollama app, fact extraction on `EXECUTIVE_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves
-  only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
+  on the Ollama app, fact extraction on `EXTRACTION_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
 - **Jarvis acts only on the owner's voice.** `SpeakerVerifiedWhisperSTT` scores each whole Whisper sentence
   against `~/.config/jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass
   from any voice. No voiceprint stops Jarvis at startup (`jarvis enroll`). User turns come only from

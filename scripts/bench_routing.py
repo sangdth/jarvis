@@ -21,7 +21,7 @@ from jarvis.soul import load_soul
 from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
 from jarvis.state import JarvisState
 
-MIN_ACCURACY = 0.95  # 99% on 2026-11-03 (DeepSeek V4.1 Flash, thinking off)
+MIN_ACCURACY = 0.95  # 91% on 2026-11-05 (DeepSeek V4 Pro, thinking on): below the bar
 
 SELF = "answer yourself"  # no tool call
 
@@ -154,7 +154,7 @@ async def main(rounds: int) -> int:
                         "messages": [{"role": "system", "content": system},
                                      *([{"role": "user", "content": text}] if isinstance(text, str) else text)],
                         "tools": tools,
-                        "reasoning": {"enabled": False},  # same as main.py
+                        "reasoning": {"enabled": True},  # same as main.py
                         "provider": {"sort": "latency"},
                     },
                 )

@@ -41,9 +41,9 @@ AGENT_REPORT_PROMPT = (
     " A turn that reports done work: one short spoken sentence, about ten words: did it do what the user asked,"
     " and if not, the one reason."
     " A turn that ends by asking the user to decide (a plan, options, \"go ahead?\"): give what they need to decide,"
-    " one short phrase for each heading or part, at most four (then say \"and more\"), then its question, under"
-    " sixty words in all, like \"Here's the plan: hold paused sentences and join the rest. I'd skip a longer pause."
-    " The risk: some pauses still slip through. Go ahead?\""
+    " one short phrase for each heading or part, at most four (then say \"and more\"), then its question, about"
+    " forty words in all. Start with the plan, not the cause, like \"Here's the plan: hold paused sentences and join"
+    " the rest. I'd skip a longer pause. The risk: some pauses still slip through. Go ahead?\""
     " Keep a question it asks the user. Leave out how it worked, commit ids, branch names, paths and file names:"
     " the full text stays in this conversation, so answer from it if the user asks for more. Do not call"
     " any tool; the user decides what happens next.\n\n"
@@ -352,9 +352,13 @@ async def run_pipecat_harness(connect: bool = False) -> None:
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(orchestrator, load_soul().personality),
-                # DeepSeek thinks by default, which more than doubles time to first word;
-                # sort=latency routes to whichever provider currently answers fastest.
-                extra={"extra_body": {"reasoning": {"enabled": False}, "provider": {"sort": "latency"}}},
+                # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever provider currently answers fastest.
+                extra={
+                    "extra_body": {
+                        "reasoning": {"enabled": True},
+                        "provider": {"sort": "latency"},
+                    }
+                },
             ),
             default_headers={
                 "HTTP-Referer": "https://github.com/sangdth/jarvis",
