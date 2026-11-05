@@ -91,7 +91,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   no tool. This keeps the model from approving anything on its own.
 - **Jarvis speaks as one assistant.** Replies and retold turns say "I pushed it", "I'm searching", never which
   agent does the work, unless the user asks. A retold turn is the outcome against the user's request in about ten
-  words (`AGENT_REPORT_PROMPT`); the full text stays in the LLM context for follow-up questions.
+  words; a turn that asks the user to decide (a plan, options) gets one phrase per heading, at most four, then its
+  question (`AGENT_REPORT_PROMPT`); the full text stays in the LLM context for follow-up questions.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.

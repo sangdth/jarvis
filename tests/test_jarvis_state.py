@@ -112,9 +112,9 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(reports), 2)
 
         # A long report keeps the agent's name: the trim is per report, from the end
-        await state.notify_topic(AgentTopic("claude", "Claude Code", "x" * 5000, is_report=True))
+        await state.notify_topic(AgentTopic("claude", "Claude Code", "x" * 9000, is_report=True))
         self.assertTrue(reports[-1].startswith("Claude Code: xxx"))
-        self.assertEqual(len(reports[-1]), len("Claude Code: ") + 3000)
+        self.assertEqual(len(reports[-1]), len("Claude Code: ") + 8000)
 
         # A finished turn ends the agent's question, so the speech check stops hearing about it
         await state.notify_topic(AgentTopic("claude", "Claude Code", "asks: Postgres or SQLite?"))

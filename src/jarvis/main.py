@@ -36,11 +36,16 @@ Core behavior:
 # It goes in as a system message: agent output is not the user's voice and must not be able to drive a tool call.
 # Not "developer": Pipecat's OpenRouter service sends developer messages as role user.
 AGENT_REPORT_PROMPT = (
-    f"{NOT_THE_USER} an agent finished its turn.] Tell the user the outcome in one short spoken sentence for"
-    " each finished turn below, never skipping one, about ten words each, as your own work (\"I pushed it\"): did"
-    " it do what the user asked, and if not, the one reason."
-    " Keep a question it asks the user. Leave out how it worked, commit ids, branch names, paths, explanations and"
-    " advice: the full text stays in this conversation, so answer from it if the user asks for more. Do not call"
+    f"{NOT_THE_USER} an agent finished its turn.] Retell each finished turn below to the user, never skipping one,"
+    " as your own work (\"I pushed it\")."
+    " A turn that reports done work: one short spoken sentence, about ten words: did it do what the user asked,"
+    " and if not, the one reason."
+    " A turn that ends by asking the user to decide (a plan, options, \"go ahead?\"): give what they need to decide,"
+    " one short phrase for each heading or part, at most four (then say \"and more\"), then its question, under"
+    " sixty words in all, like \"Here's the plan: hold paused sentences and join the rest. I'd skip a longer pause."
+    " The risk: some pauses still slip through. Go ahead?\""
+    " Keep a question it asks the user. Leave out how it worked, commit ids, branch names, paths and file names:"
+    " the full text stays in this conversation, so answer from it if the user asks for more. Do not call"
     " any tool; the user decides what happens next.\n\n"
 )
 

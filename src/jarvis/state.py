@@ -160,6 +160,7 @@ class JarvisState:
         """Finished turns are long markdown; the conversation model shortens them. Offline: last line only."""
         if self.on_report:
             # Trim per report so the agent's name survives, and no queued report disappears behind a long one.
-            await self.on_report("\n\n".join(f"{t.agent_name}: {t.summary[-3000:]}" for t in reports))
+            # 8000 characters holds a whole plan: a plan's first section is the one that matters.
+            await self.on_report("\n\n".join(f"{t.agent_name}: {t.summary[-8000:]}" for t in reports))
         elif self.on_speak:
             await self.on_speak(" ".join(f"{t.agent_name}: {_last_line(t.summary)}" for t in reports))
