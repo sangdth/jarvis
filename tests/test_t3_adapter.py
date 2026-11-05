@@ -158,6 +158,21 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await a.open_project("huggerhustle/platform-v2", ""))  # already open
         a._command.assert_not_awaited()
 
+    async def test_connected_thread_never_starts_a_new_one(self) -> None:
+        a = make()
+        a.attach("t9", "/Users/x/.t3/worktrees/platform-v2/t3-abc", connected=True)  # a worktree, not ~/Projects/...
+        a._ws = MagicMock()
+        a._call = AsyncMock()
+        with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2", "jarvis"]):
+            self.assertTrue(await a.open_project("huggerhustle/platform-v2", "ok go ahead"))
+            self.assertTrue(await a.open_project("jarvis", "and the tests"))  # another project: still this thread
+            self.assertEqual(await a.open_project("jarvis", ""), "kept_connected_thread")
+            self.assertEqual(await a.open_project("misheard", ""), "kept_connected_thread")
+        self.assertFalse(await a._launch("/tmp", "x", create=True))
+        a._call.assert_not_awaited()  # no project.create, no launchThread
+        self.assertEqual([c.args[0]["text"] for c in a._command.await_args_list], ["ok go ahead", "and the tests"])
+        self.assertEqual(a._thread_id, "t9")
+
     async def test_folder_outside_projects_is_refused(self) -> None:
         a = make()
         a._call = AsyncMock()

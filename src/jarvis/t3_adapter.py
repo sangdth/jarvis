@@ -134,6 +134,7 @@ class T3Adapter(BaseAgentAdapter):
         self._sub_id: str | None = None  # the thread subscription's request id
         self._thread_id: str | None = None
         self._root: str | None = None  # the project folder of the current thread
+        self._connected = False  # picked with `jarvis connect`: every task goes to it, never a new thread
         self._sequence: int | None = None  # last event seen, to resume after a reconnect
         self._runs: dict[str, str] = {}  # active run id -> status
         self._last_text: dict[str, str] = {}  # run id -> latest finished assistant text
@@ -321,8 +322,10 @@ class T3Adapter(BaseAgentAdapter):
             })
         return await self._launch(self.config.cwd, task)
 
-    async def open_project(self, folder: str, task: str) -> bool:
+    async def open_project(self, folder: str, task: str) -> bool | str:
         """Work in a project under PROJECTS: a new thread there that syncs with master first, or the current one."""
+        if self._connected:  # the user's own thread: a project name is no reason to leave it
+            return await self.send_task(task) if task else "kept_connected_thread"
         # Only a listed folder: the model never picks an arbitrary path. Case-blind, like the macOS file system.
         listed = {f.lower(): f for f in list_projects()}.get(folder.removeprefix(f"{PROJECTS_LABEL}/").strip("/").lower())
         if listed is None:
@@ -340,6 +343,9 @@ class T3Adapter(BaseAgentAdapter):
 
     async def _launch(self, cwd: str, text: str, create: bool = False) -> bool:
         """Start a T3 thread in the project holding cwd (made first when create is set) and watch it."""
+        if self._connected:
+            logger.error(f"[{self.config.id}] Not starting a thread: Jarvis is connected to {self._thread_id}.")
+            return False
         try:
             project = await self._find_project(cwd)
         except Exception as exc:
@@ -372,10 +378,13 @@ class T3Adapter(BaseAgentAdapter):
         logger.info(f"Started T3 thread {self._thread_id} in {project['workspaceRoot']}")
         return True
 
-    def attach(self, thread_id: str, root: str) -> None:
-        """Watch this thread from now on; it gets no message. Subscribes on the next connect, or call _subscribe."""
+    def attach(self, thread_id: str, root: str, connected: bool = False) -> None:
+        """
+        Watch this thread from now on; it gets no message. Subscribes on the next connect, or call _subscribe.
+        connected: picked with `jarvis connect`, so Jarvis never starts another thread this run.
+        """
         # shortcut: Jarvis watches one thread; the previous one keeps running in T3 unwatched. Track several if needed.
-        self._thread_id, self._root, self._sequence = thread_id, root, None
+        self._thread_id, self._root, self._sequence, self._connected = thread_id, root, None, connected
         self._runs, self._last_text = {}, {}
         if self._pending:  # a question on the old thread can no longer be answered from here
             self._pending = None
