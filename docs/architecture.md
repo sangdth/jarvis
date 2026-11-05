@@ -107,7 +107,7 @@ that asked last, and a stop to the agent that is working.
    `remind_while_busy` says a short "still working on it" line now and then; a new task restarts the count.
 2. **Long-term memory (`memory.py`):** Pipecat's `Mem0MemoryService` sits just before the executive LLM. Before
    each reply it searches local Mem0 (Qdrant on disk, Ollama `bge-m3`, ~22 ms) and adds what it finds; after each
-   reply it saves the newest exchange in the background, where `EXECUTIVE_MODEL` picks out the facts.
+   reply it saves the newest exchange in the background, where `EXTRACTION_MODEL` (default `deepseek/deepseek-v4.1-flash`, thinking off) picks out the facts.
 3. **Mute / Beep State Machine (`JarvisState`):**
    * **`VOICE` Mode:** Important agent topics are spoken immediately via TTS.
    * **`BEEP_ONLY` Mode (triggered by *"Shut up"*, *"Be quiet"*, *"Stop talking"*, *"Hush"*):** Active TTS is immediately cancelled, a low confirmation tone plays, and incoming agent topics are appended to `pending_topics` while playing a short 880Hz sine chime.

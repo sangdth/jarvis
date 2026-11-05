@@ -67,6 +67,8 @@ class Settings(BaseSettings):
 
     # OpenRouter model IDs
     executive_model: str = "deepseek/deepseek-v4.1-flash"
+    # Picks facts out of each exchange for long-term memory; a fast model, run with thinking off
+    extraction_model: str = "deepseek/deepseek-v4.1-flash"
     # Decision model that labels each heard sentence (is it for Jarvis?); won the 2026-11-02 benchmark
     filter_model: str = "typesafe/jev-1.14"
 

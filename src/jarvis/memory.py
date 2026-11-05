@@ -1,7 +1,7 @@
 """Long-term memory: Mem0 (open source) with Qdrant on disk and Ollama bge-m3 embeddings, all on this Mac.
 
 Benchmarked 2026-11-03: bge-m3 on Ollama embeds in ~20 ms (OpenRouter's best ~400 ms), and a search over 212
-memories takes ~22 ms. Fact extraction runs in the background on EXECUTIVE_MODEL; small local models were
+memories takes ~22 ms. Fact extraction runs in the background on EXTRACTION_MODEL with thinking off; small local models were
 too slow (gemma3:4b 27 s a save) or lost facts (gemma3:1b).
 """
 
@@ -40,9 +40,13 @@ def mem0_config(memory_dir: Path | None = None) -> dict[str, Any]:
         "llm": {
             "provider": "openai",
             "config": {
-                "model": settings.executive_model,
+                "model": settings.extraction_model,
                 "api_key": settings.openrouter_api_key,
                 "openai_base_url": settings.openrouter_base_url,
+                # Extraction runs on every exchange, so it never thinks. Mem0 sends reasoning_effort only for a
+                # "reasoning model"; "none" turns DeepSeek's thinking off.
+                "is_reasoning_model": True,
+                "reasoning_effort": "none",
             },
         },
         "history_db_path": str(memory_dir / "history.db"),

@@ -19,6 +19,15 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         with patch.object(memory, "MEMORY_DIR", Path("/tmp/y")):
             self.assertEqual(memory.mem0_config()["vector_store"]["config"]["path"], "/tmp/y/qdrant")
 
+    def test_fact_extraction_runs_on_flash_with_thinking_off(self) -> None:
+        from mem0.llms.openai import OpenAILLM
+
+        cfg = memory.mem0_config(Path("/tmp/x"))["llm"]["config"]
+        self.assertEqual(cfg["model"], memory.settings.extraction_model)
+        # What Mem0 really sends: the request params carry reasoning_effort="none"
+        llm = OpenAILLM({**cfg, "api_key": "sk-test"})
+        self.assertEqual(llm._get_supported_params(messages=[])["reasoning_effort"], "none")
+
     async def test_saves_only_the_newest_exchange_once(self) -> None:
         client = MagicMock()
         with (
