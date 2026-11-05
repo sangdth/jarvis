@@ -52,7 +52,8 @@ The [script](site/install.sh) installs [uv](https://docs.astral.sh/uv/) if it is
 (your own Python is left alone), runs `uv tool install --python 3.12 "git+https://github.com/sangdth/jarvis@master"`,
 then `jarvis init`. Apple Silicon Macs only. This puts the `jarvis` command on your PATH, so it runs from any folder. `jarvis update` moves it to the newest
 master and prints the commit it went from and to; `jarvis --version` shows the one you have (`master @ 0fbc724`).
-Everything of yours lives in `~/.config/jarvis/`, never in the folder you run it from.
+Everything of yours lives in `~/.config/jarvis/`, never in the folder you run it from. `jarvis uninstall` deletes that
+folder and removes the `jarvis` command; it asks first and refuses while Jarvis is listening.
 
 **Developing Jarvis:** in a checkout, `uv sync`, then `uv run jarvis` runs that checkout's code
 (`jarvis --version` there says `dev (<folder>)`). It keeps its own state in the checkout, not `~/.config/jarvis`:
