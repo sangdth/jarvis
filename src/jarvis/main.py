@@ -241,7 +241,7 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
     thread = current_thread(snapshot, root, os.environ.get("T3CODE_WORKTREE_PATH")) if root else None
     if thread:
         print(f"Continuing this T3 Code thread: {thread['project']}: {thread['title']}")
-        t3.attach(thread["id"], thread["root"])
+        t3.attach(thread["id"], thread["root"], connected=True)
         return thread
     threads = recent_threads(snapshot)
     if not threads:
@@ -257,7 +257,7 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
         except EOFError:
             sys.exit(0)
     thread = threads[int(choice) - 1]
-    t3.attach(thread["id"], thread["root"])  # its waiting question, if any, is read out once T3 Code connects
+    t3.attach(thread["id"], thread["root"], connected=True)  # its waiting question, if any, is read out once T3 Code connects
     return thread
 
 

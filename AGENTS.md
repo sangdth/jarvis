@@ -75,7 +75,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   master branch."; the model's task is not sent. Later requests go to that thread. Questions about the list
   itself ("how many projects in OpsCom?") are answered from it, with no agent.
   A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
-  at all: it is the user's work in progress. T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
+  at all: it is the user's work in progress. For the rest of that run every task goes to it, even one naming a
+  project; Jarvis starts no other thread (`_connected`). T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
 - **All user state lives in `JARVIS_HOME`** (`config.py`): `.env`, `agents.json`, `SOUL.md`, the voiceprint,
   models, memory. The installed `jarvis` uses `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's
