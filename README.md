@@ -46,9 +46,11 @@ Files are in [`src/jarvis/`](src/jarvis/).
 
 ### 1. Install
 ```bash
-uv tool install "git+https://github.com/sangdth/jarvis@master"
+curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh
 ```
-This puts the `jarvis` command on your PATH, so it runs from any folder. `jarvis update` moves it to the newest
+The [script](site/install.sh) installs [uv](https://docs.astral.sh/uv/) if it is missing, which brings its own Python
+(your own Python is left alone), runs `uv tool install --python 3.12 "git+https://github.com/sangdth/jarvis@master"`,
+then `jarvis init`. Apple Silicon Macs only. This puts the `jarvis` command on your PATH, so it runs from any folder. `jarvis update` moves it to the newest
 master and prints the commit it went from and to; `jarvis --version` shows the one you have (`master @ 0fbc724`).
 Everything of yours lives in `~/.config/jarvis/`, never in the folder you run it from.
 

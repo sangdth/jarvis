@@ -8,7 +8,8 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 
 ## Commands
 
-- Production: `uv tool install "git+https://github.com/sangdth/jarvis@master"`; `jarvis update` upgrades it,
+- Production: `curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh` (`site/install.sh`: uv, then
+  `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis update` upgrades it,
   `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
   in), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again). One listens at a time
