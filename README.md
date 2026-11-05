@@ -73,7 +73,9 @@ already running (pid ...)".
 jarvis init
 ```
 It creates `~/.config/jarvis/` with a `.env` and an `agents.json` from
-[`src/jarvis/defaults/`](src/jarvis/defaults/); it never overwrites them. Then it asks a few questions (Jarvis's personality, what to call you,
+[`src/jarvis/defaults/`](src/jarvis/defaults/); it never overwrites them. It asks for your OpenRouter and
+ElevenLabs keys (typing stays hidden; Enter skips one) and saves them in `.env`, readable only by you; a key
+already set is never asked again. Then it asks a few questions (Jarvis's personality, what to call you,
 where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
 file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
 
@@ -84,7 +86,8 @@ Enroll close to the mic in a quiet moment: background voices in the recording we
 again any time with `jarvis enroll`.
 
 ### 3. Configure `.env`
-Fill in `~/.config/jarvis/.env`:
+`jarvis init` fills the two API keys; set the rest in `~/.config/jarvis/.env`. A variable set in
+your shell wins over the file, so `op run -- jarvis` (1Password) works too:
 - `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash` with thinking off), which also retells each finished agent turn as one short first-person outcome ("I pushed it, but there was nothing for a PR"), and for the decision model that tells whether a sentence is meant for Jarvis (`FILTER_MODEL`, `typesafe/jev-1.14`). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
 - `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `t3-code`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
@@ -143,7 +146,7 @@ inside the T3 Code app, so macOS asks whether T3 Code may use the microphone; al
   `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.5), or enroll again.
 - **Jarvis splits one sentence into two.** A pause over 0.6 s ends a sentence; raise `stop_secs` in `main.py`.
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
-  key: run `jarvis init`, then fill it in.
+  key: run `jarvis init` again; it asks only for the keys still empty.
 
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.

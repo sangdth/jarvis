@@ -35,7 +35,7 @@ class SoulTest(unittest.TestCase):
             answers = iter(["warm, playful", "Sang", tmp, "", "n"])
             with patch.object(soul, "SOUL_PATH", path), patch("builtins.input", lambda _: next(answers)), \
                     patch("jarvis.enroll.main") as enroll, patch("builtins.print"), \
-                    patch.object(soul, "copy_config", return_value=[]):
+                    patch.object(soul, "copy_config", return_value=[]), patch.object(soul, "ask_api_keys"):
                 soul.main()
             enroll.assert_not_called()
             self.assertEqual(load_soul(path).projects_dir, tmp)
@@ -51,6 +51,28 @@ class SoulTest(unittest.TestCase):
             (home / ".env").write_text("KEY=mine")
             self.assertEqual(soul.copy_config(home), [])  # never overwrites
             self.assertEqual((home / ".env").read_text(), "KEY=mine")
+
+    def test_init_asks_only_for_empty_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text("OPENROUTER_API_KEY=sk-or-kept\nELEVENLABS_API_KEY=\nOTHER=1\n")
+            with patch.object(soul, "getpass", return_value=" sk_new \n") as ask, patch("builtins.print"):
+                soul.ask_api_keys(env)
+            ask.assert_called_once()  # OpenRouter is already set
+            self.assertEqual(env.read_text(), "OPENROUTER_API_KEY=sk-or-kept\nELEVENLABS_API_KEY=sk_new\nOTHER=1\n")
+            self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+
+    def test_init_skips_blank_or_broken_keys_and_adds_missing_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text("OTHER=1")
+            answers = iter(["", "sk_a b"])  # Enter, then a key with a space that would break the line
+            with patch.object(soul, "getpass", lambda _: next(answers)), patch("builtins.print"):
+                soul.ask_api_keys(env)
+            self.assertEqual(env.read_text(), "OTHER=1")
+            with patch.object(soul, "getpass", return_value="sk-or-1"), patch("builtins.print"):
+                soul.ask_api_keys(env)
+            self.assertEqual(env.read_text(), "OTHER=1\nOPENROUTER_API_KEY=sk-or-1\nELEVENLABS_API_KEY=sk-or-1\n")
 
 if __name__ == "__main__":
     unittest.main()
