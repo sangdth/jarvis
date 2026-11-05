@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,6 +7,8 @@ from pipecat.frames.frames import (
     ProposedUserStoppedSpeakingFrame,
     TextFrame,
     TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -54,6 +57,38 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
             [ProposedUserStartedSpeakingFrame, TranscriptionFrame, ProposedUserStoppedSpeakingFrame],
         )
         self.assertIs(pushed[1], frame)
+
+    def turns(self) -> list[str]:
+        return [
+            c.args[0].text for c in self.gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)
+        ]
+
+    @patch("jarvis.voice_gates.HOLD_SECS", 0.05)
+    async def test_trailing_off_waits_and_joins_the_rest(self) -> None:
+        down = FrameDirection.DOWNSTREAM
+        await self.gate.process_frame(heard(" Open the... "), down)
+        await self.gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.1)  # longer than the hold: speaking again keeps it open
+        await self.gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await self.gate.process_frame(heard(" folder in Happy Voxel. "), down)
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.turns(), ["Open the... folder in Happy Voxel."])
+        self.filter.classify_user_utterance.assert_awaited_once()
+
+    @patch("jarvis.voice_gates.HOLD_SECS", 0.05)
+    async def test_trailing_off_alone_goes_on_after_the_hold(self) -> None:
+        frame = heard("Hmm...")
+        await self.gate.process_frame(frame, FrameDirection.DOWNSTREAM)
+        self.gate.push_frame.assert_not_awaited()
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.turns(), ["Hmm..."])
+
+    async def test_mute_does_not_wait_for_a_held_sentence(self) -> None:
+        self.filter.classify_user_utterance.return_value = UserIntent.MUTE
+        await self.gate.process_frame(heard("Open the..."), FrameDirection.DOWNSTREAM)
+        await self.gate.process_frame(heard("shut up"), FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.assert_awaited_once_with(transcript="shut up", recent_jarvis_question=None)
+        await self.gate.cleanup()
 
     async def test_background_speech_is_dropped(self) -> None:
         self.filter.classify_user_utterance.return_value = UserIntent.IGNORE_BACKGROUND

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 
 import numpy as np
 from loguru import logger
@@ -10,6 +11,8 @@ from pipecat.frames.frames import (
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
@@ -17,6 +20,11 @@ from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.speaker import SpeakerEmbedder, cosine
 from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command
+
+# Whisper ends a sentence that trails off mid-thought with one of these ("Open the...").
+TRAILING_OFF = ("...", "…", "-", "—")
+# How long a trailing-off sentence waits for the rest, counted from the last stretch of silence.
+HOLD_SECS = 2.0
 
 
 class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
@@ -63,11 +71,20 @@ class JarvisIntentGate(FrameProcessor):
         super().__init__()
         self.state = state
         self.executive_filter = executive_filter
+        # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
+        self._held: TranscriptionFrame | None = None
+        self._hold_timer: asyncio.Task | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
         if not isinstance(frame, TranscriptionFrame):
+            if self._held is not None:
+                # The user speaks again: wait for that sentence; once they stop, give Whisper the window again.
+                if isinstance(frame, VADUserStartedSpeakingFrame):
+                    self._cancel_hold_timer()
+                elif isinstance(frame, VADUserStoppedSpeakingFrame):
+                    self._start_hold_timer(direction)
             await self.push_frame(frame, direction)
             return
 
@@ -75,6 +92,42 @@ class JarvisIntentGate(FrameProcessor):
         if not transcript:
             return
 
+        # Mute / unmute act at once and never join a held sentence.
+        if classify_fast_command(transcript) is None:
+            if self._held is not None:
+                self._cancel_hold_timer()
+                frame = replace(frame, text=f"{self._held.text.strip()} {transcript}")
+                self._held = None
+            if frame.text.strip().endswith(TRAILING_OFF):
+                logger.info(f"[User Transcript] holding for the rest: {frame.text.strip()!r}")
+                self._held = frame
+                self._start_hold_timer(direction)
+                return
+
+        await self._gate(frame, direction)
+
+    async def cleanup(self) -> None:
+        self._cancel_hold_timer()
+        await super().cleanup()
+
+    def _start_hold_timer(self, direction: FrameDirection) -> None:
+        self._cancel_hold_timer()
+        self._hold_timer = asyncio.create_task(self._release_held(direction))
+
+    def _cancel_hold_timer(self) -> None:
+        if self._hold_timer is not None:
+            self._hold_timer.cancel()
+            self._hold_timer = None
+
+    async def _release_held(self, direction: FrameDirection) -> None:
+        """Nothing more came: the held sentence goes on alone, so a real "Hmm..." still gets an answer."""
+        await asyncio.sleep(HOLD_SECS)
+        frame, self._held, self._hold_timer = self._held, None, None
+        if frame is not None:
+            await self._gate(frame, direction)
+
+    async def _gate(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
+        transcript = frame.text.strip()
         logger.info(f"[User Transcript] ({self.state.mode.value}): {transcript!r}")
 
         # While muted only "you can talk" matters; skip the paid LLM call for everything else.
