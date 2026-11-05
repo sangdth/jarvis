@@ -3,7 +3,8 @@
 An always-on voice harness (Pipecat) that talks to the user and hands work to agents: coding to T3 Code
 (or Claude Code or OpenCode when named), everything else to Hermes Agent. No wake word. Jarvis stays thin: it routes and
 relays; the work, tools and memory live in each agent's own harness.
-Architecture: `docs/architecture.md`. Setup and voice commands: `README.md`.
+Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS.md`. Setup and voice commands:
+`README.md`.
 
 ## Commands
 
@@ -66,8 +67,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
-- **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir` (`SOUL.md`, default
-  `~/Projects`) go into the prompt, newest first (`.git/index` time, `_last_touched`); `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
+- **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir`
+  (`SOUL.md`, default `~/Projects`) go into the prompt, newest first (`.git/index` time, `_last_touched`);
+  `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
   master branch."; the model's task is not sent. Later requests go to that thread. Questions about the list
   itself ("how many projects in OpsCom?") are answered from it, with no agent.
   A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
@@ -99,8 +101,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   on the Ollama app, fact extraction on `EXECUTIVE_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves
   only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
 - **Jarvis acts only on the owner's voice.** `SpeakerVerifiedWhisperSTT` scores each whole Whisper sentence
-  against `~/.config/jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass from any
-  voice. No voiceprint stops Jarvis at startup (`jarvis enroll`). User turns come only from
+  against `~/.config/jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass
+  from any voice. No voiceprint stops Jarvis at startup (`jarvis enroll`). User turns come only from
   `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
 - **`~/.config/jarvis/SOUL.md` is the user's own setup** (`jarvis init`, `soul.py`): front matter holds settings
   (`projects_dir`), the body is personality, added to the system prompt as tone only. The name is always Jarvis.
