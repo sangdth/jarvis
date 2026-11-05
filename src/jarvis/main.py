@@ -212,15 +212,15 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
 
         return handle
 
-    async def send(agent: Any, args: dict) -> bool:
+    async def send(agent: Any, args: dict) -> bool | str:
         if args.get("replace") and agent.busy:
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
         task, project = args.get("task", "").strip(), args.get("project")
         if not task and not project:
-            return False  # nothing to send
+            return "nothing_to_send"  # "continue on X" while connected: not a failure
         # Only T3 Code opens a project; the others work in their configured folder.
         ok = await (agent.open_project(project, task) if project and hasattr(agent, "open_project") else agent.send_task(task))
-        if ok:
+        if ok is True:  # a status word means nothing went out, so nothing to wait on
             orchestrator.remind_while_busy(agent)
         return ok
 
@@ -251,9 +251,7 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
         sys.exit(f"Could not read T3 threads; is the T3 app running? ({exc!r})")
     root = os.environ.get("T3CODE_PROJECT_ROOT")  # set only in a T3 project script
     thread = current_thread(snapshot, root, os.environ.get("T3CODE_WORKTREE_PATH")) if root else None
-    if thread:
-        print(f"Continuing this T3 Code thread: {thread['project']}: {thread['title']}")
-    else:
+    if not thread:
         thread = choose_thread(snapshot)
     t3.attach(thread["id"], thread["root"], connected=True)  # its waiting question, if any, is read out once T3 Code connects
     logger.info(f"Connected to T3 thread {thread['id']} ({thread['title']}, {thread['root']})")
