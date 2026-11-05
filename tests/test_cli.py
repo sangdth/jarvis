@@ -48,6 +48,50 @@ class CliTest(unittest.TestCase):
         self.assertIn("No .env", str(stopped.exception))
         lock.assert_not_called()
 
+    def test_uninstall_deletes_the_folder_then_the_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "jarvis"
+            home.mkdir()
+            (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-1")
+            with patch.object(cli, "version", return_value="master @ abc1234"), \
+                    patch.object(cli.shutil, "which", return_value="/bin/uv"), patch("builtins.print"), \
+                    patch("builtins.input", return_value="y"), patch.object(cli.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                cli.uninstall(home)
+            self.assertFalse(home.exists())
+            run.assert_called_once_with(["/bin/uv", "tool", "uninstall", cli.PACKAGE])
+
+    def test_uninstall_keeps_everything_unless_told_yes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with patch.object(cli, "version", return_value="master @ abc1234"), \
+                    patch.object(cli.shutil, "which", return_value="/bin/uv"), patch("builtins.print"), \
+                    patch("builtins.input", return_value=""), patch.object(cli.subprocess, "run") as run:
+                cli.uninstall(home)
+            self.assertTrue(home.exists())
+            run.assert_not_called()
+
+    def test_uninstall_refuses_while_jarvis_listens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            listening = cli.hold_lock(Path(tmp))
+            with patch.object(cli, "version", return_value="master @ abc1234"), \
+                    patch.object(cli.shutil, "which", return_value="/bin/uv"), \
+                    patch("builtins.input") as ask, self.assertRaises(SystemExit):
+                cli.uninstall(Path(tmp))
+            ask.assert_not_called()
+            self.assertTrue(Path(tmp).exists())
+            listening.close()
+
+    def test_uninstall_from_a_checkout_keeps_the_uv_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "jarvis"
+            home.mkdir()
+            with patch.object(cli, "version", return_value="dev (/x)"), patch("builtins.print"), \
+                    patch("builtins.input", return_value="y"), patch.object(cli.subprocess, "run") as run:
+                cli.uninstall(home)
+            self.assertFalse(home.exists())
+            run.assert_not_called()
+
     def test_unknown_command_prints_usage(self) -> None:
         with patch.object(cli.sys, "argv", ["jarvis", "bogus"]), self.assertRaises(SystemExit) as stopped:
             cli.main()

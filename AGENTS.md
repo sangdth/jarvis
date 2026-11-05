@@ -12,7 +12,8 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis update` upgrades it,
   `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
-  in), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again). One listens at a time
+  in), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
+  (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
   (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
 - Needs: OpenCode `opencode serve --port 4096` with the same password; Hermes its gateway service
   (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.

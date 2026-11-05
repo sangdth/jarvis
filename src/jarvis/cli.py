@@ -25,6 +25,7 @@ USAGE = """usage: jarvis [command]
   init       set up Jarvis's home (~/.config/jarvis; the checkout in dev): .env, agents.json, SOUL.md, voiceprint
   enroll     record your voiceprint again
   update     update the installed Jarvis to the latest GitHub master
+  uninstall  delete ~/.config/jarvis (keys, voiceprint, memory) and remove the installed jarvis command
   --version  show which Jarvis this is: master @ commit, or dev and its folder"""
 
 
@@ -51,6 +52,36 @@ def update() -> None:
     print(f"Jarvis is up to date: {after}." if after == before else f"Updated Jarvis: {before} -> {after}.")
 
 
+def folder_size(path: Path) -> str:
+    total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file() and not f.is_symlink())
+    return f"{total / 1e6:.0f} MB" if total >= 1e6 else f"{total / 1e3:.0f} KB"
+
+
+def uninstall(home: Path = SHARED_HOME) -> None:
+    """Delete the installed state, then the `jarvis` command; a dev checkout keeps its code and its own state."""
+    installed = not version().startswith("dev")
+    uv = shutil.which("uv")
+    if installed and uv is None:
+        sys.exit("`jarvis uninstall` needs uv on the PATH to remove the jarvis command; nothing was deleted.")
+    if home.exists():
+        lock = hold_lock(home)  # a listening Jarvis is still writing memory there
+        print(f"This deletes {home} ({folder_size(home)}): API keys, SOUL.md, your voiceprint, models and memory.")
+    if installed:
+        print("It also removes the jarvis command from your PATH.")
+    if not home.exists() and not installed:
+        return print(f"Nothing to uninstall: {home} is gone, and a dev checkout's command is `uv run jarvis`.")
+    if input("Delete it all? y/N: ").strip().lower() != "y":
+        return print("Nothing was deleted.")
+    if home.exists():
+        shutil.rmtree(home)  # still holding the lock, so no Jarvis starts halfway through
+        lock.close()
+        print(f"Deleted {home}.")
+    if installed and subprocess.run([uv, "tool", "uninstall", PACKAGE]).returncode != 0:
+        sys.exit(f"Removing the jarvis command failed; run `uv tool uninstall {PACKAGE}` yourself.")
+    print("Left in place, shared with other tools: uv, Whisper models in ~/.cache/huggingface, Ollama's bge-m3 "
+          "(`ollama rm bge-m3`).")
+
+
 def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
     """One listening Jarvis per machine: two would share the mic and Qdrant's memory folder. Keep the file open."""
     home.mkdir(parents=True, exist_ok=True)
@@ -73,6 +104,8 @@ def main() -> None:
         return print(version())
     if args == ["update"]:
         return update()
+    if args == ["uninstall"]:
+        return uninstall()
     if args == ["init"]:
         from jarvis.soul import main as init
 
