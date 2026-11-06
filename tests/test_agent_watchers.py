@@ -457,6 +457,15 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
             self.assertIs(orch.find_busy(None), hermes)  # Hermes is the one working
             self.assertIs(orch.find_waiting("claude"), claude)  # a named agent always wins
 
+    async def test_agent_asking_again_counts_as_asked_last(self) -> None:
+        state = JarvisState()
+        orch = AgentOrchestrator(state=state)
+        claude, hermes = fake_adapter("claude"), fake_adapter("hermes")
+        orch.adapters.update(claude=claude, hermes=hermes)
+        for agent_id in ("hermes", "claude", "hermes"):
+            await state.notify_topic(AgentTopic(agent_id, agent_id, "needs approval: x"))
+        self.assertIs(orch.find_waiting(None), hermes)
+
 
 if __name__ == "__main__":
     unittest.main()
