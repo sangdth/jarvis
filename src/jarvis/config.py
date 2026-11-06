@@ -1,8 +1,9 @@
 import json
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
+from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PACKAGE = "jarvis-harness"
@@ -27,6 +28,10 @@ def checkout_root(info: dict | None = None) -> Path | None:
     return Path(url.removeprefix("file://")) if url.startswith("file://") else Path(__file__).resolve().parents[2]
 
 
+# The Whisper model for each LANGUAGE, unless WHISPER_MODEL names one. PhoWhisper is VinAI's Vietnamese fine-tune of
+# Whisper large, converted to MLX (no other MLX build exists); it hears Vietnamese best, English words less well.
+WHISPER_MODELS = {"en": "mlx-community/whisper-large-v3-turbo", "vi": "sangdth/phowhisper-large-mlx"}
+
 # Jarvis's state: .env, agents.json, SOUL.md, the voiceprint, models and memory. The installed Jarvis uses
 # SHARED_HOME; a dev checkout uses its own folder (found from the running code, never the current folder).
 JARVIS_HOME = checkout_root() or SHARED_HOME
@@ -43,9 +48,11 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
-    # Local Always-On STT
-    # MLX Whisper on the Apple GPU (Hugging Face repo id)
-    whisper_model: str = "mlx-community/whisper-large-v3-turbo"
+    # The language the user speaks: Whisper listens for it (a guess per sentence misreads short Vietnamese ones)
+    # and Jarvis greets in it. Replies follow whatever the user just said; agents always get English.
+    language: Literal["en", "vi"] = "en"
+    # MLX Whisper on the Apple GPU (Hugging Face repo id or local folder); empty = WHISPER_MODELS[language]
+    whisper_model: str = ""
 
     # Owner voice check (sherpa-onnx ERes2Net): sentences scoring below this are dropped.
     # Tune it from the "[Speaker] score=" lines in the log; enroll with `jarvis enroll`.
@@ -76,6 +83,11 @@ class Settings(BaseSettings):
     @classmethod
     def _from_home(cls, path: str) -> str:
         return str(JARVIS_HOME / Path(path).expanduser())  # an absolute path stays as it is
+
+    @model_validator(mode="after")
+    def _whisper_for_language(self) -> "Settings":
+        self.whisper_model = self.whisper_model or WHISPER_MODELS[self.language]
+        return self
 
 
 settings = Settings()

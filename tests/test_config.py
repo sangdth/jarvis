@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from jarvis.config import JARVIS_HOME, SHARED_HOME, Settings, checkout_root
+from jarvis.config import JARVIS_HOME, SHARED_HOME, WHISPER_MODELS, Settings, checkout_root
 
 
 class ConfigTest(unittest.TestCase):
@@ -23,6 +23,13 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(Settings(_env_file=None, watch_config_path="./agents.json").watch_config_path,
                          str(JARVIS_HOME / "agents.json"))
         self.assertEqual(Settings(_env_file=None, watch_config_path="/etc/a.json").watch_config_path, "/etc/a.json")
+
+    def test_language_picks_the_whisper_model_unless_one_is_named(self) -> None:
+        self.assertEqual(Settings(_env_file=None).whisper_model, WHISPER_MODELS["en"])
+        self.assertEqual(Settings(_env_file=None, language="vi").whisper_model, "sangdth/phowhisper-large-mlx")
+        self.assertEqual(Settings(_env_file=None, language="vi", whisper_model="/models/x").whisper_model, "/models/x")
+        with self.assertRaises(ValueError):
+            Settings(_env_file=None, language="en_US:en")  # the locale variable LANGUAGE stops Jarvis, never guesses
 
 
 if __name__ == "__main__":

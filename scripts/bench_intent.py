@@ -66,6 +66,20 @@ CASES: list[tuple[str, UserIntent]] = [
     ("Stop talking please", M),
     ("Okay Jarvis, you can speak again", U),
     ("Alright, go ahead and talk now", U),
+    # Vietnamese and mixed speech (Whisper detects the language per sentence)
+    ("Jarvis ơi, sửa lỗi đăng nhập giúp anh", A),
+    ("Fix cái bug login trong dashboard giúp mình", A),
+    ("Bạn khỏe không?", A),
+    ("Chào buổi sáng", A),
+    ("Có, cứ làm đi", A),
+    ("Dừng lại đi.", A),
+    ("Lịch của anh ngày mai có gì?", A),
+    ("Em ơi, cơm chín chưa?", I),
+    ("Mẹ ơi, con đang họp", I),
+    ("Để anh nghĩ đã", I),
+    ("Im đi.", M),
+    ("Jarvis, im lặng một chút", M),
+    ("Nói được rồi", U),
 ]
 # (what Jarvis just said, what was heard): answers, often garbled by Whisper, and room talk right after Jarvis spoke.
 # The answers are real misses from the 2026-11-02..06 logs (docs/research/voice-recognition-misses.md).

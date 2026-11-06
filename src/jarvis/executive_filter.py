@@ -10,7 +10,8 @@ _CONTEXT = (
     "Jarvis is a voice assistant that hands work to agents (coding, research, email, calendar, notes) "
     "and chats with its user. "
     "The text is one sentence transcribed from an always-on microphone in a home office. "
-    "The user is usually alone and talks to Jarvis; other people are sometimes in the room."
+    "The user is usually alone and talks to Jarvis; other people are sometimes in the room. "
+    "The sentence may be in English, Vietnamese or a mix of both."
 )
 # One typed question for an OpenRouter decision model; the labels are the UserIntent values.
 # Jarvis is the default listener, so small talk with no one else named counts as addressed (97% on the 2026-11-02 set).

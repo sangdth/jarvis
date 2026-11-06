@@ -1,6 +1,18 @@
 {
   "version": 1,
   "skills": {
+    "hf-cli": {
+      "source": "huggingface/skills",
+      "sourceType": "github",
+      "skillPath": "skills/hf-cli/SKILL.md",
+      "computedHash": "78ed13a0095b1c7a9820e31274118f289e23bc24012915e6380a7645fc906d03"
+    },
+    "mlx": {
+      "source": "itsmostafa/llm-engineering-skills",
+      "sourceType": "github",
+      "skillPath": "skills/mlx/SKILL.md",
+      "computedHash": "cf81dfc6ae3b1defdf3b6020386f94f1e92d972008babe1ac6e29ab93b0c2cb7"
+    },
     "pipecat": {
       "source": "itechmeat/llm-code",
       "sourceType": "github",
@@ -24,6 +36,12 @@
       "sourceType": "github",
       "skillPath": "plugins/python-development/skills/python-testing-patterns/SKILL.md",
       "computedHash": "cfec3cbf4023ac0336f37bb28991824d87cc9e92758e4615e1e5d85c5f2ceeed"
+    },
+    "uv-package-manager": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/python-development/skills/uv-package-manager/SKILL.md",
+      "computedHash": "ee0681ca2f64d9e03049fa780dfa0f71a858f8cb2541c3c5f5dc7c83aa41d596"
     }
   }
 }

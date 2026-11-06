@@ -30,8 +30,8 @@ def agent_tools() -> list:
                 "agent_id": agent_id_property,
                 "task": {
                     "type": "string",
-                    "description": "The task, in clear words. With `project`, omit it when the user only opens the"
-                    " project and names no work; never invent one.",
+                    "description": "The task, in clear English words, even when the user speaks Vietnamese. With"
+                    " `project`, omit it when the user only opens the project and names no work; never invent one.",
                 },
                 "project": {
                     "type": "string",
@@ -57,7 +57,11 @@ def agent_tools() -> list:
             ),
             properties={
                 "agent_id": agent_id_property,
-                "answer": {"type": "string", "description": "The user's answer, in their words (e.g. 'yes', 'use Postgres')"},
+                "answer": {
+                    "type": "string",
+                    "description": "The user's answer in English, translated if they spoke Vietnamese"
+                    " (e.g. 'yes', 'use Postgres')",
+                },
             },
             required=["answer"],
         ),

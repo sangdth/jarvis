@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import statistics
 import sys
 import time
@@ -39,6 +40,14 @@ def after(first: str, agent_id: str, task: str, then: str) -> list[dict]:
         {"role": "user", "content": then},
     ]
 
+
+def waiting(spoken: str, reply: str) -> list[dict]:
+    """The user's reply right after Jarvis spoke an agent's question or approval request."""
+    return [{"role": "assistant", "content": spoken}, {"role": "user", "content": reply}]
+
+
+# Agents only read English: a Vietnamese letter in `task` or `answer` is a miss.
+VIETNAMESE = re.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE)
 
 CASES: list[tuple[str | list[dict], str]] = [
     ("Build a login page with email and password", "t3-code"),
@@ -117,6 +126,15 @@ CASES: list[tuple[str | list[dict], str]] = [
     (after("Open the neuroparticles project", "t3-code", "Sync with master", "Stop that section."), "stop"),
     (after("Look up flights to Hanoi in December", "hermes", "Look up flights to Hanoi in December",
            "What does idempotent mean?"), SELF),
+    # Vietnamese or mixed speech: routed the same, with English arguments
+    ("Sửa lỗi ở thanh điều hướng giúp anh", "t3-code"),
+    ("Fix cái bug login trong dashboard giúp mình", "t3-code"),
+    ("Tiếp tục làm dự án Hugger Hustle platform", "t3-code@huggerhustle/platform-v2"),
+    ("Gửi email cho Minh là anh sẽ đến muộn mười phút", "hermes"),
+    ("Bạn khỏe không?", SELF),
+    (after("Sửa lỗi đăng nhập ở dashboard", "t3-code", "Fix the login bug in the dashboard", "Dừng lại đi."), "stop"),
+    (waiting("Claude needs approval: run git push to origin.", "Có, cứ làm đi."), "answer"),
+    (waiting("T3 Code asks: Which database should I use, Postgres or SQLite?", "Dùng Postgres nhé."), "answer"),
 ]
 
 
@@ -127,6 +145,10 @@ def outcome(message: dict, default_id: str | None) -> str:
     if calls[0]["function"]["name"] == "stop_agent":
         return "stop"  # stop_agent finds the busy agent itself when no id is given
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
+    if VIETNAMESE.search(args.get("task", "") + args.get("answer", "")):
+        return "not English: " + (args.get("task") or args.get("answer"))
+    if calls[0]["function"]["name"] == "answer_agent":
+        return "answer"  # answer_agent finds the waiting agent itself when no id is given
     project = f"@{args['project'].removeprefix(f'{PROJECTS_LABEL}/').strip('/').lower()}" if args.get("project") else ""
     # Opening a project names work only when the user did ("+task"); an invented task is a miss.
     task = "+task" if project and args.get("task", "").strip() else ""
