@@ -29,6 +29,8 @@ class TestGreeting(unittest.TestCase):
         self.assertIn("Linh's recital is Saturday at 4pm", prompt)
         self.assertIn("Do not call any tool", prompt)
         self.assertNotIn("remember", greeting_prompt(datetime(2026, 11, 6, 8, 5), []))
+        self.assertNotIn("Vietnamese", prompt)
+        self.assertIn("Speak Vietnamese", greeting_prompt(datetime(2026, 11, 6, 8, 5), [], "vi"))
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ Core behavior:
 5. Act, don't offer. When the user wants something done, or asks something you can't answer from general knowledge or this conversation (the state of their projects, their files, email, calendar or notes, anything current), call send_agent_task in this same reply for the agent whose role fits, and tell the user in one short line, like "I'm looking, one moment." Saying it without the tool call sends nothing. Never ask whether to send it, and never say you don't know when an agent could find out. Ask the user only when you can't tell what they want. You will be told when the agent finishes; then bring the answer to the user.
 6. The user is not a native English speaker, and speech recognition often mishears names. When they correct or change a task an agent is still working on, send the whole corrected task with replace=true, and say in one short line that you stopped the old one.
 7. Speak as one assistant: the agents' work is your work. Say "I pushed it" or "I'm searching", never which agent does it, unless the user asks.
+8. The user speaks English or Vietnamese, often mixed. Reply in the language of their last sentence. Agents only read English: write every tool argument (`task`, `answer`) in English, translating the user's words, and keep project folder names exactly as listed.
 """
 
 # A finished agent turn is long markdown; the conversation model retells it. Approvals never come this way.
@@ -40,11 +41,12 @@ AGENT_REPORT_PROMPT = (
     " the rest. I'd skip a longer pause. The risk: some pauses still slip through. Go ahead?\""
     " Keep a question it asks the user. Leave out how it worked, commit ids, branch names, paths and file names:"
     " the full text stays in this conversation, so answer from it if the user asks for more. Do not call"
-    " any tool; the user decides what happens next.\n\n"
+    " any tool; the user decides what happens next. Speak in the language the user last spoke (English or"
+    " Vietnamese).\n\n"
 )
 
 
-def greeting_prompt(now: datetime, memories: list[str]) -> str:
+def greeting_prompt(now: datetime, memories: list[str], language: str = "en") -> str:
     """What the brain gets at startup so Jarvis speaks first: the local time and a few things it remembers."""
     remembered = (
         " Things you remember about the user: " + "; ".join(memories) + ". Mention one only if it is timely"
@@ -55,7 +57,8 @@ def greeting_prompt(now: datetime, memories: list[str]) -> str:
     return (
         f"{NOT_THE_USER} Jarvis just started. It is {now:%A %H:%M}.] Greet the user first in at most five words that fit"
         f" the time of day, like \"Evening. I'm listening.\" Don't say the time or ask how they are.{remembered}"
-        " Do not call any tool."
+        + (" Speak Vietnamese." if language == "vi" else "")
+        + " Do not call any tool."
     )
 
 

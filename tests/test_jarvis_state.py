@@ -20,6 +20,14 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(classify_fast_command("Fix the silence threshold in the VAD"))
         self.assertEqual(classify_fast_command("Don't be quiet, you can talk now"), UserIntent.UNMUTE)
 
+    def test_fast_mute_unmute_vietnamese(self) -> None:
+        self.assertEqual(classify_fast_command("Im đi."), UserIntent.MUTE)
+        self.assertEqual(classify_fast_command("Jarvis, im lặng một chút"), UserIntent.MUTE)
+        self.assertEqual(classify_fast_command("Đừng nói nữa"), UserIntent.MUTE)
+        self.assertEqual(classify_fast_command("Jarvis, nói được rồi"), UserIntent.UNMUTE)
+        self.assertIsNone(classify_fast_command("Sửa lỗi đăng nhập giúp anh"))
+        self.assertIsNone(classify_fast_command("Dừng lại đi."))  # stops the work, never mutes
+
     def test_whisper_noise_phrases_are_dropped(self) -> None:
         # Whisper writes these on silence; alone they must not reach the model as an answer to an approval.
         for noise in ("Okay.", "Thank you.", " you ", "Thanks!"):

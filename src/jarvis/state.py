@@ -38,11 +38,11 @@ def _last_line(text: str) -> str:
 
 # Fast deterministic regex patterns for instant mute/unmute without waiting on an LLM call
 _MUTE_PATTERNS = re.compile(
-    r"\b(shut\s*up|be\s*quiet|stay\s*quiet|mute\s*yourself|stop\s*talking|hush)\b",
+    r"\b(shut\s*up|be\s*quiet|stay\s*quiet|mute\s*yourself|stop\s*talking|hush|im\s*đi|im\s*lặng|đừng\s*nói\s*nữa)\b",
     re.IGNORECASE,
 )
 _UNMUTE_PATTERNS = re.compile(
-    r"\b(you\s*can\s*talk|unmute|speak\s*up|talk\s*to\s*me\s*again|jarvis\s*unmute|go\s*ahead\s*and\s*talk)\b",
+    r"\b(you\s*can\s*talk|unmute|speak\s*up|talk\s*to\s*me\s*again|jarvis\s*unmute|go\s*ahead\s*and\s*talk|nói\s*được\s*rồi)\b",
     re.IGNORECASE,
 )
 

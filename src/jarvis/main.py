@@ -12,7 +12,7 @@ from typing import Any
 from loguru import logger
 
 from jarvis.agent_tools import agent_tool_handlers, agent_tools
-from jarvis.config import settings
+from jarvis.config import WHISPER_MODELS, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
@@ -73,6 +73,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         LLMContextAggregatorPair,
         LLMUserAggregatorParams,
     )
+    from pipecat.transcriptions.language import Language
     from pipecat.transports.base_transport import TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
@@ -88,10 +89,12 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         sys.exit(1)
     # The log is where misses get investigated; it has to say which setup heard them.
     logger.info(
-        f"Hearing with Whisper {settings.whisper_model}, speaker threshold {settings.speaker_threshold}, "
+        f"Hearing {settings.language} with Whisper {settings.whisper_model}, speaker threshold {settings.speaker_threshold}, "
         f"voiceprint {VOICEPRINT_PATH}"
     )
 
+    if settings.language != "en" and settings.whisper_model == WHISPER_MODELS["en"]:
+        logger.warning(f"WHISPER_MODEL pins the English model; delete it from .env to hear {settings.language} better.")
     executive_filter = ExecutiveFilter()
     task_ref: dict[str, PipelineTask] = {}
 
@@ -138,7 +141,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         embedder=SpeakerEmbedder(),
         voiceprint=voiceprint,
         threshold=settings.speaker_threshold,
-        settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model),
+        settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model, language=Language(settings.language)),
     )
 
     # 3. Executive LLM Brain (OpenRouter)
@@ -255,7 +258,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         await task.queue_frame(
             # A user-role note: with no conversation yet, a trailing system message makes DeepSeek reply with junk.
             LLMMessagesAppendFrame(
-                messages=[{"role": "user", "content": greeting_prompt(datetime.now(), memories)}], run_llm=True
+                messages=[{"role": "user", "content": greeting_prompt(datetime.now(), memories, settings.language)}], run_llm=True
             )
         )
 
