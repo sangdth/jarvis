@@ -6,7 +6,16 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from jarvis.agent_adapter import WatchedAgentConfig
-from jarvis.t3_adapter import PROJECTS, PROJECTS_LABEL, T3Adapter, current_thread, find_project, list_projects, recent_threads, t3_question_fields
+from jarvis.t3_adapter import (
+    PROJECTS,
+    PROJECTS_LABEL,
+    T3Adapter,
+    current_thread,
+    find_project,
+    list_projects,
+    recent_threads,
+    t3_question_fields,
+)
 
 RUN = "run:thread:t1:ordinal:1"
 
@@ -94,7 +103,9 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         a._ws = MagicMock()
         self.assertTrue(await a.send_task("also update the README"))
         sent = a._command.await_args.args[0]
-        self.assertEqual((sent["type"], sent["text"], sent["deliveryIntent"]), ("message.dispatch", "also update the README", "auto"))
+        self.assertEqual(
+            (sent["type"], sent["text"], sent["deliveryIntent"]), ("message.dispatch", "also update the README", "auto")
+        )
 
     async def test_first_task_launches_a_thread_in_the_project(self) -> None:
         a = make()
@@ -117,7 +128,9 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         a._ws.send = AsyncMock()
         a._find_project = AsyncMock(return_value={"id": "p1", "workspaceRoot": "/tmp", "defaultModelSelection": None})
         a._call = AsyncMock(return_value={"threadId": "t9"})
-        defaults = {"defaultModelSelection": {"instanceId": "claudeAgent", "model": "g"}, "defaultRuntimeMode": "auto-accept-edits"}
+        defaults = {
+            "defaultModelSelection": {"instanceId": "claudeAgent", "model": "g"}, "defaultRuntimeMode": "auto-accept-edits"
+        }
         with patch("jarvis.t3_adapter.t3_defaults", return_value=defaults):
             self.assertTrue(await a.send_task("fix it"))
         payload = a._call.await_args.args[1]

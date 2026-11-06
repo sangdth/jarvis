@@ -4,9 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from pipecat.services.llm_service import FunctionCallParams
 
-from jarvis.orchestrator import AgentOrchestrator
-
 from jarvis.agent_tools import agent_tool_handlers, agent_tools
+from jarvis.orchestrator import AgentOrchestrator
 
 
 def params(arguments: dict) -> FunctionCallParams:

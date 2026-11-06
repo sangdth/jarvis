@@ -1,6 +1,5 @@
 import unittest
 
-
 from fakes import QUESTION_FORM
 from jarvis.agent_adapter import form_answer, is_approval
 
@@ -33,7 +32,10 @@ class TestFormAnswer(unittest.TestCase):
     def test_boolean_and_multiselect(self) -> None:
         fields = [
             {"key": "ok", "type": "boolean"},
-            {"key": "pick", "type": "multiselect", "options": [{"value": "a", "label": "lint"}, {"value": "b", "label": "tests"}]},
+            {
+                "key": "pick", "type": "multiselect",
+                "options": [{"value": "a", "label": "lint"}, {"value": "b", "label": "tests"}],
+            },
         ]
         self.assertEqual(form_answer(fields, "yes, run lint and tests"), {"ok": True, "pick": ["a", "b"]})
 

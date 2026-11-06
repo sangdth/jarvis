@@ -18,6 +18,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 - Needs: OpenCode `opencode serve --port 4096` with the same password; Hermes its gateway service
   (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
+- Lint and types: `uv run ruff check src tests scripts` and `uv run mypy` (config in `pyproject.toml`)
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
 - Routing benchmark: `uv run python scripts/bench_routing.py` (about 180 paid calls; `bench_routing.py 1` runs one round, 60)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to

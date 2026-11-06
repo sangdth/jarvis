@@ -1,6 +1,7 @@
-import httpx
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.state import UserIntent

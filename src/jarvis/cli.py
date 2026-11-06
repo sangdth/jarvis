@@ -76,7 +76,7 @@ def uninstall(home: Path = SHARED_HOME) -> None:
         shutil.rmtree(home)  # still holding the lock, so no Jarvis starts halfway through
         lock.close()
         print(f"Deleted {home}.")
-    if installed and subprocess.run([uv, "tool", "uninstall", PACKAGE]).returncode != 0:
+    if installed and uv and subprocess.run([uv, "tool", "uninstall", PACKAGE]).returncode != 0:
         sys.exit(f"Removing the jarvis command failed; run `uv tool uninstall {PACKAGE}` yourself.")
     print("Left in place, shared with other tools: uv, Whisper models in ~/.cache/huggingface, Ollama's bge-m3 "
           "(`ollama rm bge-m3`).")

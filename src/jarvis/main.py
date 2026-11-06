@@ -8,11 +8,12 @@ import os
 import sys
 from datetime import datetime
 from typing import Any
+
 from loguru import logger
 
+from jarvis.agent_tools import agent_tool_handlers, agent_tools
 from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
-from jarvis.agent_tools import agent_tool_handlers, agent_tools
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
 from jarvis.prompts import AGENT_REPORT_PROMPT, greeting_prompt, system_prompt
@@ -61,10 +62,10 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
+    from pipecat.expressive.policy import ExpressionGuidance, ExpressionPolicy
     from pipecat.frames.frames import InterruptionFrame, LLMMessagesAppendFrame, OutputAudioRawFrame, TTSSpeakFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
-    from pipecat.expressive.policy import ExpressionGuidance, ExpressionPolicy
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.aggregators.llm_context import LLMContext
     from pipecat.processors.aggregators.llm_response_universal import (
@@ -75,8 +76,8 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     from pipecat.transports.base_transport import TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
-    from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, load_voiceprint
     from jarvis.mac_audio import MacVoiceTransport
+    from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, load_voiceprint
     from jarvis.voice_gates import JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
 
     # No voiceprint, no start: running unchecked would let any voice in the room give orders.
@@ -150,7 +151,8 @@ async def run_pipecat_harness(connect: bool = False) -> None:
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(orchestrator, load_soul().personality, thread),
-                # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever provider currently answers fastest.
+                # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever
+                # provider currently answers fastest.
                 extra={
                     "extra_body": {
                         "reasoning": {"enabled": True},
@@ -229,7 +231,6 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
-            allow_interruptions=True,
             # Pipecat teaches the LLM the voice's tags ([laughs], excited...) and keeps them out of the context.
             enable_expressive_conversation=True,
             expression_policy=ExpressionPolicy(guidance=[ExpressionGuidance.MATCH_STYLE]),
@@ -253,7 +254,9 @@ async def run_pipecat_harness(connect: bool = False) -> None:
                 logger.warning(f"Could not read memories for the greeting ({exc!r}).")
         await task.queue_frame(
             # A user-role note: with no conversation yet, a trailing system message makes DeepSeek reply with junk.
-            LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_prompt(datetime.now(), memories)}], run_llm=True)
+            LLMMessagesAppendFrame(
+                messages=[{"role": "user", "content": greeting_prompt(datetime.now(), memories)}], run_llm=True
+            )
         )
 
     # Start background coding agent watchers (Claude Code, OpenCode)

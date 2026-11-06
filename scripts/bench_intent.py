@@ -16,7 +16,8 @@ from jarvis.state import UserIntent
 
 MIN_ACCURACY = 0.97  # INTENT_QUESTION scored 97% on 2026-11-02; a wording change may not go below it
 
-A, I, M, U = (UserIntent.ADDRESSED_TO_JARVIS, UserIntent.IGNORE_BACKGROUND, UserIntent.MUTE, UserIntent.UNMUTE)
+# One letter per label keeps the case table readable.
+A, I, M, U = (UserIntent.ADDRESSED_TO_JARVIS, UserIntent.IGNORE_BACKGROUND, UserIntent.MUTE, UserIntent.UNMUTE)  # noqa: E741
 CASES: list[tuple[str, UserIntent]] = [
     ("Jarvis, what is OpenCode doing right now?", A),
     ("Build a login page with email and password", A),

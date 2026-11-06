@@ -5,7 +5,7 @@ import re
 import struct
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 
 class JarvisMode(str, Enum):

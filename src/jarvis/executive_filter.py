@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from loguru import logger
 import httpx
+from loguru import logger
 
 from jarvis.config import settings
 from jarvis.state import UserIntent, classify_fast_command
-
 
 _CONTEXT = (
     "Jarvis is a voice assistant that hands work to agents (coding, research, email, calendar, notes) "

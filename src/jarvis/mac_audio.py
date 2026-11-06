@@ -39,6 +39,7 @@ class MicConverter:
         self.heard = self.heard or (len(samples) > 0 and float(np.abs(samples).max()) >= SILENT_MIC_PEAK)
         if rate != self._rate:
             self._stream, self._rate = soxr.ResampleStream(rate, self.out_rate, 1, dtype="float32"), rate
+        assert self._stream is not None  # made above on the first block
         out = self._stream.resample_chunk(samples) if rate != self.out_rate else samples
         return (np.clip(out, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
@@ -116,7 +117,8 @@ class MacVoiceInputTransport(BaseInputTransport):
         self._mic: MicConverter | None = None
         self._silence_check: asyncio.Task | None = None
 
-    async def setup(self, setup: FrameProcessorSetup) -> None:
+    # Same signature as Pipecat's FrameProcessor.setup, which narrows BaseObject.setup the same way.
+    async def setup(self, setup: FrameProcessorSetup) -> None:  # type: ignore[override]
         await super().setup(setup)
         self._mic = MicConverter(self.sample_rate)
         self._audio.on_mic(self._on_mic)
@@ -136,13 +138,16 @@ class MacVoiceInputTransport(BaseInputTransport):
     async def _warn_if_silent(self) -> None:
         # The tap gets no blocks at all when voice processing fails, so this is a timer, not a check on each block.
         await asyncio.sleep(SILENT_MIC_SECS)
-        if not self._mic.heard:
+        if self._mic is not None and not self._mic.heard:
             logger.error(SILENT_MIC_WARNING)
 
     def _on_mic(self, samples: np.ndarray, rate: int) -> None:  # audio thread
-        audio = self._mic.convert(samples, rate)
+        mic = self._mic  # set in setup, before the tap is installed
+        if mic is None:
+            return
+        audio = mic.convert(samples, rate)
         if audio:
-            frame = InputAudioRawFrame(audio=audio, sample_rate=self._mic.out_rate, num_channels=1)
+            frame = InputAudioRawFrame(audio=audio, sample_rate=mic.out_rate, num_channels=1)
             asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), self.get_event_loop())
 
 
@@ -152,7 +157,7 @@ class MacVoiceOutputTransport(BaseOutputTransport):
         self._audio = audio
         self._until = 0.0  # loop time when everything queued so far has played
 
-    async def setup(self, setup: FrameProcessorSetup) -> None:
+    async def setup(self, setup: FrameProcessorSetup) -> None:  # type: ignore[override]  # see the input side
         await super().setup(setup)
         self._audio.connect_player(self.sample_rate)
 
