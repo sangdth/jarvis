@@ -121,17 +121,20 @@ All files are in `src/jarvis/`.
 
 | File                  | What it holds                                                              |
 | :-------------------- | :------------------------------------------------------------------------- |
-| `main.py`             | Pipeline wiring, system prompt, agent tools, retell prompt, TTS            |
+| `main.py`             | Pipeline wiring, TTS, `jarvis connect` thread pick                         |
+| `prompts.py`          | System prompt, agent roster, project list, retell and greeting prompts     |
+| `agent_tools.py`      | `send_agent_task`, `answer_agent`, `stop_agent` schemas and handlers       |
 | `cli.py`              | `jarvis` commands (`init`, `enroll`, `connect`, `update`), one-mic lock    |
 | `config.py`           | `Settings` from `.env`, `JARVIS_HOME`, dev checkout vs. installed          |
-| `soul.py`             | `jarvis init` questions, `SOUL.md` read and write                          |
+| `soul.py`             | `SOUL.md` read and write                                                   |
+| `init.py`             | `jarvis init`: copies the defaults, asks for keys, writes `SOUL.md`        |
 | `mac_audio.py`        | `MacVoiceTransport`: mic and speaker through macOS voice processing        |
 | `voice_gates.py`      | `SpeakerVerifiedWhisperSTT`, `JarvisIntentGate`                            |
 | `speaker.py`          | sherpa-onnx speaker embeddings, voiceprint load and save, model download   |
 | `enroll.py`           | `jarvis enroll`: records the owner's voiceprint                            |
 | `executive_filter.py` | `ExecutiveFilter`: decision model, `INTENT_QUESTION`                       |
 | `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`), mute and unmute patterns, beep synth |
-| `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval |
+| `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval  |
 | `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |
 | `opencode_adapter.py` | `OpenCodeSSEAdapter`: OpenCode v2 server, events over SSE                  |
 | `hermes_adapter.py`   | `HermesAdapter`: Hermes API server runs                                    |

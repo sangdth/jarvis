@@ -14,13 +14,13 @@ from typing import Any
 from loguru import logger
 
 from jarvis.config import JARVIS_HOME, settings
+from jarvis.prompts import NOT_THE_USER
 
 # Mem0 reports usage to PostHog unless this is set before it is imported.
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 MEMORY_DIR = JARVIS_HOME / "memory"
-USER_ID = "sang"
-NOT_THE_USER = "[Not the user speaking:"  # marks notes Jarvis writes as user-role messages (the greeting)  # one user; Mem0 needs an id to file memories under
+USER_ID = "sang"  # one user; Mem0 needs an id to file memories under
 
 
 def mem0_config(memory_dir: Path | None = None) -> dict[str, Any]:
