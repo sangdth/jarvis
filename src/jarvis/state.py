@@ -143,6 +143,8 @@ class JarvisState:
         if topic.is_report:
             self.active_agent_context.pop(topic.agent_id, None)  # the turn is over, so is its question
         else:
+            # Pop first: a re-asking agent moves to the end, so "asked last" stays true (dict keeps old positions).
+            self.active_agent_context.pop(topic.agent_id, None)
             self.active_agent_context[topic.agent_id] = topic
 
         if self.mode == JarvisMode.BEEP_ONLY:
