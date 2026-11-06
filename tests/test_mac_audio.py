@@ -20,5 +20,21 @@ class TestMicConverter(unittest.TestCase):
         self.assertEqual(np.frombuffer(out, dtype=np.int16).tolist(), [0, 16383, -32767, 32767])  # 2.0 is clipped
 
 
+class TestMicHeard(unittest.TestCase):
+    """A dead voice-processing mic gives nothing or near zeros; room noise counts as a working mic."""
+
+    def test_near_zeros_are_not_heard(self) -> None:
+        mic = MicConverter(16000)
+        for _ in range(150):  # 3 s of 20 ms blocks at 48 kHz
+            mic.convert(np.full(960, 3e-5, dtype=np.float32), 48000)
+        self.assertFalse(mic.heard)
+
+    def test_one_block_of_room_noise_is_heard_for_good(self) -> None:
+        mic = MicConverter(16000)
+        mic.convert(np.full(960, 5e-3, dtype=np.float32), 48000)
+        mic.convert(np.zeros(960, dtype=np.float32), 48000)
+        self.assertTrue(mic.heard)
+
+
 if __name__ == "__main__":
     unittest.main()

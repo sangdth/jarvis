@@ -8,6 +8,9 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 - **Hermes approves its own commands.** Its guardian model ran `rm -rf` on a test folder without asking during an
   integration run. Only commands it flags reach Jarvis. Tightening is a Hermes setting (`approvals` in
   `~/.hermes/config.yaml`), not Jarvis code.
+- **macOS voice processing needs a plain output device.** With a Multi-Output or aggregate device (BlackHole) as
+  the system output, the mic delivers nothing; `MacVoiceInputTransport` logs `SILENT_MIC_WARNING` after 3 s. To
+  record both voices, capture system audio in the recorder (OBS, Screen Studio) instead of routing through BlackHole.
 - **Two memories.** Hermes keeps its own; what you tell Hermes is not in Jarvis's Mem0, and the other way round.
 
 ## Open risks
