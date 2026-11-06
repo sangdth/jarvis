@@ -70,6 +70,15 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("hermes", self.orch._reminders)  # nothing went out, so no "still waiting"
         p.result_callback.assert_awaited_once_with({"status": "nothing_to_send", "agent_id": "hermes"})
 
+    async def test_project_alone_is_nothing_to_send_for_an_agent_that_opens_no_projects(self) -> None:
+        agent = MagicMock(spec=["config", "busy", "send_task"])  # no open_project, unlike a bare MagicMock
+        agent.config.id, agent.busy, agent.send_task = "claude", False, AsyncMock(return_value=True)
+        self.orch.adapters["claude"] = agent
+        p = params({"agent_id": "claude", "project": "jarvis"})
+        await self.handlers["send_agent_task"](p)
+        agent.send_task.assert_not_awaited()
+        p.result_callback.assert_awaited_once_with({"status": "nothing_to_send", "agent_id": "claude"})
+
     async def test_replace_stops_a_busy_agent_before_sending(self) -> None:
         order: list[str] = []
         self.agent.interrupt = AsyncMock(side_effect=lambda: order.append("stop"))

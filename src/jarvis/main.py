@@ -216,10 +216,11 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         if args.get("replace") and agent.busy:
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
         task, project = args.get("task", "").strip(), args.get("project")
-        if not task and not project:
+        # Only T3 Code opens a project; the others work in their configured folder, so a project alone is no task.
+        opens = bool(project) and hasattr(agent, "open_project")
+        if not task and not opens:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
-        # Only T3 Code opens a project; the others work in their configured folder.
-        ok = await (agent.open_project(project, task) if project and hasattr(agent, "open_project") else agent.send_task(task))
+        ok = await (agent.open_project(project, task) if opens else agent.send_task(task))
         if ok is True:  # a status word means nothing went out, so nothing to wait on
             orchestrator.remind_while_busy(agent)
         return ok
