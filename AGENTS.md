@@ -19,8 +19,8 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Lint and types: `uv run ruff check src tests scripts` and `uv run mypy` (config in `pyproject.toml`)
-- Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 110 at 3 rounds)
-- Routing benchmark: `uv run python scripts/bench_routing.py` (about 180 paid calls; `bench_routing.py 1` runs one round, 60)
+- Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 150 at 3 rounds)
+- Routing benchmark: `uv run python scripts/bench_routing.py` (about 200 paid calls; `bench_routing.py 1` runs one round, 68)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
   <https://sangdth.github.io/jarvis/> on every push to master that touches `site/`.
 
@@ -93,7 +93,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `src/jarvis/defaults/` (shipped in the package); a change to the shipped agents only reaches users who copy it.
 - **"Stop" stops the work, "shut up" mutes Jarvis.** "Stop it.", "stop that", "cancel that" reach the
   conversation model, which calls `stop_agent` (`nothing_running` when idle); only "shut up" / "be quiet" (and
-  "stop talking", "hush") mute, and agents keep working while muted. `bench_intent.py` scores mute exactly.
+  "stop talking", "hush"; "im đi", "im lặng", "đừng nói nữa") mute, and agents keep working while muted.
+  `bench_intent.py` scores mute exactly.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.
@@ -101,6 +102,12 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   agent does the work, unless the user asks. A retold turn is the outcome against the user's request in about ten
   words; a turn that asks the user to decide (a plan, options) gets one phrase per heading, at most four, then its
   question (`AGENT_REPORT_PROMPT`); the full text stays in the LLM context for follow-up questions.
+- **Jarvis talks in the user's language, agents get English.** `LANGUAGE` (`en` or `vi`, `config.py`) sets the
+  language Whisper listens for (a per-sentence guess misreads short Vietnamese) and, with `WHISPER_MODEL` empty, the
+  model (`WHISPER_MODELS`: turbo for `en`; for `vi`, `sangdth/phowhisper-large-mlx`, VinAI's PhoWhisper-large
+  converted to MLX by us). Replies, retold turns and the greeting follow the user's language. Every `task` and
+  `answer` is written in English (`agent_tools.py`), so `is_approval` stays English-only. Agent questions,
+  approvals and `WAITING_LINES` stay English: they never go through an LLM.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.
