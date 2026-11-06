@@ -34,7 +34,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Don't hear its own voice          | `MacVoiceTransport` (voice processing)      | `mac_audio.py`        |
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
-| Claude Code, OpenCode, Hermes     | `*Adapter` classes                          | `agent_watchers.py`   |
+| Claude Code, OpenCode, Hermes     | `*Adapter` classes                          | `*_adapter.py`        |
 | T3 Code, projects by name         | `T3Adapter`                                 | `t3_adapter.py`       |
 | Memory                            | Mem0 + Qdrant + Ollama `bge-m3`             | `memory.py`           |
 

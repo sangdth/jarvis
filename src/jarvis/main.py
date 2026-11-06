@@ -4,7 +4,6 @@ Jarvis Always-On Voice Executive Harness (Pipecat Pipeline).
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 from datetime import datetime
@@ -12,12 +11,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from loguru import logger
 
-from jarvis.agent_watchers import AgentOrchestrator
 from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import NOT_THE_USER, create_memory_service
+from jarvis.orchestrator import AgentOrchestrator
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
+from jarvis.t3_adapter import PROJECTS_LABEL, T3Adapter, current_thread, list_projects, recent_threads
 
 
 JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, a voice assistant that hands the user's work to agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else (research, email, calendar, notes) to Hermes.
@@ -113,8 +113,6 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
 
 def project_list(orchestrator: AgentOrchestrator) -> str:
     """The user's project folders, for agents that can open one (T3 Code), so a spoken name maps to a folder."""
-    from jarvis.t3_adapter import PROJECTS_LABEL, list_projects  # imported here: t3_adapter imports agent_watchers
-
     openers = [a.config.id for a in orchestrator.adapters.values() if hasattr(a, "open_project")]
     if not openers:
         return ""
@@ -241,8 +239,6 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
 
 async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
     """`jarvis connect`: attach T3 Code to the thread this runs in (a T3 project script), else to one picked here."""
-    from jarvis.t3_adapter import T3Adapter, current_thread
-
     t3 = next((a for a in orchestrator.adapters.values() if isinstance(a, T3Adapter)), None)
     if t3 is None:
         sys.exit("jarvis connect needs a T3 Code agent enabled in agents.json.")
@@ -261,8 +257,6 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
 
 def choose_thread(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Ask at the keyboard which recent T3 thread to continue."""
-    from jarvis.t3_adapter import recent_threads
-
     threads = recent_threads(snapshot)
     if not threads:
         sys.exit("No T3 threads to connect to.")

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from jarvis.agent_watchers import WatchedAgentConfig
+from jarvis.agent_adapter import WatchedAgentConfig
 from jarvis.t3_adapter import PROJECTS, PROJECTS_LABEL, T3Adapter, current_thread, find_project, list_projects, recent_threads, t3_question_fields
 
 RUN = "run:thread:t1:ordinal:1"

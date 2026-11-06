@@ -131,6 +131,10 @@ All files are in `src/jarvis/`.
 | `enroll.py`           | `jarvis enroll`: records the owner's voiceprint                            |
 | `executive_filter.py` | `ExecutiveFilter`: decision model, `INTENT_QUESTION`                       |
 | `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`), mute and unmute patterns, beep synth |
-| `agent_watchers.py`   | Claude Code, OpenCode and Hermes adapters, `AgentOrchestrator`             |
+| `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval |
+| `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |
+| `opencode_adapter.py` | `OpenCodeSSEAdapter`: OpenCode v2 server, events over SSE                  |
+| `hermes_adapter.py`   | `HermesAdapter`: Hermes API server runs                                    |
+| `orchestrator.py`     | `AgentOrchestrator`, `ADAPTERS` (agents.json type to adapter), reminders   |
 | `t3_adapter.py`       | `T3Adapter`, project list, `jarvis connect` thread lookup                  |
 | `memory.py`           | Local Mem0 config, `LastExchangeMemory` (saves only the newest exchange)   |

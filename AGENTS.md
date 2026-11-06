@@ -33,13 +33,13 @@ speech check dropping the sentence, not the conversation model.
 | Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`                       |
 | Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`               |
 | Reacts, but the reply is wrong       | `main.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`                    |
-| Says something wrong about an agent  | `agent_watchers.py` `_surface` call sites                     |
+| Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                          |
 | Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`         |
 | Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`                |
-| Answer or stop hits the wrong agent  | `agent_watchers.py` `find_waiting`, `find_busy`               |
+| Answer or stop hits the wrong agent  | `orchestrator.py` `find_waiting`, `find_busy`                 |
 | A correction runs as a second task   | `main.py` `send_agent_task` `replace`, each `interrupt`       |
-| "Still waiting" timing or wording    | `agent_watchers.py` `remind_while_busy`, `WAITING_LINES`      |
-| Hermes runs, approvals, stop         | `agent_watchers.py` `HermesAdapter`                           |
+| "Still waiting" timing or wording    | `orchestrator.py` `remind_while_busy`, `WAITING_LINES`        |
+| Hermes runs, approvals, stop         | `hermes_adapter.py` `HermesAdapter`                           |
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)           |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                                      |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                          |
@@ -116,6 +116,6 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 
 ## Later, not now
 
-- More agents (Pi, Codex): add an adapter with the same shape as `OpenCodeSSEAdapter` / `HermesAdapter`, or run
-  them as a T3 Code provider and reach them through `t3-code`.
+- More agents (Pi, Codex): a new `<name>_adapter.py` shaped like `opencode_adapter.py` / `hermes_adapter.py`,
+  registered in `orchestrator.py` `ADAPTERS`; or run them as a T3 Code provider and reach them through `t3-code`.
 - Laya as a local speech check: parked; it lost to the OpenRouter decision models.

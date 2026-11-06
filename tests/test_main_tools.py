@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from pipecat.services.llm_service import FunctionCallParams
 
-from jarvis.agent_watchers import AgentOrchestrator
+from jarvis.orchestrator import AgentOrchestrator
 from datetime import datetime
 
 from jarvis.main import agent_tool_handlers, agent_tools, greeting_prompt
