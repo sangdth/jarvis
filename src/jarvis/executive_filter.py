@@ -17,7 +17,10 @@ _CONTEXT = (
 # Jarvis is the default listener, so small talk with no one else named counts as addressed (97% on the 2026-11-02 set).
 INTENT_QUESTION = {
     "type": "choice",
-    "instructions": _CONTEXT + " What does the speaker want?",
+    "instructions": _CONTEXT
+    + " jarvis_last_said, when given, is what Jarvis said just before: a reply to it talks to Jarvis even when the"
+    " words make little sense, because speech recognition garbles names and short answers."
+    " What does the speaker want?",
     "criteria": {
         UserIntent.MUTE.value: (
             "tells Jarvis itself to be quiet: shut up, be quiet, hush, stop talking. A plain \"stop\", \"stop it\","

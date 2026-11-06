@@ -1,6 +1,6 @@
 """Benchmark what Jarvis hears: runs the real ExecutiveFilter.classify_user_utterance on a fixed sentence set.
 
-Usage: uv run python scripts/bench_intent.py [rounds]   (needs OPENROUTER_API_KEY; ~100 paid calls at 3 rounds)
+Usage: uv run python scripts/bench_intent.py [rounds]   (needs OPENROUTER_API_KEY; ~160 paid calls at 3 rounds)
 Exits 1 when "is it for Jarvis?" accuracy drops below MIN_ACCURACY.
 """
 
@@ -66,6 +66,26 @@ CASES: list[tuple[str, UserIntent]] = [
     ("Okay Jarvis, you can speak again", U),
     ("Alright, go ahead and talk now", U),
 ]
+# (what Jarvis just said, what was heard): answers, often garbled by Whisper, and room talk right after Jarvis spoke.
+# The answers are real misses from the 2026-11-02..06 logs (docs/research/voice-recognition-misses.md).
+REPLY_CASES: list[tuple[str, str, UserIntent]] = [
+    (
+        "Which project should the new section go in, the platform one in Opscom, or somewhere else?",
+        "the tree to continue walking.",
+        A,
+    ),
+    ("T3 Code is still waiting to hear which page or thread you meant by new section.", "Ken sorry", A),
+    (
+        "Sorry, shoot what up to you? The status of the Genes fix, or something else?",
+        "Yes, you should have got me how the... The tree is walking under the...",
+        A,
+    ),
+    ("Want me to push it and open a PR?", "No.", A),
+    ("Should I run the tests now or later?", "now.", A),
+    ("I've sent that over, I'll tell you when it's done.", "Honey, can you grab the kids from school?", I),
+    ("Hermes found six projects in Happy Voxel.", "Mom, I'll call you back in five minutes.", I),
+    ("Done, the PR is up.", "Minh, did you see the game last night?", I),
+]
 
 
 async def main(rounds: int) -> int:
@@ -78,9 +98,9 @@ async def main(rounds: int) -> int:
     latencies: list[float] = []
     try:
         for _ in range(rounds):
-            for text, want in CASES:
+            for last_said, text, want in [(None, t, w) for t, w in CASES] + REPLY_CASES:
                 start = time.perf_counter()
-                got = await filt.classify_user_utterance(text)
+                got = await filt.classify_user_utterance(text, recent_jarvis_question=last_said)
                 latencies.append((time.perf_counter() - start) * 1000)
                 calls += 1
                 # Heard vs ignored is what matters most; on top, mute and unmute must be exact: "Stop it." read as
