@@ -45,11 +45,11 @@ class Settings(BaseSettings):
 
     # Local Always-On STT
     # MLX Whisper on the Apple GPU (Hugging Face repo id)
-    whisper_model: str = "mlx-community/distil-whisper-large-v3"
+    whisper_model: str = "mlx-community/whisper-large-v3-turbo"
 
     # Owner voice check (sherpa-onnx ERes2Net): sentences scoring below this are dropped.
     # Tune it from the "[Speaker] score=" lines in the log; enroll with `jarvis enroll`.
-    speaker_threshold: float = 0.4
+    speaker_threshold: float = 0.35
 
     # TTS
     elevenlabs_api_key: str = ""

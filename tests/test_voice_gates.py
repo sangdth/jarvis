@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TextFrame,
@@ -13,7 +14,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from jarvis.state import AgentTopic, JarvisMode, JarvisState, UserIntent
-from jarvis.voice_gates import JarvisIntentGate
+from jarvis.voice_gates import JarvisIntentGate, last_assistant_text
 
 
 def heard(text: str) -> TranscriptionFrame:
@@ -90,6 +91,45 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.filter.classify_user_utterance.assert_awaited_once_with(transcript="shut up", recent_jarvis_question=None)
         await self.gate.cleanup()
 
+    @patch("jarvis.voice_gates.HOLD_SECS", 0.05)
+    async def test_a_joined_sentence_is_not_held_again(self) -> None:
+        down = FrameDirection.DOWNSTREAM
+        await self.gate.process_frame(heard("Yes, you should have got me how the..."), down)
+        await self.gate.process_frame(heard("The tree is walking under the..."), down)
+        self.assertEqual(self.turns(), ["Yes, you should have got me how the... The tree is walking under the..."])
+
+    async def test_answer_right_after_jarvis_speaks_carries_its_reply(self) -> None:
+        self.gate = JarvisIntentGate(self.state, self.filter, last_said=lambda: "Which project, Opscom or another?")
+        self.gate.push_frame = AsyncMock()
+        await self.gate.process_frame(heard("the tree to continue walking."), FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.assert_awaited_with(
+            transcript="the tree to continue walking.", recent_jarvis_question=None
+        )  # Jarvis has not spoken yet: no context
+        await self.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await self.gate.process_frame(heard("the tree to continue walking."), FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.assert_awaited_with(
+            transcript="the tree to continue walking.", recent_jarvis_question="Which project, Opscom or another?"
+        )
+
+    async def test_jarvis_reply_expires_after_the_window(self) -> None:
+        self.gate = JarvisIntentGate(self.state, self.filter, last_said=lambda: "Done.")
+        await self.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        with patch("jarvis.voice_gates.REPLY_WINDOW_SECS", 0.0):
+            await self.gate.process_frame(heard("honey, dinner?"), FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.assert_awaited_with(
+            transcript="honey, dinner?", recent_jarvis_question=None
+        )
+
+    async def test_agent_question_wins_over_jarvis_reply(self) -> None:
+        self.gate = JarvisIntentGate(self.state, self.filter, last_said=lambda: "Anything else?")
+        self.gate.push_frame = AsyncMock()
+        self.state.active_agent_context["hermes"] = AgentTopic("hermes", "Hermes", "needs approval: rm x")
+        await self.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await self.gate.process_frame(heard("yes"), FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.assert_awaited_with(
+            transcript="yes", recent_jarvis_question="needs approval: rm x"
+        )
+
     async def test_background_speech_is_dropped(self) -> None:
         self.filter.classify_user_utterance.return_value = UserIntent.IGNORE_BACKGROUND
         await self.gate.process_frame(heard("honey, dinner?"), FrameDirection.DOWNSTREAM)
@@ -155,3 +195,19 @@ class TestVoiceprint(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLastAssistantText(unittest.TestCase):
+    def test_newest_assistant_text(self) -> None:
+        messages = [
+            {"role": "assistant", "content": "old"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": [{"type": "text", "text": "Which project?"}]},
+            {"role": "system", "content": "report"},
+        ]
+        self.assertEqual(last_assistant_text(messages), "Which project?")
+
+    def test_none_without_assistant_text(self) -> None:
+        self.assertIsNone(
+            last_assistant_text([{"role": "user", "content": "hi"}, {"role": "assistant", "content": ""}])
+        )

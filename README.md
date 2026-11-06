@@ -145,7 +145,7 @@ inside the T3 Code app, so macOS asks whether T3 Code may use the microphone; al
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence
   was passed on or ignored. T3 Code keeps terminal logs in `~/.t3/userdata/logs/terminals/*.log`.
 - **Your voice gets dropped, or others get through.** Every sentence logs `[Speaker] score=0.71 pass`. Set
-  `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.4), or enroll again.
+  `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.35), or enroll again.
 - **Jarvis splits one sentence into two.** A pause over 0.6 s ends a sentence; raise `stop_secs` in `main.py`.
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
   key: run `jarvis init` again; it asks only for the keys still empty.

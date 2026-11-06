@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+import time
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
 
 import numpy as np
 from loguru import logger
 from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
     Frame,
+    StartFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
@@ -25,6 +28,8 @@ from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_comm
 TRAILING_OFF = ("...", "…", "-", "—")
 # How long a trailing-off sentence waits for the rest, counted from the last stretch of silence.
 HOLD_SECS = 2.0
+# A sentence this soon after Jarvis stopped talking is judged as a possible answer to what it said.
+REPLY_WINDOW_SECS = 20.0
 
 
 class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
@@ -53,6 +58,15 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
                     continue
             yield frame
 
+    async def start(self, frame: StartFrame) -> None:
+        await super().start(frame)
+        # mlx_whisper loads the weights on the first call; do it now so the user's first sentence isn't the slow one.
+        import mlx_whisper
+
+        await asyncio.to_thread(
+            mlx_whisper.transcribe, np.zeros(16000, dtype=np.float32), path_or_hf_repo=self._settings.model
+        )
+
     def _score(self, audio: bytes) -> float:
         return cosine(self._embedder.embed(audio), self._voiceprint)
 
@@ -67,10 +81,18 @@ class JarvisIntentGate(FrameProcessor):
        when actually needed (no wake word required).
     """
 
-    def __init__(self, state: JarvisState, executive_filter: ExecutiveFilter) -> None:
+    def __init__(
+        self,
+        state: JarvisState,
+        executive_filter: ExecutiveFilter,
+        last_said: Callable[[], str | None] = lambda: None,
+    ) -> None:
         super().__init__()
         self.state = state
         self.executive_filter = executive_filter
+        # What Jarvis said last (the conversation model's last reply), for answers to its own questions.
+        self._last_said = last_said
+        self._bot_stopped_at: float | None = None
         # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
         self._held: TranscriptionFrame | None = None
         self._hold_timer: asyncio.Task | None = None
@@ -79,6 +101,8 @@ class JarvisIntentGate(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if not isinstance(frame, TranscriptionFrame):
+            if isinstance(frame, BotStoppedSpeakingFrame):
+                self._bot_stopped_at = time.monotonic()
             if self._held is not None:
                 # The user speaks again: wait for that sentence; once they stop, give Whisper the window again.
                 if isinstance(frame, VADUserStartedSpeakingFrame):
@@ -94,11 +118,13 @@ class JarvisIntentGate(FrameProcessor):
 
         # Mute / unmute act at once and never join a held sentence.
         if classify_fast_command(transcript) is None:
-            if self._held is not None:
+            joined = self._held is not None
+            if joined:
                 self._cancel_hold_timer()
                 frame = replace(frame, text=f"{self._held.text.strip()} {transcript}")
                 self._held = None
-            if frame.text.strip().endswith(TRAILING_OFF):
+            # Hold once: a joined sentence that trails off again goes on now instead of waiting another HOLD_SECS.
+            if not joined and frame.text.strip().endswith(TRAILING_OFF):
                 logger.info(f"[User Transcript] holding for the rest: {frame.text.strip()!r}")
                 self._held = frame
                 self._start_hold_timer(direction)
@@ -126,6 +152,14 @@ class JarvisIntentGate(FrameProcessor):
         if frame is not None:
             await self._gate(frame, direction)
 
+    def _recent_jarvis_question(self) -> str | None:
+        """An open agent question first; else Jarvis's own last reply, if it stopped talking moments ago."""
+        topic = next((t.summary for t in reversed(list(self.state.active_agent_context.values()))), None)
+        if topic is not None:
+            return topic
+        recent = self._bot_stopped_at is not None and time.monotonic() - self._bot_stopped_at < REPLY_WINDOW_SECS
+        return self._last_said() if recent else None
+
     async def _gate(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
         transcript = frame.text.strip()
         logger.info(f"[User Transcript] ({self.state.mode.value}): {transcript!r}")
@@ -134,13 +168,9 @@ class JarvisIntentGate(FrameProcessor):
         if self.state.mode == JarvisMode.BEEP_ONLY and classify_fast_command(transcript) is None:
             return
 
-        recent_topic = next(
-            (t.summary for t in reversed(list(self.state.active_agent_context.values()))),
-            None,
-        )
         intent = await self.executive_filter.classify_user_utterance(
             transcript=transcript,
-            recent_jarvis_question=recent_topic,
+            recent_jarvis_question=self._recent_jarvis_question(),
         )
 
         if intent == UserIntent.MUTE:
@@ -166,3 +196,16 @@ class JarvisIntentGate(FrameProcessor):
         await self.push_frame(ProposedUserStartedSpeakingFrame(), direction)
         await self.push_frame(frame, direction)
         await self.push_frame(ProposedUserStoppedSpeakingFrame(), direction)
+
+
+def last_assistant_text(messages: list) -> str | None:
+    """The text of the newest assistant message in an LLM context, or None."""
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+        if isinstance(content, str) and content.strip():
+            return content.strip()[-500:]
+    return None

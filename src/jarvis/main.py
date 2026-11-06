@@ -296,9 +296,9 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     from pipecat.transports.base_transport import TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
-    from jarvis.speaker import SpeakerEmbedder, load_voiceprint
+    from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, load_voiceprint
     from jarvis.mac_audio import MacVoiceTransport
-    from jarvis.voice_gates import JarvisIntentGate, SpeakerVerifiedWhisperSTT
+    from jarvis.voice_gates import JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
 
     # No voiceprint, no start: running unchecked would let any voice in the room give orders.
     try:
@@ -306,6 +306,11 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     except FileNotFoundError as exc:
         logger.error(str(exc))
         sys.exit(1)
+    # The log is where misses get investigated; it has to say which setup heard them.
+    logger.info(
+        f"Hearing with Whisper {settings.whisper_model}, speaker threshold {settings.speaker_threshold}, "
+        f"voiceprint {VOICEPRINT_PATH}"
+    )
 
     executive_filter = ExecutiveFilter()
     task_ref: dict[str, PipelineTask] = {}
@@ -356,10 +361,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model),
     )
 
-    # 3. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier)
-    intent_gate = JarvisIntentGate(state=state, executive_filter=executive_filter)
-
-    # 4. Executive LLM Brain (OpenRouter)
+    # 3. Executive LLM Brain (OpenRouter)
     if settings.openrouter_api_key:
         from pipecat.services.openrouter.llm import OpenRouterLLMService
 
@@ -409,6 +411,12 @@ async def run_pipecat_harness(connect: bool = False) -> None:
         # reply doesn't resend the whole day. The system prompt (system_instruction) sits outside the context, so
         # summaries never touch it; offline there is no model to summarize.
         assistant_params=LLMAssistantAggregatorParams(enable_auto_context_summarization=llm is not None),
+    )
+
+    # 4. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier); Jarvis's last reply
+    # lets it hear a short or garbled answer to Jarvis's own question.
+    intent_gate = JarvisIntentGate(
+        state=state, executive_filter=executive_filter, last_said=lambda: last_assistant_text(context.messages)
     )
 
     # 5. Text-to-Speech (ElevenLabs if configured)
