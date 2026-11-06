@@ -10,9 +10,9 @@ from loguru import logger
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     Frame,
-    StartFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
+    StartFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -64,7 +64,7 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         import mlx_whisper
 
         await asyncio.to_thread(
-            mlx_whisper.transcribe, np.zeros(16000, dtype=np.float32), path_or_hf_repo=self._settings.model
+            mlx_whisper.transcribe, np.zeros(16000, dtype=np.float32), path_or_hf_repo=self._settings.model  # type: ignore[attr-defined]
         )
 
     def _score(self, audio: bytes) -> float:
@@ -118,13 +118,13 @@ class JarvisIntentGate(FrameProcessor):
 
         # Mute / unmute act at once and never join a held sentence.
         if classify_fast_command(transcript) is None:
-            joined = self._held is not None
-            if joined:
+            held = self._held
+            if held is not None:
                 self._cancel_hold_timer()
-                frame = replace(frame, text=f"{self._held.text.strip()} {transcript}")
+                frame = replace(frame, text=f"{held.text.strip()} {transcript}")
                 self._held = None
             # Hold once: a joined sentence that trails off again goes on now instead of waiting another HOLD_SECS.
-            if not joined and frame.text.strip().endswith(TRAILING_OFF):
+            if held is None and frame.text.strip().endswith(TRAILING_OFF):
                 logger.info(f"[User Transcript] holding for the rest: {frame.text.strip()!r}")
                 self._held = frame
                 self._start_hold_timer(direction)

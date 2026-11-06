@@ -46,7 +46,8 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.post.assert_awaited_once_with("/api/session/ses_1/form/frm_1/reply", json={"answer": {"q0": "Tests"}})
 
     async def test_finished_turn_is_surfaced_and_next_message_is_a_prompt(self) -> None:
-        await self.adapter._handle_event({"type": "session.text.ended", "data": {"sessionID": "ses_1", "text": "All tests pass."}})
+        ended = {"type": "session.text.ended", "data": {"sessionID": "ses_1", "text": "All tests pass."}}
+        await self.adapter._handle_event(ended)
         await self.adapter._handle_event({"type": "session.execution.succeeded", "data": {"sessionID": "ses_1"}})
         self.adapter._surface.assert_awaited_once_with("All tests pass.", is_report=True)
 

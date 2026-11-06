@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 from fakes import fake_adapter
 from jarvis.orchestrator import WAITING_LINES, AgentOrchestrator
 from jarvis.state import AgentTopic, JarvisState

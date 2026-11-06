@@ -1,5 +1,4 @@
 import unittest
-
 from pathlib import Path
 
 from jarvis.config import JARVIS_HOME, SHARED_HOME, Settings, checkout_root

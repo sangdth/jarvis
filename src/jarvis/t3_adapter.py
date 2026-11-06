@@ -174,7 +174,9 @@ class T3Adapter(BaseAgentAdapter):
             except InvalidStatus as exc:
                 code = exc.response.status_code
                 if code == 426:
-                    logger.error(f"[{self.config.id}] T3 Code changed its protocol (Jarvis speaks {PROTOCOL}); update the adapter.")
+                    logger.error(
+                        f"[{self.config.id}] T3 Code changed its protocol (Jarvis speaks {PROTOCOL}); update the adapter."
+                    )
                     wait = 300.0
                 elif code in (401, 403):
                     self._token = None  # revoked or expired: issue a new one
@@ -245,7 +247,8 @@ class T3Adapter(BaseAgentAdapter):
         """T3's projects and threads, read from a short-lived shell subscription."""
         self._token = self._token or await self._issue_token()
         async with self._connect() as ws:
-            await ws.send(json.dumps({"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell", "payload": {}, "headers": []}))
+            request = {"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell", "payload": {}, "headers": []}
+            await ws.send(json.dumps(request))
             async for raw in ws:
                 msg = json.loads(raw)
                 if msg.get("_tag") == "Exit":
@@ -274,6 +277,8 @@ class T3Adapter(BaseAgentAdapter):
             self._settle(payload.get("id"))  # answered in the T3 window, expired or cancelled
         elif kind == "run.updated":
             run_id, status = payload.get("id") or event.get("runId"), payload.get("status")
+            if not run_id:
+                return  # no run to track
             if status in _ACTIVE:
                 self._runs[run_id] = status
                 return
