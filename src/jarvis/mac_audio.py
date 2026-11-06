@@ -18,6 +18,12 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 PLAY_AHEAD_SECS = 0.08  # audio queued in the player beyond what is playing; an interruption cuts in after this
+SILENT_MIC_SECS = 3.0  # this long after start without real sound means the mic is not reaching Jarvis
+SILENT_MIC_PEAK = 1e-3  # -60 dBFS; a quiet room through voice processing peaks near 1e-2
+SILENT_MIC_WARNING = (
+    "Mic is silent: macOS voice processing delivers no sound. Set System Settings > Sound > Output to speakers "
+    "or headphones; a Multi-Output or aggregate device (BlackHole and similar) stops the mic."
+)
 
 
 class MicConverter:
@@ -25,10 +31,12 @@ class MicConverter:
 
     def __init__(self, out_rate: int) -> None:
         self.out_rate = out_rate
+        self.heard = False  # any block loud enough to be a real mic, not a dead one
         self._rate = 0
         self._stream: soxr.ResampleStream | None = None
 
     def convert(self, samples: np.ndarray, rate: int) -> bytes:
+        self.heard = self.heard or (len(samples) > 0 and float(np.abs(samples).max()) >= SILENT_MIC_PEAK)
         if rate != self._rate:
             self._stream, self._rate = soxr.ResampleStream(rate, self.out_rate, 1, dtype="float32"), rate
         out = self._stream.resample_chunk(samples) if rate != self.out_rate else samples
@@ -106,6 +114,7 @@ class MacVoiceInputTransport(BaseInputTransport):
         super().__init__(params)
         self._audio = audio
         self._mic: MicConverter | None = None
+        self._silence_check: asyncio.Task | None = None
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         await super().setup(setup)
@@ -115,11 +124,20 @@ class MacVoiceInputTransport(BaseInputTransport):
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
         self._audio.start()
+        self._silence_check = self.create_task(self._warn_if_silent())
         await self.set_transport_ready(frame)
 
     async def cleanup(self) -> None:
         await super().cleanup()
+        if self._silence_check:
+            await self.cancel_task(self._silence_check)
         self._audio.stop()
+
+    async def _warn_if_silent(self) -> None:
+        # The tap gets no blocks at all when voice processing fails, so this is a timer, not a check on each block.
+        await asyncio.sleep(SILENT_MIC_SECS)
+        if not self._mic.heard:
+            logger.error(SILENT_MIC_WARNING)
 
     def _on_mic(self, samples: np.ndarray, rate: int) -> None:  # audio thread
         audio = self._mic.convert(samples, rate)

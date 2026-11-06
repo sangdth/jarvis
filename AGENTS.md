@@ -44,6 +44,7 @@ speech check dropping the sentence, not the conversation model.
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                                      |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                          |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)       |
+| Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`   |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`             |
 | Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`         |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |
