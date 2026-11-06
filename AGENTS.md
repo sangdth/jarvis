@@ -32,12 +32,12 @@ speech check dropping the sentence, not the conversation model.
 | :----------------------------------- | :------------------------------------------------------------ |
 | Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`                       |
 | Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`               |
-| Reacts, but the reply is wrong       | `main.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`                    |
+| Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`                 |
 | Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                          |
-| Retold agent turn is long or odd     | `main.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`         |
-| Wrong agent gets a task              | `agents.json` `role`, `main.py` `agent_roster`                |
+| Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`      |
+| Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`             |
 | Answer or stop hits the wrong agent  | `orchestrator.py` `find_waiting`, `find_busy`                 |
-| A correction runs as a second task   | `main.py` `send_agent_task` `replace`, each `interrupt`       |
+| A correction runs as a second task   | `agent_tools.py` `send` (`replace`), each `interrupt`         |
 | "Still waiting" timing or wording    | `orchestrator.py` `remind_while_busy`, `WAITING_LINES`        |
 | Hermes runs, approvals, stop         | `hermes_adapter.py` `HermesAdapter`                           |
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)           |
@@ -110,8 +110,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   against `~/.config/jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass
   from any voice. No voiceprint stops Jarvis at startup (`jarvis enroll`). User turns come only from
   `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
-- **`~/.config/jarvis/SOUL.md` is the user's own setup** (`jarvis init`, `soul.py`): front matter holds settings
-  (`projects_dir`), the body is personality, added to the system prompt as tone only. The name is always Jarvis.
+- **`~/.config/jarvis/SOUL.md` is the user's own setup** (`jarvis init` in `init.py`, read by `soul.py`): front
+  matter holds settings (`projects_dir`), the body is personality, added to the system prompt as tone only. The name
+  is always Jarvis.
 - Mock HTTP and the Claude SDK in unit tests. Live checks against real agents go in a throwaway script, not in `tests/`.
 
 ## Later, not now

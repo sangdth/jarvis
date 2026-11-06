@@ -107,7 +107,7 @@ def main() -> None:
     if args == ["uninstall"]:
         return uninstall()
     if args == ["init"]:
-        from jarvis.soul import main as init
+        from jarvis.init import main as init
 
         return init()
     if args == ["enroll"]:

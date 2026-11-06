@@ -12,7 +12,7 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
         self.orch = AgentOrchestrator(state=MagicMock())
 
     def test_roster_lists_exact_ids_and_default(self) -> None:
-        from jarvis.main import agent_roster
+        from jarvis.prompts import agent_roster
 
         self.assertIn("No coding agents", agent_roster(self.orch))
         self.orch.adapters["opencode"] = fake_adapter("opencode")

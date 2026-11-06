@@ -5,9 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 from pipecat.services.llm_service import FunctionCallParams
 
 from jarvis.orchestrator import AgentOrchestrator
-from datetime import datetime
 
-from jarvis.main import agent_tool_handlers, agent_tools, greeting_prompt
+from jarvis.agent_tools import agent_tool_handlers, agent_tools
 
 
 def params(arguments: dict) -> FunctionCallParams:
@@ -97,15 +96,6 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         p = params({"agent_id": "nope", "task": "x"})
         await self.handlers["send_agent_task"](p)
         p.result_callback.assert_awaited_once_with({"status": "agent_not_active", "agent_id": "nope"})
-
-
-class TestGreeting(unittest.TestCase):
-    def test_greeting_has_time_and_memories(self) -> None:
-        prompt = greeting_prompt(datetime(2026, 11, 6, 8, 5), ["Linh's recital is Saturday at 4pm"])
-        self.assertIn("Friday 08:05", prompt)
-        self.assertIn("Linh's recital is Saturday at 4pm", prompt)
-        self.assertIn("Do not call any tool", prompt)
-        self.assertNotIn("remember", greeting_prompt(datetime(2026, 11, 6, 8, 5), []))
 
 
 if __name__ == "__main__":

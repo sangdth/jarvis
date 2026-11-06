@@ -16,7 +16,8 @@ import httpx
 
 from jarvis.orchestrator import AgentOrchestrator
 from jarvis.config import settings
-from jarvis.main import agent_tools, system_prompt
+from jarvis.agent_tools import agent_tools
+from jarvis.prompts import system_prompt
 from jarvis.soul import load_soul
 from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
 from jarvis.state import JarvisState
