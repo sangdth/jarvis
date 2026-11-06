@@ -12,7 +12,7 @@ from loguru import logger
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import InvalidStatus
 
-from jarvis.agent_watchers import BaseAgentAdapter, WatchedAgentConfig, describe_fields, form_answer, is_approval
+from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig, describe_fields, form_answer, is_approval
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
 

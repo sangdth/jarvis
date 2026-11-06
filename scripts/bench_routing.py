@@ -14,7 +14,7 @@ import time
 
 import httpx
 
-from jarvis.agent_watchers import AgentOrchestrator
+from jarvis.orchestrator import AgentOrchestrator
 from jarvis.config import settings
 from jarvis.main import agent_tools, system_prompt
 from jarvis.soul import load_soul
