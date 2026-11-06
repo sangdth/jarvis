@@ -5,7 +5,7 @@ description = "Always-on voice harness that hands work to Claude Code, OpenCode 
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "pipecat-ai[silero,whisper,mlx-whisper,openai,elevenlabs]>=0.0.50",
     "pydantic-settings>=2.2.0",
