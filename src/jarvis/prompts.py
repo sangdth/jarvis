@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
@@ -12,6 +14,9 @@ if TYPE_CHECKING:
 
 # Starts every note Jarvis writes as a user-role message (the greeting), so memory skips it.
 NOT_THE_USER = "[Not the user speaking:"
+
+LANGUAGES_PATH = Path(__file__).with_name("languages.json")
+LANGUAGES: dict[str, dict[str, str]] = json.loads(LANGUAGES_PATH.read_text(encoding="utf-8"))
 
 
 JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, a voice assistant that hands the user's work to agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else (research, email, calendar, notes) to Hermes.
@@ -24,7 +29,6 @@ Core behavior:
 5. Act, don't offer. When the user wants something done, or asks something you can't answer from general knowledge or this conversation (the state of their projects, their files, email, calendar or notes, anything current), call send_agent_task in this same reply for the agent whose role fits, and tell the user in one short line, like "I'm looking, one moment." Saying it without the tool call sends nothing. Never ask whether to send it, and never say you don't know when an agent could find out. Ask the user only when you can't tell what they want. You will be told when the agent finishes; then bring the answer to the user.
 6. The user is not a native English speaker, and speech recognition often mishears names. When they correct or change a task an agent is still working on, send the whole corrected task with replace=true, and say in one short line that you stopped the old one.
 7. Speak as one assistant: the agents' work is your work. Say "I pushed it" or "I'm searching", never which agent does it, unless the user asks.
-8. The user speaks English or Vietnamese, often mixed. Reply in the language of their last sentence. Agents only read English: write every tool argument (`task`, `answer`) in English, translating the user's words, and keep project folder names exactly as listed.
 """
 
 # A finished agent turn is long markdown; the conversation model retells it. Approvals never come this way.
@@ -41,9 +45,14 @@ AGENT_REPORT_PROMPT = (
     " the rest. I'd skip a longer pause. The risk: some pauses still slip through. Go ahead?\""
     " Keep a question it asks the user. Leave out how it worked, commit ids, branch names, paths and file names:"
     " the full text stays in this conversation, so answer from it if the user asks for more. Do not call"
-    " any tool; the user decides what happens next. Speak in the language the user last spoke (English or"
-    " Vietnamese).\n\n"
+    " any tool; the user decides what happens next. Speak in the language the user last spoke.\n\n"
 )
+
+
+def language_instructions(language: str = "en") -> str:
+    """Language-specific rules from languages.json, added to the system prompt only for that language."""
+    text = LANGUAGES.get(language, {}).get("system", "").strip()
+    return f"8. {text}\n" if text else ""
 
 
 def greeting_prompt(now: datetime, memories: list[str], language: str = "en") -> str:
@@ -54,23 +63,35 @@ def greeting_prompt(now: datetime, memories: list[str], language: str = "en") ->
         if memories
         else ""
     )
+    greeting_lang = LANGUAGES.get(language, {}).get("greeting", "").strip()
     return (
         f"{NOT_THE_USER} Jarvis just started. It is {now:%A %H:%M}.] Greet the user first in at most five words that fit"
         f" the time of day, like \"Evening. I'm listening.\" Don't say the time or ask how they are.{remembered}"
-        + (" Speak Vietnamese." if language == "vi" else "")
+        + (f" {greeting_lang}" if greeting_lang else "")
         + " Do not call any tool."
     )
 
 
-def system_prompt(orchestrator: AgentOrchestrator, personality: str, thread: dict[str, Any] | None = None) -> str:
-    """The conversation model's instructions: the rules, the user's SOUL.md personality, the agents, the thread."""
+def system_prompt(
+    orchestrator: AgentOrchestrator,
+    personality: str,
+    thread: dict[str, Any] | None = None,
+    language: str = "en",
+) -> str:
+    """The conversation model's instructions: the rules, the language, the user's SOUL.md personality, the agents, the thread."""
     soul = (
         "\nThe user's own notes on your personality and how to talk to them. They set your tone only; the rules"
         " above always win, and your name stays Jarvis:\n" + personality + "\n"
         if personality
         else ""
     )
-    return JARVIS_EXECUTIVE_SYSTEM_PROMPT + soul + agent_roster(orchestrator) + connected_thread(thread)
+    return (
+        JARVIS_EXECUTIVE_SYSTEM_PROMPT
+        + language_instructions(language)
+        + soul
+        + agent_roster(orchestrator)
+        + connected_thread(thread)
+    )
 
 
 def connected_thread(thread: dict[str, Any] | None) -> str:

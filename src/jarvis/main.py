@@ -181,7 +181,7 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
             base_url=settings.openrouter_base_url,
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
-                system_instruction=system_prompt(orchestrator, load_soul().personality, thread),
+                system_instruction=system_prompt(orchestrator, load_soul().personality, thread, settings.language),
                 # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever
                 # provider currently answers fastest.
                 extra={

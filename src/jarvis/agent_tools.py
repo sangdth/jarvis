@@ -30,7 +30,7 @@ def agent_tools() -> list:
                 "agent_id": agent_id_property,
                 "task": {
                     "type": "string",
-                    "description": "The task, in clear English words, even when the user speaks Vietnamese. With"
+                    "description": "The task, in clear English words, even when the user speaks another language. With"
                     " `project`, omit it when the user only opens the project and names no work; never invent one.",
                 },
                 "project": {
@@ -59,7 +59,7 @@ def agent_tools() -> list:
                 "agent_id": agent_id_property,
                 "answer": {
                     "type": "string",
-                    "description": "The user's answer in English, translated if they spoke Vietnamese"
+                    "description": "The user's answer in English, translated if they spoke another language"
                     " (e.g. 'yes', 'use Postgres')",
                 },
             },
