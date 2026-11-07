@@ -1,10 +1,40 @@
 {
   "en": {
     "system": "",
-    "greeting": ""
+    "greeting": "",
+    "connected": "Connected to {title} in {project}.",
+    "waiting": [
+      "Still working on it.",
+      "Still on it.",
+      "Still working. Nothing back yet.",
+      "Hang tight, still digging.",
+      "No news yet. I haven't forgotten.",
+      "Still busy. I'm keeping an eye on it.",
+      "Still here, still working.",
+      "Taking a while. Good work usually does.",
+      "Still going. If this were a kettle, it'd be almost boiling.",
+      "Thinking hard. I can almost hear the fans.",
+      "Still on it. I'd make coffee, but I don't have hands.",
+      "Still going. Patience is my only skill that never crashes."
+    ]
   },
   "vi": {
     "system": "The user speaks English or Vietnamese, often mixed. Reply in the language of their last sentence. Agents only read English: write every tool argument (`task`, `answer`) in English, translating the user's words, and keep project folder names exactly as listed.",
-    "greeting": "Speak Vietnamese."
+    "greeting": "Speak Vietnamese.",
+    "connected": "Đã kết nối với phiên {title} trong {project}.",
+    "waiting": [
+      "Vẫn đang làm.",
+      "Chưa xong, đang làm tiếp.",
+      "Vẫn đang làm, chưa có kết quả.",
+      "Chờ chút nhé, vẫn đang tìm.",
+      "Chưa có tin gì. Không quên đâu.",
+      "Vẫn đang chạy, có gì sẽ báo ngay.",
+      "Vẫn ở đây, vẫn đang làm.",
+      "Hơi lâu chút. Việc tốt thường mất thời gian.",
+      "Vẫn đang chạy. Nếu là ấm nước thì cũng sắp sôi rồi.",
+      "Đang suy nghĩ kỹ. Nghe cả tiếng quạt máy luôn.",
+      "Vẫn đang làm. Muốn pha cà phê lắm mà không có tay.",
+      "Vẫn đang chạy. Kiên nhẫn là thứ duy nhất ở đây chưa bao giờ bị treo."
+    ]
   }
 }
