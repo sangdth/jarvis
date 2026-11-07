@@ -104,8 +104,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   question (`AGENT_REPORT_PROMPT`); the full text stays in the LLM context for follow-up questions.
 - **Jarvis talks in the user's language, agents get English.** `LANGUAGE` (`en` or `vi`, `config.py`) sets the
   language Whisper listens for (a per-sentence guess misreads short Vietnamese) and, with `WHISPER_MODEL` empty, the
-  model (`WHISPER_MODELS`: turbo for `en`; for `vi`, `sangdth/phowhisper-large-mlx`, VinAI's PhoWhisper-large
-  converted to MLX by us). Replies, retold turns and the greeting follow the user's language. Every `task` and
+  model (`WHISPER_MODELS`: turbo for `en`; for `vi`, `sangdth/phowhisper-large-vien-cs-mlx`: VinAI's
+  PhoWhisper-large plus the vi-en code-switching LoRA `rinhoooo/phowhisper-large-vien-cs-asr`, merged and converted
+  to MLX by us). Replies, retold turns and the greeting follow the user's language. Every `task` and
   `answer` is written in English (`agent_tools.py`), so `is_approval` stays English-only. Agent questions,
   approvals and `WAITING_LINES` stay English: they never go through an LLM.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
