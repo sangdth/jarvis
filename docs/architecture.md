@@ -15,6 +15,9 @@
 
 ## 2. System Architecture Diagram
 
+> [!TIP]
+> A visual architecture map is stored in [docs/architecture-map.html](architecture-map.html) (standalone interactive view) and [docs/assets/architecture-map.png](assets/architecture-map.png).
+
 ```mermaid
 flowchart LR
     subgraph Input ["1. Always-On Ear"]
