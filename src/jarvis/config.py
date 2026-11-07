@@ -30,7 +30,7 @@ def checkout_root(info: dict | None = None) -> Path | None:
 
 # The Whisper model for each LANGUAGE, unless WHISPER_MODEL names one. For vi: VinAI's PhoWhisper-large with a
 # Vietnamese-English code-switching LoRA merged in, converted to MLX by us; it keeps English words in mixed speech.
-WHISPER_MODELS = {"en": "mlx-community/whisper-large-v3-turbo", "vi": "sangdth/phowhisper-large-vien-cs-mlx"}
+WHISPER_MODELS = {"en": "mlx-community/whisper-large-v3-turbo", "vi": "sangdth/phowhisper-large-vien-cs-mlx-16bit"}
 
 # Jarvis's state: .env, agents.json, SOUL.md, the voiceprint, models and memory. The installed Jarvis uses
 # SHARED_HOME; a dev checkout uses its own folder (found from the running code, never the current folder).

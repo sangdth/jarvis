@@ -104,7 +104,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   question (`AGENT_REPORT_PROMPT`); the full text stays in the LLM context for follow-up questions.
 - **Jarvis talks in the user's language, agents get English.** `LANGUAGE` (`en` or `vi`, `config.py`) sets the
   language Whisper listens for (a per-sentence guess misreads short Vietnamese) and, with `WHISPER_MODEL` empty, the
-  model (`WHISPER_MODELS`: turbo for `en`; for `vi`, `sangdth/phowhisper-large-vien-cs-mlx`: VinAI's
+  model (`WHISPER_MODELS`: turbo for `en`; for `vi`, `sangdth/phowhisper-large-vien-cs-mlx-16bit`: VinAI's
   PhoWhisper-large plus the vi-en code-switching LoRA `rinhoooo/phowhisper-large-vien-cs-asr`, merged and converted
   to MLX by us). Language-specific prompt rules live in `languages.json` and are added to the system and greeting
   prompts dynamically for the active `LANGUAGE` only. Replies, retold turns and the greeting follow the user's
