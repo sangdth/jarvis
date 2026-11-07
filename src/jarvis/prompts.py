@@ -49,12 +49,6 @@ AGENT_REPORT_PROMPT = (
 )
 
 
-def language_instructions(language: str = "en") -> str:
-    """Language-specific rules from languages.json, added to the system prompt only for that language."""
-    text = LANGUAGES.get(language, {}).get("system", "").strip()
-    return f"8. {text}\n" if text else ""
-
-
 def greeting_prompt(now: datetime, memories: list[str], language: str = "en") -> str:
     """What the brain gets at startup so Jarvis speaks first: the local time and a few things it remembers."""
     remembered = (
@@ -63,11 +57,11 @@ def greeting_prompt(now: datetime, memories: list[str], language: str = "en") ->
         if memories
         else ""
     )
-    greeting_lang = LANGUAGES.get(language, {}).get("greeting", "").strip()
+    greeting = LANGUAGES[language]["greeting"]
     return (
         f"{NOT_THE_USER} Jarvis just started. It is {now:%A %H:%M}.] Greet the user first in at most five words that fit"
         f" the time of day, like \"Evening. I'm listening.\" Don't say the time or ask how they are.{remembered}"
-        + (f" {greeting_lang}" if greeting_lang else "")
+        + (f" {greeting}" if greeting else "")
         + " Do not call any tool."
     )
 
@@ -85,9 +79,10 @@ def system_prompt(
         if personality
         else ""
     )
+    rule = LANGUAGES[language]["system"]  # a missing language fails here, at startup
     return (
         JARVIS_EXECUTIVE_SYSTEM_PROMPT
-        + language_instructions(language)
+        + (f"\n{rule}\n" if rule else "")
         + soul
         + agent_roster(orchestrator)
         + connected_thread(thread)

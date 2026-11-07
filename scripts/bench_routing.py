@@ -128,7 +128,7 @@ CASES: list[tuple[str | list[dict], str]] = [
            "What does idempotent mean?"), SELF),
 ]
 
-# Vietnamese or mixed speech (run with LANGUAGE=vi): routed the same, with English arguments
+# Vietnamese or mixed speech, with the vi prompt: routed the same, with English arguments
 VI_CASES: list[tuple[str | list[dict], str]] = [
     ("Sửa lỗi ở thanh điều hướng giúp anh", "t3-code"),
     ("Fix cái bug login trong dashboard giúp mình", "t3-code"),

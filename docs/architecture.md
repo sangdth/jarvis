@@ -122,7 +122,7 @@ All files are in `src/jarvis/`.
 | File                  | What it holds                                                              |
 | :-------------------- | :------------------------------------------------------------------------- |
 | `main.py`             | Pipeline wiring, TTS, `jarvis connect` thread pick                         |
-| `prompts.py`          | System prompt, language rules (`languages.json`), agent roster, project list, retell and greeting prompts |
+| `prompts.py`          | System prompt, agent roster, project list, retell and greeting prompts     |
 | `languages.json`      | Language-specific system and greeting prompt instructions (`en`, `vi`)     |
 | `agent_tools.py`      | `send_agent_task`, `answer_agent`, `stop_agent` schemas and handlers       |
 | `cli.py`              | `jarvis` commands (`init`, `enroll`, `connect`, `update`), one-mic lock    |
