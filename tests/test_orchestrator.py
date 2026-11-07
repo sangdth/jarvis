@@ -2,7 +2,8 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakes import fake_adapter
-from jarvis.orchestrator import WAITING_LINES, AgentOrchestrator
+from jarvis.orchestrator import AgentOrchestrator
+from jarvis.prompts import LANGUAGES
 from jarvis.state import AgentTopic, JarvisState
 
 
@@ -95,7 +96,7 @@ class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.on_speak.await_count, 2)  # after 8s and after 34s
         first, second = (c.args[0] for c in state.on_speak.await_args_list)
         self.assertNotEqual(first, second)  # varied, never the same line twice in a row
-        self.assertLessEqual({first, second}, {t.format(name="Hermes") for t in WAITING_LINES})
+        self.assertLessEqual({first, second}, set(LANGUAGES["en"]["waiting"]))
 
 
 if __name__ == "__main__":

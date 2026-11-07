@@ -41,6 +41,16 @@ class PromptTest(unittest.TestCase):
         self.assertIn(LANGUAGES["vi"]["system"], vi_prompt)
         self.assertNotIn("Vietnamese", AGENT_REPORT_PROMPT)
 
+    def test_every_language_has_the_spoken_lines_with_their_placeholders(self):
+        for code, text in LANGUAGES.items():
+            with self.subTest(code):
+                self.assertEqual(set(text), set(LANGUAGES["en"]))
+                connected = text["connected"].format(title="Fix login", project="jarvis")  # a stray placeholder raises
+                self.assertIn("Fix login", connected)
+                self.assertIn("jarvis", connected)
+                self.assertGreater(len(text["waiting"]), 1)  # the reminder never repeats a line twice in a row
+                for line in text["waiting"]:
+                    self.assertNotIn("{", line)  # no agent name: Jarvis speaks as one assistant
 
 class TestGreeting(unittest.TestCase):
     def test_greeting_has_time_and_memories(self) -> None:

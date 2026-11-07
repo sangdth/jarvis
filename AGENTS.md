@@ -39,7 +39,7 @@ speech check dropping the sentence, not the conversation model.
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`               |
 | Answer or stop hits the wrong agent  | `orchestrator.py` `find_waiting`, `find_busy`                   |
 | A correction runs as a second task   | `agent_tools.py` `send` (`replace`), each `interrupt`           |
-| "Still waiting" timing or wording    | `orchestrator.py` `remind_while_busy`, `WAITING_LINES`          |
+| "Still waiting" timing or wording    | `remind_while_busy`, `languages.json` `waiting`                 |
 | Hermes runs, approvals, stop         | `hermes_adapter.py` `HermesAdapter`                             |
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)             |
 | `jarvis connect pi`, Pi windows      | `pi_adapter.py` `PiAdapter`, `defaults/pi/jarvis.ts`            |
@@ -109,7 +109,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   to MLX by us). Language-specific prompt rules live in `languages.json` and are added to the system and greeting
   prompts dynamically for the active `LANGUAGE` only. Replies, retold turns and the greeting follow the user's
   language. Every `task` and `answer` is written in English (`agent_tools.py`), so `is_approval` stays English-only.
-  Agent questions, approvals and `WAITING_LINES` stay English: they never go through an LLM.
+  Fixed spoken lines (the `jarvis connect` line, the "still waiting" lines) live in `languages.json` per language.
+  Agent questions and approvals stay English: they never go through an LLM.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.

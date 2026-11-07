@@ -19,7 +19,7 @@ from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
 from jarvis.pi_adapter import PiAdapter, install_extension, list_windows
-from jarvis.prompts import AGENT_REPORT_PROMPT, greeting_prompt, system_prompt
+from jarvis.prompts import AGENT_REPORT_PROMPT, LANGUAGES, greeting_prompt, system_prompt
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
 from jarvis.t3_adapter import T3Adapter, current_thread, recent_threads
@@ -272,7 +272,7 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
     @task.event_handler("on_pipeline_started")
     async def greet(task: PipelineTask, frame) -> None:
         if thread:  # back from the keyboard mid-work: say where we are, skip the small talk
-            await on_speak(f"Connected to {thread['title']} in {thread['project']}.")
+            await on_speak(LANGUAGES[settings.language]["connected"].format(title=thread["title"], project=thread["project"]))
             return
         if llm is None:
             await on_speak("Jarvis here. I'm listening.")

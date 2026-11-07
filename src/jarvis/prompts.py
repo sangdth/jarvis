@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
 
@@ -16,7 +16,18 @@ if TYPE_CHECKING:
 NOT_THE_USER = "[Not the user speaking:"
 
 LANGUAGES_PATH = Path(__file__).with_name("languages.json")
-LANGUAGES: dict[str, dict[str, str]] = json.loads(LANGUAGES_PATH.read_text(encoding="utf-8"))
+
+
+class LanguageText(TypedDict):
+    """Per-language text: prompt rules for the model, and fixed lines Jarvis speaks without an LLM."""
+
+    system: str
+    greeting: str
+    connected: str  # {title}, {project}
+    waiting: list[str]  # no agent name: Jarvis speaks as one assistant
+
+
+LANGUAGES: dict[str, LanguageText] = json.loads(LANGUAGES_PATH.read_text(encoding="utf-8"))
 
 
 JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, a voice assistant that hands the user's work to agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else (research, email, calendar, notes) to Hermes.

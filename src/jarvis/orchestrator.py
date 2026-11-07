@@ -12,6 +12,7 @@ from jarvis.claude_adapter import ClaudeCodeAdapter
 from jarvis.config import settings
 from jarvis.hermes_adapter import HermesAdapter
 from jarvis.opencode_adapter import OpenCodeSSEAdapter
+from jarvis.prompts import LANGUAGES
 from jarvis.state import JarvisMode, JarvisState
 from jarvis.t3_adapter import T3Adapter
 
@@ -24,21 +25,6 @@ ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
 }
 
 
-# Fixed lines, no LLM: free, instant, and nothing an agent wrote can slip in. {name} is the agent.
-WAITING_LINES = (
-    "Still waiting on {name}.",
-    "{name} is still on it.",
-    "Still working on it. {name} hasn't come back yet.",
-    "Hang tight, {name} is still digging.",
-    "No news from {name} yet. I haven't forgotten.",
-    "{name} is still busy. I'm keeping an eye on it.",
-    "Still here, still waiting on {name}.",
-    "{name} is taking its time. Good work usually does.",
-    "Still waiting. If {name} were a kettle, it'd be almost boiling.",
-    "{name} is thinking hard. I can almost hear the fans.",
-    "Still on it. I'd make coffee, but I don't have hands.",
-    "{name} is still going. Patience is my only skill that never crashes.",
-)
 
 
 class AgentOrchestrator:
@@ -79,7 +65,7 @@ class AgentOrchestrator:
             await adapter.stop()
 
     def remind_while_busy(self, agent: BaseAgentAdapter) -> None:
-        """After a task is sent: say "Still waiting on X" while X works, so the user knows it isn't forgotten."""
+        """After a task is sent: say "Still working on it" while the agent works, so the user knows it isn't forgotten."""
         old = self._reminders.pop(agent.config.id, None)
         if old:
             old.cancel()  # a new task restarts the count
@@ -88,14 +74,15 @@ class AgentOrchestrator:
     async def _remind(self, agent: BaseAgentAdapter) -> None:
         wait, next_wait = 8, 13  # Fibonacci seconds: 8, 13, 21, 34, 55, 89, 144, ...
         last = None
+        lines = LANGUAGES[settings.language]["waiting"]  # fixed lines, no LLM: nothing an agent wrote slips in
         while True:
             await asyncio.sleep(wait)
             if not agent.busy:
                 return
             waiting_on_user = agent.config.id in self.state.active_agent_context  # it asked something
             if not waiting_on_user and self.state.mode == JarvisMode.VOICE and self.state.on_speak:
-                last = random.choice([t for t in WAITING_LINES if t != last])  # never the same twice in a row
-                await self.state.on_speak(last.format(name=agent.config.name))
+                last = random.choice([t for t in lines if t != last])  # never the same twice in a row
+                await self.state.on_speak(last)
             wait, next_wait = next_wait, wait + next_wait
 
     @property
