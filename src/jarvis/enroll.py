@@ -11,50 +11,65 @@ import time
 
 import numpy as np
 
+from jarvis.config import settings
+from jarvis.prompts import LANGUAGES
 from jarvis.speaker import SAMPLE_RATE, SpeakerEmbedder, cosine, save_voiceprint
 
-SECONDS_PER_CLIP = 4
-# (where to face, what to say): head turned each way, then straight on, so the voiceprint covers how the mic hears
-# you at an angle too. Counting is short; the straight-on lines add everyday speech sounds.
-PROMPTS = [
-    ("Turn your head to the left", "One, two, three, four, five."),
-    ("Turn your head to the right", "One, two, three, four, five."),
-    ("Face the screen", "Hey Jarvis, open the jarvis project and run the tests."),
-    ("Face the screen", "What's on my calendar tomorrow?"),
-    ("Face the screen", "Tell Hermes to book a table for two on Friday."),
-]
+# Room for a slow start; the silence around the sentence is trimmed before it is scored.
+SECONDS_PER_CLIP = 5
+# The suggested SPEAKER_THRESHOLD sits this far below your lowest check score.
+THRESHOLD_MARGIN = 0.05
+
+
+def suggest_threshold(scores: list[float]) -> float:
+    """A threshold just under the lowest score of your own unseen sentences."""
+    return round(min(scores) - THRESHOLD_MARGIN, 2)
 
 
 def main() -> None:
     from jarvis.mac_audio import MacVoiceAudio, MicConverter  # imported here: loads AVFoundation
 
+    text = LANGUAGES[settings.language]
     embedder = SpeakerEmbedder()
     # Record through the same voice processing Jarvis listens through, so the voiceprint sounds like what it hears.
     # One engine for all clips: a second voice-processing engine in one process records nothing.
     audio, mic, clip = MacVoiceAudio(), MicConverter(SAMPLE_RATE), []
     audio.on_mic(lambda samples, rate: clip.append(mic.convert(samples, rate)))
     audio.start()
-    print("\n=== Jarvis owner voice enrollment ===")
-    print("Use the mic Jarvis will use. Read each line in your normal voice.\n")
-    embeddings = []
-    for i, (pose, prompt) in enumerate(PROMPTS, 1):
-        input(f"[{i}/{len(PROMPTS)}] {pose}. Press Enter, then say:\n    {prompt}\n")
+
+    def record(label: str, line: str) -> bytes:
+        input(f"{label} Press Enter, then say:\n    {line}\n")
         print(f"Recording {SECONDS_PER_CLIP} s...")
         clip.clear()
         time.sleep(SECONDS_PER_CLIP)
-        emb = embedder.embed(b"".join(list(clip)))
+        return b"".join(list(clip))
+
+    print("\n=== Jarvis owner voice enrollment ===")
+    print("Use the mic Jarvis will use, where you usually sit. Read each line in your normal voice.\n")
+    embeddings = []
+    for i, line in enumerate(text["enroll"], 1):
+        emb = embedder.embed(record(f"[{i}/{len(text['enroll'])}]", line))
         if emb is None:
             sys.exit("Recording was empty; check the mic and try again.")
         embeddings.append(emb)
-
-    audio.stop()
-
-    # Each clip against the average of the others: low numbers mean a noisy or inconsistent recording.
     for i, emb in enumerate(embeddings):
+        # Each clip against the average of the others: a low number means a noisy or inconsistent recording.
         others = np.mean([e for j, e in enumerate(embeddings) if j != i], axis=0)
         print(f"Clip {i + 1} matches the others at {cosine(emb, others):.2f}")
-    print(f"\nSaved owner voiceprint to {save_voiceprint(embeddings)}")
-    print("Tune SPEAKER_THRESHOLD from the [Speaker] score lines in Jarvis's log.")
+    path = save_voiceprint(embeddings)
+    voiceprint = np.load(path)
+    print(f"\nSaved owner voiceprint to {path}")
+
+    print("\nNow three new lines, to measure how Jarvis will score you.\n")
+    scores = []
+    for i, line in enumerate(text["enroll_check"], 1):
+        score = cosine(embedder.embed(record(f"[check {i}/{len(text['enroll_check'])}]", line)), voiceprint)
+        scores.append(score)
+        print(f"Score {score:.2f}")
+    audio.stop()
+
+    print(f"\nYour scores: {', '.join(f'{s:.2f}' for s in scores)} (now SPEAKER_THRESHOLD={settings.speaker_threshold}).")
+    print(f"Suggested: set SPEAKER_THRESHOLD={suggest_threshold(scores):.2f} in .env, then restart Jarvis.")
 
 
 if __name__ == "__main__":

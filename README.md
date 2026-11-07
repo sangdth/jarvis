@@ -80,9 +80,9 @@ already set is never asked again. Then it asks a few questions (Jarvis's persona
 where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
 file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
 
-Last, it records your voice: Jarvis acts only on your voice and won't start until you enroll. Say five short lines (4 s
-each) with the mic Jarvis will use: counting with your head turned left, then right, then three lines facing the
-screen. It downloads the speaker model (25 MB) to `~/.config/jarvis/models/` and
+Last, it records your voice: Jarvis acts only on your voice and won't start until you enroll. Read eight everyday lines (5 s
+each, in the language `LANGUAGE` sets) with the mic Jarvis will use, then three more that Jarvis scores against your new
+voiceprint; it prints those scores and suggests a `SPEAKER_THRESHOLD` just under the lowest. It downloads the speaker model (25 MB) to `~/.config/jarvis/models/` and
 saves your voiceprint to `~/.config/jarvis/owner_voice.npy`. Anyone can still say "shut up" or "you can talk".
 Enroll close to the mic in a quiet moment: background voices in the recording weaken the voiceprint. Record it
 again any time with `jarvis enroll`.

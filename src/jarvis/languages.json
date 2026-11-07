@@ -16,6 +16,21 @@
       "Thinking hard. I can almost hear the fans.",
       "Still on it. I'd make coffee, but I don't have hands.",
       "Still going. Patience is my only skill that never crashes."
+    ],
+    "enroll": [
+      "Hey Jarvis, open the jarvis project and run the tests.",
+      "What's on my calendar tomorrow?",
+      "Tell me when the build is done, I'm going to grab a coffee.",
+      "Can you check my email and read me anything important?",
+      "Push the fix to a new branch and open a pull request.",
+      "Remind me to call my mother on Sunday afternoon.",
+      "What's the weather going to be like this weekend?",
+      "Stop that, I changed my mind. Let's do the other one first."
+    ],
+    "enroll_check": [
+      "Search for a good Italian restaurant near the office.",
+      "How many projects do I have right now?",
+      "Read me the last message from the team."
     ]
   },
   "vi": {
@@ -35,6 +50,21 @@
       "Đang suy nghĩ kỹ. Nghe cả tiếng quạt máy luôn.",
       "Vẫn đang làm. Muốn pha cà phê lắm mà không có tay.",
       "Vẫn đang chạy. Kiên nhẫn là thứ duy nhất ở đây chưa bao giờ bị treo."
+    ],
+    "enroll": [
+      "Jarvis ơi, mở dự án jarvis rồi chạy test giúp mình.",
+      "Lịch ngày mai của mình có gì không?",
+      "Xong bản build thì báo mình nhé, mình đi pha cà phê.",
+      "Kiểm tra email giúp mình, có gì quan trọng thì đọc cho mình nghe.",
+      "Đẩy bản sửa lên nhánh mới rồi mở pull request nhé.",
+      "Nhắc mình gọi điện cho mẹ vào chiều chủ nhật.",
+      "Cuối tuần này thời tiết thế nào?",
+      "Thôi dừng lại, mình đổi ý rồi. Làm cái kia trước đi."
+    ],
+    "enroll_check": [
+      "Tìm giúp mình một quán ăn ngon gần văn phòng.",
+      "Hiện giờ mình có bao nhiêu dự án?",
+      "Đọc tin nhắn mới nhất của nhóm cho mình nghe."
     ]
   }
 }

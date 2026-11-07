@@ -20,6 +20,7 @@ MODEL_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-re
 MODEL_SHA256 = "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5"
 MODEL_PATH = JARVIS_HOME / "models" / MODEL_NAME
 VOICEPRINT_PATH = JARVIS_HOME / "owner_voice.npy"
+FRAME = SAMPLE_RATE // 50  # 20 ms
 
 
 def ensure_model(path: Path = MODEL_PATH) -> Path:
@@ -55,11 +56,23 @@ class SpeakerEmbedder:
     def embed(self, pcm16: bytes) -> np.ndarray | None:
         """Embedding of 16 kHz mono 16-bit PCM; None when the audio is too short to score."""
         stream = self._extractor.create_stream()
-        stream.accept_waveform(SAMPLE_RATE, np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0)
+        samples = trim_silence(np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0)
+        stream.accept_waveform(SAMPLE_RATE, samples)
         stream.input_finished()
         if not self._extractor.is_ready(stream):
             return None
         return np.array(self._extractor.compute(stream), dtype=np.float32)
+
+
+def trim_silence(samples: np.ndarray) -> np.ndarray:
+    """Drop the quiet start and end: the pause before and after a sentence blurs the speaker embedding."""
+    frames = len(samples) // FRAME
+    if frames == 0:
+        return samples
+    rms = np.sqrt(np.mean(samples[: frames * FRAME].reshape(frames, FRAME) ** 2, axis=1))
+    loud = np.flatnonzero(rms >= rms.max() * 0.1)  # within 20 dB of the loudest frame
+    pad = 5  # 100 ms each side keeps the soft start and end of words
+    return samples[max(loud[0] - pad, 0) * FRAME : min(loud[-1] + 1 + pad, frames) * FRAME]
 
 
 def cosine(a: np.ndarray | None, b: np.ndarray) -> float:
@@ -72,7 +85,8 @@ def cosine(a: np.ndarray | None, b: np.ndarray) -> float:
 
 def save_voiceprint(embeddings: list[np.ndarray], path: Path = VOICEPRINT_PATH) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, np.mean(embeddings, axis=0))
+    # Each clip scaled to length 1 first, so one loud or odd clip doesn't pull the average toward itself
+    np.save(path, np.mean([e / np.linalg.norm(e) for e in embeddings], axis=0))
     return path
 
 
