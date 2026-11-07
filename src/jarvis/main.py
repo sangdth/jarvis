@@ -7,19 +7,27 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from jarvis.agent_adapter import WatchedAgentConfig
 from jarvis.agent_tools import agent_tool_handlers, agent_tools
 from jarvis.config import settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
+from jarvis.pi_adapter import PiAdapter, install_extension, list_windows
 from jarvis.prompts import AGENT_REPORT_PROMPT, greeting_prompt, system_prompt
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
 from jarvis.t3_adapter import T3Adapter, current_thread, recent_threads
+
+
+async def pick_connection(orchestrator: AgentOrchestrator, target: str) -> dict[str, Any]:
+    """`jarvis connect [pi]`: pick the T3 thread or Pi window that every task goes to this run."""
+    return await pick_pi_window(orchestrator) if target == "pi" else await pick_thread(orchestrator)
 
 
 async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
@@ -34,31 +42,51 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
     root = os.environ.get("T3CODE_PROJECT_ROOT")  # set only in a T3 project script
     thread = current_thread(snapshot, root, os.environ.get("T3CODE_WORKTREE_PATH")) if root else None
     if not thread:
-        thread = choose_thread(snapshot)
+        threads = recent_threads(snapshot)
+        if not threads:
+            sys.exit("No T3 threads to connect to.")
+        labels = [f"{t['project']}: {t['title']}  ({t['status']}, {_when(t['updatedAt'])})" for t in threads]
+        thread = threads[choose("Your recent T3 Code threads", labels, "Thread to continue")]
     t3.attach(thread["id"], thread["root"], connected=True)  # its waiting question, if any, is read out once T3 Code connects
     logger.info(f"Connected to T3 thread {thread['id']} ({thread['title']}, {thread['root']})")
-    return {**thread, "agent_id": t3.config.id}
+    return {**thread, "agent_id": t3.config.id, "agent_name": t3.config.name}
 
 
-def choose_thread(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Ask at the keyboard which recent T3 thread to continue."""
-    threads = recent_threads(snapshot)
-    if not threads:
-        sys.exit("No T3 threads to connect to.")
-    print("\n=== Your recent T3 Code threads ===\n")
-    for n, t in enumerate(threads, 1):
-        when = datetime.fromisoformat(t["updatedAt"]).astimezone().strftime("%b %d %H:%M") if t["updatedAt"] else ""
-        print(f"{n:>2}. {t['project']}: {t['title']}  ({t['status']}, {when})")
+async def pick_pi_window(orchestrator: AgentOrchestrator) -> dict[str, Any]:
+    """`jarvis connect pi`: talk to a Pi window that is open now, through Jarvis's Pi extension."""
+    if install_extension():
+        sys.exit("Installed Jarvis's Pi extension. Run /reload in your open Pi windows, then run this again.")
+    windows = await list_windows()
+    if not windows:
+        sys.exit("No Pi window is open with Jarvis's extension. Open pi in the project, then run this again.")
+    labels = [f"{Path(w['cwd']).name}: {w['name'] or w['first'] or '(new session)'}" for w in windows]
+    window = windows[choose("Your open Pi windows", labels, "Window to connect")]
+    pi = PiAdapter(WatchedAgentConfig(id="pi", name="Pi", type="pi", cwd=window["cwd"]), orchestrator.state, window["socket"])
+    orchestrator.adapters[pi.config.id] = pi
+    title = window["name"] or window["first"] or "a new session"
+    logger.info(f"Connected to Pi session {window['session']} ({title}, {window['cwd']})")
+    return {"id": window["session"], "title": title, "project": Path(window["cwd"]).name, "agent_id": "pi", "agent_name": "Pi"}
+
+
+def _when(iso: str | None) -> str:
+    return datetime.fromisoformat(iso).astimezone().strftime("%b %d %H:%M") if iso else ""
+
+
+def choose(heading: str, labels: list[str], question: str) -> int:
+    """Ask at the keyboard which numbered row to use; returns its index."""
+    print(f"\n=== {heading} ===\n")
+    for n, label in enumerate(labels, 1):
+        print(f"{n:>2}. {label}")
     choice = ""
-    while not (choice.isdigit() and 1 <= int(choice) <= len(threads)):
+    while not (choice.isdigit() and 1 <= int(choice) <= len(labels)):
         try:  # blocking is fine: nothing else runs before the pipeline starts
-            choice = input(f"\nThread to continue (1-{len(threads)}): ").strip()
+            choice = input(f"\n{question} (1-{len(labels)}): ").strip()
         except EOFError:
             sys.exit(0)
-    return threads[int(choice) - 1]
+    return int(choice) - 1
 
 
-async def run_pipecat_harness(connect: bool = False) -> None:
+async def run_pipecat_harness(connect: str | None = None) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -127,7 +155,7 @@ async def run_pipecat_harness(connect: bool = False) -> None:
     )
     orchestrator = AgentOrchestrator(state=state)
     orchestrator.load_from_file(settings.watch_config_path)
-    thread = await pick_thread(orchestrator) if connect else None
+    thread = await pick_connection(orchestrator, connect) if connect else None
 
     # 1. Local mic + speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
     # voice so the user can talk over it on speakers
