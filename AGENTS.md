@@ -33,7 +33,7 @@ speech check dropping the sentence, not the conversation model.
 | :----------------------------------- | :------------------------------------------------------------ |
 | Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`                       |
 | Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`               |
-| Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`                 |
+| Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`, `languages.json` |
 | Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                          |
 | Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`      |
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`             |
@@ -106,9 +106,10 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   language Whisper listens for (a per-sentence guess misreads short Vietnamese) and, with `WHISPER_MODEL` empty, the
   model (`WHISPER_MODELS`: turbo for `en`; for `vi`, `sangdth/phowhisper-large-vien-cs-mlx`: VinAI's
   PhoWhisper-large plus the vi-en code-switching LoRA `rinhoooo/phowhisper-large-vien-cs-asr`, merged and converted
-  to MLX by us). Replies, retold turns and the greeting follow the user's language. Every `task` and
-  `answer` is written in English (`agent_tools.py`), so `is_approval` stays English-only. Agent questions,
-  approvals and `WAITING_LINES` stay English: they never go through an LLM.
+  to MLX by us). Language-specific prompt rules live in `languages.json` and are added to the system and greeting
+  prompts dynamically for the active `LANGUAGE` only. Replies, retold turns and the greeting follow the user's
+  language. Every `task` and `answer` is written in English (`agent_tools.py`), so `is_approval` stays English-only.
+  Agent questions, approvals and `WAITING_LINES` stay English: they never go through an LLM.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.

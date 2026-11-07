@@ -126,7 +126,10 @@ CASES: list[tuple[str | list[dict], str]] = [
     (after("Open the neuroparticles project", "t3-code", "Sync with master", "Stop that section."), "stop"),
     (after("Look up flights to Hanoi in December", "hermes", "Look up flights to Hanoi in December",
            "What does idempotent mean?"), SELF),
-    # Vietnamese or mixed speech: routed the same, with English arguments
+]
+
+# Vietnamese or mixed speech (run with LANGUAGE=vi): routed the same, with English arguments
+VI_CASES: list[tuple[str | list[dict], str]] = [
     ("Sửa lỗi ở thanh điều hướng giúp anh", "t3-code"),
     ("Fix cái bug login trong dashboard giúp mình", "t3-code"),
     ("Tiếp tục làm dự án Hugger Hustle platform", "t3-code@huggerhustle/platform-v2"),
@@ -161,20 +164,21 @@ async def main(rounds: int) -> int:
         return 2
     orchestrator = AgentOrchestrator(state=JarvisState())
     orchestrator.load_from_file(settings.watch_config_path)
-    system = system_prompt(orchestrator, load_soul().personality)
+    personality = load_soul().personality
+    prompts = {lang: system_prompt(orchestrator, personality, language=lang) for lang in ("en", "vi")}
     tools = [{"type": "function", "function": t.to_default_dict()} for t in agent_tools()]
     misses: dict[str, str] = {}
     hits = calls = 0
     latencies: list[float] = []
     async with httpx.AsyncClient(timeout=30.0, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}) as http:
         for _ in range(rounds):
-            for text, want in CASES:
+            for lang, text, want in [("en", t, w) for t, w in CASES] + [("vi", t, w) for t, w in VI_CASES]:
                 start = time.perf_counter()
                 resp = await http.post(
                     f"{settings.openrouter_base_url.rstrip('/')}/chat/completions",
                     json={
                         "model": settings.executive_model,
-                        "messages": [{"role": "system", "content": system},
+                        "messages": [{"role": "system", "content": prompts[lang]},
                                      *([{"role": "user", "content": text}] if isinstance(text, str) else text)],
                         "tools": tools,
                         "reasoning": {"enabled": True},  # same as main.py

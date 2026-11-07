@@ -1,0 +1,10 @@
+{
+  "en": {
+    "system": "",
+    "greeting": ""
+  },
+  "vi": {
+    "system": "The user speaks English or Vietnamese, often mixed. Reply in the language of their last sentence. Agents only read English: write every tool argument (`task`, `answer`) in English, translating the user's words, and keep project folder names exactly as listed.",
+    "greeting": "Speak Vietnamese."
+  }
+}

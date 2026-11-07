@@ -2,7 +2,15 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from jarvis.prompts import JARVIS_EXECUTIVE_SYSTEM_PROMPT, greeting_prompt, system_prompt
+from jarvis.config import WHISPER_MODELS
+from jarvis.prompts import (
+    AGENT_REPORT_PROMPT,
+    JARVIS_EXECUTIVE_SYSTEM_PROMPT,
+    LANGUAGES,
+    greeting_prompt,
+    language_instructions,
+    system_prompt,
+)
 
 
 class PromptTest(unittest.TestCase):
@@ -20,6 +28,19 @@ class PromptTest(unittest.TestCase):
         prompt = system_prompt(orchestrator, "", thread)
         self.assertIn('T3 Code session "Fix login" in platform-v2', prompt)
         self.assertIn("send_agent_task for `t3-code`", prompt)
+
+    def test_prompt_includes_only_active_language_instructions(self):
+        orchestrator = MagicMock(adapters={})
+        self.assertEqual(set(LANGUAGES), set(WHISPER_MODELS))
+        en_prompt = system_prompt(orchestrator, "", language="en")
+        self.assertNotIn("Vietnamese", en_prompt)
+        self.assertEqual(language_instructions("en"), "")
+
+        vi_prompt = system_prompt(orchestrator, "", language="vi")
+        self.assertTrue(vi_prompt.startswith(JARVIS_EXECUTIVE_SYSTEM_PROMPT))
+        self.assertIn("Vietnamese", vi_prompt)
+        self.assertIn(LANGUAGES["vi"]["system"], vi_prompt)
+        self.assertNotIn("Vietnamese", AGENT_REPORT_PROMPT)
 
 
 class TestGreeting(unittest.TestCase):
