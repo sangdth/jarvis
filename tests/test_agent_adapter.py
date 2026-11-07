@@ -40,5 +40,22 @@ class TestFormAnswer(unittest.TestCase):
         self.assertEqual(form_answer(fields, "yes, run lint and tests"), {"ok": True, "pick": ["a", "b"]})
 
 
+class TestReconnectLog(unittest.TestCase):
+    def test_unreachable_agent_is_logged_once_until_it_is_back(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from jarvis import agent_adapter
+
+        cfg = agent_adapter.WatchedAgentConfig(id="opencode", name="OpenCode", type="x")
+        a = agent_adapter.BaseAgentAdapter(cfg, MagicMock())
+        with patch.object(agent_adapter, "logger") as log:
+            for _ in range(3):
+                a._log_unreachable("OpenCode is unavailable")
+            a._log_reached("Connected")
+            a._log_unreachable("OpenCode is unavailable")
+        self.assertEqual(log.warning.call_count, 2)
+        log.info.assert_called_once_with("Connected")
+
+
 if __name__ == "__main__":
     unittest.main()

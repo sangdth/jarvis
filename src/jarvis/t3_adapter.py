@@ -179,7 +179,7 @@ class T3Adapter(BaseAgentAdapter):
                 self._token = self._token or await self._issue_token()
                 async with self._connect() as ws:
                     self._ws = ws
-                    logger.info(f"Connected to T3 Code at {self.ws_url}")
+                    self._log_reached(f"Connected to T3 Code at {self.ws_url}")
                     if self._thread_id:
                         await self._subscribe()
                     async for raw in ws:
@@ -195,9 +195,9 @@ class T3Adapter(BaseAgentAdapter):
                     wait = 300.0
                 elif code in (401, 403):
                     self._token = None  # revoked or expired: issue a new one
-                logger.debug(f"[{self.config.id}] T3 Code refused the connection ({code}); retrying.")
+                self._log_unreachable(f"T3 Code refused the connection ({code})")
             except Exception as exc:
-                logger.debug(f"[{self.config.id}] T3 Code unavailable ({exc!r}); retrying in {wait:.0f}s.")
+                self._log_unreachable(f"T3 Code is unavailable ({exc!r}); is the T3 app running?")
             finally:
                 self._ws = None
                 for call in self._calls.values():

@@ -76,7 +76,7 @@ class PiAdapter(BaseAgentAdapter):
             try:
                 reader, self._writer = await asyncio.open_unix_connection(self.socket_path)
                 misses = 0
-                logger.info(f"Connected to the Pi window at {self.socket_path}")
+                self._log_reached(f"Connected to the Pi window at {self.socket_path}")
                 while line := await reader.readline():
                     try:
                         await self._handle(json.loads(line))
@@ -86,7 +86,7 @@ class PiAdapter(BaseAgentAdapter):
                 raise
             except OSError as exc:
                 misses += 1
-                logger.debug(f"[{self.config.id}] Pi socket unavailable ({exc!r}).")
+                self._log_unreachable(f"Pi socket {self.socket_path} is unavailable ({exc!r})")
                 if misses == 3:  # /reload reopens the socket within a second; three misses is a closed window
                     self._running = False
                     await self._surface("closed its window. Run jarvis connect pi again to pick another.")

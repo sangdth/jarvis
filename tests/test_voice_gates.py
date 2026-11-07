@@ -170,6 +170,23 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
     async def test_too_short_to_score_is_dropped(self) -> None:
         self.assertEqual(await self.run_stt("build a login page", None), [])
 
+    async def test_empty_whisper_result_is_logged(self) -> None:
+        import numpy as np
+        from pipecat.services.whisper.stt import WhisperSTTServiceMLX
+
+        from jarvis import voice_gates
+
+        async def whisper(_self, _audio):
+            return
+            yield
+
+        embedder = MagicMock()
+        embedder.embed.return_value = np.array([1.0, 0.0], dtype=np.float32)
+        stt = voice_gates.SpeakerVerifiedWhisperSTT(embedder=embedder, voiceprint=np.array([1.0, 0.0]), threshold=0.5)
+        with patch.object(WhisperSTTServiceMLX, "run_stt", new=whisper), patch.object(voice_gates, "logger") as log:
+            self.assertEqual([f async for f in stt.run_stt(b"\x00\x00" * 16000)], [])
+        self.assertIn("empty: Whisper wrote nothing for 1.0 s", log.info.call_args.args[0])
+
 
 class TestVoiceprint(unittest.TestCase):
     def test_missing_voiceprint_refuses(self) -> None:

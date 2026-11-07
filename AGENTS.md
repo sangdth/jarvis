@@ -47,6 +47,7 @@ speech check dropping the sentence, not the conversation model.
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                          |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)       |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`   |
+| Said something, no `[Speaker]` line  | No sentence cut: talk-over on speakers; `[Speaker] ... empty` |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`             |
 | Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`         |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy` |

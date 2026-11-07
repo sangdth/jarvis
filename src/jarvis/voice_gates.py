@@ -49,6 +49,10 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         score_task = asyncio.create_task(asyncio.to_thread(self._score, audio))
         frames = [frame async for frame in super().run_stt(audio)]
         score = await score_task
+        if not any(isinstance(f, TranscriptionFrame) for f in frames):
+            # Pipecat logs only non-empty text; without this line a lost sentence leaves no trace at all, and a
+            # missing line then means the voice detector never cut a sentence (e.g. talk over Jarvis on speakers).
+            logger.info(f"[Speaker] score={score:.2f} empty: Whisper wrote nothing for {len(audio) / 32000:.1f} s of sound")
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
                 owner = score >= self._threshold

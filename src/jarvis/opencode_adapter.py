@@ -48,7 +48,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
                 timeout = httpx.Timeout(10.0, read=45.0)
                 async with self._http.stream("GET", "/api/event", timeout=timeout) as response:
                     response.raise_for_status()
-                    logger.info(f"Connected to OpenCode event stream at {self.base_url}/api/event")
+                    self._log_reached(f"Connected to OpenCode event stream at {self.base_url}/api/event")
                     await self._resync()
                     async for line in response.aiter_lines():
                         raw_data = line.removeprefix("data:").strip() if line.startswith("data:") else ""
@@ -63,7 +63,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
                 raise
             except Exception as exc:
                 # Reconnect if `opencode serve` is not started yet, dropped the stream, or went silent
-                logger.debug(f"[{self.config.id}] OpenCode stream unavailable ({exc!r}); retrying in 10s.")
+                self._log_unreachable(f"OpenCode at {self.base_url} is unavailable ({exc!r})")
                 await asyncio.sleep(10.0)
 
     async def _resync(self) -> None:

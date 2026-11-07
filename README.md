@@ -123,7 +123,9 @@ Ollama, Jarvis still runs, just without memory.
 jarvis
 ```
 Jarvis greets you in a few words and listens. Speakers work: the mic and speaker run through macOS voice
-processing (the echo canceller FaceTime uses), so you can talk over Jarvis. Enroll your voice again after
+processing (the echo canceller FaceTime uses), so Jarvis doesn't hear itself. On speakers, a quiet word said while
+Jarvis talks is lost, because the canceller damps your voice too; a firm "stop" gets through. Wait for Jarvis to
+finish before you answer it, or use headphones, where you can talk over it freely. Enroll your voice again after
 updating from an older version (`jarvis enroll`): it now records through the same processing.
 
 ### Continue a T3 Code thread away from the keyboard
@@ -169,7 +171,7 @@ and you answer it at the keyboard. A saved session with no window open isn't lis
 - **"Stop it"** / **"Stop that"** / **"Cancel that"** / **"Stop Claude"** — Stops the agent's current turn; with
   nothing running, Jarvis says so. "Stop" stops the work, "shut up" mutes Jarvis.
 - **"No, I meant..."** — Replaces a task an agent is still working on, instead of starting a second one.
-- **Talking over Jarvis** — Cuts its reply off. Only your voice does this.
+- **Talking over Jarvis** — Cuts its reply off. Only your voice does this. On speakers, say it loud; see step 6.
 - **Vietnamese** — Set `LANGUAGE=vi` and speak Vietnamese, with English words mixed in; Jarvis answers in Vietnamese and still briefs agents in English. Agent questions and approvals are read out in English.
 - **"Shut up"** / **"Be quiet"** / **"Stop talking"** / **"Hush"** / **"Im đi"** / **"Im lặng"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
 - **"You can talk"** / **"Nói được rồi"** — Switches Jarvis back to `VOICE` mode and immediately reads a concise, jargon-free digest of everything queued while muted.

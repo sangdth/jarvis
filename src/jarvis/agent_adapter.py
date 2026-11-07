@@ -74,6 +74,17 @@ class BaseAgentAdapter:
         self.config = config
         self.state = state
         self._task: asyncio.Task[None] | None = None
+        self._unreachable = False  # the reconnect loop failed and said so once
+
+    def _log_unreachable(self, message: str) -> None:
+        """A reconnect loop retries for as long as Jarvis runs: say so once, not on every try."""
+        if not self._unreachable:
+            logger.warning(f"[{self.config.id}] {message}; retrying quietly until it answers.")
+        self._unreachable = True
+
+    def _log_reached(self, message: str) -> None:
+        self._unreachable = False
+        logger.info(message)
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run_loop(), name=f"watcher-{self.config.id}")
