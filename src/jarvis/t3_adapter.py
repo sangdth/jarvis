@@ -141,17 +141,32 @@ class T3Adapter(BaseAgentAdapter):
         self._pending: dict[str, Any] | None = None  # the approval or question T3 is waiting on
         self._spoken: set[str] = set()  # request ids already read out, so a resync doesn't repeat them
 
-    async def _issue_token(self) -> str:
+    async def _t3(self, *args: str) -> str:
+        """Run the `t3` CLI as the machine's owner; its stdout, or RuntimeError."""
         t3 = shutil.which("t3") or str(T3_HOME / "bin" / "t3")
         proc = await asyncio.create_subprocess_exec(
-            t3, "auth", "session", "issue", "--scope", "orchestration:read", "--scope", "orchestration:operate",
-            "--ttl", "30d", "--label", f"jarvis {self.config.id}", "--token-only",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            t3, *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         out, err = await proc.communicate()
         if proc.returncode != 0:
-            raise RuntimeError(f"`t3 auth session issue` failed: {err.decode().strip()}")
+            raise RuntimeError(f"`t3 {' '.join(args[:3])}` failed: {err.decode().strip()}")
         return out.decode().strip()
+
+    async def _issue_token(self) -> str:
+        label = f"jarvis {self.config.id}"
+        # One listening Jarvis per machine (hold_lock), so every older token with this label is stale: revoke it,
+        # or each start leaves another live 30-day token behind.
+        try:
+            sessions = json.loads(await self._t3("auth", "session", "list", "--json"))
+            for session in sessions:
+                if (session.get("client") or {}).get("label") == label:
+                    await self._t3("auth", "session", "revoke", session["sessionId"])
+        except (RuntimeError, ValueError, KeyError, TypeError) as exc:
+            logger.debug(f"[{self.config.id}] Could not revoke old T3 tokens ({exc!r}).")
+        return await self._t3(
+            "auth", "session", "issue", "--scope", "orchestration:read", "--scope", "orchestration:operate",
+            "--ttl", "30d", "--label", label, "--token-only",
+        )
 
     def _connect(self) -> Any:
         return connect(self.ws_url, additional_headers={"Authorization": f"Bearer {self._token}"}, max_size=None)

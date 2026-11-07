@@ -6,6 +6,19 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from jarvis.orchestrator import AgentOrchestrator
+from jarvis.prompts import NOT_THE_USER
+
+
+def asked_by_user(messages: list) -> bool:
+    """False when the newest message that started this reply is Jarvis's own note (an agent report, the greeting).
+
+    Agent output reaches the model as such a note; the prompt tells it to call no tool, and this makes sure: text an
+    agent wrote can never send, answer or stop anything.
+    """
+    for message in reversed(list(messages)):
+        if isinstance(message, dict) and message.get("role") in ("user", "system"):
+            return not str(message.get("content", "")).startswith(NOT_THE_USER)
+    return True
 
 
 def agent_tools() -> list:
@@ -80,6 +93,9 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
     def handler(action, ok_status: str, fail_status: str, find=orchestrator.find):
         async def handle(params: Any) -> None:
             args = params.arguments
+            if not asked_by_user(getattr(params.context, "messages", [])):
+                await params.result_callback({"status": "refused_not_asked_by_user"})
+                return
             agent = find(args.get("agent_id"))
             if agent is None:
                 await params.result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})

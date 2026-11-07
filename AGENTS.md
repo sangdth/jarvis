@@ -14,7 +14,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
   in), `jarvis connect pi` (an open Pi window), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
   (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
-  (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
+  (`hold_lock`, `~/.config/jarvis/jarvis.lock`); so each start revokes its old T3 tokens (`_issue_token`).
 - Needs: OpenCode `opencode serve --port 4096` with the same password; Hermes its gateway service
   (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
@@ -97,7 +97,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `bench_intent.py` scores mute exactly.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
-  no tool. This keeps the model from approving anything on its own.
+  no tool. `agent_tools.py` `asked_by_user` refuses any tool call made in reply to such a note (or the greeting), so
+  agent text can never approve, send or stop anything.
 - **Jarvis speaks as one assistant.** Replies and retold turns say "I pushed it", "I'm searching", never which
   agent does the work, unless the user asks. A retold turn is the outcome against the user's request in about ten
   words; a turn that asks the user to decide (a plan, options) gets one phrase per heading, at most four, then its

@@ -213,6 +213,23 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(a._surface.await_args.args[0].startswith("needs approval:"))
         a._command.assert_not_awaited()
 
+    async def test_new_token_revokes_only_jarvis_old_ones(self) -> None:
+        a = make()
+        sessions = [
+            {"sessionId": "old", "client": {"label": "jarvis t3-code"}},
+            {"sessionId": "desktop", "client": {"label": "T3 Code Desktop"}},
+        ]
+        calls = []
+
+        async def t3(*args):
+            calls.append(args)
+            return json.dumps(sessions) if args[2] == "list" else "tok"
+
+        a._t3 = t3
+        self.assertEqual(await a._issue_token(), "tok")
+        self.assertEqual([c[2:] for c in calls if c[2] == "revoke"], [("revoke", "old")])
+        self.assertEqual(calls[-1][2], "issue")
+
 
 class TestHelpers(unittest.TestCase):
     def test_deepest_live_project_holds_cwd(self) -> None:
