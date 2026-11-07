@@ -8,7 +8,6 @@ from jarvis.prompts import (
     JARVIS_EXECUTIVE_SYSTEM_PROMPT,
     LANGUAGES,
     greeting_prompt,
-    language_instructions,
     system_prompt,
 )
 
@@ -34,7 +33,7 @@ class PromptTest(unittest.TestCase):
         self.assertEqual(set(LANGUAGES), set(WHISPER_MODELS))
         en_prompt = system_prompt(orchestrator, "", language="en")
         self.assertNotIn("Vietnamese", en_prompt)
-        self.assertEqual(language_instructions("en"), "")
+        self.assertEqual(en_prompt, system_prompt(orchestrator, ""))
 
         vi_prompt = system_prompt(orchestrator, "", language="vi")
         self.assertTrue(vi_prompt.startswith(JARVIS_EXECUTIVE_SYSTEM_PROMPT))
