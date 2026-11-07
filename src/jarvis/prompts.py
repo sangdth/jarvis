@@ -75,9 +75,9 @@ def connected_thread(thread: dict[str, Any] | None) -> str:
     if not thread:
         return ""
     return (
-        f"\n\nYou are connected to the user's T3 Code thread \"{thread['title']}\" in {thread['project']}. Every"
-        f" coding task and follow-up goes to that thread with send_agent_task for `{thread['agent_id']}`; never set"
-        " `project`, even when the user names one: this overrides the project instructions above. Asked which thread"
+        f"\n\nYou are connected to the user's {thread['agent_name']} session \"{thread['title']}\" in {thread['project']}."
+        f" Every coding task and follow-up goes to that session with send_agent_task for `{thread['agent_id']}`; never set"
+        " `project`, even when the user names one: this overrides the project instructions above. Asked which session"
         " or project you are on, name this one."
     )
 

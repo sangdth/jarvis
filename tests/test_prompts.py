@@ -16,9 +16,9 @@ class PromptTest(unittest.TestCase):
     def test_prompt_names_the_connected_thread_only_when_connected(self):
         orchestrator = MagicMock(adapters={})
         self.assertNotIn("You are connected to", system_prompt(orchestrator, ""))
-        thread = {"title": "Fix login", "project": "platform-v2", "agent_id": "t3-code"}
+        thread = {"title": "Fix login", "project": "platform-v2", "agent_id": "t3-code", "agent_name": "T3 Code"}
         prompt = system_prompt(orchestrator, "", thread)
-        self.assertIn('"Fix login" in platform-v2', prompt)
+        self.assertIn('T3 Code session "Fix login" in platform-v2', prompt)
         self.assertIn("send_agent_task for `t3-code`", prompt)
 
 

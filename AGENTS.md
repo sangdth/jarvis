@@ -12,7 +12,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis update` upgrades it,
   `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
-  in), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
+  in), `jarvis connect pi` (an open Pi window), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
   (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
   (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
 - Needs: OpenCode `opencode serve --port 4096` with the same password; Hermes its gateway service
@@ -42,6 +42,7 @@ speech check dropping the sentence, not the conversation model.
 | "Still waiting" timing or wording    | `orchestrator.py` `remind_while_busy`, `WAITING_LINES`        |
 | Hermes runs, approvals, stop         | `hermes_adapter.py` `HermesAdapter`                           |
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)           |
+| `jarvis connect pi`, Pi windows      | `pi_adapter.py` `PiAdapter`, `defaults/pi/jarvis.ts`          |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                                      |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                          |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)       |
@@ -81,6 +82,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   project; Jarvis starts no other thread (`_connected`), and the system prompt names it (`connected_thread`).
   T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
+- **Pi is reached only through an open window.** `jarvis connect pi` installs `defaults/pi/jarvis.ts` into
+  `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
+  make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.
 - **All user state lives in `JARVIS_HOME`** (`config.py`): `.env`, `agents.json`, `SOUL.md`, the voiceprint,
   models, memory. The installed `jarvis` uses `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's
   folder (`checkout_root`, found from the running code, never the current folder; gitignored) and stops without its
@@ -118,6 +122,6 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 
 ## Later, not now
 
-- More agents (Pi, Codex): a new `<name>_adapter.py` shaped like `opencode_adapter.py` / `hermes_adapter.py`,
+- Pi as a routable agent (in `agents.json`, not only `jarvis connect pi`), and Codex: a new `<name>_adapter.py` shaped like `opencode_adapter.py` / `hermes_adapter.py`,
   registered in `orchestrator.py` `ADAPTERS`; or run them as a T3 Code provider and reach them through `t3-code`.
 - Laya as a local speech check: parked; it lost to the OpenRouter decision models.

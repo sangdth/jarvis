@@ -22,6 +22,7 @@ from jarvis.config import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, inst
 USAGE = """usage: jarvis [command]
   (none)     listen and hand work to the agents
   connect    continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
+  connect pi talk to a Pi window that is open now (installs Jarvis's Pi extension the first time)
   init       set up Jarvis's home (~/.config/jarvis; the checkout in dev): .env, agents.json, SOUL.md, voiceprint
   enroll     record your voiceprint again
   update     update the installed Jarvis to the latest GitHub master
@@ -114,7 +115,7 @@ def main() -> None:
         from jarvis.enroll import main as enroll  # imported here: loads the speaker model
 
         return enroll()
-    if args not in ([], ["connect"]):
+    if args not in ([], ["connect"], ["connect", "pi"]):
         sys.exit(USAGE)
     if checkout_root() and not (JARVIS_HOME / ".env").exists():
         sys.exit(f"No .env in {JARVIS_HOME}: a dev checkout uses its own. Run the T3 setup script or `uv run jarvis init`.")
@@ -123,7 +124,7 @@ def main() -> None:
     from jarvis.main import run_pipecat_harness  # imported here: loads Pipecat
 
     try:
-        asyncio.run(run_pipecat_harness(connect=args == ["connect"]))
+        asyncio.run(run_pipecat_harness(connect=None if not args else args[-1] if args[-1] == "pi" else "t3"))
     except KeyboardInterrupt:
         logger.info("Jarvis stopped.")
         sys.exit(0)

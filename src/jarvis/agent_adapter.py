@@ -93,8 +93,9 @@ class BaseAgentAdapter:
         """Send new work to the agent as a prompt."""
         raise NotImplementedError
 
-    async def answer(self, answer: str) -> bool:
-        """Answer the agent's pending question or permission request. False when nothing is pending."""
+    async def answer(self, answer: str) -> bool | str:
+        """Answer the agent's pending question or permission request. False when nothing is pending; a status word
+        when the question can't be answered from here."""
         raise NotImplementedError
 
     async def interrupt(self) -> bool:

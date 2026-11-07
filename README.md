@@ -141,6 +141,16 @@ and its finished turns are retold. Nothing is sent to the thread when you connec
 are back at the keyboard, or it reads out the replies to what you type too. As a project script, Jarvis runs
 inside the T3 Code app, so macOS asks whether T3 Code may use the microphone; allow it.
 
+### Talk to an open Pi window
+```bash
+jarvis connect pi
+```
+The first run puts Jarvis's Pi extension in `~/.pi/agent/extensions/jarvis.ts` and stops: run `/reload` in your open
+Pi windows (new windows load it on their own), then run it again. It lists the Pi windows open now, newest first, by
+folder and session name. Pick one, and what you say goes into that window as if you typed it; finished turns are
+retold. Jarvis can't answer a dialog in the window (an extension's confirm or select): it tells you one is waiting,
+and you answer it at the keyboard. A saved session with no window open isn't listed; open `pi` in it first.
+
 ### Tuning and Troubleshooting
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence
   was passed on or ignored. T3 Code keeps terminal logs in `~/.t3/userdata/logs/terminals/*.log`.
