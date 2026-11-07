@@ -156,7 +156,7 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
         on_interrupt=on_interrupt,
         on_report=on_report if settings.openrouter_api_key else None,  # no LLM offline: last line only
     )
-    orchestrator = AgentOrchestrator(state=state)
+    orchestrator = AgentOrchestrator(state=state, personality=load_soul().personality)
     orchestrator.load_from_file(settings.watch_config_path)
     thread = await pick_connection(orchestrator, connect) if connect else None
 

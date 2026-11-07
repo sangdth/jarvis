@@ -100,7 +100,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             return "nothing_to_send"  # "continue on X" while connected: not a failure
         ok = await (agent.open_project(project, task) if opens else agent.send_task(task))
         if ok is True:  # a status word means nothing went out, so nothing to wait on
-            orchestrator.remind_while_busy(agent)
+            orchestrator.remind_while_busy(agent, task or f"open the {project} project")
         return ok
 
     async def stop(agent: Any, args: dict) -> bool | str:

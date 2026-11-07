@@ -39,7 +39,7 @@ speech check dropping the sentence, not the conversation model.
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`               |
 | Answer or stop hits the wrong agent  | `orchestrator.py` `find_waiting`, `find_busy`                   |
 | A correction runs as a second task   | `agent_tools.py` `send` (`replace`), each `interrupt`           |
-| "Still waiting" timing or wording    | `remind_while_busy`, `languages.json` `waiting`                 |
+| "Still waiting" timing or wording    | `remind_while_busy`, `waiting_lines.py`, `WAITING_PROMPT`       |
 | Hermes runs, approvals, stop         | `hermes_adapter.py` `HermesAdapter`                             |
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)             |
 | `jarvis connect pi`, Pi windows      | `pi_adapter.py` `PiAdapter`, `defaults/pi/jarvis.ts`            |
@@ -109,12 +109,14 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   to MLX by us). Language-specific prompt rules live in `languages.json` and are added to the system and greeting
   prompts dynamically for the active `LANGUAGE` only. Replies, retold turns and the greeting follow the user's
   language. Every `task` and `answer` is written in English (`agent_tools.py`), so `is_approval` stays English-only.
-  Fixed spoken lines (the `jarvis connect` line, the "still waiting" lines) live in `languages.json` per language.
+  Fixed spoken lines (the `jarvis connect` line) live in `languages.json` per language. Its `waiting` lines are the
+  base for the "still waiting" lines: `EXECUTIVE_MODEL` writes 6 new ones per task from them and the user's task
+  (never an agent's text, never a progress claim), refilling at 4 used; the base lines are spoken only when that fails.
   Agent questions and approvals stay English: they never go through an LLM.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.
-- **Three model settings, one job each:** `EXECUTIVE_MODEL` talks and retells turns, thinking always on;
+- **Three model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
   `FILTER_MODEL` (a decision model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis;
   `EXTRACTION_MODEL` picks memory facts, a fast model with thinking always off.
 - **Voice is ElevenLabs `eleven_v4_turbo` over Text-to-Dialogue** (the plain TTS socket rejects it). Emotion
