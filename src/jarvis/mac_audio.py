@@ -57,6 +57,10 @@ class MacVoiceAudio:
         ok, err = self.engine.inputNode().setVoiceProcessingEnabled_error_(True, None)
         if not ok:
             raise RuntimeError(f"macOS voice processing could not start: {err}")
+        # Voice processing turns down every other app's sound by default; keep that to the least macOS allows.
+        self.engine.inputNode().setVoiceProcessingOtherAudioDuckingConfiguration_(
+            (False, AVFoundation.AVAudioVoiceProcessingOtherAudioDuckingLevelMin)
+        )
         self.player = AVFoundation.AVAudioPlayerNode.alloc().init()
         self.engine.attachNode_(self.player)
         self._play_format = None
