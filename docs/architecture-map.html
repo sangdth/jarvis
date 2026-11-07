@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis System Architecture Map</title>
+<style>
+  :root {
+    --background: #0b0f19;
+    --foreground: #e2e8f0;
+    --card: #131c2e;
+    --card-foreground: #f8fafc;
+    --border: #223049;
+    --primary: #38bdf8;
+    --primary-foreground: #0b0f19;
+    --secondary: #1e293b;
+    --secondary-foreground: #f8fafc;
+    --muted-foreground: #94a3b8;
+    --accent: #f472b6;
+    --radius: 10px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    line-height: 1.45;
+    font-size: 13px;
+    padding: 30px 20px;
+    display: flex;
+    justify-content: center;
+  }
+
+  .arch-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 100%;
+    max-width: 860px;
+  }
+
+  .header-card {
+    background: linear-gradient(135deg, #131c2e 0%, #1e293b 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+  .header-title h1 {
+    font-size: 20px;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .header-title p {
+    color: var(--muted-foreground);
+    font-size: 12px;
+  }
+
+  /* Section Card */
+  .section-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  }
+
+  .box-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .box-title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--primary);
+  }
+  .box-badge {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    padding: 3px 8px;
+    border-radius: 9999px;
+    background: var(--secondary);
+    color: var(--secondary-foreground);
+    border: 1px solid var(--border);
+  }
+
+  /* Grid layout */
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  .grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 650px) {
+    .grid-3, .grid-4, .grid-2 {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Node Cards */
+  .node-item {
+    background: rgba(11, 15, 25, 0.7);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: relative;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+  }
+  .node-item:hover {
+    border-color: var(--primary);
+    transform: translateY(-2px);
+  }
+  .node-item.accent-border {
+    border-color: rgba(56, 189, 248, 0.4);
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.08);
+  }
+  .node-item.warn-border {
+    border-color: rgba(245, 158, 11, 0.4);
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.08);
+  }
+  .node-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .node-tag {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    color: var(--primary);
+    background: rgba(56, 189, 248, 0.12);
+    padding: 2px 5px;
+    border-radius: 4px;
+  }
+  .node-tech {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--muted-foreground);
+  }
+  .node-body {
+    font-size: 11.5px;
+    color: #cbd5e1;
+    line-height: 1.4;
+  }
+
+  /* Flow Connectors */
+  .flow-div {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #64748b;
+    padding: 2px 0;
+  }
+  .flow-sym {
+    color: var(--primary);
+    font-weight: 800;
+    font-size: 14px;
+  }
+
+  /* State Strip */
+  .state-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .state-pill {
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .mode-voice {
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    color: #4ade80;
+  }
+  .mode-beep {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #f87171;
+  }
+
+  /* Tools & Protocols */
+  .tool-tag {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    background: rgba(0,0,0,0.35);
+    color: var(--accent);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .stat-card {
+    background: rgba(0,0,0,0.3);
+    border-radius: 6px;
+    padding: 8px 10px;
+    text-align: center;
+    border: 1px solid var(--border);
+  }
+  .stat-val {
+    font-size: 14px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--primary);
+  }
+  .stat-lbl {
+    font-size: 9.5px;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="arch-wrap">
+
+  <div class="header-card">
+    <div class="header-title">
+      <h1>🎙️ Jarvis Architecture Map</h1>
+      <p>Always-On Voice Executive Harness &bull; Apple Silicon &bull; Multi-Agent Orchestration</p>
+    </div>
+    <span class="box-badge">v1.0 &bull; Master</span>
+  </div>
+
+  <!-- 1. HARDWARE & ACOUSTIC LAYER -->
+  <div class="section-box">
+    <div class="box-header">
+      <div class="box-title">
+        <span>1. Mac Hardware & Voice Processing Transport</span>
+      </div>
+      <span class="box-badge">mac_audio.py • Apple Silicon</span>
+    </div>
+    <div class="grid-3">
+      <div class="node-item">
+        <div class="node-name">
+          <span>Mic In Tap</span>
+          <span class="node-tag">48kHz</span>
+        </div>
+        <div class="node-tech">AVAudioEngine inputNode</div>
+        <div class="node-body">20ms audio blocks (float32). Converted to 16kHz PCM mono via <span class="tool-tag">soxr</span>.</div>
+      </div>
+      <div class="node-item accent-border">
+        <div class="node-name">
+          <span>Apple Voice Processing</span>
+          <span class="node-tag">AEC</span>
+        </div>
+        <div class="node-tech">Hardware Echo Canceller</div>
+        <div class="node-body">Shared engine cancels Jarvis's own TTS output; allows user speech barge-in on speakers.</div>
+      </div>
+      <div class="node-item">
+        <div class="node-name">
+          <span>Speaker Out</span>
+          <span class="node-tag">16kHz</span>
+        </div>
+        <div class="node-tech">AVAudioPlayerNode</div>
+        <div class="node-body">Paced real-time playback (~80ms buffer). Interrupted immediately on speech detection.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-div">
+    <span>16kHz Mono PCM Audio Stream</span> <span class="flow-sym">&darr;</span>
+  </div>
+
+  <!-- 2. ALWAYS-ON EAR & MULTI-STAGE GATING -->
+  <div class="section-box">
+    <div class="box-header">
+      <div class="box-title">
+        <span>2. Always-On Ear & Dual Verification Gates</span>
+      </div>
+      <span class="box-badge">voice_gates.py • No Wake Word</span>
+    </div>
+    <div class="grid-4">
+      <div class="node-item">
+        <div class="node-name">
+          <span>Silero VAD</span>
+          <span class="node-tag">&lt;1ms</span>
+        </div>
+        <div class="node-tech">stop_secs = 0.6s</div>
+        <div class="node-body">Fast neural speech segmentation; detects utterance boundaries.</div>
+      </div>
+      <div class="node-item">
+        <div class="node-name">
+          <span>MLX Whisper STT</span>
+          <span class="node-tag">Local GPU</span>
+        </div>
+        <div class="node-tech">Whisper Large v3 Turbo</div>
+        <div class="node-body">Zero cloud cost. Trailing-off thoughts ("...") held up to 2.0s.</div>
+      </div>
+      <div class="node-item warn-border">
+        <div class="node-name">
+          <span>Sherpa-ONNX</span>
+          <span class="node-tag">Concurrent</span>
+        </div>
+        <div class="node-tech">3D-Speaker ERes2Net</div>
+        <div class="node-body">Scores vs <span class="tool-tag">owner_voice.npy</span>. Background/TV speech dropped!</div>
+      </div>
+      <div class="node-item">
+        <div class="node-name">
+          <span>JEV Filter</span>
+          <span class="node-tag">~230ms</span>
+        </div>
+        <div class="node-tech">typesafe/jev-1.14</div>
+        <div class="node-body">Separates addressed talk from ambient room chatter. Fast regex bypass.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-div">
+    <span>Verified Addressed Speech &rarr; ProposedUserStartedSpeakingFrame</span> <span class="flow-sym">&darr;</span>
+  </div>
+
+  <!-- 3. EXECUTIVE CORE & STATE MACHINE -->
+  <div class="section-box">
+    <div class="box-header">
+      <div class="box-title">
+        <span>3. Executive Brain & State Coordinator</span>
+      </div>
+      <span class="box-badge">Pipecat Pipeline • main.py</span>
+    </div>
+    <div class="grid-3">
+      <div class="node-item accent-border" style="grid-column: span 2;">
+        <div class="node-name">
+          <span>Executive LLM Brain (OpenRouter)</span>
+          <span class="node-tag">Reasoning ON</span>
+        </div>
+        <div class="node-tech">deepseek/deepseek-v4.1-flash + SOUL.md Persona</div>
+        <div class="node-body">
+          Dispatches function calls:
+          <span class="tool-tag">send_agent_task</span>, <span class="tool-tag">answer_agent</span>, <span class="tool-tag">stop_agent</span>.
+          Retells complex multi-file git/build diffs as ~10-word first-person outcomes.
+        </div>
+      </div>
+      <div class="node-item">
+        <div class="node-name">
+          <span>Mem0 Memory</span>
+          <span class="node-tag">~22ms</span>
+        </div>
+        <div class="node-tech">Qdrant + Ollama bge-m3</div>
+        <div class="node-body">Local vector store. Background facts extracted via non-thinking model.</div>
+      </div>
+    </div>
+
+    <!-- Mode machine -->
+    <div class="state-strip">
+      <div class="state-pill mode-voice">
+        <strong>🟢 VOICE MODE:</strong> Full verbal interaction. Agent questions and approvals spoken immediately. Completed turns retold in plain words.
+      </div>
+      <div class="state-pill mode-beep">
+        <strong>🔴 BEEP_ONLY MODE:</strong> Activated by "Shut up" / "Im đi". Speech interrupted instantly. Plays 880Hz sine chimes on agent queries and queues digest.
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-div">
+    <span>Tool Calls & Agent Routing</span> <span class="flow-sym">&darr;</span>
+  </div>
+
+  <!-- 4. AGENT ADAPTERS & ASYNC WATCHERS -->
+  <div class="section-box">
+    <div class="box-header">
+      <div class="box-title">
+        <span>4. Autonomous Agent Orchestrator & Adapters</span>
+      </div>
+      <span class="box-badge">orchestrator.py • Structured APIs</span>
+    </div>
+    <div class="grid-2">
+      <div class="node-item">
+        <div class="node-name">
+          <span>T3 Code (Default Coding)</span>
+          <span class="node-tag">WebSocket RPC</span>
+        </div>
+        <div class="node-tech">ws://127.0.0.1:3773/ws • Effect RPC</div>
+        <div class="node-body">Dispatches project tasks, launches git branch sync threads, listens to <span class="tool-tag">approval_request</span> and turn stream.</div>
+      </div>
+      <div class="node-item">
+        <div class="node-name">
+          <span>Claude Code</span>
+          <span class="node-tag">Agent SDK</span>
+        </div>
+        <div class="node-tech">ClaudeSDKClient (Python SDK)</div>
+        <div class="node-body">Runs with native permission rules; intercepts <span class="tool-tag">AskUserQuestion</span> and bash approvals via <span class="tool-tag">can_use_tool</span>.</div>
+      </div>
+      <div class="node-item">
+        <div class="node-name">
+          <span>Hermes Agent</span>
+          <span class="node-tag">HTTP Gateway</span>
+        </div>
+        <div class="node-tech">Port 8642 • GET/POST /v1/runs</div>
+        <div class="node-body">General executive tasks (calendar, email, search). Guardian model enforces human safety approvals.</div>
+      </div>
+      <div class="node-item">
+        <div class="node-name">
+          <span>OpenCode & Pi Terminal</span>
+          <span class="node-tag">SSE & UNIX IPC</span>
+        </div>
+        <div class="node-tech">OpenCode v2 HTTP + Pi Socket</div>
+        <div class="node-body">Watches permissions & form replies over SSE; live interactive terminal piping via Pi extension.</div>
+      </div>
+    </div>
+
+    <!-- Latency metrics -->
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-val">&lt; 1 ms</div>
+        <div class="stat-lbl">Silero VAD</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">~100 ms</div>
+        <div class="stat-lbl">Speaker Verification</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">~230 ms</div>
+        <div class="stat-lbl">Intent Decision</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">~100 ms</div>
+        <div class="stat-lbl">TTS First Audio</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
