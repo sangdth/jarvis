@@ -24,6 +24,7 @@ def params(arguments: dict) -> FunctionCallParams:
 class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.orch = AgentOrchestrator(state=MagicMock())
+        self.orch._http = None  # no real OpenRouter call for the waiting lines
         agent = MagicMock()
         agent.config.id = "hermes"
         agent.send_task = AsyncMock(return_value=True)

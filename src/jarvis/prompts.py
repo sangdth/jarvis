@@ -32,6 +32,19 @@ class LanguageText(TypedDict):
 LANGUAGES: dict[str, LanguageText] = json.loads(LANGUAGES_PATH.read_text(encoding="utf-8"))
 
 
+# Writes the "still working" lines for one task (`waiting_lines.py`). It sees only the user's task, never what an agent
+# wrote, and may not claim progress: Jarvis doesn't know how far the agent is.
+WAITING_PROMPT = """Write {count} short lines a voice assistant says while it is still working on the user's task, so the \
+user knows it hasn't forgotten.
+- Same language and style as the examples: under 12 words, one or two short sentences, light humor welcome.
+- You may mention the task in plain everyday words.
+- Never claim progress, timing or results ("almost done", "nearly there", "found it", "a few more minutes").
+- Never name an agent, tool, model or file. Speak as one assistant ("I'm still on it").
+- Do not repeat or rephrase any line under "Already said".
+- Personality, for tone only: {personality}
+Return only the lines, one per line, with no numbering or quotes."""
+
+
 JARVIS_EXECUTIVE_SYSTEM_PROMPT = """You are Jarvis, a voice assistant that hands the user's work to agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else (research, email, calendar, notes) to Hermes.
 
 Core behavior:

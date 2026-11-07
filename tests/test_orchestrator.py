@@ -5,6 +5,7 @@ from fakes import fake_adapter
 from jarvis.orchestrator import AgentOrchestrator
 from jarvis.prompts import LANGUAGES
 from jarvis.state import AgentTopic, JarvisState
+from jarvis.waiting_lines import WaitingLines
 
 
 class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
@@ -90,7 +91,7 @@ class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
                 state.mode = JarvisMode.VOICE
 
         with patch("jarvis.orchestrator.asyncio.sleep", fake_sleep):
-            await orch._remind(agent)
+            await orch._remind(agent, WaitingLines("check my calendar"))  # no client: the base lines
 
         self.assertEqual(waits, [8, 13, 21, 34, 55])
         self.assertEqual(state.on_speak.await_count, 2)  # after 8s and after 34s

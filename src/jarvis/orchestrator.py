@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 from pathlib import Path
 
+import httpx
 from loguru import logger
 
 from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig
@@ -12,9 +12,9 @@ from jarvis.claude_adapter import ClaudeCodeAdapter
 from jarvis.config import settings
 from jarvis.hermes_adapter import HermesAdapter
 from jarvis.opencode_adapter import OpenCodeSSEAdapter
-from jarvis.prompts import LANGUAGES
 from jarvis.state import JarvisMode, JarvisState
 from jarvis.t3_adapter import T3Adapter
+from jarvis.waiting_lines import WaitingLines
 
 # agents.json `type` -> its adapter; a new agent is a new <name>_adapter.py and one line here.
 ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
@@ -30,10 +30,21 @@ ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
 class AgentOrchestrator:
     """Manages all coding agent watchers and routes user verbal decisions back to the right agent."""
 
-    def __init__(self, state: JarvisState) -> None:
+    def __init__(self, state: JarvisState, personality: str = "") -> None:
         self.state = state
         self.adapters: dict[str, BaseAgentAdapter] = {}
-        self._reminders: dict[str, asyncio.Task] = {}
+        self._reminders: dict[str, tuple[asyncio.Task, WaitingLines]] = {}
+        self._personality = personality  # SOUL.md, the tone of the waiting lines
+        # Writes the waiting lines; without a key there is none, and the base lines are used as they are.
+        self._http = (
+            httpx.AsyncClient(
+                base_url=settings.openrouter_base_url,
+                timeout=30.0,
+                headers={"Authorization": f"Bearer {settings.openrouter_api_key}", "X-Title": "Jarvis"},
+            )
+            if settings.openrouter_api_key
+            else None
+        )
 
     def load_from_file(self, config_path: str | Path) -> None:
         path = Path(config_path)
@@ -63,27 +74,33 @@ class AgentOrchestrator:
     async def stop_all(self) -> None:
         for adapter in self.adapters.values():
             await adapter.stop()
+        if self._http:
+            await self._http.aclose()
 
-    def remind_while_busy(self, agent: BaseAgentAdapter) -> None:
+    def remind_while_busy(self, agent: BaseAgentAdapter, task: str) -> None:
         """After a task is sent: say "Still working on it" while the agent works, so the user knows it isn't forgotten."""
         old = self._reminders.pop(agent.config.id, None)
-        if old:
-            old.cancel()  # a new task restarts the count
-        self._reminders[agent.config.id] = asyncio.create_task(self._remind(agent))
+        if old:  # a new task restarts the count and the lines
+            old[0].cancel()
+            old[1].stop()
+        # Written from the user's task only, never from what an agent wrote
+        lines = WaitingLines(task, self._personality, self._http)
+        lines.start()
+        self._reminders[agent.config.id] = (asyncio.create_task(self._remind(agent, lines)), lines)
 
-    async def _remind(self, agent: BaseAgentAdapter) -> None:
+    async def _remind(self, agent: BaseAgentAdapter, lines: WaitingLines) -> None:
         wait, next_wait = 8, 13  # Fibonacci seconds: 8, 13, 21, 34, 55, 89, 144, ...
-        last = None
-        lines = LANGUAGES[settings.language]["waiting"]  # fixed lines, no LLM: nothing an agent wrote slips in
-        while True:
-            await asyncio.sleep(wait)
-            if not agent.busy:
-                return
-            waiting_on_user = agent.config.id in self.state.active_agent_context  # it asked something
-            if not waiting_on_user and self.state.mode == JarvisMode.VOICE and self.state.on_speak:
-                last = random.choice([t for t in lines if t != last])  # never the same twice in a row
-                await self.state.on_speak(last)
-            wait, next_wait = next_wait, wait + next_wait
+        try:
+            while True:
+                await asyncio.sleep(wait)
+                if not agent.busy:
+                    return
+                waiting_on_user = agent.config.id in self.state.active_agent_context  # it asked something
+                if not waiting_on_user and self.state.mode == JarvisMode.VOICE and self.state.on_speak:
+                    await self.state.on_speak(await lines.next())
+                wait, next_wait = next_wait, wait + next_wait
+        finally:
+            lines.stop()  # the agent finished: no batch for a task that's over
 
     @property
     def default_agent_id(self) -> str | None:

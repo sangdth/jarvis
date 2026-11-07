@@ -104,7 +104,10 @@ that asked last, and a stop to the agent that is working.
    are spoken as they are. A finished turn (long markdown) goes to the executive LLM as an `AGENT_REPORT_PROMPT`
    message, which retells it as one short first-person outcome per turn and calls no tool; approvals never go through the LLM, so it can't
    approve anything on its own. Offline, Jarvis reads the turn's last line. While a sent task runs,
-   `remind_while_busy` says a short "still working on it" line now and then; a new task restarts the count.
+   `remind_while_busy` says a short "still working on it" line now and then; a new task restarts the count. The
+   lines are written per task by `EXECUTIVE_MODEL` (`waiting_lines.py`, `WAITING_PROMPT`) from the `languages.json`
+   `waiting` lines and the user's task, 6 at a time, with the next batch started after 4 are spoken; the base lines
+   are spoken as they are only when a call fails.
 2. **Long-term memory (`memory.py`):** Pipecat's `Mem0MemoryService` sits just before the executive LLM. Before
    each reply it searches local Mem0 (Qdrant on disk, Ollama `bge-m3`, ~22 ms) and adds what it finds; after each
    reply it saves the newest exchange in the background, where `EXTRACTION_MODEL` (default `deepseek/deepseek-v4.1-flash`, thinking off) picks out the facts.
@@ -140,5 +143,6 @@ All files are in `src/jarvis/`.
 | `opencode_adapter.py` | `OpenCodeSSEAdapter`: OpenCode v2 server, events over SSE                  |
 | `hermes_adapter.py`   | `HermesAdapter`: Hermes API server runs                                    |
 | `orchestrator.py`     | `AgentOrchestrator`, `ADAPTERS` (agents.json type to adapter), reminders   |
+| `waiting_lines.py`    | `WaitingLines`: the per-task "still working" lines, refilled in batches    |
 | `t3_adapter.py`       | `T3Adapter`, project list, `jarvis connect` thread lookup                  |
 | `memory.py`           | Local Mem0 config, `LastExchangeMemory` (saves only the newest exchange)   |
