@@ -42,6 +42,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         self._stopped = False  # Jarvis stopped the turn; its interrupted event is not news
 
     async def _run_loop(self) -> None:
+        last_error: str | None = None  # logged once; the same failure every 10 s stays quiet
         while True:
             try:
                 # The server sends a heartbeat every 15 s; 45 s of silence means the stream is dead.
@@ -49,6 +50,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
                 async with self._http.stream("GET", "/api/event", timeout=timeout) as response:
                     response.raise_for_status()
                     logger.info(f"Connected to OpenCode event stream at {self.base_url}/api/event")
+                    last_error = None
                     await self._resync()
                     async for line in response.aiter_lines():
                         raw_data = line.removeprefix("data:").strip() if line.startswith("data:") else ""
@@ -63,7 +65,9 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
                 raise
             except Exception as exc:
                 # Reconnect if `opencode serve` is not started yet, dropped the stream, or went silent
-                logger.debug(f"[{self.config.id}] OpenCode stream unavailable ({exc!r}); retrying in 10s.")
+                if repr(exc) != last_error:
+                    last_error = repr(exc)
+                    logger.debug(f"[{self.config.id}] OpenCode stream unavailable ({exc!r}); retrying every 10s.")
                 await asyncio.sleep(10.0)
 
     async def _resync(self) -> None:

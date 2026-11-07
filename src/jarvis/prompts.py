@@ -25,6 +25,8 @@ class LanguageText(TypedDict):
     greeting: str
     connected: str  # {title}, {project}
     waiting: list[str]  # no agent name: Jarvis speaks as one assistant
+    enroll: list[str]  # `jarvis enroll`: lines read aloud for the voiceprint
+    enroll_check: list[str]  # read after it, unseen, to measure the score and suggest SPEAKER_THRESHOLD
 
 
 LANGUAGES: dict[str, LanguageText] = json.loads(LANGUAGES_PATH.read_text(encoding="utf-8"))

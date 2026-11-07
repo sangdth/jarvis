@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -105,6 +106,21 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         # Stopped in the OpenCode UI instead: the turn is over.
         await self.adapter._handle_event({"type": "session.execution.interrupted", "data": {"sessionID": "ses_1"}})
         self.assertFalse(self.adapter.busy)
+
+    async def test_a_repeated_connection_failure_is_logged_once(self) -> None:
+        refused = httpx.ConnectError("All connection attempts failed")
+        errors = [refused, refused, refused, httpx.ReadTimeout("silent"), refused]
+        sleep = AsyncMock(side_effect=[None] * (len(errors) - 1) + [asyncio.CancelledError()])
+        with (
+            patch.object(self.adapter._http, "stream", side_effect=errors),
+            patch("jarvis.opencode_adapter.asyncio.sleep", new=sleep),
+            patch("jarvis.opencode_adapter.logger") as logger,
+            self.assertRaises(asyncio.CancelledError),
+        ):
+            await self.adapter._run_loop()
+        logged = [call.args[0] for call in logger.debug.call_args_list]
+        self.assertEqual(len(logged), 3, logged)  # refused, then the timeout, then refused again
+        self.assertIn("ReadTimeout", logged[1])
 
 
 if __name__ == "__main__":
