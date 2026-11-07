@@ -13,7 +13,7 @@ around how `SpeakerVerifiedWhisperSTT` actually drops frames, and five are cut o
 | Idea (first draft)                    | Verdict   | Why, in one line                                             |
 | :------------------------------------ | :-------- | :----------------------------------------------------------- |
 | OpenCode `service.json` discovery     | Do first  | A `--service` daemon runs on port 49374; Jarvis tries 4096   |
-| Audio fixture env var                 | Reshaped  | Save raw segments before the drop first; replay only if needed |
+| Audio fixture env var                 | Reshaped  | Save segments before any drop first; replay only if needed  |
 | Whisper `initial_prompt` vocabulary   | Cut       | Rejected 2026-11-06 (misses research, finding 6)             |
 | Sub-160 ms and DC-offset gate         | Cut       | Four existing gates already drop clicks and hallucinations   |
 | `utterances.jsonl` flight recorder    | Cut       | The terminal log already records every gate's verdict        |
@@ -37,7 +37,7 @@ Hex: `src/desktop/opencode_service.rs` reads `$XDG_STATE_HOME/opencode/service.j
 opens it with `O_NOFOLLOW` and checks `uid == geteuid()` and `mode & 0o077 == 0`, refuses non-loopback URLs (so a file
 can never make the client send the password off-machine), and never starts OpenCode itself.
 
-Checked live against OpenCode 2.2.5 (`pid 95993`, port 49374) on 2026-11-08, which uncovered three details the
+Checked live against OpenCode 2.2.5 (`pid 95993`, port 49374) on 2026-11-08, which uncovered four details the
 adapter must handle when talking to the shared `--service` daemon instead of a per-folder `opencode serve`:
 
 1. **Session directory:** The daemon runs in `/Users/sang`, so `POST /api/session` with `{"title": "Jarvis"}` creates a
@@ -49,6 +49,15 @@ adapter must handle when talking to the shared `--service` daemon instead of a p
    permissions and forms in the project folder. (`GET /api/event` is global and needs no header.)
 3. **Log message on `self.base_url`:** `_run_loop` logs `f"Connected to OpenCode event stream at
    {self.base_url}/api/event"`, which would still print port 4096 if only `self._http.base_url` were updated.
+4. **Session latching (the bug that matters):** `_handle_event` runs `self._session_id = self._session_id or
+   session_id` on every event, and the daemon's `GET /api/event` streams every session on the machine (50 today,
+   across many folders; the user's own OpenCode app included). The first `session.*` event from any project would
+   lock Jarvis to that session; `permission.asked` and `form.created` from any project would be read out, and
+   `answer_agent` would approve them; `stop_agent` would interrupt a run in another project. Nothing in the event
+   says which folder: `Permission.Request` and `Form.Info` carry only `sessionID`, and the envelope is
+   `{"id", "type", "data"}`. `GET /api/session/{id}` returns `location.directory`, so one lookup per unknown session
+   settles it. With a per-folder `opencode serve` this latch was harmless; with the shared daemon it widens what
+   Jarvis can approve to everything OpenCode runs.
 
 Change, in `opencode_adapter.py`:
 
@@ -58,8 +67,8 @@ Change, in `opencode_adapter.py`:
   return `(url.rstrip("/"), password)`. One `shortcut:` comment: `service.json` only, no `service-<channel>.json`,
   until a beta channel is in use.
 - Precedence in `_run_loop` before each connect attempt:
-  - When `OPENCODE_SERVER_PASSWORD` is set in `.env`, or `config.url` was explicitly changed from the shipped default
-    (`http://127.0.0.1:4096`), keep that URL and password.
+  - When `OPENCODE_SERVER_PASSWORD` is set in `.env`, or `config.url` is neither missing nor the shipped default
+    (`config.url not in (None, "http://127.0.0.1:4096")`), keep that URL and password.
   - Otherwise, if `discover_service()` returns `(url, password)`, set `self.base_url = url`,
     `self._http.base_url = url`, and `self._http.auth = ("opencode", password)`. Done per attempt, not once at startup,
     because a restarted OpenCode picks a new port. A stale file fails to connect on `/api/event` and retries in 10 s, so
@@ -68,20 +77,28 @@ Change, in `opencode_adapter.py`:
   - Pass `headers={"x-opencode-directory": self._cwd}` on the `GET /api/permission/request` and `GET /api/form` calls in
     `_resync()`.
   - Pass `"location": {"directory": self._cwd}` in `POST /api/session` inside `send_task()`.
+- Drop the latch in `_handle_event`. A session is Jarvis's when `send_task()` created it, when the directory-scoped
+  `_resync()` returned its request, or when a `permission.asked`, `form.created` or `session.*` event names an unknown
+  session and `GET /api/session/{id}` says `location.directory == self._cwd`. Cache the verdict per session id (a
+  `dict[str, bool]`), so each session costs one lookup; a failed lookup counts as not ours. Events from sessions in
+  other folders are ignored, the way child-session events already are.
 - `README.md` section 4, `defaults/env.example` and the `AGENTS.md` "Needs" line: note that Jarvis finds the running
   OpenCode 2 service automatically, and `OPENCODE_SERVER_PASSWORD` is only for pinning a separate `opencode serve`.
 
 Check: `tests/test_opencode_adapter.py` with `XDG_STATE_HOME` pointed at a temp folder: a 0600 loopback file sets
 `base_url` and `auth`, a 0644 file or non-loopback URL is ignored, no file falls back to `config.url`, a set
-`OPENCODE_SERVER_PASSWORD` wins, `_resync()` sends `x-opencode-directory`, and `send_task()` sends the resolved
-`location.directory`. Live: with `OPENCODE_SERVER_PASSWORD` unset, run `uv run jarvis`, confirm the log says
+`OPENCODE_SERVER_PASSWORD` wins, `_resync()` sends `x-opencode-directory`, `send_task()` sends the resolved
+`location.directory`, a `permission.asked` from a session in another folder is neither surfaced nor adopted, and one
+in `cwd` is adopted after a single `GET /api/session/{id}` (mocked). Live: with `OPENCODE_SERVER_PASSWORD` unset,
+run `uv run jarvis`, confirm the log says
 `Connected to OpenCode event stream at http://127.0.0.1:49374/api/event`, and send OpenCode a task.
 
-About 30 lines in `opencode_adapter.py`, plus 30 of tests.
+About 45 lines in `opencode_adapter.py`, plus 40 of tests.
 
 ### 2. Keep the audio Whisper heard (including segments Whisper or the speaker check dropped)
 
-What breaks: a miss leaves only text in the log—or nothing at all when Whisper returns no text. The 2026-11-06 research
+What breaks: a miss leaves only text in the log, or nothing at all when Whisper returns no text. The 2026-11-06
+research
 had to fake voices with macOS `say` to measure anything, and its "enroll with short phrases too" idea (finding 3) is
 still untested because no real clip of a dropped "Hello?" (`0.26`) or "What's he going on?" (`0.23`) exists.
 
@@ -94,7 +111,8 @@ Pipeline subtlety in Jarvis: `SpeakerVerifiedWhisperSTT.run_stt` (`voice_gates.p
 executes, and not even `[Speaker] score=` is logged. Saving inside that loop would miss every Whisper-dropped clip.
 
 Change: in `SpeakerVerifiedWhisperSTT.run_stt` (`voice_gates.py`), right after `score = await score_task` (outside the
-`for frame in frames` loop), when `JARVIS_SAVE_SEGMENTS` is set to a positive integer `N` (e.g. `JARVIS_SAVE_SEGMENTS=200`):
+`for frame in frames` loop), when `JARVIS_SAVE_SEGMENTS` is set to a positive integer `N` (for example
+`JARVIS_SAVE_SEGMENTS=200`):
 
 - Write `audio` (16 kHz mono PCM16, with Pipecat's 1 s pre-roll and 0.5 s trailing silence) via stdlib `wave` to
   `JARVIS_HOME/clips/<YYYYmmdd-HHMMSS-fff>.wav` (`0700` dir, `0600` file) and unlink oldest `.wav` files past `N`.
@@ -211,7 +229,10 @@ only if real logs show the user saying "here" or "this project" and Jarvis askin
 
 - Step 1 changes which server Jarvis talks to when `OPENCODE_SERVER_PASSWORD` is empty and `url` is the default: from
   an unauthenticated localhost:4096 fallback to the daemon OpenCode registered in `service.json`, with new sessions and
-  resyncs scoped to `config.cwd`. Setting `OPENCODE_SERVER_PASSWORD` or a custom `url` keeps the old behavior.
+  resyncs scoped to `config.cwd`. Setting `OPENCODE_SERVER_PASSWORD` or a custom `url` keeps the old behavior. The
+  session-latch fix is not optional: without it, step 1 lets Jarvis approve tool calls in every OpenCode session on
+  the machine. The fix also changes today's behavior for a per-folder server: a session Jarvis neither created nor
+  found pending at connect time is adopted only after its folder is confirmed.
 - Step 2 writes your voice (and room audio that triggered VAD) to `JARVIS_HOME/clips/`; off unless
   `JARVIS_SAVE_SEGMENTS` is set, mode `0700`/`0600`, rotated at `N` files.
 - Neither step changes reply latency (finding 7) or the speaker threshold on short phrases (finding 3) directly—step 2
