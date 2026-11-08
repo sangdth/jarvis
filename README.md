@@ -9,8 +9,9 @@ Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sh
 It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
 
 What it does:
-- **Talks only with you.** It checks every sentence against your enrolled voice. Other people, the TV and its own
-  voice are dropped, and they can't interrupt Jarvis or keep it waiting.
+- **Can talk only with you.** Turn on the master check (`MASTER_CHECK=true`, set by `jarvis enroll`) and it checks
+  every sentence against your voice. Other people, the TV and its own voice are dropped, and they can't interrupt
+  Jarvis or keep it waiting. Off by default: any voice may talk to it.
 - **Answers only when you mean it.** A decision model tells talk aimed at Jarvis from talk around it.
 - **Opens your projects by name.** "Continue working on the Hugger Hustle platform" starts a T3 Code thread in that
   repo that syncs with master; then you say what to do. Questions about the list itself ("how many projects in
@@ -29,7 +30,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Feature                           | Component                                   | File                  |
 | :-------------------------------- | :------------------------------------------ | :-------------------- |
 | No wake word, answer when needed  | Silero VAD, MLX Whisper, `JarvisIntentGate` | `voice_gates.py`      |
-| Act only on your voice            | `SpeakerVerifiedWhisperSTT` (sherpa-onnx)   | `voice_gates.py`      |
+| Master check (opt-in)             | `SpeakerVerifiedWhisperSTT` (sherpa-onnx)   | `voice_gates.py`      |
 | Background voices never interrupt | `ExternalUserTurnStrategies`                | `voice_gates.py`      |
 | Don't hear its own voice          | `MacVoiceTransport` (voice processing)      | `mac_audio.py`        |
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
@@ -80,12 +81,14 @@ already set is never asked again. Then it asks a few questions (Jarvis's persona
 where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
 file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
 
-Last, it records your voice: Jarvis acts only on your voice and won't start until you enroll. Read eight everyday lines (5 s
-each, in the language `LANGUAGE` sets) with the mic Jarvis will use, then three more that Jarvis scores against your new
-voiceprint; it prints those scores and suggests a `SPEAKER_THRESHOLD` just under the lowest. It downloads the speaker model (25 MB) to `~/.config/jarvis/models/` and
-saves your voiceprint to `~/.config/jarvis/owner_voice.npy`. Anyone can still say "shut up" or "you can talk".
-Enroll close to the mic in a quiet moment: background voices in the recording weaken the voiceprint. Record it
-again any time with `jarvis enroll`.
+Last, it offers to record your voice for the master check (default no; later: `jarvis enroll`). Without it, Jarvis
+acts on any voice it hears. With it, Jarvis acts only on yours: read eight everyday lines (5 s each, in the language
+`LANGUAGE` sets) with the mic Jarvis will use, then three more that Jarvis scores against your new voiceprint; it
+prints those scores, suggests a `SPEAKER_THRESHOLD` just under the lowest and sets `MASTER_CHECK=true` in `.env`. It
+downloads the speaker model (25 MB) to `~/.config/jarvis/models/` and saves your voiceprint to
+`~/.config/jarvis/owner_voice.npy`. Anyone can still say "shut up" or "you can talk". Enroll close to the mic in a
+quiet moment: background voices in the recording weaken the voiceprint. `MASTER_CHECK=false` turns the check off
+again and keeps the voiceprint.
 
 ### 3. Configure `.env`
 `jarvis init` fills the two API keys; set the rest in `~/.config/jarvis/.env`. A variable set in
@@ -128,8 +131,10 @@ Ollama, Jarvis still runs, just without memory.
 jarvis
 ```
 Jarvis greets you in a few words and listens. Speakers work: the mic and speaker run through macOS voice
-processing (the echo canceller FaceTime uses), so you can talk over Jarvis. Enroll your voice again after
-updating from an older version (`jarvis enroll`): it now records through the same processing.
+processing (the echo canceller FaceTime uses), so you can talk over Jarvis. With the master check on, enroll your
+voice again after updating from an older version (`jarvis enroll`): it now records through the same processing.
+Updated from a version that required enrollment? Your voiceprint stays, but the check is now off until you set
+`MASTER_CHECK=true`; the startup log says so.
 
 ### Continue a T3 Code thread away from the keyboard
 ```bash
@@ -174,14 +179,19 @@ In Google Meet, set the microphone to **BlackHole 2ch**; Jarvis sends your voice
 speakers on your normal output and wear headphones: on speakers the mic hears the call a second time. Jarvis hears
 the call through macOS's system audio tap (macOS 14.2 or later), so allow your terminal under System Settings >
 Privacy & Security > Screen & System Audio Recording. People on the call talk to each other until someone says
-"Jarvis"; Jarvis then gets what was said since. Anyone may ask a question or for work, but only your voice can
-answer an agent's question, approve, stop or replace a task. Meeting talk is never saved to memory.
+"Jarvis"; Jarvis then gets what was said since. Meeting talk is never saved to memory.
+
+Who may do what depends on the master check. Off: Jarvis can't tell voices apart, so everyone counts as you. On:
+guests may ask questions and ask for work, and Jarvis asks you before it starts that work (`MEETING_GUESTS=ask`,
+the default); `MEETING_GUESTS=allow` starts it at once. Either way only your voice can answer an agent's question,
+approve, stop or replace a task.
 `MEETING_VIRTUAL_MIC` in `.env` picks another virtual mic by name.
 
 ### Tuning and Troubleshooting
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence
   was passed on or ignored. T3 Code keeps terminal logs in `~/.t3/userdata/logs/terminals/*.log`.
-- **Your voice gets dropped, or others get through.** Every sentence logs `[Speaker] score=0.71 pass`. Set
+- **Your voice gets dropped, or others get through.** With the master check on, every sentence logs
+  `[Speaker] score=0.71 pass` (off: `[Speaker] off pass`). Set
   `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.35), or enroll again.
 - **Jarvis splits one sentence into two.** A pause over 0.6 s ends a sentence; raise `stop_secs` in `main.py`.
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
@@ -197,7 +207,7 @@ answer an agent's question, approve, stop or replace a task. Meeting talk is nev
 - **"Stop it"** / **"Stop that"** / **"Cancel that"** / **"Stop Claude"** — Stops the agent's current turn; with
   nothing running, Jarvis says so. "Stop" stops the work, "shut up" mutes Jarvis.
 - **"No, I meant..."** — Replaces a task an agent is still working on, instead of starting a second one.
-- **Talking over Jarvis** — Cuts its reply off. Only your voice does this.
+- **Talking over Jarvis** — Cuts its reply off. With the master check on, only your voice does this.
 - **Vietnamese** — Set `LANGUAGE=vi` and speak Vietnamese, with English words mixed in; Jarvis answers in Vietnamese and still briefs agents in English. Agent questions and approvals are read out in English.
 - **"Shut up"** / **"Be quiet"** / **"Stop talking"** / **"Hush"** / **"Im đi"** / **"Im lặng"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
 - **"You can talk"** / **"Nói được rồi"** — Switches Jarvis back to `VOICE` mode and immediately reads a concise, jargon-free digest of everything queued while muted.

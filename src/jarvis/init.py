@@ -1,7 +1,8 @@
 """
 `jarvis init`: set up Jarvis's home (~/.config/jarvis; the checkout in dev). Copies .env and agents.json there,
 asks for the API keys it is missing, writes SOUL.md (personality and a few settings) from a short interview, then
-records the voiceprint. The name stays "Jarvis"; the speech check and the mute phrases depend on it.
+offers to record the voiceprint for the master check. The name stays "Jarvis"; the speech check and the mute phrases
+depend on it.
 """
 
 from __future__ import annotations
@@ -61,9 +62,18 @@ def ask_api_keys(env: Path = ENV_PATH) -> None:
             continue
         if prefix and not key.startswith(prefix):
             print(f"Note: {name} usually starts with {prefix}; saved it anyway.")
-        entry = f"{name}={key}"
-        text = text[: line.start()] + entry + text[line.end():] if line else text.rstrip("\n") + f"\n{entry}\n"
-        env.write_text(text, encoding="utf-8")
+        set_env(name, key, env)
+    env.chmod(0o600)  # .env holds API keys
+
+
+def set_env(name: str, value: str, env: Path = ENV_PATH) -> None:
+    """Set NAME=value in .env: replace its line, or add one at the end."""
+    text = env.read_text(encoding="utf-8") if env.is_file() else ""
+    line = re.search(rf"^{name}=(.*)$", text, re.MULTILINE)
+    entry = f"{name}={value}"
+    text = text[: line.start()] + entry + text[line.end():] if line else text.rstrip("\n") + f"\n{entry}\n"
+    env.parent.mkdir(parents=True, exist_ok=True)
+    env.write_text(text, encoding="utf-8")
     env.chmod(0o600)  # .env holds API keys
 
 
@@ -84,7 +94,8 @@ def main() -> None:
         SOUL_PATH.write_text(render_soul(personality, user_name, projects_dir, extra), encoding="utf-8")
         print(f"\nSaved {SOUL_PATH}. Edit it by hand any time; Jarvis reads it at startup.\n")
 
-    if ask("Record your voice now? Jarvis won't start without it (later: `jarvis enroll`). Y/n", "y").lower().startswith("y"):
+    question = "Record your voice so Jarvis acts only on yours? It turns on MASTER_CHECK (later: `jarvis enroll`). y/N"
+    if ask(question, "n").lower().startswith("y"):
         from jarvis.enroll import main as enroll  # imported here: loads the speaker model
 
         enroll()

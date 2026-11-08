@@ -54,8 +54,10 @@ class Settings(BaseSettings):
     # MLX Whisper on the Apple GPU (Hugging Face repo id or local folder); empty = WHISPER_MODELS[language]
     whisper_model: str = ""
 
-    # Owner voice check (sherpa-onnx ERes2Net): sentences scoring below this are dropped.
-    # Tune it from the "[Speaker] score=" lines in the log; enroll with `jarvis enroll`.
+    # Master check: Jarvis acts only on its master's voice (sherpa-onnx ERes2Net against owner_voice.npy, recorded
+    # by `jarvis enroll`). Off: any voice may talk to Jarvis, and in a meeting everyone counts as the master.
+    master_check: bool = False
+    # With the master check on, sentences scoring below this are dropped. Tune it from the "[Speaker] score=" lines.
     speaker_threshold: float = 0.35
     # Keep the last N sentences Whisper heard as WAVs in JARVIS_HOME/clips, dropped ones too; 0 = off. Your voice
     # goes to disk, so only while tracking down misses.
@@ -63,6 +65,9 @@ class Settings(BaseSettings):
     # `jarvis meeting`: the virtual mic to send your voice and Jarvis's into (part of its name); empty = the first of
     # mac_audio.VIRTUAL_MIC_NAMES that is installed. Pick the same device as the microphone in Google Meet.
     meeting_virtual_mic: str = ""
+    # `jarvis meeting`, master check on: work a guest asks for waits for the master's yes ("ask") or starts at once
+    # ("allow"). Answering an agent, stopping or replacing work stays the master's either way.
+    meeting_guests: Literal["ask", "allow"] = "ask"
 
     # TTS
     elevenlabs_api_key: str = ""

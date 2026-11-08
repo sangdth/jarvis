@@ -1,6 +1,6 @@
 import inspect
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from pipecat.services.llm_service import FunctionCallParams
 
@@ -176,7 +176,26 @@ class TestSessionSwitch(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(p.result_callback.await_args.args[0]["status"], "owner_only")
         self.assertEqual((await self.send(task="fix it", replace=True))["status"], "owner_only")
         self.agent.send_task.assert_not_awaited()
-        self.assertEqual((await self.send(task="fix it"))["status"], "sent")  # asking for work is fine
+
+    async def test_guest_task_waits_for_the_masters_yes(self) -> None:
+        from jarvis.config import settings
+
+        with patch.object(settings, "meeting_guests", "ask"):
+            self.orch.state.room_turn = True
+            result = await self.send(task="fix it")
+            self.assertEqual((result["status"], result["task"]), ("needs_owner_ok", "fix it"))
+            self.agent.send_task.assert_not_awaited()
+            self.orch.state.room_turn = False  # the master says yes; the model sends it again
+            self.assertEqual((await self.send(task="fix it"))["status"], "sent")
+        self.agent.send_task.assert_awaited_once_with("fix it")
+
+    async def test_meeting_guests_allow_runs_guest_tasks(self) -> None:
+        from jarvis.config import settings
+
+        self.orch.state.room_turn = True
+        with patch.object(settings, "meeting_guests", "allow"):
+            self.assertEqual((await self.send(task="fix it"))["status"], "sent")
+            self.assertEqual((await self.send(task="fix it", replace=True))["status"], "owner_only")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from typing import Any
 
 from loguru import logger
 
+from jarvis.config import settings
 from jarvis.orchestrator import AgentOrchestrator
 from jarvis.sessions import CodingSessionAdapter, match_sessions
 from jarvis.t3_adapter import resolve_project
@@ -87,12 +88,21 @@ def agent_tools() -> list:
 def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[Any], Awaitable[None]]]:
     """Handlers for agent_tools(). Pipecat 1.x calls each with one FunctionCallParams (arguments, result_callback)."""
 
-    def handler(action, ok_status: str, fail_status: str, find=orchestrator.find, owner_only: bool = False):
+    def handler(
+        action, ok_status: str, fail_status: str, find=orchestrator.find, owner_only: bool = False, guest_waits: bool = False
+    ):
         async def handle(params: Any) -> None:
             args = params.arguments
-            # `jarvis meeting`: someone else on the call may ask for work, never approve, stop or replace it.
-            if (owner_only or args.get("replace")) and orchestrator.state.room_turn is True:
+            guest = orchestrator.state.room_turn is True  # `jarvis meeting`, master check on, not the master's voice
+            # A guest may ask for work, never approve, stop or replace it.
+            if guest and (owner_only or args.get("replace")):
                 await params.result_callback({"status": "owner_only", "agent_id": args.get("agent_id")})
+                return
+            # MEETING_GUESTS=ask: nothing runs until the master says yes; the model then sends it again on that turn.
+            if guest and guest_waits and settings.meeting_guests == "ask":
+                await params.result_callback(
+                    {"status": "needs_owner_ok", "agent_id": args.get("agent_id"), "task": args.get("task")}
+                )
                 return
             agent = find(args.get("agent_id"))
             if agent is None:
@@ -157,7 +167,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         return await agent.interrupt() if agent.busy else "nothing_running"
 
     return {
-        "send_agent_task": handler(send, "sent", "failed"),
+        "send_agent_task": handler(send, "sent", "failed", guest_waits=True),
         # No id: an answer goes to the agent that asked, a stop to the one that is working.
         "answer_agent": handler(
             lambda a, args: a.answer(args.get("answer", "")),

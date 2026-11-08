@@ -133,6 +133,8 @@ def meeting_mode(meeting: bool) -> str:
         " to answer questions, summarize decisions, or hand tasks to agents."
         " Anyone in the meeting may ask you questions or ask for work. Only `[User]` may answer an agent, stop one or"
         " replace its task: for `[Room]` those calls return owner_only, so say only the user can do that."
+        " A `[Room]` task may return needs_owner_ok: nothing ran. Ask the user in one short line whether to do it;"
+        " when `[User]` says yes, call send_agent_task again with that task."
     )
 
 

@@ -130,17 +130,24 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, load_voiceprint
     from jarvis.voice_gates import CLIPS_DIR, JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
 
-    # No voiceprint, no start: running unchecked would let any voice in the room give orders.
-    try:
-        voiceprint = load_voiceprint()
-    except FileNotFoundError as exc:
-        logger.error(str(exc))
-        sys.exit(1)
+    voiceprint = None
+    if settings.master_check:
+        # Asked for the master check but no voiceprint: refuse rather than let any voice give orders unannounced.
+        try:
+            voiceprint = load_voiceprint()
+        except FileNotFoundError as exc:
+            logger.error(f"MASTER_CHECK is on: {exc}")
+            sys.exit(1)
+        check = f"master check on (threshold {settings.speaker_threshold}, voiceprint {VOICEPRINT_PATH})"
+    else:
+        check = "master check off: any voice may talk to Jarvis"
+        if VOICEPRINT_PATH.exists():
+            logger.warning(f"{VOICEPRINT_PATH} is there but unused; set MASTER_CHECK=true in .env to use it.")
+    if meeting:
+        guests = settings.meeting_guests if settings.master_check else "allow (everyone counts as the master)"
+        check += f"; meeting guests: {guests}"
     # The log is where misses get investigated; it has to say which setup heard them.
-    logger.info(
-        f"Hearing {settings.language} with Whisper {settings.whisper_model}, speaker threshold {settings.speaker_threshold}, "
-        f"voiceprint {VOICEPRINT_PATH}"
-    )
+    logger.info(f"Hearing {settings.language} with Whisper {settings.whisper_model}, {check}")
 
     if settings.save_segments > 0:
         logger.warning(f"SAVE_SEGMENTS={settings.save_segments}: every sentence heard is saved to {CLIPS_DIR}.")
@@ -187,9 +194,10 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     # voice so the user can talk over it on speakers
     transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
 
-    # 2. Local Always-On STT (MLX Whisper on the Apple GPU), passing on only the owner's voice (or tagging room in meetings)
+    # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice
+    # (or tagging room in meetings). Off, the speaker model isn't even loaded.
     stt = SpeakerVerifiedWhisperSTT(
-        embedder=SpeakerEmbedder(),
+        embedder=SpeakerEmbedder() if voiceprint is not None else None,
         voiceprint=voiceprint,
         threshold=settings.speaker_threshold,
         meeting=meeting,

@@ -128,10 +128,13 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   base for the "still waiting" lines: `EXECUTIVE_MODEL` writes 6 new ones per task from them and the user's task
   (never an agent's text, never a progress claim), refilling at 4 used; the base lines are spoken only when that fails.
   Agent questions and approvals stay English: they never go through an LLM.
-- **In a meeting only the owner's voice acts for the owner.** `jarvis meeting` tags each sentence `[User]` or
+- **In a meeting Jarvis has one master; everyone else is a guest.** `jarvis meeting` tags each sentence `[User]` or
   `[Room]` (`SpeakerVerifiedWhisperSTT`) and buffers room talk until someone says "Jarvis" (`JarvisIntentGate`).
-  A room turn sets `JarvisState.room_turn`; `answer_agent`, `stop_agent` and a `replace` then return `owner_only`
-  in `agent_tools.py`, in code, not in the prompt. Memory neither saves meeting turns nor searches for the room.
+  A room turn sets `JarvisState.room_turn`; `answer_agent`, `stop_agent` and a `replace` then return `owner_only`,
+  and with `MEETING_GUESTS=ask` (default) a `send_agent_task` returns `needs_owner_ok` and runs nothing until the
+  master's yes resends it (`agent_tools.py`, in code, not in the prompt; `allow` runs guest tasks). With the master
+  check off nobody is `[Room]`: everyone counts as the master. Memory neither saves meeting turns nor searches for
+  the room.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.
@@ -148,10 +151,11 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   tags come from Pipecat's expressive conversation mode; Jarvis writes no tag rules of its own.
 - **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.config/jarvis/memory`, `bge-m3` embeddings
   on the Ollama app, fact extraction on `EXTRACTION_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
-- **Jarvis acts only on the owner's voice.** `SpeakerVerifiedWhisperSTT` scores each whole Whisper sentence
-  against `~/.config/jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en); mute and unmute phrases pass
-  from any voice. No voiceprint stops Jarvis at startup (`jarvis enroll`). User turns come only from
-  `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
+- **The master check is opt-in.** `MASTER_CHECK=false` (default): any voice talks to Jarvis and the speaker model
+  is not loaded. `MASTER_CHECK=true` (`jarvis enroll` sets it): `SpeakerVerifiedWhisperSTT` scores each whole
+  Whisper sentence against `~/.config/jarvis/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en) and drops other
+  voices; mute and unmute phrases pass from any voice; no voiceprint stops Jarvis at startup. User turns come only
+  from `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
 - **`~/.config/jarvis/SOUL.md` is the user's own setup** (`jarvis init` in `init.py`, read by `soul.py`): front
   matter holds settings (`projects_dir`), the body is personality, added to the system prompt as tone only. The name
   is always Jarvis.
