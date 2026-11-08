@@ -14,7 +14,7 @@ from loguru import logger
 
 from jarvis.agent_adapter import WatchedAgentConfig
 from jarvis.agent_tools import agent_tool_handlers, agent_tools
-from jarvis.config import JARVIS_HOME, WHISPER_MODELS, settings
+from jarvis.config import WHISPER_MODELS, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
@@ -107,7 +107,7 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
 
     from jarvis.mac_audio import MacVoiceTransport
     from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, load_voiceprint
-    from jarvis.voice_gates import JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
+    from jarvis.voice_gates import CLIPS_DIR, JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
 
     # No voiceprint, no start: running unchecked would let any voice in the room give orders.
     try:
@@ -122,7 +122,7 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
     )
 
     if settings.save_segments > 0:
-        logger.warning(f"SAVE_SEGMENTS={settings.save_segments}: every sentence heard is saved to {JARVIS_HOME / 'clips'}.")
+        logger.warning(f"SAVE_SEGMENTS={settings.save_segments}: every sentence heard is saved to {CLIPS_DIR}.")
     if settings.language != "en" and settings.whisper_model == WHISPER_MODELS["en"]:
         logger.warning(f"WHISPER_MODEL pins the English model; delete it from .env to hear {settings.language} better.")
     executive_filter = ExecutiveFilter()
