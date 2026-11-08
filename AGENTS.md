@@ -34,6 +34,7 @@ speech check dropping the sentence, not the conversation model.
 | :----------------------------------- | :-------------------------------------------------------------- |
 | Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`                         |
 | Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`                 |
+| Which model answered, corrections    | `~/.config/jarvis/feedback/intent.jsonl`, `feedback.py`         |
 | Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`, `languages.json` |
 | Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                            |
 | Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`        |
@@ -59,7 +60,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 
 ## Rules
 
-- **Speech check changes need the benchmark.** Any edit to `INTENT_QUESTION` or `FILTER_MODEL` runs
+- **Speech check changes need the benchmark.** Any edit to `INTENT_QUESTION`, `FILTER_MODEL` or `LAYA_MODEL` runs
   `scripts/bench_intent.py` before and after and quotes both results. It exits 1 below 97%; going below needs
   Sang's OK. New misses found in real use become new cases in that script.
 - **Routing changes need the routing benchmark.** An edit to an agent `role`, `agent_roster` or the system
@@ -120,6 +121,11 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Three model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
   `FILTER_MODEL` (a decision model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis;
   `EXTRACTION_MODEL` picks memory facts, a fast model with thinking always off.
+- **The speech check asks Laya first.** `LAYA_MODEL` (`jarvis-intent`, fine-tuned for Jarvis, served by
+  HappyVoxel's GPU box at `LAYA_BASE_URL` with a console `LAYA_API_KEY`) answers; `FILTER_MODEL` is asked at the
+  same time and used when Laya fails or passes `LAYA_TIMEOUT_SECS`. Every decision, both answers and the
+  corrections the user's next move implies (an undone mute, "not you", an ignored sentence said again) go to
+  `feedback/intent.jsonl` in `JARVIS_HOME`, for retraining in the laya repo (`data/distill.py feedback`).
 - **Voice is ElevenLabs `eleven_v4_turbo` over Text-to-Dialogue** (the plain TTS socket rejects it). Emotion
   tags come from Pipecat's expressive conversation mode; Jarvis writes no tag rules of its own.
 - **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.config/jarvis/memory`, `bge-m3` embeddings
@@ -137,6 +143,5 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 
 - Pi as a routable agent (in `agents.json`, not only `jarvis connect pi`), and Codex: a new `<name>_adapter.py` shaped like `opencode_adapter.py` / `hermes_adapter.py`,
   registered in `orchestrator.py` `ADAPTERS`; or run them as a T3 Code provider and reach them through `t3-code`.
-- Laya as a local speech check: parked; it lost to the OpenRouter decision models.
 - Ideas from Hex (replaying saved clips through the pipeline, window context, `hex mcp`):
   `docs/research/hex-adoption-plan.md`.

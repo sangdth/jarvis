@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 from loguru import logger
 
 from jarvis.config import settings
-from jarvis.state import UserIntent, classify_fast_command
+from jarvis.feedback import FeedbackLog
+from jarvis.state import UserIntent, classify_fast_command, is_not_for_jarvis
 
 _CONTEXT = (
     "Jarvis is a voice assistant that hands work to agents (coding, research, email, calendar, notes) "
@@ -41,20 +44,28 @@ INTENT_QUESTION = {
 
 
 class ExecutiveFilter:
-    """Decides whether a heard sentence is meant for Jarvis, with an OpenRouter decision model."""
+    """Decides whether a heard sentence is meant for Jarvis: Laya's jarvis-intent first, the OpenRouter decision
+    model (FILTER_MODEL) as the fallback. Both are asked at once; Jev's answer is logged even when Laya's is used."""
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
+        laya_api_key: str | None = None,
+        feedback: FeedbackLog | None = None,
     ) -> None:
         self.api_key = settings.openrouter_api_key if api_key is None else api_key
         self.model = model or settings.filter_model
         self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
         # shortcut: OpenRouter serves decision models on its alpha API next to /v1; revisit if it moves.
         self.decisions_url = self.base_url.removesuffix("/v1") + "/alpha/decisions"
-        # One long-lived client keeps the TLS connection warm between calls.
+        self.laya_api_key = settings.laya_api_key if laya_api_key is None else laya_api_key
+        # LAYA_BASE_URL works with or without /v1, like OPENROUTER_BASE_URL.
+        self.laya_url = settings.laya_base_url.rstrip("/").removesuffix("/v1") + "/v1/systemone"
+        # Off unless given: the benchmark and the tests must not write to the user's feedback file.
+        self.feedback = feedback
+        # One long-lived client each keeps the TLS connection warm between calls.
         self._http = httpx.AsyncClient(
             timeout=12.0,
             headers={
@@ -63,11 +74,35 @@ class ExecutiveFilter:
                 "X-Title": "Jarvis",
             },
         )
-        if not self.api_key:
+        self._laya_http = httpx.AsyncClient(
+            timeout=settings.laya_timeout_secs, headers={"Authorization": f"Bearer {self.laya_api_key}"}
+        )
+        self._pending: set[asyncio.Task] = set()  # Jev calls still running after Jarvis acted on Laya
+        if not self.api_key and not self.laya_api_key:
             logger.warning("OPENROUTER_API_KEY is not set; only the fixed mute and unmute phrases are heard.")
 
+    @property
+    def name(self) -> str:
+        return f"{settings.laya_model} (Laya, {self.model} as fallback)" if self.laya_api_key else self.model
+
     async def aclose(self) -> None:
+        for task in list(self._pending):
+            task.cancel()
         await self._http.aclose()
+        await self._laya_http.aclose()
+
+    async def _ask(self, http: httpx.AsyncClient, url: str, body: dict) -> dict:
+        """One model's answer as {choice, probabilities}, or {error} on any failure (never raises)."""
+        try:
+            resp = await http.post(url, json=body)
+            resp.raise_for_status()
+            answer = resp.json()["answers"]["intent"]
+            return {"choice": UserIntent(answer["choice"]).value, "probabilities": answer.get("probabilities")}
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"[:200]}
+
+    def _log(self, transcript: str, state: dict | None, intent: UserIntent, source: str, **answers: dict | None) -> str:
+        return self.feedback.decision(transcript, state, intent, source, **answers) if self.feedback else ""
 
     async def classify_user_utterance(
         self,
@@ -77,23 +112,53 @@ class ExecutiveFilter:
         """Determine if an un-waked utterance is meant for Jarvis or should be ignored."""
         fast = classify_fast_command(transcript)
         if fast is not None:
+            self._log(transcript, None, fast, "fast")
             return fast
-
-        if not self.api_key:
-            # When running without an API key, ignore background speech unless explicitly addressed
+        if is_not_for_jarvis(transcript):
+            self._log(transcript, None, UserIntent.IGNORE_BACKGROUND, "not-you")
             return UserIntent.IGNORE_BACKGROUND
 
         state = {"document": transcript}
         if recent_jarvis_question:
             state["jarvis_last_said"] = recent_jarvis_question
-        try:
-            resp = await self._http.post(
-                self.decisions_url,
-                json={"model": self.model, "state": state, "questions": {"intent": INTENT_QUESTION}},
-            )
-            resp.raise_for_status()
-            return UserIntent(resp.json()["answers"]["intent"]["choice"])
-        except Exception as exc:
-            logger.warning(f"Turn classifier failed ({exc}); defaulting to IGNORE_BACKGROUND.")
+        body = {"state": state, "questions": {"intent": INTENT_QUESTION}}
+        jev = (
+            asyncio.create_task(self._ask(self._http, self.decisions_url, {"model": self.model, **body}))
+            if self.api_key
+            else None
+        )
+        laya = (
+            await self._ask(self._laya_http, self.laya_url, {"model": settings.laya_model, **body})
+            if self.laya_api_key
+            else None
+        )
 
+        if laya and "choice" in laya:
+            intent = UserIntent(laya["choice"])
+            decision_id = self._log(transcript, state, intent, "laya", laya=laya)
+            if jev is not None:
+                self._log_when_done(decision_id, jev)
+            return intent
+
+        if laya:
+            logger.warning(f"Laya failed ({laya['error']}); using {self.model}.")
+        answer = await jev if jev is not None else None
+        if answer and "choice" in answer:
+            intent = UserIntent(answer["choice"])
+            self._log(transcript, state, intent, "jev", laya=laya, jev=answer)
+            return intent
+        if answer:
+            logger.warning(f"Turn classifier failed ({answer['error']}); defaulting to IGNORE_BACKGROUND.")
+        # No model answered (or no key): ignore background speech unless explicitly addressed.
+        self._log(transcript, state, UserIntent.IGNORE_BACKGROUND, "none", laya=laya, jev=answer)
         return UserIntent.IGNORE_BACKGROUND
+
+    def _log_when_done(self, decision_id: str, jev: asyncio.Task) -> None:
+        self._pending.add(jev)
+
+        def done(task: asyncio.Task) -> None:
+            self._pending.discard(task)
+            if self.feedback and decision_id and not task.cancelled():
+                self.feedback.late(decision_id, task.result())
+
+        jev.add_done_callback(done)

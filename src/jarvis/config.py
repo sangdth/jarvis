@@ -82,6 +82,14 @@ class Settings(BaseSettings):
     # Decision model that labels each heard sentence (is it for Jarvis?); won the 2026-11-02 benchmark
     filter_model: str = "typesafe/jev-1.14"
 
+    # Laya (self-hosted, HappyVoxel's GPU box) answers the speech check first; FILTER_MODEL is the fallback.
+    # A console key (laya_...) from https://laya.happyvoxel.com; empty = FILTER_MODEL only. Keys expire after 90 days.
+    laya_api_key: str = ""
+    laya_base_url: str = "https://laya.happyvoxel.com"
+    laya_model: str = "jarvis-intent"
+    # Past this, Jarvis uses FILTER_MODEL's answer for the sentence (Laya ~31 ms on the box, plus the trip)
+    laya_timeout_secs: float = 1.0
+
     @field_validator("watch_config_path")
     @classmethod
     def _from_home(cls, path: str) -> str:
