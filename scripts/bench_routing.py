@@ -164,6 +164,9 @@ async def main(rounds: int) -> int:
         return 2
     orchestrator = AgentOrchestrator(state=JarvisState())
     orchestrator.load_from_file(settings.watch_config_path)
+    if not orchestrator.adapters:  # an empty roster tells the model no agent exists: the score would mean nothing
+        print(f"No agents loaded from {settings.watch_config_path}; copy agents.json there (see README) and run again.")
+        return 2
     personality = load_soul().personality
     prompts = {lang: system_prompt(orchestrator, personality, language=lang) for lang in ("en", "vi")}
     tools = [{"type": "function", "function": t.to_default_dict()} for t in agent_tools()]
