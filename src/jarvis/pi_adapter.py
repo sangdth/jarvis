@@ -13,8 +13,9 @@ from typing import Any
 
 from loguru import logger
 
-from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig
+from jarvis.agent_adapter import WatchedAgentConfig
 from jarvis.config import SHARED_HOME
+from jarvis.sessions import AgentSession, CodingSessionAdapter
 from jarvis.state import JarvisState
 
 SOCKET_DIR = SHARED_HOME / "pi"  # one folder for a dev and an installed Jarvis, as the extension hardcodes
@@ -56,14 +57,17 @@ async def list_windows(socket_dir: Path = SOCKET_DIR) -> list[dict[str, Any]]:
         if hello is None:
             path.unlink(missing_ok=True)
             continue
-        windows.append({**hello, "socket": str(path)})
+        windows.append({**hello, "socket": str(path), "mtime": path.stat().st_mtime})
     return windows
 
 
-class PiAdapter(BaseAgentAdapter):
-    """One Pi window, reached through its socket. Created by `jarvis connect pi`, not from agents.json."""
+class PiAdapter(CodingSessionAdapter):
+    """
+    One Pi window, reached through its socket. Created by `jarvis connect pi`, not from agents.json. Its sessions are
+    the windows open now: a closed one can't be continued from here, and a new one is opened by the user.
+    """
 
-    def __init__(self, config: WatchedAgentConfig, state: JarvisState, socket_path: str) -> None:
+    def __init__(self, config: WatchedAgentConfig, state: JarvisState, socket_path: str = "") -> None:
         super().__init__(config, state)
         self.socket_path = socket_path
         self._writer: asyncio.StreamWriter | None = None
@@ -144,6 +148,30 @@ class PiAdapter(BaseAgentAdapter):
     @property
     def busy(self) -> bool:
         return self._running
+
+    async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
+        return [
+            AgentSession(id=w["session"], title=w["name"] or w["first"] or "(new session)", cwd=w["cwd"], updated_at=w["mtime"])
+            for w in await list_windows()
+            if cwd is None or w["cwd"] == cwd
+        ][:limit]
+
+    async def pick_session(self, session: AgentSession, connected: bool = False) -> bool:
+        if self.busy:
+            return False
+        window = next((w for w in await list_windows() if w["session"] == session.id), None)
+        if window is None:  # closed since it was listed
+            return False
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+        self.socket_path, self.connected = window["socket"], connected
+        await self._restart()
+        return True
+
+    async def new_session(self, cwd: str | None = None) -> bool:
+        logger.info(f"[{self.config.id}] A new Pi session is a new Pi window; Jarvis can't open one.")
+        return False
 
     async def stop(self) -> None:
         await super().stop()

@@ -11,8 +11,9 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 
-from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig, describe_fields, form_answer, is_approval
+from jarvis.agent_adapter import WatchedAgentConfig, describe_fields, form_answer, is_approval
 from jarvis.config import settings
+from jarvis.sessions import AgentSession, CodingSessionAdapter
 from jarvis.state import JarvisState
 
 
@@ -59,7 +60,7 @@ def discover_service() -> tuple[str, str] | None:
 
 
 
-class OpenCodeSSEAdapter(BaseAgentAdapter):
+class OpenCodeSSEAdapter(CodingSessionAdapter):
     """
     Talks to an OpenCode v2 server: events over SSE at `/api/event`, actions over `/api`. Auth: HTTP Basic, user
     `opencode`. With OPENCODE_SERVER_PASSWORD or a custom `url`, that server; otherwise the service OpenCode
@@ -213,16 +214,19 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
             if text:
                 await self._surface(("The turn failed. " if ev_type.endswith("failed") else "") + text, is_report=True)
 
+    async def _create_session(self) -> None:
+        """Start a session in the agent's folder (a pinned server uses its own) and send tasks to it."""
+        body: dict[str, Any] = {"title": "Jarvis"}
+        if self._directory:  # the shared service would put it in $HOME; an absolute path is required
+            body["location"] = {"directory": self._directory}
+        resp = await self._http.post("/api/session", json=body)
+        resp.raise_for_status()
+        self._session_id = resp.json()["data"]["id"]
+
     async def send_task(self, task: str) -> bool:
         try:
-            if not self._session_id:
-                # No session seen yet: start one in the agent's folder (a pinned server uses its own).
-                body: dict[str, Any] = {"title": "Jarvis"}
-                if self._directory:  # the shared service would put it in $HOME; an absolute path is required
-                    body["location"] = {"directory": self._directory}
-                resp = await self._http.post("/api/session", json=body)
-                resp.raise_for_status()
-                self._session_id = resp.json()["data"]["id"]
+            if not self._session_id:  # no session seen yet
+                await self._create_session()
             resp = await self._http.post(f"/api/session/{self._session_id}/prompt", json={"text": task})
             self._running = resp.is_success
             return resp.is_success
@@ -274,6 +278,56 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         except httpx.HTTPError as exc:
             logger.error(f"Failed to interrupt OpenCode: {exc}")
             return False
+
+    async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
+        self._use_service()  # before start_all (`jarvis connect`) the watch loop has not found the service yet
+        headers = {"x-opencode-directory": cwd} if cwd else {}  # no header: every folder the service serves
+        resp = await self._http.get("/api/session", headers=headers)
+        resp.raise_for_status()
+        found = [
+            AgentSession(
+                id=s["id"],
+                title=s.get("title") or "(untitled)",
+                cwd=(s.get("location") or {}).get("directory") or self._cwd,
+                updated_at=((s.get("time") or {}).get("updated") or 0) / 1000,
+            )
+            for s in resp.json().get("data", [])
+        ]
+        return sorted(found, key=lambda s: s.updated_at, reverse=True)[:limit]
+
+    def _move_to(self, folder: str) -> None:
+        """Tasks and events from now on belong to this folder: forget what was asked and looked up in the old one."""
+        self._cwd = folder
+        if self._directory is not None:  # the shared service; a pinned server serves one folder of its own
+            self._directory = folder
+        self._ours = {}
+        if self._pending_permission or self._pending_form:
+            self._pending_permission = self._pending_form = None
+            self._question_settled()
+
+    async def pick_session(self, session: AgentSession, connected: bool = False) -> bool:
+        if self.busy:  # the running turn's result would come back from a session tasks no longer go to
+            return False
+        self._move_to(session.cwd)
+        self._session_id, self.connected = session.id, connected
+        try:
+            await self._resync()  # a question that session is already waiting on is read out now
+        except httpx.HTTPError as exc:
+            logger.debug(f"[{self.config.id}] Resync after picking {session.id} failed ({exc!r}).")
+        return True
+
+    async def new_session(self, cwd: str | None = None) -> bool:
+        if self.busy:
+            return False
+        self._move_to(cwd or self._cwd)
+        self._session_id = None  # if making one fails, the next task makes it; it never goes to the old one
+        try:
+            # Made now, not with the next task: an event from another session in the folder would latch first.
+            await self._create_session()
+        except httpx.HTTPError as exc:
+            logger.error(f"Failed to start an OpenCode session: {exc}")
+            return False
+        return True
 
     async def stop(self) -> None:
         await super().stop()

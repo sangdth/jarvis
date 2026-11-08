@@ -95,7 +95,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
         task, project = args.get("task", "").strip(), args.get("project")
         # Only T3 Code opens a project; the others work in their configured folder, so a project alone is no task.
-        opens = bool(project) and hasattr(agent, "open_project")
+        opens = bool(project) and agent is orchestrator.t3
         if not task and not opens:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
         ok = await (agent.open_project(project, task) if opens else agent.send_task(task))

@@ -74,6 +74,7 @@ class BaseAgentAdapter:
         self.config = config
         self.state = state
         self._task: asyncio.Task[None] | None = None
+        self.connected = False  # picked with `jarvis connect`: every task goes to it this run, it never leaves
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run_loop(), name=f"watcher-{self.config.id}")

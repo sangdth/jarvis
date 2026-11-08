@@ -69,8 +69,11 @@ or approval the agent is waiting on) and `stop_agent`. An answer never becomes a
 a pending question. With no agent named, a task goes to the default coding agent, an answer to the agent
 that asked last, and a stop to the agent that is working.
 
-1. **Claude Code (`ClaudeCodeAdapter`):** One long-lived `ClaudeSDKClient` (Python `claude-agent-sdk`) with
-   the user's own Claude settings and permission mode (Jarvis sets none). Tool permissions and `AskUserQuestion` arrive in
+1. **Claude Code (`ClaudeCodeAdapter`):** One `ClaudeSDKClient` (Python `claude-agent-sdk`) per session, with
+   the user's own Claude settings and permission mode (Jarvis sets none). It starts with `resume=<session id>`: the
+   id from the CLI's `init` message, or the one `jarvis connect claude` picked from `list_sessions` (every folder,
+   newest first). A crash restarts the process on the same id, and a crash mid-turn is said out loud. Picking or
+   starting a session restarts the process, so neither happens while a turn runs. Tool permissions and `AskUserQuestion` arrive in
    `can_use_tool`; Jarvis reads them out and the agent waits for `answer_agent`. A turn ends with a `ResultMessage`.
    `stop_agent` calls `interrupt()` and denies any pending question.
 2. **OpenCode (`OpenCodeSSEAdapter`):** Talks to the service OpenCode 2 registers in
@@ -84,7 +87,8 @@ that asked last, and a stop to the agent that is working.
    The shared service streams every session on the Mac, so Jarvis keeps to its `cwd`: listings carry
    `x-opencode-directory`, new sessions get `location.directory`, and an unknown session's events count only after
    one `GET /api/session/:id` shows it is in `cwd` (`_is_ours`); otherwise Jarvis could approve tool calls in other
-   projects. Within `cwd` it follows one session: the first it sees, or a new one from `POST /api/session`. Events
+   projects. Within `cwd` it follows one session: the first it sees, the one `jarvis connect opencode` picked from
+   `GET /api/session` (which moves `cwd` to that session's folder), or a new one from `POST /api/session`. Events
    from other sessions (sub-agents run in child sessions) do not end the turn. Tasks go to that session
    (`POST /api/session/:id/prompt`); answers go to
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
@@ -133,7 +137,7 @@ All files are in `src/jarvis/`.
 
 | File                  | What it holds                                                              |
 | :-------------------- | :------------------------------------------------------------------------- |
-| `main.py`             | Pipeline wiring, TTS, `jarvis connect` thread pick                         |
+| `main.py`             | Pipeline wiring, TTS, `jarvis connect` thread and session pick             |
 | `prompts.py`          | System prompt, agent roster, project list, retell and greeting prompts     |
 | `languages.json`      | Per-language prompt rules and fixed spoken lines (`en`, `vi`)              |
 | `agent_tools.py`      | `send_agent_task`, `answer_agent`, `stop_agent` schemas and handlers       |
@@ -148,6 +152,7 @@ All files are in `src/jarvis/`.
 | `executive_filter.py` | `ExecutiveFilter`: decision model, `INTENT_QUESTION`                       |
 | `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`), mute and unmute patterns, beep synth |
 | `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval  |
+| `sessions.py`         | `CodingSessionAdapter` (list, pick, new session), `match_sessions`         |
 | `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |
 | `opencode_adapter.py` | `OpenCodeSSEAdapter`: found OpenCode 2 service, SSE events, `cwd` only     |
 | `hermes_adapter.py`   | `HermesAdapter`: Hermes API server runs                                    |

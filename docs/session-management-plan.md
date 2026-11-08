@@ -1,6 +1,8 @@
 # Session management for the coding clients (plan, 2026-11-08)
 
-Status: proposed, not started. Reviewed against the code and the installed `claude_agent_sdk` on 2026-11-08.
+Status: Phase 1 built (2026-11-08). Phase 2 is on hold: the routing benchmark scored 53% on master's own prompt
+(`deepseek/deepseek-v4.1-flash`, 204 calls) before any change, so it can't gate this work until that is fixed.
+Phase 3 waits for its trigger.
 
 ## Why
 

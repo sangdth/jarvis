@@ -95,16 +95,18 @@ class CliTest(unittest.TestCase):
     def test_connect_names_what_to_connect_to(self) -> None:
         from unittest.mock import AsyncMock
 
-        for argv, target in ((["jarvis"], None), (["jarvis", "connect"], "t3"), (["jarvis", "connect", "pi"], "pi")):
+        for argv, target in ((["jarvis"], None), (["jarvis", "connect"], "t3"), (["jarvis", "connect", "pi"], "pi"),
+                            (["jarvis", "connect", "claude"], "claude")):
             with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
                     patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
                 cli.main()
             run.assert_awaited_once_with(connect=target)
 
     def test_unknown_command_prints_usage(self) -> None:
-        with patch.object(cli.sys, "argv", ["jarvis", "bogus"]), self.assertRaises(SystemExit) as stopped:
-            cli.main()
-        self.assertEqual(stopped.exception.code, cli.USAGE)
+        for argv in (["jarvis", "bogus"], ["jarvis", "connect", "claude", "extra"]):
+            with patch.object(cli.sys, "argv", argv), self.assertRaises(SystemExit) as stopped:
+                cli.main()
+            self.assertEqual(stopped.exception.code, cli.USAGE)
 
 
 if __name__ == "__main__":
