@@ -334,7 +334,9 @@
           <span class="node-tag">Concurrent</span>
         </div>
         <div class="node-tech">3D-Speaker ERes2Net</div>
-        <div class="node-body">Scores vs <span class="tool-tag">owner_voice.npy</span>. Background/TV speech dropped!</div>
+        <div class="node-body">Scores vs <span class="tool-tag">owner_voice.npy</span>. Background/TV speech dropped!
+          With <span class="tool-tag">SAVE_SEGMENTS=N</span>, each segment (even Whisper's no-text drops) is kept in
+          <span class="tool-tag">clips/</span>, newest N, owner-only.</div>
       </div>
       <div class="node-item">
         <div class="node-name">
@@ -435,8 +437,11 @@
           <span>OpenCode & Pi Terminal</span>
           <span class="node-tag">SSE & UNIX IPC</span>
         </div>
-        <div class="node-tech">OpenCode v2 HTTP + Pi Socket</div>
-        <div class="node-body">Watches permissions & form replies over SSE; live interactive terminal piping via Pi extension.</div>
+        <div class="node-tech">OpenCode 2 service (auto-found) + Pi Socket</div>
+        <div class="node-body">Finds the running OpenCode via <span class="tool-tag">service.json</span> (owner-only file, live pid,
+          loopback URL); a pinned <span class="tool-tag">OPENCODE_SERVER_PASSWORD</span> wins. Sessions, permissions and forms
+          scoped to <span class="tool-tag">cwd</span>; other folders' sessions ignored. Pi: prompts and stops over the
+          extension socket.</div>
       </div>
     </div>
 

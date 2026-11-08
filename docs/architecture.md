@@ -60,7 +60,7 @@ flowchart LR
 Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
 0. **Echo cancellation:** `MacVoiceTransport` (`mac_audio.py`) replaces Pipecat's PyAudio transport. One `AVAudioEngine` with macOS voice processing on owns both the mic tap and the speaker player, because Apple cancels only the echo of what plays through the same engine. The mic arrives as float32 at 48 kHz and is resampled to 16 kHz; playback is paced to real time with about 80 ms queued, so an interruption cuts Jarvis off. `jarvis enroll` records through the same engine, so the voiceprint matches what Jarvis hears. Research and numbers: `docs/research/echo-cancellation.md`.
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
-2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/whisper-large-v3-turbo`) transcribes speech locally on the Apple GPU at $0 cost. In the same step, a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker embedding (3D-Speaker ERes2Net, about 100 ms, run alongside Whisper) compares the whole sentence with the enrolled voiceprint (`~/.config/jarvis/owner_voice.npy`); below `SPEAKER_THRESHOLD` the sentence is dropped, unless it is a mute or unmute phrase. Turns come only from sentences that pass both checks: the user aggregator runs on Pipecat's `ExternalUserTurnStrategies`, and `JarvisIntentGate` wraps each passed sentence in proposed start/stop frames, so background voices never interrupt Jarvis or hold a turn open. Voice detection still cuts Whisper's sentences, at a 0.6 s pause; a sentence Whisper ends with "..." or a dash waits up to 2 s after the user's next silence and joins what they say next, once (`HOLD_SECS`). Research: `docs/research/speaker-verification.md`. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
+2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/whisper-large-v3-turbo`) transcribes speech locally on the Apple GPU at $0 cost. In the same step, a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker embedding (3D-Speaker ERes2Net, about 100 ms, run alongside Whisper) compares the whole sentence with the enrolled voiceprint (`~/.config/jarvis/owner_voice.npy`); below `SPEAKER_THRESHOLD` the sentence is dropped, unless it is a mute or unmute phrase. Turns come only from sentences that pass both checks: the user aggregator runs on Pipecat's `ExternalUserTurnStrategies`, and `JarvisIntentGate` wraps each passed sentence in proposed start/stop frames, so background voices never interrupt Jarvis or hold a turn open. Voice detection still cuts Whisper's sentences, at a 0.6 s pause; a sentence Whisper ends with "..." or a dash waits up to 2 s after the user's next silence and joins what they say next, once (`HOLD_SECS`). Research: `docs/research/speaker-verification.md`. With `SAVE_SEGMENTS=N`, every segment Whisper gets (even one it returns no text for) is saved as a WAV in `JARVIS_HOME/clips` (folder 0700, files 0600, newest N kept) and named on its `[Speaker] score=` log line, to re-run Whisper and the voice check on real misses; off by default. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to the OpenRouter decision model `typesafe/jev-1.14` (`POST /api/alpha/decisions`, one `choice` question), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND` in about 230 ms.
 
 ### C. Agent Integration (Claude Code, OpenCode, Hermes, T3 Code)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
@@ -73,13 +73,19 @@ that asked last, and a stop to the agent that is working.
    the user's own Claude settings and permission mode (Jarvis sets none). Tool permissions and `AskUserQuestion` arrive in
    `can_use_tool`; Jarvis reads them out and the agent waits for `answer_agent`. A turn ends with a `ResultMessage`.
    `stop_agent` calls `interrupt()` and denies any pending question.
-2. **OpenCode (`OpenCodeSSEAdapter`):** Talks to a user-started `opencode serve` with HTTP Basic auth (`opencode` /
-   `OPENCODE_SERVER_PASSWORD`). Events come from `GET /api/event`; 45 s without bytes (heartbeats arrive every 15 s)
-   means a dead stream and a reconnect. After each connect it re-reads `GET /api/permission/request` and
+2. **OpenCode (`OpenCodeSSEAdapter`):** Talks to the service OpenCode 2 registers in
+   `~/.local/state/opencode/service.json` (`discover_service`, read before each connect since a restart picks a new
+   port). The file is trusted only when it is the user's own, not a symlink, unreadable to others, names a loopback
+   URL and a live pid. `OPENCODE_SERVER_PASSWORD` or a custom `url` pins a user-started `opencode serve` instead. Auth
+   is HTTP Basic (`opencode` / password). Events come from `GET /api/event`; 45 s without bytes (heartbeats arrive
+   every 15 s) means a dead stream and a reconnect. After each connect it re-reads `GET /api/permission/request` and
    `GET /api/form`, since events are not replayed. It surfaces `permission.asked`, `form.created` and the last text of
    each finished run, and drops a pending request on `permission.replied`, `form.replied` or `form.cancelled`.
-   Jarvis follows one session: the first it sees, or a new one from `POST /api/session`. Events from other
-   sessions (sub-agents run in child sessions) do not end the turn. Tasks go to that session
+   The shared service streams every session on the Mac, so Jarvis keeps to its `cwd`: listings carry
+   `x-opencode-directory`, new sessions get `location.directory`, and an unknown session's events count only after
+   one `GET /api/session/:id` shows it is in `cwd` (`_is_ours`); otherwise Jarvis could approve tool calls in other
+   projects. Within `cwd` it follows one session: the first it sees, or a new one from `POST /api/session`. Events
+   from other sessions (sub-agents run in child sessions) do not end the turn. Tasks go to that session
    (`POST /api/session/:id/prompt`); answers go to
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
 
@@ -143,7 +149,7 @@ All files are in `src/jarvis/`.
 | `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`), mute and unmute patterns, beep synth |
 | `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval  |
 | `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |
-| `opencode_adapter.py` | `OpenCodeSSEAdapter`: OpenCode v2 server, events over SSE                  |
+| `opencode_adapter.py` | `OpenCodeSSEAdapter`: found OpenCode 2 service, SSE events, `cwd` only     |
 | `hermes_adapter.py`   | `HermesAdapter`: Hermes API server runs                                    |
 | `orchestrator.py`     | `AgentOrchestrator`, `ADAPTERS` (agents.json type to adapter), reminders   |
 | `waiting_lines.py`    | `WaitingLines`: the per-task "still working" lines, refilled in batches    |
