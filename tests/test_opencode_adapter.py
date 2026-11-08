@@ -139,13 +139,28 @@ class TestDiscoverService(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def write(self, url: str = "http://127.0.0.1:49374/", mode: int = 0o600) -> None:
-        self.file.write_text(json.dumps({"id": "x", "url": url, "pid": 1, "password": "pw"}))
+    def write(self, url: str = "http://127.0.0.1:49374/", mode: int = 0o600, pid: int | None = None) -> None:
+        pid = os.getpid() if pid is None else pid  # a live process, so the file counts as current
+        self.file.write_text(json.dumps({"id": "x", "url": url, "pid": pid, "password": "pw"}))
         self.file.chmod(mode)
 
     def test_owner_only_loopback_file_is_used(self) -> None:
         self.write()
         self.assertEqual(discover_service(), ("http://127.0.0.1:49374", "pw"))
+
+    def test_file_of_a_dead_process_is_ignored(self) -> None:
+        with patch("jarvis.opencode_adapter.os.kill", side_effect=ProcessLookupError):
+            self.write()
+            self.assertIsNone(discover_service())
+
+    def test_process_of_another_user_still_counts(self) -> None:
+        with patch("jarvis.opencode_adapter.os.kill", side_effect=PermissionError):
+            self.write()
+            self.assertEqual(discover_service(), ("http://127.0.0.1:49374", "pw"))
+
+    def test_unreadable_file_is_ignored(self) -> None:
+        self.write(mode=0o000)
+        self.assertIsNone(discover_service())
 
     def test_no_file(self) -> None:
         self.assertIsNone(discover_service())

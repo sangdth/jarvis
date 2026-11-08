@@ -28,7 +28,8 @@ def discover_service() -> tuple[str, str] | None:
     """
     The OpenCode 2 service registered on this Mac (`opencode serve --service`): its url and password, or None.
     Trusted only as Hex trusts it: the user's own file, unreadable to others, naming a loopback url, so a planted
-    file can never send the password off the machine. Not followed through a symlink.
+    file can never send the password off the machine. Not followed through a symlink, and not used once its process
+    is gone: a crashed OpenCode leaves the file, and another program may hold the port by now.
     shortcut: service.json only, not service-<channel>.json; add the channels when a beta OpenCode is in use.
     """
     path = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "opencode" / "service.json"
@@ -40,8 +41,16 @@ def discover_service() -> tuple[str, str] | None:
             data = json.load(file)
     except (OSError, ValueError):
         return None
-    url, password = (data.get("url"), data.get("password")) if isinstance(data, dict) else (None, None)
-    if not isinstance(url, str) or not isinstance(password, str):
+    if not isinstance(data, dict):
+        return None
+    url, password, pid = data.get("url"), data.get("password"), data.get("pid")
+    if not isinstance(url, str) or not isinstance(password, str) or not isinstance(pid, int):
+        return None
+    try:
+        os.kill(pid, 0)  # signal 0 only checks that the process exists
+    except PermissionError:
+        pass  # it exists, under another user
+    except OSError:
         return None
     parsed = urlparse(url)
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
@@ -207,7 +216,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
     async def send_task(self, task: str) -> bool:
         try:
             if not self._session_id:
-                # No session seen yet: start one in the folder `opencode serve` runs in.
+                # No session seen yet: start one in the agent's folder (a pinned server uses its own).
                 body: dict[str, Any] = {"title": "Jarvis"}
                 if self._directory:  # the shared service would put it in $HOME; an absolute path is required
                     body["location"] = {"directory": self._directory}
