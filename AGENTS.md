@@ -15,7 +15,8 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   in), `jarvis connect pi` (an open Pi window), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
   (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
   (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
-- Needs: OpenCode `opencode serve --port 4096` with the same password; Hermes its gateway service
+- Needs: OpenCode 2's own service (found in `~/.local/state/opencode/service.json`), or `opencode serve` pinned with
+  `OPENCODE_SERVER_PASSWORD`; Hermes its gateway service
   (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Lint and types: `uv run ruff check src tests scripts` and `uv run mypy` (config in `pyproject.toml`)
@@ -137,3 +138,5 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - Pi as a routable agent (in `agents.json`, not only `jarvis connect pi`), and Codex: a new `<name>_adapter.py` shaped like `opencode_adapter.py` / `hermes_adapter.py`,
   registered in `orchestrator.py` `ADAPTERS`; or run them as a T3 Code provider and reach them through `t3-code`.
 - Laya as a local speech check: parked; it lost to the OpenRouter decision models.
+- Ideas from Hex (replaying saved clips through the pipeline, window context, `hex mcp`):
+  `docs/research/hex-adoption-plan.md`.

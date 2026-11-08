@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # Owner voice check (sherpa-onnx ERes2Net): sentences scoring below this are dropped.
     # Tune it from the "[Speaker] score=" lines in the log; enroll with `jarvis enroll`.
     speaker_threshold: float = 0.35
+    # Keep the last N sentences Whisper heard as WAVs in JARVIS_HOME/clips, dropped ones too; 0 = off. Your voice
+    # goes to disk, so only while tracking down misses.
+    save_segments: int = 0
 
     # TTS
     elevenlabs_api_key: str = ""
@@ -66,7 +69,7 @@ class Settings(BaseSettings):
     # Exact agents.json id that gets coding tasks when no agent is named; empty = first enabled agent
     default_coding_agent: str = ""
 
-    # OpenCode v2 `serve` password (it prints a random one at startup unless OPENCODE_SERVER_PASSWORD is set)
+    # Pins an `opencode serve` started with this password; empty = OpenCode 2's own service (service.json)
     opencode_server_password: str = ""
     watch_config_path: str = str(JARVIS_HOME / "agents.json")  # a relative path counts from JARVIS_HOME
     # Hermes API server key (API_SERVER_KEY in ~/.hermes/.env)

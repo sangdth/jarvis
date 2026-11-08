@@ -11,6 +11,12 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 - **macOS voice processing needs a plain output device.** With a Multi-Output or aggregate device (BlackHole) as
   the system output, the mic delivers nothing; `MacVoiceInputTransport` logs `SILENT_MIC_WARNING` after 3 s. To
   record both voices, capture system audio in the recorder (OBS, Screen Studio) instead of routing through BlackHole.
+- **No Whisper vocabulary prompt.** An `initial_prompt` with project and agent names was tested on 2026-11-06: it
+  leaked names into sentences that never said them and fixed none (`docs/research/voice-recognition-misses.md`,
+  finding 6). Names are matched after Whisper, by the conversation model and `open_project`.
+- **OpenCode's shared service streams every session.** Jarvis follows only sessions whose folder is the agent's `cwd`
+  (`OpenCodeSSEAdapter._is_ours`, one lookup per session); a request from another project is never read out or
+  answered. A server pinned with `OPENCODE_SERVER_PASSWORD` or a custom `url` is taken as one folder's, unfiltered.
 - **Two memories.** Hermes keeps its own; what you tell Hermes is not in Jarvis's Mem0, and the other way round.
 
 ## Open risks

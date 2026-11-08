@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
@@ -17,11 +21,40 @@ def _request_of(data: dict[str, Any]) -> dict[str, Any]:
     return next((v for v in data.values() if isinstance(v, dict) and "id" in v and "sessionID" in v), data)
 
 
+DEFAULT_URL = "http://127.0.0.1:4096"
+
+
+def discover_service() -> tuple[str, str] | None:
+    """
+    The OpenCode 2 service registered on this Mac (`opencode serve --service`): its url and password, or None.
+    Trusted only as Hex trusts it: the user's own file, unreadable to others, naming a loopback url, so a planted
+    file can never send the password off the machine. Not followed through a symlink.
+    shortcut: service.json only, not service-<channel>.json; add the channels when a beta OpenCode is in use.
+    """
+    path = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "opencode" / "service.json"
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as file:
+            info = os.fstat(file.fileno())
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                return None
+            data = json.load(file)
+    except (OSError, ValueError):
+        return None
+    url, password = (data.get("url"), data.get("password")) if isinstance(data, dict) else (None, None)
+    if not isinstance(url, str) or not isinstance(password, str):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return url.rstrip("/"), password
+
+
 
 class OpenCodeSSEAdapter(BaseAgentAdapter):
     """
-    Talks to an OpenCode v2 server (`opencode serve`): events over SSE at `/api/event`, actions over `/api`.
-    Auth: HTTP Basic, user `opencode`, password from OPENCODE_SERVER_PASSWORD.
+    Talks to an OpenCode v2 server: events over SSE at `/api/event`, actions over `/api`. Auth: HTTP Basic, user
+    `opencode`. With OPENCODE_SERVER_PASSWORD or a custom `url`, that server; otherwise the service OpenCode
+    registered (`discover_service`). That one serves every folder, so Jarvis keeps to the sessions in `cwd`.
     """
 
     def __init__(
@@ -30,7 +63,13 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         state: JarvisState,
     ) -> None:
         super().__init__(config, state)
-        self.base_url = (config.url or "http://127.0.0.1:4096").rstrip("/")
+        self.base_url = (config.url or DEFAULT_URL).rstrip("/")
+        # A password or url set by the user pins their own `opencode serve`; otherwise find the registered service.
+        self._pinned = bool(settings.opencode_server_password) or config.url not in (None, DEFAULT_URL)
+        self._cwd = str(Path(config.cwd).expanduser().resolve())
+        # The folder Jarvis's sessions live in, set once on the shared service; None: the server serves one folder.
+        self._directory: str | None = None
+        self._ours: dict[str, bool] = {}  # session id -> in self._directory, looked up once
         auth = ("opencode", settings.opencode_server_password) if settings.opencode_server_password else None
         self._http = httpx.AsyncClient(base_url=self.base_url, auth=auth, timeout=10.0)
         self._session_id: str | None = None  # latest session seen, or the one Jarvis created
@@ -45,6 +84,7 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         last_error: str | None = None  # logged once; the same failure every 10 s stays quiet
         while True:
             try:
+                self._use_service()  # each attempt: a restarted OpenCode registers a new port
                 # The server sends a heartbeat every 15 s; 45 s of silence means the stream is dead.
                 timeout = httpx.Timeout(10.0, read=45.0)
                 async with self._http.stream("GET", "/api/event", timeout=timeout) as response:
@@ -70,10 +110,42 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
                     logger.debug(f"[{self.config.id}] OpenCode stream unavailable ({exc!r}); retrying every 10s.")
                 await asyncio.sleep(10.0)
 
+    def _use_service(self) -> None:
+        """Point at the registered OpenCode service, unless .env or agents.json pins a server."""
+        found = None if self._pinned else discover_service()
+        if found is None:
+            return
+        url, password = found
+        self.base_url = self._http.base_url = url
+        self._http.auth = ("opencode", password)
+        self._directory = self._cwd
+
+    def _scope(self) -> dict[str, str]:
+        """The header that scopes a listing to Jarvis's folder on the shared service (it serves `$HOME` by default)."""
+        return {"x-opencode-directory": self._directory} if self._directory else {}
+
+    async def _is_ours(self, session_id: str) -> bool:
+        """
+        Whether a session belongs to Jarvis. The shared service streams every session on the Mac, and its requests
+        name only a session id; without this, Jarvis would read out and approve tool calls in other projects.
+        """
+        if self._directory is None or session_id == self._session_id:
+            return True
+        if session_id not in self._ours:
+            try:
+                resp = await self._http.get(f"/api/session/{session_id}")
+                resp.raise_for_status()
+                folder = resp.json()["data"]["location"]["directory"]
+            except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+                logger.debug(f"[{self.config.id}] Could not look up session {session_id} ({exc!r}); ignored.")
+                return False  # not cached: a passing network error must not hide a session for good
+            self._ours[session_id] = folder == self._directory
+        return self._ours[session_id]
+
     async def _resync(self) -> None:
         """Events are not replayed, so pick up permissions and questions that were asked while disconnected."""
         for path, on_request in (("/api/permission/request", self._on_permission), ("/api/form", self._on_form)):
-            resp = await self._http.get(path)
+            resp = await self._http.get(path, headers=self._scope())
             resp.raise_for_status()
             for request in resp.json().get("data", []):
                 await on_request(request)
@@ -96,7 +168,9 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
     async def _handle_event(self, event: dict[str, Any]) -> None:
         ev_type = event.get("type", "")
         data = event.get("data") or {}
-        session_id = data.get("sessionID")
+        session_id = data.get("sessionID") or _request_of(data).get("sessionID")
+        if session_id and not await self._is_ours(session_id):
+            return  # another folder's session on the shared service
         # One session: the first seen, or the one Jarvis created. Sub-agents run in child sessions,
         # and their "done" is not the turn being done.
         self._session_id = self._session_id or session_id
@@ -134,7 +208,10 @@ class OpenCodeSSEAdapter(BaseAgentAdapter):
         try:
             if not self._session_id:
                 # No session seen yet: start one in the folder `opencode serve` runs in.
-                resp = await self._http.post("/api/session", json={"title": "Jarvis"})
+                body: dict[str, Any] = {"title": "Jarvis"}
+                if self._directory:  # the shared service would put it in $HOME; an absolute path is required
+                    body["location"] = {"directory": self._directory}
+                resp = await self._http.post("/api/session", json=body)
                 resp.raise_for_status()
                 self._session_id = resp.json()["data"]["id"]
             resp = await self._http.post(f"/api/session/{self._session_id}/prompt", json={"text": task})

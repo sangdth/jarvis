@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+import wave
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 from loguru import logger
@@ -20,6 +24,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
+from jarvis.config import JARVIS_HOME, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.speaker import SpeakerEmbedder, cosine
 from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command
@@ -30,6 +35,27 @@ TRAILING_OFF = ("...", "…", "-", "—")
 HOLD_SECS = 2.0
 # A sentence this soon after Jarvis stopped talking is judged as a possible answer to what it said.
 REPLY_WINDOW_SECS = 20.0
+# SAVE_SEGMENTS keeps the newest sentences here, to re-run Whisper and the voice check on real misses.
+CLIPS_DIR = JARVIS_HOME / "clips"
+
+
+def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> Path | None:
+    """Write one sentence as a WAV only the user can read; delete the oldest past `keep`. None if the disk fails."""
+    try:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = folder / f"{datetime.now():%Y%m%d-%H%M%S-%f}.wav"
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
+            with wave.open(file, "wb") as clip:
+                clip.setnchannels(1)
+                clip.setsampwidth(2)
+                clip.setframerate(rate)
+                clip.writeframes(pcm16)
+        for old in sorted(folder.glob("*.wav"))[:-keep]:  # names sort by time
+            old.unlink(missing_ok=True)
+        return path
+    except OSError as exc:
+        logger.warning(f"Could not save the sentence to {folder} ({exc!r}).")
+        return None
 
 
 class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
@@ -49,11 +75,16 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         score_task = asyncio.create_task(asyncio.to_thread(self._score, audio))
         frames = [frame async for frame in super().run_stt(audio)]
         score = await score_task
+        # Saved before any drop: the misses worth replaying are the ones Whisper or the voice check threw away.
+        clip = save_clip(audio, self.sample_rate, settings.save_segments) if settings.save_segments > 0 else None
+        saved = f" ({clip.name})" if clip else ""
+        if clip and not any(isinstance(f, TranscriptionFrame) for f in frames):
+            logger.info(f"[Speaker] score={score:.2f} no text{saved}")  # Whisper heard noise or nothing
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
                 owner = score >= self._threshold
                 passed = owner or classify_fast_command(frame.text) is not None
-                logger.info(f"[Speaker] score={score:.2f} {'pass' if passed else 'drop'}: {frame.text!r}")
+                logger.info(f"[Speaker] score={score:.2f} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
                 if not passed:
                     continue
             yield frame
