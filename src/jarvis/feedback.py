@@ -121,7 +121,7 @@ class FeedbackLog:
         not_label: UserIntent | None = None,
     ) -> None:
         logger.info(f"[Feedback] {signal}: {old.text!r} was not {old.intent.value}")
-        record = {"correction_of": old.id, "signal": signal, "strength": strength}
+        record: dict[str, str | None] = {"correction_of": old.id, "signal": signal, "strength": strength}
         record |= {"label": label.value} if label else {"not_label": not_label.value if not_label else None}
         self._write(record)
         # One correction per decision: drop it so a later move cannot correct it again.
