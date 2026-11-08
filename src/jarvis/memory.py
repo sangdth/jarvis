@@ -14,7 +14,7 @@ from typing import Any
 from loguru import logger
 
 from jarvis.config import JARVIS_HOME, settings
-from jarvis.prompts import NOT_THE_USER
+from jarvis.prompts import MEETING_TRANSCRIPT, NOT_THE_USER, ROOM
 
 # Mem0 reports usage to PostHog unless this is set before it is imported.
 os.environ.setdefault("MEM0_TELEMETRY", "False")
@@ -70,13 +70,15 @@ def create_memory_service() -> Any | None:
         _last_saved: list[Any] | None = None
 
         async def _enhance_context_with_memories(self, context, query):  # type: ignore[override]
-            if not query.startswith(NOT_THE_USER):  # Jarvis's own notes (the greeting) are not a memory query
+            # Jarvis's own notes (the greeting) are not a memory query; someone else in a meeting gets no memories.
+            if not query.startswith((NOT_THE_USER, ROOM)):
                 await super()._enhance_context_with_memories(context, query)
 
         async def _store_messages(self, messages):  # type: ignore[override]
             newest = messages[-2:]
             if newest == self._last_saved or any(
-                m.get("role") == "user" and str(m.get("content", "")).startswith(NOT_THE_USER) for m in newest
+                m.get("role") == "user" and str(m.get("content", "")).startswith((NOT_THE_USER, MEETING_TRANSCRIPT, ROOM))
+                for m in newest
             ):
                 return
             self._last_saved = newest

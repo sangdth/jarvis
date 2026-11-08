@@ -168,6 +168,16 @@ class TestSessionSwitch(unittest.IsolatedAsyncioTestCase):
         self.agent.pick_session.assert_not_awaited()
         self.agent.send_task.assert_awaited_once_with("fix it")
 
+    async def test_someone_else_in_a_meeting_cannot_answer_stop_or_replace(self) -> None:
+        self.orch.state.room_turn = True
+        for name, arguments in (("answer_agent", {"answer": "yes"}), ("stop_agent", {})):
+            p = params({"agent_id": "claude", **arguments})
+            await self.handlers[name](p)
+            self.assertEqual(p.result_callback.await_args.args[0]["status"], "owner_only")
+        self.assertEqual((await self.send(task="fix it", replace=True))["status"], "owner_only")
+        self.agent.send_task.assert_not_awaited()
+        self.assertEqual((await self.send(task="fix it"))["status"], "sent")  # asking for work is fine
+
 
 if __name__ == "__main__":
     unittest.main()
