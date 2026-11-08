@@ -225,40 +225,25 @@
     border: 1px solid rgba(255,255,255,0.08);
   }
 
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-    margin-top: 12px;
+  /* Time a step adds per sentence, from end of speech to first spoken word */
+  .node-time {
+    margin-top: auto;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border);
+    font-size: 10.5px;
+    color: var(--muted-foreground);
   }
-  .stat-card {
-    background: rgba(0,0,0,0.3);
-    border-radius: 6px;
-    padding: 8px 10px;
-    text-align: center;
-    border: 1px solid var(--border);
-  }
-  .stat-val {
-    font-size: 14px;
-    font-weight: 700;
+  .node-time strong {
     font-family: var(--font-mono);
     color: var(--primary);
+    margin-right: 4px;
   }
-  .stat-lbl {
-    font-size: 9.5px;
+  .time-note {
+    font-size: 11px;
     color: var(--muted-foreground);
-    text-transform: uppercase;
-    margin-top: 2px;
+    margin-top: 12px;
   }
-  .stat-src {
-    font-size: 9.5px;
-    color: #64748b;
-    margin-top: 3px;
-    line-height: 1.3;
-  }
-  @media (max-width: 650px) {
-    .stat-grid { grid-template-columns: repeat(2, 1fr); }
-  }
+  .time-note strong { color: var(--primary); }
 </style>
 </head>
 <body>
@@ -268,6 +253,8 @@
     <div class="header-title">
       <h1>🎙️ Jarvis Architecture Map</h1>
       <p>Always-On Voice Executive Harness &bull; Apple Silicon &bull; Multi-Agent Orchestration</p>
+      <p class="time-note"><strong>⏱</strong> on a card = time that step adds per sentence, from end of speech to
+        first spoken word, in pipeline order: step 2, step 3, then voice out.</p>
     </div>
     <span class="box-badge">v1.0 &bull; Master</span>
   </div>
@@ -303,7 +290,8 @@
           <span class="node-tag">16kHz</span>
         </div>
         <div class="node-tech">AVAudioPlayerNode</div>
-        <div class="node-body">Paced real-time playback (~80ms buffer). Interrupted immediately on speech detection.</div>
+        <div class="node-body">Plays the ElevenLabs voice from step 3. Paced real-time playback (~80ms buffer).
+          Interrupted immediately on speech detection.</div>
       </div>
     </div>
   </div>
@@ -324,10 +312,11 @@
       <div class="node-item">
         <div class="node-name">
           <span>Silero VAD</span>
-          <span class="node-tag">&lt;1ms</span>
+          <span class="node-tag">&lt;1ms/frame</span>
         </div>
         <div class="node-tech">stop_secs = 0.6s</div>
         <div class="node-body">Fast neural speech segmentation; detects utterance boundaries.</div>
+        <div class="node-time"><strong>⏱ 0.6 s</strong>silence before a sentence ends</div>
       </div>
       <div class="node-item">
         <div class="node-name">
@@ -336,6 +325,7 @@
         </div>
         <div class="node-tech">Whisper Large v3 Turbo</div>
         <div class="node-body">Zero cloud cost. Trailing-off thoughts ("...") held up to 2.0s.</div>
+        <div class="node-time"><strong>⏱ ~0.64 s</strong>warm turbo; first sentence ~0.9 s</div>
       </div>
       <div class="node-item warn-border">
         <div class="node-name">
@@ -346,14 +336,16 @@
         <div class="node-body">Scores vs <span class="tool-tag">owner_voice.npy</span>. Background/TV speech dropped!
           With <span class="tool-tag">SAVE_SEGMENTS=N</span>, each segment (even Whisper's no-text drops) is kept in
           <span class="tool-tag">clips/</span>, newest N, owner-only.</div>
+        <div class="node-time"><strong>⏱ ~0</strong>~100 ms, alongside Whisper</div>
       </div>
       <div class="node-item">
         <div class="node-name">
-          <span>JEV Filter</span>
-          <span class="node-tag">~230ms</span>
+          <span>System One</span>
+          <span class="node-tag">Intent</span>
         </div>
-        <div class="node-tech">typesafe/jev-1.14</div>
+        <div class="node-tech">Laya jarvis-intent</div>
         <div class="node-body">Separates addressed talk from ambient room chatter. Fast regex bypass.</div>
+        <div class="node-time"><strong>⏱ ~90 ms</strong>fixed phrases skip it</div>
       </div>
     </div>
   </div>
@@ -371,7 +363,16 @@
       <span class="box-badge">Pipecat Pipeline • main.py</span>
     </div>
     <div class="grid-3">
-      <div class="node-item accent-border" style="grid-column: span 2;">
+      <div class="node-item">
+        <div class="node-name">
+          <span>Mem0 Memory</span>
+          <span class="node-tag">Local</span>
+        </div>
+        <div class="node-tech">Qdrant + Ollama bge-m3</div>
+        <div class="node-body">Runs before the brain. Background facts extracted via non-thinking model.</div>
+        <div class="node-time"><strong>⏱ ~22 ms</strong>warm; first lookup 1.6 s cold</div>
+      </div>
+      <div class="node-item accent-border">
         <div class="node-name">
           <span>Executive LLM Brain (OpenRouter)</span>
           <span class="node-tag">Reasoning ON</span>
@@ -381,15 +382,20 @@
           Dispatches function calls:
           <span class="tool-tag">send_agent_task</span>, <span class="tool-tag">answer_agent</span>, <span class="tool-tag">stop_agent</span>.
           Retells complex multi-file git/build diffs as ~10-word first-person outcomes.
+          Adds emotion tags (<span class="tool-tag">[laughs]</span>) for the voice through Pipecat's expressive mode.
         </div>
+        <div class="node-time"><strong>⏱ 0.5&ndash;6 s</strong>0.5&ndash;1.4 s thinking off; on: one 6.4 s sample,
+          to first TTS sentence</div>
       </div>
-      <div class="node-item">
+      <div class="node-item accent-border">
         <div class="node-name">
-          <span>Mem0 Memory</span>
-          <span class="node-tag">~22ms</span>
+          <span>ElevenLabs Voice (TTS)</span>
+          <span class="node-tag">Cloud</span>
         </div>
-        <div class="node-tech">Qdrant + Ollama bge-m3</div>
-        <div class="node-body">Local vector store. Background facts extracted via non-thinking model.</div>
+        <div class="node-tech">eleven_v4_turbo &bull; Text-to-Dialogue</div>
+        <div class="node-body">Runs after the brain; streams its reply as audio to Speaker Out (step 1). Real laughs and
+          sighs. Only with <span class="tool-tag">ELEVENLABS_API_KEY</span>.</div>
+        <div class="node-time"><strong>⏱ ~100 ms</strong>to first audio; ElevenLabs' figure, not measured here</div>
       </div>
     </div>
 
@@ -453,58 +459,8 @@
           extension socket.</div>
       </div>
     </div>
-  </div>
-
-  <!-- 5. TIME PER SENTENCE (spans steps 2-3) -->
-  <div class="section-box">
-    <div class="box-header">
-      <div class="box-title">
-        <span>Time per Sentence: from end of speech to first spoken word</span>
-      </div>
-      <span class="box-badge">Steps 2 &rarr; 3 &bull; in order</span>
-    </div>
-    <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-val">0.6 s</div>
-        <div class="stat-lbl">Step 2 &bull; VAD pause</div>
-        <div class="stat-src">silence before a sentence ends (stop_secs)</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">~0.64 s</div>
-        <div class="stat-lbl">Step 2 &bull; Whisper</div>
-        <div class="stat-src">warm turbo; first sentence ~0.9 s</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">~100 ms</div>
-        <div class="stat-lbl">Step 2 &bull; Speaker check</div>
-        <div class="stat-src">runs alongside Whisper: adds ~0</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">~230 ms</div>
-        <div class="stat-lbl">Step 2 &bull; Intent</div>
-        <div class="stat-src">jev-1.14; fixed phrases skip it</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">~22 ms</div>
-        <div class="stat-lbl">Step 3 &bull; Memory</div>
-        <div class="stat-src">warm; first lookup 1.6 s cold</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">0.5&ndash;6 s</div>
-        <div class="stat-lbl">Step 3 &bull; Brain LLM</div>
-        <div class="stat-src">0.5&ndash;1.4 s thinking off; on: one 6.4 s sample, to first TTS sentence</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">~100 ms</div>
-        <div class="stat-lbl">Output &bull; TTS first audio</div>
-        <div class="stat-src">ElevenLabs' figure; not measured here</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-val">&mdash;</div>
-        <div class="stat-lbl">Step 4 &bull; Agents</div>
-        <div class="stat-src">sending a task is one local call; the work reports back later</div>
-      </div>
-    </div>
+    <p class="time-note"><strong>⏱ &mdash;</strong> Sending a task is one local call and adds nothing to the reply; the
+      work reports back later.</p>
   </div>
 
 </div>
