@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 import wave
 from collections.abc import AsyncGenerator, Callable
@@ -37,6 +38,15 @@ HOLD_SECS = 2.0
 REPLY_WINDOW_SECS = 20.0
 # SAVE_SEGMENTS keeps the newest sentences here, to re-run Whisper and the voice check on real misses.
 CLIPS_DIR = JARVIS_HOME / "clips"
+# How many recent meeting utterances to hold and pass as context the next time Jarvis is addressed.
+MEETING_LOG_LIMIT = 40
+# In a meeting, people talk to each other by default; unless Jarvis just asked a question, it only answers when named.
+_MEETING_ADDRESS_PATTERNS = re.compile(r"\b(jarvis|javis|jarvis's)\b", re.IGNORECASE)
+
+
+def is_meeting_addressed(transcript: str) -> bool:
+    """True when a sentence in a meeting names Jarvis directly."""
+    return _MEETING_ADDRESS_PATTERNS.search(transcript) is not None
 
 
 def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> Path | None:
@@ -60,16 +70,19 @@ def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> P
 
 class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
     """
-    MLX Whisper that only passes on the owner's sentences.
+    MLX Whisper that only passes on the owner's sentences (or tags owner vs room in meeting mode).
     Pipecat hands run_stt one whole VAD sentence; the voice score runs alongside Whisper, so it adds no delay.
     Mute / unmute phrases pass from any voice: the worst case is that someone else silences Jarvis.
     """
 
-    def __init__(self, *, embedder: SpeakerEmbedder, voiceprint: np.ndarray, threshold: float, **kwargs) -> None:
+    def __init__(
+        self, *, embedder: SpeakerEmbedder, voiceprint: np.ndarray, threshold: float, meeting: bool = False, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self._embedder = embedder
         self._voiceprint = voiceprint
         self._threshold = threshold
+        self._meeting = meeting
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         score_task = asyncio.create_task(asyncio.to_thread(self._score, audio))
@@ -83,10 +96,15 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
                 owner = score >= self._threshold
-                passed = owner or classify_fast_command(frame.text) is not None
-                logger.info(f"[Speaker] score={score:.2f} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
-                if not passed:
-                    continue
+                if self._meeting:
+                    role = "owner" if owner else "room"
+                    logger.info(f"[Speaker] score={score:.2f} {role}: {frame.text!r}{saved}")
+                    frame = replace(frame, user_id=role)
+                else:
+                    passed = owner or classify_fast_command(frame.text) is not None
+                    logger.info(f"[Speaker] score={score:.2f} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
+                    if not passed:
+                        continue
             yield frame
 
     async def start(self, frame: StartFrame) -> None:
@@ -109,7 +127,7 @@ class JarvisIntentGate(FrameProcessor):
     2. Immediately catches 'You can talk' -> restores VOICE mode and reads queued topics.
     3. When in BEEP_ONLY mode, suppresses all normal conversational responses.
     4. When in VOICE mode, runs the Always-On Turn Classifier so Jarvis only responds
-       when actually needed (no wake word required).
+       when actually needed (no wake word required; in meeting mode, buffers room talk until Jarvis is addressed).
     """
 
     def __init__(
@@ -117,12 +135,16 @@ class JarvisIntentGate(FrameProcessor):
         state: JarvisState,
         executive_filter: ExecutiveFilter,
         last_said: Callable[[], str | None] = lambda: None,
+        *,
+        meeting: bool = False,
     ) -> None:
         super().__init__()
         self.state = state
         self.executive_filter = executive_filter
         # What Jarvis said last (the conversation model's last reply), for answers to its own questions.
         self._last_said = last_said
+        self._meeting = meeting
+        self._meeting_log: list[str] = []
         self._bot_stopped_at: float | None = None
         # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
         self._held: TranscriptionFrame | None = None
@@ -191,21 +213,43 @@ class JarvisIntentGate(FrameProcessor):
         recent = self._bot_stopped_at is not None and time.monotonic() - self._bot_stopped_at < REPLY_WINDOW_SECS
         return self._last_said() if recent else None
 
+    def _buffer_meeting(self, speaker: str, transcript: str) -> None:
+        if classify_fast_command(transcript) == UserIntent.IGNORE_BACKGROUND or is_not_for_jarvis(transcript):
+            return
+        self._meeting_log.append(f"[{speaker}]: {transcript}")
+        if len(self._meeting_log) > MEETING_LOG_LIMIT:
+            del self._meeting_log[: len(self._meeting_log) - MEETING_LOG_LIMIT]
+        logger.info(f"[Meeting] buffered ({speaker}): {transcript!r}")
+
     async def _gate(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
         transcript = frame.text.strip()
+        speaker = "Room" if frame.user_id == "room" else "User"
         logger.info(f"[User Transcript] ({self.state.mode.value}): {transcript!r}")
 
         # While muted only "you can talk" matters; skip the paid LLM call for everything else.
         if self.state.mode == JarvisMode.BEEP_ONLY and classify_fast_command(transcript) is None:
+            if self._meeting:
+                self._buffer_meeting(speaker, transcript)
             return
 
         # "Not you": Jarvis took room talk as a turn, so it stops answering it. The filter logs the correction.
         if is_not_for_jarvis(transcript) and self.state.on_interrupt:
             await self.state.on_interrupt()
 
+        question = self._recent_jarvis_question()
+        if (
+            self._meeting
+            and classify_fast_command(transcript) is None
+            and not is_not_for_jarvis(transcript)
+            and question is None
+            and not is_meeting_addressed(transcript)
+        ):
+            self._buffer_meeting(speaker, transcript)
+            return
+
         intent = await self.executive_filter.classify_user_utterance(
             transcript=transcript,
-            recent_jarvis_question=self._recent_jarvis_question(),
+            recent_jarvis_question=question,
         )
 
         if intent == UserIntent.MUTE:
@@ -223,8 +267,17 @@ class JarvisIntentGate(FrameProcessor):
             return
 
         if intent == UserIntent.IGNORE_BACKGROUND:
-            logger.debug(f"Ignored self-talk / unaddressed speech: {transcript!r}")
+            if self._meeting:
+                self._buffer_meeting(speaker, transcript)
+            else:
+                logger.debug(f"Ignored self-talk / unaddressed speech: {transcript!r}")
             return
+
+        if self._meeting:
+            history = "\n".join(self._meeting_log)
+            self._meeting_log.clear()
+            prefix = f"[Meeting transcript:\n{history}]\n" if history else ""
+            frame = replace(frame, text=f"{prefix}[{speaker}]: {transcript}")
 
         # User is addressing Jarvis: this sentence is the whole user turn. The aggregator runs on
         # ExternalUserTurnStrategies, so only these frames start a turn (and interrupt Jarvis).

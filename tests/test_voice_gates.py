@@ -143,6 +143,43 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.filter.classify_user_utterance.assert_awaited_once()  # the filter logs the correction
         self.gate.push_frame.assert_not_awaited()
 
+    async def test_meeting_mode_buffers_room_talk_until_jarvis_is_named(self) -> None:
+        gate = JarvisIntentGate(self.state, self.filter, meeting=True)
+        gate.push_frame = AsyncMock()
+        down = FrameDirection.DOWNSTREAM
+
+        await gate.process_frame(TranscriptionFrame(text="Let's ship the API on Tuesday.", user_id="room", timestamp="0"), down)
+        await gate.process_frame(TranscriptionFrame(text="Agreed, I'll update the docs.", user_id="owner", timestamp="0"), down)
+        self.filter.classify_user_utterance.assert_not_awaited()
+        gate.push_frame.assert_not_awaited()
+
+        await gate.process_frame(
+            TranscriptionFrame(text="Jarvis, put that deadline on the calendar.", user_id="owner", timestamp="0"), down
+        )
+        self.filter.classify_user_utterance.assert_awaited_once()
+        pushed = [c.args[0] for c in gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)]
+        self.assertEqual(
+            [f.text for f in pushed],
+            [
+                "[Meeting transcript:\n"
+                "[Room]: Let's ship the API on Tuesday.\n"
+                "[User]: Agreed, I'll update the docs.]\n"
+                "[User]: Jarvis, put that deadline on the calendar."
+            ],
+        )
+
+    async def test_meeting_mode_hears_direct_reply_to_jarvis_without_wake_word(self) -> None:
+        gate = JarvisIntentGate(self.state, self.filter, last_said=lambda: "Which day should I book?", meeting=True)
+        gate.push_frame = AsyncMock()
+        await gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        reply = TranscriptionFrame(text="Tuesday afternoon", user_id="room", timestamp="0")
+        await gate.process_frame(reply, FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.assert_awaited_once_with(
+            transcript="Tuesday afternoon", recent_jarvis_question="Which day should I book?"
+        )
+        pushed = [c.args[0] for c in gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)]
+        self.assertEqual([f.text for f in pushed], ["[Room]: Tuesday afternoon"])
+
 
 class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
     """Whisper is mocked; the embedder returns a fixed vector so the score is known."""
@@ -155,7 +192,7 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         saving.start()
         self.addCleanup(saving.stop)
 
-    async def run_stt(self, text: str | None, embedding) -> list:
+    async def run_stt(self, text: str | None, embedding, *, meeting: bool = False) -> list:
         import numpy as np
         from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
@@ -168,7 +205,7 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         embedder = MagicMock()
         embedder.embed.return_value = None if embedding is None else np.array(embedding, dtype=np.float32)
         stt = SpeakerVerifiedWhisperSTT(
-            embedder=embedder, voiceprint=np.array([1.0, 0.0], dtype=np.float32), threshold=0.5
+            embedder=embedder, voiceprint=np.array([1.0, 0.0], dtype=np.float32), threshold=0.5, meeting=meeting
         )
         with patch.object(WhisperSTTServiceMLX, "run_stt", new=whisper):
             return [f async for f in stt.run_stt(b"\x00\x00" * 16000)]
@@ -179,6 +216,12 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
 
     async def test_other_voice_is_dropped(self) -> None:
         self.assertEqual(await self.run_stt("build a login page", [0.1, 0.9]), [])
+
+    async def test_other_voice_passes_as_room_in_meeting_mode(self) -> None:
+        room = await self.run_stt("what about the deadline", [0.1, 0.9], meeting=True)
+        owner = await self.run_stt("let's ask Jarvis", [0.9, 0.1], meeting=True)
+        self.assertEqual([(f.user_id, f.text) for f in room], [("room", "what about the deadline")])
+        self.assertEqual([(f.user_id, f.text) for f in owner], [("owner", "let's ask Jarvis")])
 
     async def test_other_voice_can_still_mute(self) -> None:
         frames = await self.run_stt("shut up", [0.1, 0.9])

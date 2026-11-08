@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from jarvis.mac_audio import MicConverter
+from jarvis.mac_audio import MicConverter, MixBuffer
 
 
 class TestMicConverter(unittest.TestCase):
@@ -34,6 +34,28 @@ class TestMicHeard(unittest.TestCase):
         mic.convert(np.full(960, 5e-3, dtype=np.float32), 48000)
         mic.convert(np.zeros(960, dtype=np.float32), 48000)
         self.assertTrue(mic.heard)
+
+
+class TestMixBuffer(unittest.TestCase):
+    """System audio (Google Meet) is mixed into the steady mic stream without clipping or overflowing."""
+
+    def test_empty_buffer_leaves_mic_unchanged(self) -> None:
+        buf = MixBuffer()
+        mic = np.array([100, -200, 300], dtype=np.int16).tobytes()
+        self.assertEqual(buf.mix(mic), mic)
+
+    def test_sums_and_clips_system_audio_into_mic(self) -> None:
+        buf = MixBuffer()
+        buf.push(np.array([1000, 30000, -30000], dtype=np.int16).tobytes())
+        mic = np.array([500, 10000, -10000, 42], dtype=np.int16).tobytes()
+        mixed = np.frombuffer(buf.mix(mic), dtype=np.int16).tolist()
+        self.assertEqual(mixed, [1500, 32767, -32768, 42])
+
+    def test_caps_buffered_audio_to_max_bytes(self) -> None:
+        buf = MixBuffer(max_bytes=4)
+        buf.push(np.array([1, 2, 3, 4], dtype=np.int16).tobytes())
+        mic = np.zeros(2, dtype=np.int16).tobytes()
+        self.assertEqual(np.frombuffer(buf.mix(mic), dtype=np.int16).tolist(), [3, 4])
 
 
 if __name__ == "__main__":

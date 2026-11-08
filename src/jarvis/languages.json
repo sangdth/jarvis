@@ -3,6 +3,7 @@
     "system": "",
     "greeting": "",
     "connected": "Connected to {title} in {project}.",
+    "meeting": "In the meeting. Call my name when you need me.",
     "waiting": [
       "Still working on it.",
       "Still on it.",
@@ -37,6 +38,7 @@
     "system": "The user speaks English or Vietnamese, often mixed. Reply in the language of their last sentence. Agents only read English: write every tool argument (`task`, `answer`) in English, translating the user's words, and keep project folder names exactly as listed.",
     "greeting": "Speak Vietnamese.",
     "connected": "Đã kết nối với phiên {title} trong {project}.",
+    "meeting": "Đang trong cuộc họp. Cần gì cứ gọi tên mình.",
     "waiting": [
       "Vẫn đang làm.",
       "Chưa xong, đang làm tiếp.",

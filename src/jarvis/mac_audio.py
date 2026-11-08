@@ -6,7 +6,11 @@ its own voice on speakers. Apple cancels only what plays through the same AVAudi
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import os
+import threading
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import soxr
@@ -24,6 +28,88 @@ SILENT_MIC_WARNING = (
     "Mic is silent: macOS voice processing delivers no sound. Set System Settings > Sound > Output to speakers "
     "or headphones; a Multi-Output or aggregate device (BlackHole and similar) stops the mic."
 )
+# Virtual audio cables checked in order for `jarvis meeting` so Google Meet can hear both the user and Jarvis.
+VIRTUAL_MIC_NAMES = ("BlackHole 2ch", "BlackHole 16ch", "Microsoft Teams Audio", "ZoomAudioDevice")
+
+
+class _AudioObjectPropertyAddress(ctypes.Structure):
+    _fields_ = [("mSelector", ctypes.c_uint32), ("mScope", ctypes.c_uint32), ("mElement", ctypes.c_uint32)]
+
+
+def _fourcc(code: str) -> int:
+    return int.from_bytes(code.encode("ascii"), "big")
+
+
+class MixBuffer:
+    """Thread-safe 16-bit mono PCM ring buffer that mixes system audio (Google Meet) into the steady mic stream."""
+
+    def __init__(self, max_bytes: int = 16000) -> None:
+        self._max_bytes = max_bytes & ~1  # ~0.5 s at 16 kHz mono int16
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+
+    def push(self, pcm16: bytes) -> None:
+        if not pcm16:
+            return
+        with self._lock:
+            self._buf.extend(pcm16)
+            if len(self._buf) > self._max_bytes:
+                del self._buf[: len(self._buf) - self._max_bytes]
+
+    def mix(self, mic_pcm16: bytes) -> bytes:
+        if not mic_pcm16:
+            return mic_pcm16
+        with self._lock:
+            if not self._buf:
+                return mic_pcm16
+            n = min(len(mic_pcm16), len(self._buf)) & ~1
+            if n == 0:
+                return mic_pcm16
+            tap_bytes = bytes(self._buf[:n])
+            del self._buf[:n]
+        mic = np.frombuffer(mic_pcm16, dtype=np.int16).astype(np.int32).copy()
+        tap = np.frombuffer(tap_bytes, dtype=np.int16).astype(np.int32)
+        mic[: len(tap)] = np.clip(mic[: len(tap)] + tap, -32768, 32767)
+        return mic.astype(np.int16).tobytes()
+
+
+def find_virtual_mic(preferred: str = "") -> tuple[int, str] | None:
+    """Find a virtual audio device by name (BlackHole, Teams, Zoom) and set its volume scalar to 1.0."""
+    ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+    cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    cf.CFStringGetCString.restype = ctypes.c_bool
+
+    addr = _AudioObjectPropertyAddress(_fourcc("dev#"), _fourcc("glob"), 0)
+    size = ctypes.c_uint32(0)
+    if ca.AudioObjectGetPropertyDataSize(1, ctypes.byref(addr), 0, None, ctypes.byref(size)) != 0 or not size.value:
+        return None
+    count = size.value // 4
+    ids = (ctypes.c_uint32 * count)()
+    if ca.AudioObjectGetPropertyData(1, ctypes.byref(addr), 0, None, ctypes.byref(size), ids) != 0:
+        return None
+
+    devices: dict[str, int] = {}
+    name_addr = _AudioObjectPropertyAddress(_fourcc("lnam"), _fourcc("glob"), 0)
+    for dev_id in ids:
+        cfstr = ctypes.c_void_p()
+        sz = ctypes.c_uint32(ctypes.sizeof(cfstr))
+        if ca.AudioObjectGetPropertyData(dev_id, ctypes.byref(name_addr), 0, None, ctypes.byref(sz), ctypes.byref(cfstr)) == 0:
+            buf = ctypes.create_string_buffer(256)
+            if cfstr.value and cf.CFStringGetCString(cfstr.value, buf, 256, 0x08000100):
+                devices[buf.value.decode("utf-8", errors="replace")] = int(dev_id)
+
+    candidates = (preferred, *VIRTUAL_MIC_NAMES) if preferred else VIRTUAL_MIC_NAMES
+    chosen = next(
+        ((dev_id, name) for target in candidates if target for name, dev_id in devices.items() if target.lower() in name.lower()),
+        None,
+    )
+    if chosen is not None:
+        vol = ctypes.c_float(1.0)
+        for scope in ("outp", "inpt"):
+            vol_addr = _AudioObjectPropertyAddress(_fourcc("volm"), _fourcc(scope), 0)
+            ca.AudioObjectSetPropertyData(chosen[0], ctypes.byref(vol_addr), 0, None, 4, ctypes.byref(vol))
+    return chosen
 
 
 class MicConverter:
@@ -44,10 +130,202 @@ class MicConverter:
         return (np.clip(out, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
 
+class MeetingAudioBridge:
+    """
+    Meeting mode audio:
+    1. Taps system audio (Google Meet, Zoom, browser) via CoreAudio CATapDescription excluding Jarvis's own PID,
+       so Jarvis hears remote participants even on headphones without changing macOS System Output.
+    2. Forwards both the user's processed mic and Jarvis's TTS voice into a virtual mic (BlackHole / Teams / Zoom),
+       so picking that virtual mic in Google Meet lets the room hear both the user and Jarvis.
+    """
+
+    def __init__(self, out_rate: int = 16000) -> None:
+        import AVFoundation
+        import objc
+
+        self._av = AVFoundation
+        self._objc = objc
+        self.mix_buffer = MixBuffer(max_bytes=out_rate * 2 // 2)
+        self._tap_converter = MicConverter(out_rate)
+        self._ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+        self._ca.AudioHardwareCreateProcessTap.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        self._ca.AudioHardwareCreateProcessTap.restype = ctypes.c_int32
+        self._ca.AudioHardwareDestroyProcessTap.argtypes = [ctypes.c_uint32]
+        self._ca.AudioHardwareDestroyProcessTap.restype = ctypes.c_int32
+        self._ca.AudioHardwareCreateAggregateDevice.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+        self._ca.AudioHardwareCreateAggregateDevice.restype = ctypes.c_int32
+        self._ca.AudioHardwareDestroyAggregateDevice.argtypes = [ctypes.c_uint32]
+        self._ca.AudioHardwareDestroyAggregateDevice.restype = ctypes.c_int32
+
+        self._tap_id = 0
+        self._agg_id = 0
+        self._tap_engine: Any = None
+        self._vmic_dev_id = 0
+        self._vmic_engine: Any = None
+        self._vmic_mic_player: Any = None
+        self._vmic_tts_player: Any = None
+        self._vmic_mic_format: Any = None
+        self._vmic_tts_format: Any = None
+        self.virtual_mic_name: str | None = None
+
+        vmic = find_virtual_mic(os.environ.get("MEETING_VIRTUAL_MIC", ""))
+        if vmic is not None:
+            self._vmic_dev_id, self.virtual_mic_name = vmic
+            eng = AVFoundation.AVAudioEngine.alloc().init()
+            # Touch mainMixerNode first: creating the mixer later resets outputNode's deviceID to the default speaker.
+            eng.outputNode(), eng.mainMixerNode()
+            if eng.outputNode().AUAudioUnit().setDeviceID_error_(self._vmic_dev_id, None):
+                self._vmic_engine = eng
+                self._vmic_mic_player = AVFoundation.AVAudioPlayerNode.alloc().init()
+                self._vmic_tts_player = AVFoundation.AVAudioPlayerNode.alloc().init()
+                eng.attachNode_(self._vmic_mic_player)
+                eng.attachNode_(self._vmic_tts_player)
+
+    def connect_tts(self, rate: int) -> None:
+        if self._vmic_engine is None:
+            return
+        av = self._av
+        self._vmic_tts_format = av.AVAudioFormat.alloc().initWithCommonFormat_sampleRate_channels_interleaved_(
+            av.AVAudioPCMFormatFloat32, float(rate), 1, False
+        )
+        self._vmic_engine.connect_to_format_(self._vmic_tts_player, self._vmic_engine.mainMixerNode(), self._vmic_tts_format)
+
+    def connect_mic(self, rate: int) -> None:
+        if self._vmic_engine is None:
+            return
+        av = self._av
+        self._vmic_mic_format = av.AVAudioFormat.alloc().initWithCommonFormat_sampleRate_channels_interleaved_(
+            av.AVAudioPCMFormatFloat32, float(rate), 1, False
+        )
+        self._vmic_engine.connect_to_format_(self._vmic_mic_player, self._vmic_engine.mainMixerNode(), self._vmic_mic_format)
+
+    def start(self) -> None:
+        self._start_system_tap()
+        if self._vmic_engine is not None and not self._vmic_engine.isRunning():
+            self._vmic_engine.outputNode().AUAudioUnit().setDeviceID_error_(self._vmic_dev_id, None)
+            ok, err = self._vmic_engine.startAndReturnError_(None)
+            if ok:
+                if self._vmic_mic_format is not None:
+                    self._vmic_mic_player.play()
+                if self._vmic_tts_format is not None:
+                    self._vmic_tts_player.play()
+                logger.info(
+                    f"Meeting virtual mic ready: set your Google Meet microphone to '{self.virtual_mic_name}' "
+                    "so the room hears both you and Jarvis."
+                )
+            else:
+                logger.warning(f"Could not start virtual mic '{self.virtual_mic_name}': {err}")
+                self._vmic_engine = None
+        elif self.virtual_mic_name is None:
+            logger.warning(
+                "Meeting mode: no virtual mic (BlackHole) found; speaking on speakers only. "
+                "Install `brew install blackhole-2ch` to share a virtual mic with Google Meet."
+            )
+
+    def _start_system_tap(self) -> None:
+        if self._tap_engine is not None:
+            return
+        try:
+            pid = ctypes.c_int32(os.getpid())
+            own_obj = ctypes.c_uint32(0)
+            sz = ctypes.c_uint32(4)
+            addr = _AudioObjectPropertyAddress(_fourcc("id2p"), _fourcc("glob"), 0)
+            self._ca.AudioObjectGetPropertyData(
+                1, ctypes.byref(addr), 4, ctypes.byref(pid), ctypes.byref(sz), ctypes.byref(own_obj)
+            )
+
+            CATapDescription = self._objc.lookUpClass("CATapDescription")
+            NSDictionary = self._objc.lookUpClass("NSDictionary")
+            desc = CATapDescription.alloc().initStereoGlobalTapButExcludeProcesses_([own_obj.value] if own_obj.value else [])
+            desc.setName_("JarvisMeetingTap")
+            desc.setPrivate_(True)
+            tap_uuid = str(desc.UUID().UUIDString())
+
+            tap_id = ctypes.c_uint32(0)
+            if self._ca.AudioHardwareCreateProcessTap(self._objc.pyobjc_id(desc), ctypes.byref(tap_id)) != 0:
+                return
+            self._tap_id = tap_id.value
+
+            agg_dict = NSDictionary.dictionaryWithDictionary_(
+                {
+                    "name": "JarvisSystemAudioTap",
+                    "uid": f"com.jarvis.tap.{os.getpid()}",
+                    "private": True,
+                    "tapautostart": True,
+                    "taps": [{"uid": tap_uuid, "drift": True}],
+                }
+            )
+            agg_id = ctypes.c_uint32(0)
+            if self._ca.AudioHardwareCreateAggregateDevice(self._objc.pyobjc_id(agg_dict), ctypes.byref(agg_id)) != 0:
+                self._ca.AudioHardwareDestroyProcessTap(self._tap_id)
+                self._tap_id = 0
+                return
+            self._agg_id = agg_id.value
+
+            eng = self._av.AVAudioEngine.alloc().init()
+            inp = eng.inputNode()
+            inp.AUAudioUnit().setDeviceID_error_(self._agg_id, None)
+            fmt = inp.outputFormatForBus_(0)
+            rate = int(fmt.sampleRate())
+
+            def on_tap(buffer, when) -> None:
+                n = buffer.frameLength()
+                if n > 0:
+                    samples = np.frombuffer(buffer.floatChannelData()[0].as_buffer(n), dtype=np.float32).copy()
+                    self.mix_buffer.push(self._tap_converter.convert(samples, rate))
+
+            inp.installTapOnBus_bufferSize_format_block_(0, max(1, rate // 50), fmt, on_tap)
+            ok, err = eng.startAndReturnError_(None)
+            if ok:
+                self._tap_engine = eng
+                logger.info("Meeting system audio tap active (hearing Google Meet / room audio).")
+            else:
+                logger.warning(f"Could not start system audio tap: {err}")
+        except Exception as exc:
+            logger.warning(f"System audio tap unavailable ({exc!r}); hearing microphone only.")
+
+    def forward_mic(self, samples: np.ndarray) -> None:
+        if self._vmic_engine is None or self._vmic_mic_format is None or not len(samples):
+            return
+        if self._vmic_engine.isRunning() and not self._vmic_mic_player.isPlaying():
+            self._vmic_mic_player.play()
+        buf = self._av.AVAudioPCMBuffer.alloc().initWithPCMFormat_frameCapacity_(self._vmic_mic_format, len(samples))
+        np.frombuffer(buf.floatChannelData()[0].as_buffer(len(samples)), dtype=np.float32)[:] = samples
+        buf.setFrameLength_(len(samples))
+        self._vmic_mic_player.scheduleBuffer_completionHandler_(buf, None)
+
+    def play_tts(self, samples: np.ndarray) -> None:
+        if self._vmic_engine is None or self._vmic_tts_format is None or not len(samples):
+            return
+        if self._vmic_engine.isRunning() and not self._vmic_tts_player.isPlaying():
+            self._vmic_tts_player.play()
+        buf = self._av.AVAudioPCMBuffer.alloc().initWithPCMFormat_frameCapacity_(self._vmic_tts_format, len(samples))
+        np.frombuffer(buf.floatChannelData()[0].as_buffer(len(samples)), dtype=np.float32)[:] = samples / 32768
+        buf.setFrameLength_(len(samples))
+        self._vmic_tts_player.scheduleBuffer_completionHandler_(buf, None)
+
+    def stop(self) -> None:
+        if self._tap_engine is not None:
+            self._tap_engine.inputNode().removeTapOnBus_(0)
+            self._tap_engine.stop()
+            self._tap_engine = None
+        if self._agg_id:
+            self._ca.AudioHardwareDestroyAggregateDevice(self._agg_id)
+            self._agg_id = 0
+        if self._tap_id:
+            self._ca.AudioHardwareDestroyProcessTap(self._tap_id)
+            self._tap_id = 0
+        if self._vmic_engine is not None:
+            self._vmic_mic_player.stop()
+            self._vmic_tts_player.stop()
+            self._vmic_engine.stop()
+            self._vmic_engine = None
+
+
 class MacVoiceAudio:
     """One AVAudioEngine with voice processing on: the mic tap and the player share it. One per process."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, meeting: bool = False) -> None:
         import AVFoundation  # imported here: macOS only, and slow to load
 
         self._av = AVFoundation
@@ -65,16 +343,22 @@ class MacVoiceAudio:
         self.engine.attachNode_(self.player)
         self._play_format = None
         self._tapped = False
+        self.bridge = MeetingAudioBridge() if meeting else None
 
     def on_mic(self, callback: Callable[[np.ndarray, int], None]) -> None:
         """Call `callback(samples, rate)` from the audio thread with each block of the processed mic."""
         mic = self.engine.inputNode()
         fmt = mic.outputFormatForBus_(0)  # several identical channels with voice processing on; channel 0 is enough
         rate = int(fmt.sampleRate())
+        if self.bridge is not None:
+            self.bridge.connect_mic(rate)
 
         def tap(buffer, when) -> None:  # an Objective-C void block: it must return None
             n = buffer.frameLength()
-            callback(np.frombuffer(buffer.floatChannelData()[0].as_buffer(n), dtype=np.float32).copy(), rate)
+            samples = np.frombuffer(buffer.floatChannelData()[0].as_buffer(n), dtype=np.float32).copy()
+            if self.bridge is not None:
+                self.bridge.forward_mic(samples)
+            callback(samples, rate)
 
         mic.installTapOnBus_bufferSize_format_block_(0, rate // 50, fmt, tap)  # asks for 20 ms blocks
         self._tapped = True
@@ -86,8 +370,12 @@ class MacVoiceAudio:
             av.AVAudioPCMFormatFloat32, float(rate), 1, False
         )
         self.engine.connect_to_format_(self.player, self.engine.mainMixerNode(), self._play_format)
+        if self.bridge is not None:
+            self.bridge.connect_tts(rate)
 
     def start(self) -> None:
+        if self.bridge is not None:
+            self.bridge.start()
         if not self.engine.isRunning():
             ok, err = self.engine.startAndReturnError_(None)
             if not ok:
@@ -104,12 +392,16 @@ class MacVoiceAudio:
         np.frombuffer(buffer.floatChannelData()[0].as_buffer(len(samples)), dtype=np.float32)[:] = samples / 32768
         buffer.setFrameLength_(len(samples))
         self.player.scheduleBuffer_completionHandler_(buffer, None)
+        if self.bridge is not None:
+            self.bridge.play_tts(samples)
         return len(samples) / self._play_format.sampleRate()
 
     def stop(self) -> None:
         if self._tapped:
             self.engine.inputNode().removeTapOnBus_(0)
             self._tapped = False
+        if self.bridge is not None:
+            self.bridge.stop()
         self.player.stop()
         self.engine.stop()
 
@@ -150,6 +442,8 @@ class MacVoiceInputTransport(BaseInputTransport):
         if mic is None:
             return
         audio = mic.convert(samples, rate)
+        if self._audio.bridge is not None:
+            audio = self._audio.bridge.mix_buffer.mix(audio)
         if audio:
             frame = InputAudioRawFrame(audio=audio, sample_rate=mic.out_rate, num_channels=1)
             asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), self.get_event_loop())
@@ -182,10 +476,10 @@ class MacVoiceOutputTransport(BaseOutputTransport):
 class MacVoiceTransport(BaseTransport):
     """Local mic and speaker, like Pipecat's LocalAudioTransport, but with Apple's echo canceller in the path."""
 
-    def __init__(self, params: TransportParams) -> None:
+    def __init__(self, params: TransportParams, *, meeting: bool = False) -> None:
         super().__init__()
         self._params = params
-        self._audio = MacVoiceAudio()
+        self._audio = MacVoiceAudio(meeting=meeting)
         self._input: MacVoiceInputTransport | None = None
         self._output: MacVoiceOutputTransport | None = None
         logger.info("Mic and speaker run through macOS voice processing (echo cancellation).")

@@ -107,7 +107,7 @@ def choose(heading: str, labels: list[str], question: str) -> int:
     return int(choice) - 1
 
 
-async def run_pipecat_harness(connect: str | None = None) -> None:
+async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = False) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
@@ -185,13 +185,14 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
 
     # 1. Local mic + speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
     # voice so the user can talk over it on speakers
-    transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True))
+    transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
 
-    # 2. Local Always-On STT (MLX Whisper on the Apple GPU), passing on only the owner's voice
+    # 2. Local Always-On STT (MLX Whisper on the Apple GPU), passing on only the owner's voice (or tagging room in meetings)
     stt = SpeakerVerifiedWhisperSTT(
         embedder=SpeakerEmbedder(),
         voiceprint=voiceprint,
         threshold=settings.speaker_threshold,
+        meeting=meeting,
         settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model, language=Language(settings.language)),
     )
 
@@ -204,7 +205,9 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
             base_url=settings.openrouter_base_url,
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
-                system_instruction=system_prompt(orchestrator, load_soul().personality, thread, settings.language),
+                system_instruction=system_prompt(
+                    orchestrator, load_soul().personality, thread, settings.language, meeting=meeting
+                ),
                 # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever
                 # provider currently answers fastest.
                 extra={
@@ -251,7 +254,10 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
     # 4. Intent & Mute Gate ("Shut up" -> BEEP_ONLY, "You can talk" -> VOICE, Turn Classifier); Jarvis's last reply
     # lets it hear a short or garbled answer to Jarvis's own question.
     intent_gate = JarvisIntentGate(
-        state=state, executive_filter=executive_filter, last_said=lambda: last_assistant_text(context.messages)
+        state=state,
+        executive_filter=executive_filter,
+        last_said=lambda: last_assistant_text(context.messages),
+        meeting=meeting,
     )
 
     # 5. Text-to-Speech (ElevenLabs if configured)
@@ -296,6 +302,9 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
     async def greet(task: PipelineTask, frame) -> None:
         if thread:  # back from the keyboard mid-work: say where we are, skip the small talk
             await on_speak(LANGUAGES[settings.language]["connected"].format(title=thread["title"], project=thread["project"]))
+            return
+        if meeting:  # never read out personal memories in front of a meeting room
+            await on_speak(LANGUAGES[settings.language]["meeting"])
             return
         if llm is None:
             await on_speak("Jarvis here. I'm listening.")

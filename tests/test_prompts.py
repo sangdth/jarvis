@@ -28,6 +28,13 @@ class PromptTest(unittest.TestCase):
         self.assertIn('T3 Code session "Fix login" in platform-v2', prompt)
         self.assertIn("send_agent_task for `t3-code`", prompt)
 
+    def test_prompt_adds_meeting_rules_only_in_meeting_mode(self):
+        orchestrator = MagicMock(adapters={})
+        self.assertNotIn("sitting in a meeting", system_prompt(orchestrator, ""))
+        prompt = system_prompt(orchestrator, "", meeting=True)
+        self.assertIn("sitting in a meeting", prompt)
+        self.assertIn("`[Room]`", prompt)
+
     def test_prompt_includes_only_active_language_instructions(self):
         orchestrator = MagicMock(adapters={})
         self.assertEqual(set(LANGUAGES), set(WHISPER_MODELS))
