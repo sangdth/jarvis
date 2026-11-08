@@ -65,6 +65,20 @@ def classify_fast_command(transcript: str) -> UserIntent | None:
     return None
 
 
+# "That wasn't for you": Jarvis took room talk as a turn. Only short sentences count, so "it's not you, it's the
+# build" stays a normal sentence.
+_NOT_YOU_PATTERNS = re.compile(
+    r"\b(not\s+(talking\s+)?to\s+you|not\s+you|n[o']?t\s+for\s+you|wasn'?t\s+talking\s+to\s+you"
+    r"|không\s+phải\s+(nói\s+)?(với\s+)?em|đâu\s+có\s+nói\s+với\s+em)\b",
+    re.IGNORECASE,
+)
+
+
+def is_not_for_jarvis(transcript: str) -> bool:
+    """The user says the last thing Jarvis took up was not meant for it."""
+    return len(transcript.split()) <= 7 and _NOT_YOU_PATTERNS.search(transcript) is not None
+
+
 def synthesize_beep_pcm(
     freq_hz: float = 880.0,
     duration_ms: int = 160,

@@ -135,6 +135,14 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         await self.gate.process_frame(heard("honey, dinner?"), FrameDirection.DOWNSTREAM)
         self.gate.push_frame.assert_not_awaited()
 
+    async def test_not_you_stops_jarvis_talking(self) -> None:
+        self.state.on_interrupt = AsyncMock()
+        self.filter.classify_user_utterance.return_value = UserIntent.IGNORE_BACKGROUND
+        await self.gate.process_frame(heard("Not you, Jarvis"), FrameDirection.DOWNSTREAM)
+        self.state.on_interrupt.assert_awaited_once()
+        self.filter.classify_user_utterance.assert_awaited_once()  # the filter logs the correction
+        self.gate.push_frame.assert_not_awaited()
+
 
 class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
     """Whisper is mocked; the embedder returns a fixed vector so the score is known."""

@@ -27,7 +27,7 @@ from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from jarvis.config import JARVIS_HOME, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.speaker import SpeakerEmbedder, cosine
-from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command
+from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command, is_not_for_jarvis
 
 # Whisper ends a sentence that trails off mid-thought with one of these ("Open the...").
 TRAILING_OFF = ("...", "…", "-", "—")
@@ -198,6 +198,10 @@ class JarvisIntentGate(FrameProcessor):
         # While muted only "you can talk" matters; skip the paid LLM call for everything else.
         if self.state.mode == JarvisMode.BEEP_ONLY and classify_fast_command(transcript) is None:
             return
+
+        # "Not you": Jarvis took room talk as a turn, so it stops answering it. The filter logs the correction.
+        if is_not_for_jarvis(transcript) and self.state.on_interrupt:
+            await self.state.on_interrupt()
 
         intent = await self.executive_filter.classify_user_utterance(
             transcript=transcript,
