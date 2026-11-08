@@ -12,7 +12,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis update` upgrades it,
   `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
-  in), `jarvis connect pi` (an open Pi window), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
+  in), `jarvis connect claude|opencode|pi` (continue a session of that client; for Pi, an open window), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
   (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
   (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
 - Needs: OpenCode 2's own service (found in `~/.local/state/opencode/service.json`), or `opencode serve` pinned with
@@ -44,7 +44,8 @@ speech check dropping the sentence, not the conversation model.
 | "Still waiting" timing or wording    | `remind_while_busy`, `waiting_lines.py`, `WAITING_PROMPT`       |
 | Hermes runs, approvals, stop         | `hermes_adapter.py` `HermesAdapter`                             |
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)             |
-| `jarvis connect pi`, Pi windows      | `pi_adapter.py` `PiAdapter`, `defaults/pi/jarvis.ts`            |
+| `jarvis connect <agent>`, sessions   | `sessions.py` `CodingSessionAdapter`, `main.py` `pick_session`  |
+| Pi windows                           | `pi_adapter.py` `PiAdapter`, `defaults/pi/jarvis.ts`            |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                                        |
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                            |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
@@ -70,6 +71,11 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Hermes decides its own approvals.** Its guardian model (`approvals` in `~/.hermes/config.yaml`) lets safe
   commands run; only flagged ones reach Jarvis as `approval.request`. A question Hermes asks ends its turn, so
   the reply goes back with `send_agent_task` into the same Hermes session.
+- **T3 Code is the first-class client; Claude Code, OpenCode and Pi share one session contract.** T3 keeps its own
+  projects and threads (`T3Adapter`), reached only through `orchestrator.t3`, never by checking for a method. The
+  others extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`); a new
+  client of that kind implements those three, with no case of its own in `main.py`, `agent_tools.py` or
+  `prompts.py`. A switch never happens mid-turn (`busy`). Hermes is not a coding client and stays on the base.
 - **Claude Code uses the user's own settings** (`~/.claude/settings.json`, `defaultMode` and allow rules), as in
   their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
@@ -81,9 +87,12 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   itself ("how many projects in OpsCom?") are answered from it, with no agent.
   A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
   at all: it is the user's work in progress. For the rest of that run every task goes to it, even one naming a
-  project; Jarvis starts no other thread (`_connected`), and the system prompt names it (`connected_thread`).
+  project; Jarvis starts no other thread (`connected`), and the system prompt names it (`connected_thread`).
   T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
+- **A connected session is the default agent.** `jarvis connect claude|opencode|pi` lists that client's sessions
+  (every folder, newest first) and `pick_session(connected=True)`; `default_agent_id` returns it for the run.
+  Claude Code runs one SDK process per session, started with `resume=<id>`, and resumes the same id after a crash.
 - **Pi is reached only through an open window.** `jarvis connect pi` installs `defaults/pi/jarvis.ts` into
   `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
   make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.

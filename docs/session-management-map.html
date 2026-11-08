@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis Client Session Management Architecture Map</title>
+<style>
+  :root {
+    --background: #0b0f19;
+    --foreground: #e2e8f0;
+    --card: #131c2e;
+    --card-foreground: #f8fafc;
+    --border: #223049;
+    --primary: #38bdf8;
+    --primary-foreground: #0b0f19;
+    --secondary: #1e293b;
+    --secondary-foreground: #f8fafc;
+    --muted-foreground: #94a3b8;
+    --accent: #f472b6;
+    --emerald: #34d399;
+    --amber: #fbbf24;
+    --indigo: #818cf8;
+    --purple: #c084fc;
+    --radius: 12px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    font-size: 13px;
+    padding: 30px 20px;
+    display: flex;
+    justify-content: center;
+  }
+
+  .wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    width: 100%;
+    max-width: 980px;
+  }
+
+  .header {
+    background: linear-gradient(135deg, #131c2e 0%, #1e293b 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+
+  .title-area h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: #f8fafc;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-primary { background: rgba(56, 189, 248, 0.15); color: var(--primary); border: 1px solid rgba(56, 189, 248, 0.3); }
+  .badge-emerald { background: rgba(52, 211, 153, 0.15); color: var(--emerald); border: 1px solid rgba(52, 211, 153, 0.3); }
+  .badge-amber { background: rgba(251, 191, 36, 0.15); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.3); }
+
+  .subtitle {
+    color: var(--muted-foreground);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  }
+
+  .card h2 {
+    font-size: 15px;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* Grid Layouts */
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  @media (max-width: 768px) {
+    .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  .tier-box {
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .tier-first-class {
+    background: rgba(56, 189, 248, 0.05);
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+  .tier-shared {
+    background: rgba(129, 140, 248, 0.05);
+    border-color: rgba(129, 140, 248, 0.3);
+  }
+  .tier-base {
+    background: rgba(148, 163, 184, 0.05);
+    border-color: rgba(148, 163, 184, 0.3);
+  }
+
+  .tier-title {
+    font-weight: 700;
+    font-size: 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .tier-first-class .tier-title { color: var(--primary); }
+  .tier-shared .tier-title { color: var(--indigo); }
+  .tier-base .tier-title { color: var(--muted-foreground); }
+
+  .code-pill {
+    background: #090d16;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #cbd5e1;
+    overflow-x: auto;
+  }
+
+  /* Phase Timeline */
+  .phase-row {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: 16px;
+    margin-bottom: 14px;
+    align-items: start;
+  }
+
+  .phase-tag {
+    font-weight: 700;
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    text-align: center;
+    border: 1px solid;
+  }
+  .phase-1 { background: rgba(52, 211, 153, 0.1); color: var(--emerald); border-color: rgba(52, 211, 153, 0.3); }
+  .phase-2 { background: rgba(56, 189, 248, 0.1); color: var(--primary); border-color: rgba(56, 189, 248, 0.3); }
+  .phase-3 { background: rgba(251, 191, 36, 0.1); color: var(--amber); border-color: rgba(251, 191, 36, 0.3); }
+
+  .phase-body {
+    background: #0f172a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .phase-body h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin-bottom: 4px;
+  }
+  .phase-body p {
+    color: var(--muted-foreground);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  /* Matrix Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th, td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    background: #0d1524;
+    color: #94a3b8;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  tr:hover td {
+    background: rgba(255,255,255,0.02);
+  }
+
+  .flow-diagram {
+    background: #090d16;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.6;
+    color: #94a3b8;
+    white-space: pre-wrap;
+    overflow-x: auto;
+  }
+  .hl-p { color: var(--primary); font-weight: 600; }
+  .hl-e { color: var(--emerald); font-weight: 600; }
+  .hl-a { color: var(--amber); font-weight: 600; }
+  .hl-i { color: var(--indigo); font-weight: 600; }
+
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="title-area">
+      <h1>Jarvis Session Management Blueprint</h1>
+      <div class="subtitle">Architecture, Contract Hierarchy, and Execution Phases (2026-11-08)</div>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <span class="badge badge-primary">T3 First-Class</span>
+      <span class="badge badge-emerald">3-Phase Plan</span>
+    </div>
+  </div>
+
+  <!-- Section 1: Architectural Hierarchy -->
+  <div class="card">
+    <h2>1. The 3 Architectural Tiers</h2>
+    <div class="grid-3">
+      
+      <!-- Tier 1 -->
+      <div class="tier-box tier-first-class">
+        <div class="tier-title">
+          <span>Tier 1: T3 Code</span>
+          <span class="badge badge-primary">First-Class</span>
+        </div>
+        <p style="font-size:12px; color:var(--muted-foreground);">
+          Independent, rich orchestration. Projects, git worktrees, threads, and Effect RPC WebSocket (protocol 2).
+        </p>
+        <div class="code-pill">
+          orchestrator.t3: T3Adapter<br>
+          ├── shell_snapshot()<br>
+          ├── open_project(folder, task)<br>
+          └── attach(thread_id, root)
+        </div>
+        <div style="font-size:11px; color:#38bdf8;">
+          ✦ Reached explicitly via <code>orchestrator.t3</code><br>
+          ✦ No duck-typing (<code>hasattr/isinstance</code> deleted)
+        </div>
+      </div>
+
+      <!-- Tier 2 -->
+      <div class="tier-box tier-shared">
+        <div class="tier-title">
+          <span>Tier 2: Coding Clients</span>
+          <span class="badge" style="background:rgba(129,140,248,0.15); color:var(--indigo); border:1px solid rgba(129,140,248,0.3);">One Contract</span>
+        </div>
+        <p style="font-size:12px; color:var(--muted-foreground);">
+          Claude Code, OpenCode, and Pi. Share one session lifecycle contract over distinct transports.
+        </p>
+        <div class="code-pill">
+          CodingSessionAdapter<br>
+          ├── list_sessions(cwd, limit)<br>
+          ├── pick_session(session)<br>
+          └── new_session(cwd)
+        </div>
+        <div style="font-size:11px; color:var(--indigo);">
+          ✦ Claude: Agent SDK resume / fork<br>
+          ✦ OpenCode: HTTP /api/session<br>
+          ✦ Pi: Unix domain sockets (~/.config/jarvis/pi)
+        </div>
+      </div>
+
+      <!-- Tier 3 -->
+      <div class="tier-box tier-base">
+        <div class="tier-title">
+          <span>Tier 3: Hermes Agent</span>
+          <span class="badge" style="background:rgba(148,163,184,0.15); color:var(--muted-foreground); border:1px solid rgba(148,163,184,0.3);">Base Only</span>
+        </div>
+        <p style="font-size:12px; color:var(--muted-foreground);">
+          Non-coding generalist (notes, calendar, research). No coding sessions managed by Jarvis.
+        </p>
+        <div class="code-pill">
+          BaseAgentAdapter<br>
+          ├── send_task(task)<br>
+          ├── answer(answer)<br>
+          ├── interrupt()<br>
+          └── busy: bool
+        </div>
+        <div style="font-size:11px; color:var(--muted-foreground);">
+          ✦ Hermes manages its own gateway runs<br>
+          ✦ Untouched by session refactoring
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Section 2: Implementation Matrix -->
+  <div class="card">
+    <h2>2. Implementation Matrix by Client</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Operation</th>
+          <th>Claude Code (SDK)</th>
+          <th>OpenCode 2 (HTTP SSE)</th>
+          <th>Pi (Unix Socket)</th>
+          <th>T3 Code (WS RPC)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="font-weight:600; color:#f1f5f9;">Session Discovery</td>
+          <td><code>claude_agent_sdk.list_sessions(directory, limit)</code></td>
+          <td><code>GET /api/session</code> + <code>x-opencode-directory</code></td>
+          <td><code>list_windows()</code> reading active sockets</td>
+          <td><code>shell_snapshot()</code> -> <code>recent_threads()</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600; color:#f1f5f9;">Pick / Resume</td>
+          <td>Restart SDK client with <code>resume=session.id</code> (refuse if busy)</td>
+          <td>Set <code>_session_id</code>, update folder scope, <code>_resync()</code></td>
+          <td>Reconnect to target window's Unix socket</td>
+          <td><code>attach(thread_id, root, connected=True)</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600; color:#f1f5f9;">Create New</td>
+          <td>Restart SDK client with <code>resume=None</code> in project folder</td>
+          <td><code>POST /api/session</code> with <code>location.directory</code></td>
+          <td>Not supported via bridge (user opens window)</td>
+          <td><code>launchThread()</code> with "Sync with master."</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600; color:#f1f5f9;">Crash Recovery</td>
+          <td>Resume same <code>_session_id</code>, notify user: "Claude restarted."</td>
+          <td>Reconnect SSE stream (10s backoff), re-read pending</td>
+          <td>Wait for window reload, surface if closed</td>
+          <td>Reconnect WS, resume from last sequence</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Section 3: Dual Entry-Points & Flows -->
+  <div class="card">
+    <h2>3. Dual Interaction Flows: CLI vs. Voice</h2>
+    <div class="flow-diagram">
+<span class="hl-p">┌────────────────────────────────────────────────────────────────────────────────────────┐</span>
+<span class="hl-p">│ FLOW A: Pre-Pipeline Keyboard Connection (Zero Voice/LLM Overhead)                     │</span>
+<span class="hl-p">└────────────────────────────────────────────────────────────────────────────────────────┘</span>
+  Terminal: <span class="hl-e">jarvis connect [claude | opencode | pi | t3-code]</span>
+      │
+      ├─── If target == t3-code (or default):
+      │    └──> Reads <span class="hl-i">T3CODE_PROJECT_ROOT</span> or lists <span class="hl-i">recent_threads()</span> ──> <span class="hl-e">t3.attach(thread)</span>
+      │
+      └─── If target in [claude, opencode, pi]:
+           └──> Calls <span class="hl-i">adapter.list_sessions()</span>
+                └──> Keyboard interactive prompt: <span class="hl-i">choose("Your recent sessions", labels, "Pick")</span>
+                     └──> Calls <span class="hl-e">await adapter.pick_session(chosen, connected=True)</span>
+                          └──> Locked for this run; prompt names it via <span class="hl-a">connected_thread()</span>
+
+<span class="hl-p">┌────────────────────────────────────────────────────────────────────────────────────────┐</span>
+<span class="hl-p">│ FLOW B: Mid-Conversation Voice Control (Phase 2, Gated by Routing Benchmark >= 95%)     │</span>
+<span class="hl-p">└────────────────────────────────────────────────────────────────────────────────────────┘</span>
+  User Voice: <span class="hl-e">"Continue the session where we fixed the navbar on Claude"</span>
+      │
+      ▼
+  <span class="hl-i">EXECUTIVE_MODEL</span> emits tool call:
+  <span class="hl-a">send_agent_task(agent_id="claude", session="fixed navbar", task="run the tests")</span>
+      │
+      ▼
+  Pipecat Tool Handler:
+      ├─── If <span class="hl-i">session == "new"</span>:
+      │    └──> Check not busy ──> <span class="hl-e">await adapter.new_session(project_cwd)</span>
+      ├─── If <span class="hl-i">session == &lt;words&gt;</span>:
+      │    └──> <span class="hl-i">match_sessions(await adapter.list_sessions(), words)</span> ──> <span class="hl-e">pick_session(best)</span>
+      └─── Relay <span class="hl-i">task</span> into resumed/picked session
+    </div>
+  </div>
+
+  <!-- Section 4: Three-Phase Roadmap -->
+  <div class="card">
+    <h2>4. Phased Implementation Roadmap</h2>
+    
+    <div class="phase-row">
+      <div class="phase-tag phase-1">PHASE 1</div>
+      <div class="phase-body">
+        <h3>The Contract, Keyboard Picker, & Clean T3 Reference</h3>
+        <p>
+          • Create <code>src/jarvis/sessions.py</code>: <code>AgentSession</code>, <code>CodingSessionAdapter</code>, and <code>match_sessions()</code>.<br>
+          • Implement adapter methods in <code>claude_adapter.py</code>, <code>opencode_adapter.py</code>, and <code>pi_adapter.py</code>.<br>
+          • Add explicit <code>orchestrator.t3</code> property; delete duck-typing checks in <code>agent_tools.py</code>, <code>prompts.py</code>, and <code>main.py</code>.<br>
+          • Generalize <code>jarvis connect [client]</code> in <code>cli.py</code> and <code>main.py</code>.<br>
+          • <strong>Safety gate:</strong> No prompt or tool schema modifications. Unit tests and mypy must pass.
+        </p>
+      </div>
+    </div>
+
+    <div class="phase-row">
+      <div class="phase-tag phase-2">PHASE 2</div>
+      <div class="phase-body">
+        <h3>Voice Session Selection via Pipecat Tool</h3>
+        <p>
+          • Add optional <code>session</code> property (<code>"new"</code> or search words) to <code>send_agent_task</code> (keeps 3 tools total, avoids tool bloat).<br>
+          • Populate top 5 recent sessions per coding agent in system prompt (like <code>project_list</code>) for zero-latency memory recall.<br>
+          • <strong>Safety gate:</strong> Run <code>scripts/bench_routing.py</code> before and after; accuracy must stay <strong>≥ 95%</strong>.
+        </p>
+      </div>
+    </div>
+
+    <div class="phase-row">
+      <div class="phase-tag phase-3">PHASE 3</div>
+      <div class="phase-body">
+        <h3>Triggered RAG Over Deep Transcripts</h3>
+        <p>
+          • Triggered <em>only</em> if user feedback confirms titles/first prompts are insufficient for retrieval.<br>
+          • Index message transcripts via <code>claude_agent_sdk.get_session_messages()</code> and OpenCode message endpoint into a local <code>jarvis_sessions</code> Qdrant collection.<br>
+          • Embed using local Ollama <code>bge-m3</code> (zero API cost, ~20 ms latency, same stack as <code>memory.py</code>).
+        </p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Section 5: Safeguards & Decisions -->
+  <div class="card">
+    <h2>5. Key Architecture Decisions & Safeguards</h2>
+    <div class="grid-3">
+      <div style="background:#0f172a; padding:12px; border-radius:8px; border:1px solid var(--border);">
+        <div style="color:var(--emerald); font-weight:600; margin-bottom:4px;">No Tool Bloat</div>
+        <p style="color:var(--muted-foreground); font-size:12px;">
+          Rather than a 4th tool (<code>manage_agent_session</code>) which dilutes LLM attention, session intent is unified into <code>send_agent_task(..., session="...")</code>.
+        </p>
+      </div>
+      <div style="background:#0f172a; padding:12px; border-radius:8px; border:1px solid var(--border);">
+        <div style="color:var(--amber); font-weight:600; margin-bottom:4px;">Busy State Protection</div>
+        <p style="color:var(--muted-foreground); font-size:12px;">
+          Restarting Claude's SDK client mid-turn drops in-flight work. <code>pick_session</code> and <code>new_session</code> reject while <code>busy</code> is True.
+        </p>
+      </div>
+      <div style="background:#0f172a; padding:12px; border-radius:8px; border:1px solid var(--border);">
+        <div style="color:var(--primary); font-weight:600; margin-bottom:4px;">Crash Context Preservation</div>
+        <p style="color:var(--muted-foreground); font-size:12px;">
+          If Claude Code CLI restarts unexpectedly, Jarvis now re-attaches to the exact same <code>_session_id</code> and informs the user instead of wiping state silently.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

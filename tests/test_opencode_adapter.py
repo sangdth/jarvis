@@ -61,6 +61,44 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
             await self.adapter.send_task("Now add dark mode")
         self.post.assert_awaited_once_with("/api/session/ses_1/prompt", json={"text": "Now add dark mode"})
 
+    async def test_sessions_are_listed_newest_first_and_scoped_to_a_folder(self) -> None:
+        listing = {"data": [
+            {"id": "ses_old", "title": "Old", "location": {"directory": "/p/a"}, "time": {"updated": 1_000}},
+            {"id": "ses_new", "title": "", "location": {"directory": "/p/a"}, "time": {"updated": 5_000}},
+        ]}
+        get = AsyncMock(return_value=MagicMock(json=lambda: listing, raise_for_status=lambda: None))
+        no_service = patch("jarvis.opencode_adapter.discover_service", return_value=None)
+        with patch.object(self.adapter._http, "get", new=get), no_service:
+            sessions = await self.adapter.list_sessions("/p/a", limit=1)
+        get.assert_awaited_once_with("/api/session", headers={"x-opencode-directory": "/p/a"})
+        self.assertEqual([(s.id, s.title, s.updated_at) for s in sessions], [("ses_new", "(untitled)", 5.0)])
+
+    async def test_pick_moves_to_the_session_and_forgets_the_old_question(self) -> None:
+        from jarvis.sessions import AgentSession
+
+        self.adapter._session_id, self.adapter._directory = "ses_1", "/p/a"
+        self.adapter._pending_permission = {"id": "per_1", "sessionID": "ses_1"}
+        empty = MagicMock(json=lambda: {"data": []}, raise_for_status=lambda: None)
+        with patch.object(self.adapter._http, "get", new=AsyncMock(return_value=empty)) as get:
+            self.assertTrue(await self.adapter.pick_session(AgentSession("ses_2", "Login", "/p/b", 1.0), connected=True))
+        self.assertEqual((self.adapter._session_id, self.adapter._directory), ("ses_2", "/p/b"))
+        self.assertIsNone(self.adapter._pending_permission)  # asked in the old session: can't be answered from here
+        self.assertTrue(self.adapter.connected)
+        get.assert_any_await("/api/permission/request", headers={"x-opencode-directory": "/p/b"})  # resynced there
+        self.adapter._running = True
+        self.assertFalse(await self.adapter.pick_session(AgentSession("ses_3", "x", "/p/b", 1.0)))  # not mid-turn
+
+    async def test_new_session_is_made_in_the_folder_and_a_failure_never_reuses_the_old_one(self) -> None:
+        self.adapter._session_id, self.adapter._directory = "ses_1", "/p/a"
+        made = MagicMock(json=lambda: {"data": {"id": "ses_9"}}, raise_for_status=lambda: None)
+        with patch.object(self.adapter._http, "post", new=AsyncMock(return_value=made)) as post:
+            self.assertTrue(await self.adapter.new_session("/p/b"))
+        post.assert_awaited_once_with("/api/session", json={"title": "Jarvis", "location": {"directory": "/p/b"}})
+        self.assertEqual(self.adapter._session_id, "ses_9")
+        with patch.object(self.adapter._http, "post", new=AsyncMock(side_effect=httpx.ConnectError("down"))):
+            self.assertFalse(await self.adapter.new_session())
+        self.assertIsNone(self.adapter._session_id)  # the next task makes one instead of going to ses_9
+
     async def test_a_sub_agent_session_does_not_end_the_turn(self) -> None:
         self.adapter._session_id, self.adapter._running = "ses_1", True
         await self.adapter._handle_event({"type": "session.text.ended", "data": {"sessionID": "ses_child", "text": "x"}})

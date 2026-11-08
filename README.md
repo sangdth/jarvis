@@ -143,6 +143,14 @@ and its finished turns are retold. Nothing is sent to the thread when you connec
 are back at the keyboard, or it reads out the replies to what you type too. As a project script, Jarvis runs
 inside the T3 Code app, so macOS asks whether T3 Code may use the microphone; allow it.
 
+### Continue a Claude Code or OpenCode session
+```bash
+jarvis connect claude      # or: jarvis connect opencode
+```
+It lists that agent's recent sessions in every folder, newest first, by folder and title. Pick one by number and
+what you say goes to it, in its own folder; finished turns are retold. Claude Code needs the `claude` CLI on your
+`PATH`; OpenCode needs its service running (step 4 above). Nothing is sent when you connect.
+
 ### Talk to an open Pi window
 ```bash
 jarvis connect pi

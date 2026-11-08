@@ -17,6 +17,7 @@ def fake_adapter(agent_id: str, name: str = "Agent One", role: str = "") -> Magi
     adapter.config.id = agent_id
     adapter.config.name = name
     adapter.config.role = role
+    adapter.connected = False  # a MagicMock attribute is truthy: every fake would count as `jarvis connect`ed
     return adapter
 
 
