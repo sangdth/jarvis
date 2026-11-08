@@ -1,11 +1,15 @@
 import asyncio
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
 from fakes import QUESTION_FORM, make
-from jarvis.opencode_adapter import OpenCodeSSEAdapter
+from jarvis.opencode_adapter import OpenCodeSSEAdapter, discover_service
 
 
 class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
@@ -82,7 +86,7 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
 
     async def test_resync_reads_out_each_pending_request_once(self) -> None:
         listing = {"/api/permission/request": [], "/api/form": [QUESTION_FORM]}
-        get = AsyncMock(side_effect=lambda path: MagicMock(json=MagicMock(return_value={"data": listing[path]})))
+        get = AsyncMock(side_effect=lambda path, **_: MagicMock(json=MagicMock(return_value={"data": listing[path]})))
         with patch.object(self.adapter._http, "get", new=get):
             await self.adapter._resync()
             await self.adapter._resync()
@@ -121,6 +125,124 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         logged = [call.args[0] for call in logger.debug.call_args_list]
         self.assertEqual(len(logged), 3, logged)  # refused, then the timeout, then refused again
         self.assertIn("ReadTimeout", logged[1])
+
+
+class TestDiscoverService(unittest.TestCase):
+    """The registered OpenCode service is used only when the file is the user's own and names a loopback url."""
+
+    def setUp(self) -> None:
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        self.file = Path(self.state.name) / "opencode" / "service.json"
+        self.file.parent.mkdir()
+        patcher = patch.dict(os.environ, {"XDG_STATE_HOME": self.state.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, url: str = "http://127.0.0.1:49374/", mode: int = 0o600) -> None:
+        self.file.write_text(json.dumps({"id": "x", "url": url, "pid": 1, "password": "pw"}))
+        self.file.chmod(mode)
+
+    def test_owner_only_loopback_file_is_used(self) -> None:
+        self.write()
+        self.assertEqual(discover_service(), ("http://127.0.0.1:49374", "pw"))
+
+    def test_no_file(self) -> None:
+        self.assertIsNone(discover_service())
+
+    def test_readable_by_others_is_ignored(self) -> None:
+        self.write(mode=0o644)
+        self.assertIsNone(discover_service())
+
+    def test_remote_url_is_ignored(self) -> None:
+        self.write(url="http://evil.example:80")
+        self.assertIsNone(discover_service())
+
+    def test_symlink_is_not_followed(self) -> None:
+        real = Path(self.state.name) / "real.json"
+        real.write_text(json.dumps({"url": "http://127.0.0.1:1", "password": "pw"}))
+        real.chmod(0o600)
+        self.file.symlink_to(real)
+        self.assertIsNone(discover_service())
+
+
+class TestSharedService(unittest.IsolatedAsyncioTestCase):
+    """On the shared service Jarvis keeps to the sessions in its own folder."""
+
+    def setUp(self) -> None:
+        with patch("jarvis.opencode_adapter.settings") as settings:  # not pinned, whatever the local .env says
+            settings.opencode_server_password = ""
+            self.adapter = make(OpenCodeSSEAdapter, "opencode_sse")
+
+    async def asyncTearDown(self) -> None:
+        await self.adapter._http.aclose()
+
+    def use_service(self) -> None:
+        with patch("jarvis.opencode_adapter.discover_service", return_value=("http://127.0.0.1:49374", "pw")):
+            self.adapter._use_service()
+
+    @staticmethod
+    def session_in(folder: str) -> AsyncMock:
+        return AsyncMock(return_value=MagicMock(
+            raise_for_status=MagicMock(), json=MagicMock(return_value={"data": {"location": {"directory": folder}}})
+        ))
+
+    def test_found_service_replaces_the_default_url(self) -> None:
+        self.use_service()
+        self.assertEqual(self.adapter.base_url, "http://127.0.0.1:49374")
+        self.assertEqual(str(self.adapter._http.base_url).rstrip("/"), "http://127.0.0.1:49374")
+        self.assertEqual(self.adapter._directory, str(Path("/tmp").resolve()))
+
+    def test_a_set_password_pins_the_server(self) -> None:
+        with patch("jarvis.opencode_adapter.settings") as settings:
+            settings.opencode_server_password = "mine"
+            adapter = make(OpenCodeSSEAdapter, "opencode_sse")
+        with patch("jarvis.opencode_adapter.discover_service", return_value=("http://127.0.0.1:1", "pw")) as found:
+            adapter._use_service()
+        found.assert_not_called()
+        self.assertEqual(adapter.base_url, "http://127.0.0.1:4096")
+
+    async def test_another_folders_request_is_not_read_out(self) -> None:
+        self.use_service()
+        event = {"type": "permission.asked", "data": {"id": "per_1", "sessionID": "ses_x", "action": "bash"}}
+        get = self.session_in("/Users/someone/other-project")
+        with patch.object(self.adapter._http, "get", new=get):
+            await self.adapter._handle_event(event)
+            await self.adapter._handle_event({"type": "session.text.ended", "data": {"sessionID": "ses_x"}})
+        get.assert_awaited_once_with("/api/session/ses_x")  # looked up once, then remembered
+        self.adapter._surface.assert_not_awaited()
+        self.assertIsNone(self.adapter._pending_permission)
+        self.assertIsNone(self.adapter._session_id)
+
+    async def test_own_folders_session_is_adopted(self) -> None:
+        self.use_service()
+        event = {"type": "permission.asked", "data": {"id": "per_1", "sessionID": "ses_1", "action": "bash"}}
+        with patch.object(self.adapter._http, "get", new=self.session_in(str(Path("/tmp").resolve()))):
+            await self.adapter._handle_event(event)
+        self.adapter._surface.assert_awaited_once()
+        self.assertEqual(self.adapter._session_id, "ses_1")
+
+    async def test_failed_lookup_is_retried_later(self) -> None:
+        self.use_service()
+        failing = AsyncMock(side_effect=httpx.ConnectError("down"))
+        with patch.object(self.adapter._http, "get", new=failing):
+            self.assertFalse(await self.adapter._is_ours("ses_1"))
+        with patch.object(self.adapter._http, "get", new=self.session_in(str(Path("/tmp").resolve()))):
+            self.assertTrue(await self.adapter._is_ours("ses_1"))
+
+    async def test_new_session_and_resync_are_scoped_to_cwd(self) -> None:
+        self.use_service()
+        folder = str(Path("/tmp").resolve())
+        created = MagicMock(is_success=True, json=MagicMock(return_value={"data": {"id": "ses_new"}}))
+        post = AsyncMock(side_effect=[created, MagicMock(is_success=True)])
+        with patch.object(self.adapter._http, "post", new=post):
+            self.assertTrue(await self.adapter.send_task("build a navbar"))
+        self.assertEqual(post.await_args_list[0].kwargs["json"]["location"], {"directory": folder})
+        get = AsyncMock(return_value=MagicMock(json=MagicMock(return_value={"data": []})))
+        with patch.object(self.adapter._http, "get", new=get):
+            await self.adapter._resync()
+        for call in get.await_args_list:
+            self.assertEqual(call.kwargs["headers"], {"x-opencode-directory": folder})
 
 
 if __name__ == "__main__":

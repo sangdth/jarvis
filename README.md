@@ -102,8 +102,9 @@ what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path
 - **Claude Code** runs through the Agent SDK with your own Claude settings (`defaultMode`, allow rules), the same as
   in your terminal. Whatever those settings would ask you, and Claude's own questions, are read out, and Claude waits
   for your answer.
-- **OpenCode** needs its v2 server running with the same password Jarvis has in `.env`:
-  `OPENCODE_SERVER_PASSWORD=<same value> opencode serve --port 4096`, started in the project folder.
+- **OpenCode** 2 runs its own service, and Jarvis finds it (`~/.local/state/opencode/service.json`); its sessions
+  go in the agent's `cwd`, and requests from other projects are ignored. To use a server of your own instead, start
+  it with `OPENCODE_SERVER_PASSWORD=<same value as in .env> opencode serve --port 4096` in the project folder.
 - **Hermes Agent** needs its API server: `API_SERVER_ENABLED=true` and an `API_SERVER_KEY` of 16+ characters in
   `~/.hermes/.env`, then `hermes gateway install` (port 8642). Hermes's own approval settings decide what it asks.
 - **T3 Code** (the default) needs the T3 Code app running (port 3773). Jarvis gets its own token through the `t3`

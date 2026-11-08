@@ -139,14 +139,15 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
 class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
     """Whisper is mocked; the embedder returns a fixed vector so the score is known."""
 
-    async def run_stt(self, text: str, embedding) -> list:
+    async def run_stt(self, text: str | None, embedding) -> list:
         import numpy as np
         from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
         from jarvis.voice_gates import SpeakerVerifiedWhisperSTT
 
         async def whisper(_self, _audio):
-            yield heard(text)
+            if text is not None:  # None: Whisper dropped the segment (no_speech_prob), so no frame at all
+                yield heard(text)
 
         embedder = MagicMock()
         embedder.embed.return_value = None if embedding is None else np.array(embedding, dtype=np.float32)
@@ -169,6 +170,49 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
 
     async def test_too_short_to_score_is_dropped(self) -> None:
         self.assertEqual(await self.run_stt("build a login page", None), [])
+
+    async def test_saving_keeps_dropped_sentences_too(self) -> None:
+        with patch("jarvis.voice_gates.settings") as settings, patch("jarvis.voice_gates.save_clip") as save:
+            settings.save_segments = 5
+            save.return_value = None
+            await self.run_stt("build a login page", [0.1, 0.9])  # other voice: dropped
+            await self.run_stt(None, [0.9, 0.1])  # Whisper heard nothing
+        self.assertEqual(save.call_count, 2)
+        self.assertEqual(save.call_args.args[0], b"\x00\x00" * 16000)
+        self.assertEqual(save.call_args.args[2], 5)
+
+    async def test_saving_is_off_by_default(self) -> None:
+        with patch("jarvis.voice_gates.settings") as settings, patch("jarvis.voice_gates.save_clip") as save:
+            settings.save_segments = 0
+            await self.run_stt("build a login page", [0.9, 0.1])
+        save.assert_not_called()
+
+
+class TestSaveClip(unittest.TestCase):
+    def test_writes_a_private_wav_and_keeps_the_newest(self) -> None:
+        import os
+        import stat
+        import tempfile
+        import wave
+        from pathlib import Path
+
+        from jarvis.voice_gates import save_clip
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "clips"
+            paths = [save_clip(b"\x01\x00" * 1600, 16000, keep=2, folder=folder) for _ in range(3)]
+            self.assertEqual(sorted(folder.glob("*.wav")), paths[1:])  # the oldest was deleted
+            with wave.open(str(paths[-1])) as clip:
+                self.assertEqual((clip.getframerate(), clip.getnchannels(), clip.getnframes()), (16000, 1, 1600))
+            self.assertEqual(stat.S_IMODE(os.stat(paths[-1]).st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+
+    def test_a_disk_error_does_not_raise(self) -> None:
+        from pathlib import Path
+
+        from jarvis.voice_gates import save_clip
+
+        self.assertIsNone(save_clip(b"\x00\x00", 16000, keep=1, folder=Path("/dev/null/clips")))
 
 
 class TestVoiceprint(unittest.TestCase):

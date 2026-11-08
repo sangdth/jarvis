@@ -14,7 +14,7 @@ from loguru import logger
 
 from jarvis.agent_adapter import WatchedAgentConfig
 from jarvis.agent_tools import agent_tool_handlers, agent_tools
-from jarvis.config import WHISPER_MODELS, settings
+from jarvis.config import JARVIS_HOME, WHISPER_MODELS, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
@@ -121,6 +121,8 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
         f"voiceprint {VOICEPRINT_PATH}"
     )
 
+    if settings.save_segments > 0:
+        logger.warning(f"SAVE_SEGMENTS={settings.save_segments}: every sentence heard is saved to {JARVIS_HOME / 'clips'}.")
     if settings.language != "en" and settings.whisper_model == WHISPER_MODELS["en"]:
         logger.warning(f"WHISPER_MODEL pins the English model; delete it from .env to hear {settings.language} better.")
     executive_filter = ExecutiveFilter()

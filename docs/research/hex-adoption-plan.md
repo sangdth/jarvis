@@ -5,6 +5,14 @@ source in `.venv`, the Hex source (`~/Projects/others/hex/src`), the live OpenCo
 `voice-recognition-misses.md` before it kept its place. The rule it keeps: Jarvis stays thin; it routes and relays, and
 the work lives in each agent's own harness.
 
+## Status (2026-11-08)
+
+Steps 1, 2 and 4 are built. Step 2's setting is `SAVE_SEGMENTS` (no `JARVIS_` prefix, like every other `.env` key);
+the "no text" log line is written only while saving, so a noisy room doesn't fill the log. Step 3 stays parked until
+a saved clip needs the whole pipeline to explain. Step 1 was checked read-only against the live service: it found
+port 49374, scoped the resync to `cwd`, and rejected a session from another folder. No session was created and no
+task sent; that last live check is still Sang's.
+
 ## Short version
 
 Of the seven ideas in the first draft, one survives and is expanded to fix two shared-daemon bugs, one is reshaped
