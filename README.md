@@ -90,7 +90,11 @@ again any time with `jarvis enroll`.
 ### 3. Configure `.env`
 `jarvis init` fills the two API keys; set the rest in `~/.config/jarvis/.env`. A variable set in
 your shell wins over the file, so `op run -- jarvis` (1Password) works too:
-- `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash`, thinking on), which also retells each finished agent turn as one short first-person outcome ("I pushed it, but there was nothing for a PR"), and for the decision model that tells whether a sentence is meant for Jarvis (`FILTER_MODEL`, `typesafe/jev-1.14`), and for picking memory facts out of each exchange (`EXTRACTION_MODEL`, a fast non-thinking model). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
+- `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash`, thinking on), which also retells each finished agent turn as one short first-person outcome ("I pushed it, but there was nothing for a PR"), and for the fallback speech check (`FILTER_MODEL`, `typesafe/jev-1.14`), and for picking memory facts out of each exchange (`EXTRACTION_MODEL`, a fast non-thinking model). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
+- `LAYA_API_KEY`: a console key (`laya_...`, from https://laya.happyvoxel.com, valid 90 days) for the speech check
+  that tells whether a sentence is meant for Jarvis: Laya's `jarvis-intent` model, fine-tuned for Jarvis. `FILTER_MODEL`
+  is asked at the same time and used when Laya fails or is slower than `LAYA_TIMEOUT_SECS`; left empty, only
+  `FILTER_MODEL` is used.
 - `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `t3-code`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
 - `LANGUAGE`: `en` (default) or `vi`. It sets the language Whisper listens for and, while `WHISPER_MODEL` is empty, the model: `mlx-community/whisper-large-v3-turbo` for `en`, [`sangdth/phowhisper-large-vien-cs-mlx-16bit`](https://huggingface.co/sangdth/phowhisper-large-vien-cs-mlx-16bit) for `vi`: VinAI's PhoWhisper-large tuned for Vietnamese with English words mixed in, about 3 GB, downloaded on first start. It takes about twice as long per sentence as turbo.

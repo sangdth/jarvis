@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     executive_model: str = "deepseek/deepseek-v4.1-flash"
     # Picks facts out of each exchange for long-term memory; a fast model, run with thinking off
     extraction_model: str = "deepseek/deepseek-v4.1-flash"
-    # Decision model that labels each heard sentence (is it for Jarvis?); won the 2026-11-02 benchmark
+    # OpenRouter decision model for the speech check (is a sentence for Jarvis?), used when Laya fails or is slow
     filter_model: str = "typesafe/jev-1.14"
 
     # Laya (self-hosted, HappyVoxel's GPU box) answers the speech check first; FILTER_MODEL is the fallback.
