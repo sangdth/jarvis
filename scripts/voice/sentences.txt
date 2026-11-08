@@ -1,0 +1,310 @@
+# Sentences for fine-tuning Whisper on the owner's voice (scripts/voice/record.py). One per line; `#` lines are
+# skipped. Written the way they are said to Jarvis: commands, coding and science words, project and agent names.
+# Add lines at the end: a recorded line keeps its clip, and its train or test split comes from its text.
+
+# Git and pull requests
+Merge the PR for me.
+Can you merge the pull request?
+Merge it.
+Merge the branch into master.
+Merge master into my branch first.
+Don't merge yet, wait for the checks.
+Squash and merge the PR.
+Rebase on master and push.
+Rebase the branch onto origin master.
+Resolve the merge conflict in the config file.
+There's a merge conflict, can you fix it?
+Open a pull request for this branch.
+Open a draft PR.
+Close the PR, we don't need it anymore.
+Review the PR and leave comments.
+Approve the pull request.
+What's the state of the PR?
+Are the checks green on the PR?
+Push the branch.
+Force push with lease.
+Commit the changes.
+Commit and push.
+Write a commit message for these changes.
+Amend the last commit.
+Revert the last commit.
+Cherry-pick that commit onto master.
+Create a new branch called sang dev.
+Switch to the master branch.
+Pull the latest from origin.
+Fetch and rebase.
+Stash the changes for now.
+Show me the git log.
+What changed since yesterday?
+Delete the old branch.
+Tag the release.
+Bump the version and tag it.
+Link the PR to the ticket.
+Request a review from the team.
+The CI is red, find out why.
+Re-run the failed job.
+
+# Coding tasks
+Fix the bug in the navbar.
+Build a login page with email and password.
+Add unit tests for the payment module.
+Refactor the auth service to use JWT.
+Why is the build failing?
+Rename the user table column to email address.
+Write a Python script that resizes all images in a folder.
+Run the tests.
+Run pytest on the speaker module.
+Run the type checker.
+Run mypy and ruff.
+Fix the lint errors.
+Add a migration for the new column.
+Write a database migration.
+Add an index on the created at column.
+Parse the JSON response.
+Add error handling around the API call.
+Validate the input with Zod.
+Add a Pydantic model for the request.
+Make the function async.
+Add a retry with exponential backoff.
+Cache the result in Redis.
+Add a WebSocket endpoint.
+Stream the response with server sent events.
+Debounce the search input.
+Memoize that component with useMemo.
+Use a virtualizer for the long list.
+Add a loading spinner.
+Make the page responsive on mobile.
+Add dark mode.
+Fix the race condition in the queue.
+The test is flaky, find out why.
+Profile the slow endpoint.
+Reduce the bundle size.
+Upgrade the dependencies.
+Pin the version in the lock file.
+Remove the dead code.
+Extract that into a helper function.
+Inline the variable.
+Add type hints to the module.
+Write a docstring for this class.
+Add logging instead of print statements.
+Deploy it to production.
+Roll back the deployment.
+Check the logs on the server.
+Restart the service.
+Set the environment variable.
+Rotate the API key.
+Add a health check endpoint.
+Write an integration test with a real database.
+Mock the HTTP client in the test.
+Add a fixture for the test user.
+Set up the GitHub Actions workflow.
+Build the Docker image.
+Write a Dockerfile with a multi-stage build.
+Add a cron job that runs every night.
+Expose the port in the config.
+Add row level security to the table.
+Write a SQL query that joins the orders and customers.
+Use a parameterized query.
+Add pagination to the endpoint.
+Return a 404 when the user doesn't exist.
+Handle the timeout gracefully.
+Add a feature flag for it.
+Write the README for this project.
+Update the changelog.
+Add a TypeScript interface for the props.
+Convert the enum to a string literal union.
+Use a dataclass with frozen equals true.
+Thread the context through with a timeout.
+Wrap the error with fmt Errorf.
+Add a goroutine and a wait group.
+Run go vet and staticcheck.
+
+# Tools, models and terms
+Use the Claude Agent SDK.
+Check the OpenRouter pricing.
+Use DeepSeek Flash for that.
+Run the benchmark again.
+Run the routing benchmark.
+Run the speech benchmark.
+Fine-tune the model with LoRA.
+Convert the model to MLX.
+Quantize it to eight bit.
+Run it on the Ollama app.
+Embed it with bge-m3.
+Store the vectors in Qdrant.
+Use Mem0 for the memory.
+Check the Pipecat pipeline.
+Lower the VAD stop seconds.
+The Whisper transcript is wrong.
+Tune the speaker threshold.
+Use ElevenLabs for the voice.
+Check the Cloudflare tunnel.
+Set up the Gatus status check.
+Look at the Woodpecker CI pipeline.
+Open it in Linear.
+Create a Linear ticket for that.
+Search with DeepWiki.
+Use Playwright for the end to end test.
+Use Vitest for the unit tests.
+Format it with Prettier.
+Lint it with Biome.
+Install it with uv.
+Sync the uv lock file.
+
+# Science, math and machine learning
+Compute the eigenvalues of the covariance matrix.
+Normalize the vectors before the dot product.
+Use cosine similarity instead.
+Take the gradient with respect to the weights.
+The loss is not converging.
+Lower the learning rate.
+Add weight decay.
+Use a cosine learning rate schedule.
+Increase the batch size.
+Use gradient accumulation.
+The model is overfitting.
+Add dropout to the attention layer.
+Freeze the encoder and train the decoder.
+Compute the word error rate on the test set.
+Split the data into train, validation and test.
+Shuffle the data set.
+Run a cross validation with five folds.
+Plot the confusion matrix.
+Compute precision, recall and F1.
+Draw the ROC curve.
+Compute the area under the curve.
+Fit a linear regression.
+Use logistic regression as the baseline.
+Train a gradient boosted tree.
+Try a random forest.
+Run principal component analysis.
+Reduce the dimensions with t-SNE.
+Cluster it with k-means.
+Compute the mean and the standard deviation.
+Use the median instead of the mean.
+Compute the p-value.
+Run a t-test between the two groups.
+The variance is too high.
+Bootstrap the confidence interval.
+Use a Bayesian prior.
+Compute the posterior distribution.
+Sample from a Gaussian distribution.
+Use a Poisson distribution.
+Fit a power law.
+Take the logarithm of both sides.
+Compute the derivative.
+Integrate over the whole domain.
+Solve the differential equation.
+Use the Fourier transform.
+Apply a low pass filter.
+Compute the spectrogram.
+Resample the audio to sixteen kilohertz.
+Use a mel spectrogram as the input.
+Compute the matrix multiplication on the GPU.
+Use the transformer architecture.
+Increase the context window.
+Use mixed precision training.
+Tokenize the text first.
+Compute the attention weights.
+Use the softmax over the logits.
+Run inference with temperature zero.
+Calibrate the confidence scores.
+Distill the large model into a small one.
+Evaluate on the held out set.
+Compare it against the baseline.
+
+# Talking to Jarvis and its agents
+Jarvis, what is OpenCode doing right now?
+Tell Claude to run the tests.
+Have OpenCode add dark mode.
+Ask OpenCode to update the README.
+Ask T3 Code to fix the navbar.
+Have T3 add a dark mode toggle.
+Have Claude Code add a dark mode toggle.
+Tell Hermes to find a cheap flight to Hanoi in December.
+Start a new Claude Code session.
+Open a fresh OpenCode session.
+On Claude Code, continue the session about speaker verification.
+Go back to the OpenCode session where we fixed the login bug.
+Jarvis, stop Claude.
+Stop it.
+Stop that.
+Cancel that.
+No, stop that.
+Shut up.
+Be quiet.
+Okay Jarvis, you can speak again.
+You can talk now.
+Yes, go ahead.
+No, don't do that.
+Use Postgres.
+Use SQLite for now.
+Approve it.
+Deny it.
+Now, please.
+Later.
+What's on my calendar tomorrow?
+Email Minh that I'll be ten minutes late.
+Remind me to call the bank at three PM.
+Summarize my unread emails.
+What's the status of the frontend?
+What is the status of the OpsCom demo project?
+No, I meant the admin dashboard, not the main one.
+And after that, update the README too.
+Continue where I left off.
+How many projects do we have in Happy Voxel?
+What projects are in Hugger Hustle?
+
+# Projects
+Continue working on the Hugger Hustle platform.
+Let's work on the Hugger Hustle platform v2.
+Open the OpsCom status project.
+Open the OpsCom dashboard.
+I want to work on Jarvis today.
+Let's work on the Hugger Hustle blog.
+Open the auto spam triage project.
+Continue on the geo AEO tracker.
+Open Flowy.
+Open the neuroparticles project.
+Let's work on Laya.
+Retrain Laya with the new feedback.
+Open Lakihelppi.
+Open the Influxify dispatch TMS.
+Open the OpsCom design system.
+Open Butterfly.
+Open Raphael.
+Open the data lakehouse.
+Open the scraping pack.
+Open Lodo.
+Open Hex.
+Open OpenMontage.
+Open the meal planner.
+Open the walkie talkie project.
+Open Gabriel.
+Open the Sieutoc platform.
+Open Fastbackr.
+Open the OpsCom landing page.
+Open the lead engine.
+Open the AI radar.
+
+# Short and casual
+Okay, cool.
+Thanks, that's great.
+Good morning.
+How are you?
+Are you there?
+What's up?
+Tell me a joke.
+I'm tired today.
+Hmm, let me think about that.
+Uh, yeah, okay.
+Not you.
+That's not for you.
+Wait a second.
+Hold on.
+Never mind.
+Sounds good.
+Perfect.
+Do it.
+Try again.
+What did you say?

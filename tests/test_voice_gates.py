@@ -147,6 +147,14 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
 class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
     """Whisper is mocked; the embedder returns a fixed vector so the score is known."""
 
+    def setUp(self) -> None:
+        from jarvis.config import settings
+
+        # Clip saving stays off unless a test turns it on: the developer's own .env may set SAVE_SEGMENTS.
+        saving = patch.object(settings, "save_segments", 0)
+        saving.start()
+        self.addCleanup(saving.stop)
+
     async def run_stt(self, text: str | None, embedding) -> list:
         import numpy as np
         from pipecat.services.whisper.stt import WhisperSTTServiceMLX
