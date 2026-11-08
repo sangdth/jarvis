@@ -100,7 +100,21 @@ class CliTest(unittest.TestCase):
             with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
                     patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
                 cli.main()
-            run.assert_awaited_once_with(connect=target)
+            run.assert_awaited_once_with(connect=target, meeting=False)
+
+    def test_meeting_flag_and_subcommand_enable_meeting_mode(self) -> None:
+        from unittest.mock import AsyncMock
+
+        for argv, target in (
+            (["jarvis", "meeting"], None),
+            (["jarvis", "--meeting"], None),
+            (["jarvis", "meeting", "connect"], "t3"),
+            (["jarvis", "connect", "pi", "--meeting"], "pi"),
+        ):
+            with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
+                    patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
+                cli.main()
+            run.assert_awaited_once_with(connect=target, meeting=True)
 
     def test_unknown_command_prints_usage(self) -> None:
         for argv in (["jarvis", "bogus"], ["jarvis", "connect", "claude", "extra"]):
