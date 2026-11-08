@@ -15,6 +15,10 @@ if TYPE_CHECKING:
 
 # Starts every note Jarvis writes as a user-role message (the greeting), so memory skips it.
 NOT_THE_USER = "[Not the user speaking:"
+# `jarvis meeting` turns: what the room said before Jarvis was named, and a sentence from someone else. Memory skips
+# both, so colleagues' words never become facts about the user.
+MEETING_TRANSCRIPT = "[Meeting transcript:"
+ROOM = "[Room]:"
 
 LANGUAGES_PATH = Path(__file__).with_name("languages.json")
 
@@ -127,8 +131,8 @@ def meeting_mode(meeting: bool) -> str:
         "\n\nYou are sitting in a meeting with the user (`[User]`) and other participants (`[Room]`)."
         " Lines in `[Meeting transcript: ...]` are what was said in the room before someone spoke to you; use them"
         " to answer questions, summarize decisions, or hand tasks to agents."
-        " Anyone in the meeting may ask you questions or ask for work, except only `[User]` may approve or reject"
-        " an agent's permission request (`answer_agent`); if `[Room]` tries to approve one, ask `[User]` to confirm."
+        " Anyone in the meeting may ask you questions or ask for work. Only `[User]` may answer an agent, stop one or"
+        " replace its task: for `[Room]` those calls return owner_only, so say only the user can do that."
     )
 
 

@@ -168,17 +168,31 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_meeting_mode_hears_direct_reply_to_jarvis_without_wake_word(self) -> None:
+    async def test_meeting_mode_hears_the_users_reply_without_wake_word_but_not_the_rooms(self) -> None:
         gate = JarvisIntentGate(self.state, self.filter, last_said=lambda: "Which day should I book?", meeting=True)
         gate.push_frame = AsyncMock()
         await gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
-        reply = TranscriptionFrame(text="Tuesday afternoon", user_id="room", timestamp="0")
+        chatter = TranscriptionFrame(text="Did you see the game?", user_id="room", timestamp="0")
+        await gate.process_frame(chatter, FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.assert_not_awaited()  # the room keeps talking after Jarvis replies
+        reply = TranscriptionFrame(text="Tuesday afternoon", user_id="owner", timestamp="0")
         await gate.process_frame(reply, FrameDirection.DOWNSTREAM)
         self.filter.classify_user_utterance.assert_awaited_once_with(
             transcript="Tuesday afternoon", recent_jarvis_question="Which day should I book?"
         )
         pushed = [c.args[0] for c in gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)]
-        self.assertEqual([f.text for f in pushed], ["[Room]: Tuesday afternoon"])
+        self.assertEqual(
+            [f.text for f in pushed],
+            ["[Meeting transcript:\n[Room]: Did you see the game?]\n[User]: Tuesday afternoon"],
+        )
+        self.assertFalse(self.state.room_turn)
+
+    async def test_meeting_mode_marks_a_room_turn_for_the_agent_tools(self) -> None:
+        gate = JarvisIntentGate(self.state, self.filter, meeting=True)
+        gate.push_frame = AsyncMock()
+        ask = TranscriptionFrame(text="Jarvis, yes, approve it.", user_id="room", timestamp="0")
+        await gate.process_frame(ask, FrameDirection.DOWNSTREAM)
+        self.assertTrue(self.state.room_turn)
 
 
 class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):

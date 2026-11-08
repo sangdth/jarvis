@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # Keep the last N sentences Whisper heard as WAVs in JARVIS_HOME/clips, dropped ones too; 0 = off. Your voice
     # goes to disk, so only while tracking down misses.
     save_segments: int = 0
+    # `jarvis meeting`: the virtual mic to send your voice and Jarvis's into (part of its name); empty = the first of
+    # mac_audio.VIRTUAL_MIC_NAMES that is installed. Pick the same device as the microphone in Google Meet.
+    meeting_virtual_mic: str = ""
 
     # TTS
     elevenlabs_api_key: str = ""

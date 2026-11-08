@@ -62,6 +62,21 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         client.search.assert_not_called()
         client.add.assert_not_called()
 
+    async def test_meeting_turns_are_not_saved_and_the_room_gets_no_memories(self) -> None:
+        client = MagicMock()
+        with (
+            patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+            patch.object(memory, "MEMORY_DIR", Path("/tmp/jarvis-test-memory")),
+            patch("mem0.Memory.from_config", return_value=client),
+        ):
+            service = memory.create_memory_service()
+        room = memory.ROOM + " Jarvis, what does Sang have planned tonight?"
+        await service._enhance_context_with_memories(MagicMock(), room)
+        client.search.assert_not_called()
+        for turn in (room, memory.MEETING_TRANSCRIPT + "\n[Room]: Anna is on leave.]\n[User]: Jarvis, note that."):
+            await service._store_messages([{"role": "user", "content": turn}, {"role": "assistant", "content": "Ok."}])
+        client.add.assert_not_called()
+
     def test_no_memory_when_ollama_is_down(self) -> None:
         with (
             patch.object(memory.settings, "openrouter_api_key", "sk-test"),

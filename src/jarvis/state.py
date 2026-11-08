@@ -119,6 +119,9 @@ class JarvisState:
         self.mode: JarvisMode = JarvisMode.VOICE
         self.pending_topics: list[AgentTopic] = []
         self.active_agent_context: dict[str, AgentTopic] = {}
+        # `jarvis meeting`: the turn the model is answering came from someone else, so agent tools that act on
+        # the user's behalf (answer, stop, replace) refuse it. Set by JarvisIntentGate on every turn it passes.
+        self.room_turn = False
         self.on_speak = on_speak
         self.on_beep = on_beep
         self.on_interrupt = on_interrupt

@@ -87,9 +87,13 @@ def agent_tools() -> list:
 def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[Any], Awaitable[None]]]:
     """Handlers for agent_tools(). Pipecat 1.x calls each with one FunctionCallParams (arguments, result_callback)."""
 
-    def handler(action, ok_status: str, fail_status: str, find=orchestrator.find):
+    def handler(action, ok_status: str, fail_status: str, find=orchestrator.find, owner_only: bool = False):
         async def handle(params: Any) -> None:
             args = params.arguments
+            # `jarvis meeting`: someone else on the call may ask for work, never approve, stop or replace it.
+            if (owner_only or args.get("replace")) and orchestrator.state.room_turn is True:
+                await params.result_callback({"status": "owner_only", "agent_id": args.get("agent_id")})
+                return
             agent = find(args.get("agent_id"))
             if agent is None:
                 await params.result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})
@@ -156,7 +160,11 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         "send_agent_task": handler(send, "sent", "failed"),
         # No id: an answer goes to the agent that asked, a stop to the one that is working.
         "answer_agent": handler(
-            lambda a, args: a.answer(args.get("answer", "")), "answered", "no_pending_question", orchestrator.find_waiting
+            lambda a, args: a.answer(args.get("answer", "")),
+            "answered",
+            "no_pending_question",
+            orchestrator.find_waiting,
+            owner_only=True,
         ),
-        "stop_agent": handler(stop, "stopped", "failed", orchestrator.find_busy),
+        "stop_agent": handler(stop, "stopped", "failed", orchestrator.find_busy, owner_only=True),
     }

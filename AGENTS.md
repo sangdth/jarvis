@@ -12,7 +12,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis update` upgrades it,
   `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
-  in), `jarvis connect claude|opencode|pi` (continue a session of that client; for Pi, an open window), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
+  in), `jarvis connect claude|opencode|pi` (continue a session of that client; for Pi, an open window), `jarvis meeting` (sit in a call; `--meeting` after `connect`), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
   (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
   (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
 - Needs: OpenCode 2's own service (found in `~/.local/state/opencode/service.json`), or `opencode serve` pinned with
@@ -50,6 +50,7 @@ speech check dropping the sentence, not the conversation model.
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                            |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
+| Meeting: call or Jarvis can't hear   | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |
 | Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`           |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy`   |
@@ -127,6 +128,10 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   base for the "still waiting" lines: `EXECUTIVE_MODEL` writes 6 new ones per task from them and the user's task
   (never an agent's text, never a progress claim), refilling at 4 used; the base lines are spoken only when that fails.
   Agent questions and approvals stay English: they never go through an LLM.
+- **In a meeting only the owner's voice acts for the owner.** `jarvis meeting` tags each sentence `[User]` or
+  `[Room]` (`SpeakerVerifiedWhisperSTT`) and buffers room talk until someone says "Jarvis" (`JarvisIntentGate`).
+  A room turn sets `JarvisState.room_turn`; `answer_agent`, `stop_agent` and a `replace` then return `owner_only`
+  in `agent_tools.py`, in code, not in the prompt. Memory neither saves meeting turns nor searches for the room.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.

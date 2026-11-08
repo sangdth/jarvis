@@ -27,6 +27,7 @@ from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from jarvis.config import JARVIS_HOME, settings
 from jarvis.executive_filter import ExecutiveFilter
+from jarvis.prompts import MEETING_TRANSCRIPT
 from jarvis.speaker import SpeakerEmbedder, cosine
 from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command, is_not_for_jarvis
 
@@ -237,11 +238,12 @@ class JarvisIntentGate(FrameProcessor):
             await self.state.on_interrupt()
 
         question = self._recent_jarvis_question()
+        # In a meeting only the user may answer Jarvis without naming it: the room keeps talking after each reply.
         if (
             self._meeting
             and classify_fast_command(transcript) is None
             and not is_not_for_jarvis(transcript)
-            and question is None
+            and (question is None or speaker == "Room")
             and not is_meeting_addressed(transcript)
         ):
             self._buffer_meeting(speaker, transcript)
@@ -276,8 +278,9 @@ class JarvisIntentGate(FrameProcessor):
         if self._meeting:
             history = "\n".join(self._meeting_log)
             self._meeting_log.clear()
-            prefix = f"[Meeting transcript:\n{history}]\n" if history else ""
+            prefix = f"{MEETING_TRANSCRIPT}\n{history}]\n" if history else ""
             frame = replace(frame, text=f"{prefix}[{speaker}]: {transcript}")
+        self.state.room_turn = speaker == "Room"
 
         # User is addressing Jarvis: this sentence is the whole user turn. The aggregator runs on
         # ExternalUserTurnStrategies, so only these frames start a turn (and interrupt Jarvis).

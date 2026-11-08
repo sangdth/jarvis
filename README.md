@@ -165,6 +165,19 @@ folder and session name. Pick one, and what you say goes into that window as if 
 retold. Jarvis can't answer a dialog in the window (an extension's confirm or select): it tells you one is waiting,
 and you answer it at the keyboard. A saved session with no window open isn't listed; open `pi` in it first.
 
+### Sit in a Google Meet call
+```bash
+brew install blackhole-2ch   # once: the virtual mic the call hears
+jarvis meeting               # or: jarvis connect --meeting
+```
+In Google Meet, set the microphone to **BlackHole 2ch**; Jarvis sends your voice and its own into it. Keep the
+speakers on your normal output and wear headphones: on speakers the mic hears the call a second time. Jarvis hears
+the call through macOS's system audio tap (macOS 14.2 or later), so allow your terminal under System Settings >
+Privacy & Security > Screen & System Audio Recording. People on the call talk to each other until someone says
+"Jarvis"; Jarvis then gets what was said since. Anyone may ask a question or for work, but only your voice can
+answer an agent's question, approve, stop or replace a task. Meeting talk is never saved to memory.
+`MEETING_VIRTUAL_MIC` in `.env` picks another virtual mic by name.
+
 ### Tuning and Troubleshooting
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence
   was passed on or ignored. T3 Code keeps terminal logs in `~/.t3/userdata/logs/terminals/*.log`.
