@@ -6,6 +6,7 @@ from jarvis.state import (
     JarvisState,
     UserIntent,
     classify_fast_command,
+    is_not_for_jarvis,
     synthesize_beep_pcm,
 )
 
@@ -27,6 +28,13 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_fast_command("Jarvis, nói được rồi"), UserIntent.UNMUTE)
         self.assertIsNone(classify_fast_command("Sửa lỗi đăng nhập giúp anh"))
         self.assertIsNone(classify_fast_command("Dừng lại đi."))  # stops the work, never mutes
+
+    def test_not_for_jarvis_phrases(self) -> None:
+        for text in ("Not you.", "Jarvis, I wasn't talking to you", "that's not for you", "Không phải nói với em"):
+            self.assertTrue(is_not_for_jarvis(text), text)
+        for text in ("It's not you, it's the build that keeps failing on CI", "Can you not use Redis here",
+                     "Did you see the game"):
+            self.assertFalse(is_not_for_jarvis(text), text)
 
     def test_whisper_noise_phrases_are_dropped(self) -> None:
         # Whisper writes these on silence; alone they must not reach the model as an answer to an approval.
