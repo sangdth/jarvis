@@ -17,7 +17,13 @@ from jarvis.state import UserIntent
 MIN_ACCURACY = 0.97  # INTENT_QUESTION scored 97% on 2026-11-02; a wording change may not go below it
 
 # One letter per label keeps the case table readable.
-A, I, M, U = (UserIntent.ADDRESSED_TO_JARVIS, UserIntent.IGNORE_BACKGROUND, UserIntent.MUTE, UserIntent.UNMUTE)  # noqa: E741
+A, I, M, U, N = (  # noqa: E741
+    UserIntent.ADDRESSED_TO_JARVIS,
+    UserIntent.IGNORE_BACKGROUND,
+    UserIntent.MUTE,
+    UserIntent.UNMUTE,
+    UserIntent.INTRODUCTION,
+)
 CASES: list[tuple[str, UserIntent]] = [
     ("Jarvis, what is OpenCode doing right now?", A),
     ("Build a login page with email and password", A),
@@ -66,6 +72,9 @@ CASES: list[tuple[str, UserIntent]] = [
     ("Stop talking please", M),
     ("Okay Jarvis, you can speak again", U),
     ("Alright, go ahead and talk now", U),
+    ("Jarvis, this is my friend David.", N),
+    ("Hey Jarvis, meet Sarah.", N),
+    ("Jarvis, I want to introduce someone to you.", N),
     # Vietnamese and mixed speech (Whisper detects the language per sentence)
     ("Jarvis ơi, sửa lỗi đăng nhập giúp anh", A),
     ("Fix cái bug login trong dashboard giúp mình", A),
@@ -80,6 +89,7 @@ CASES: list[tuple[str, UserIntent]] = [
     ("Im đi.", M),
     ("Jarvis, im lặng một chút", M),
     ("Nói được rồi", U),
+    ("Anh giới thiệu với em đây là bạn anh.", N),
 ]
 # (what Jarvis just said, what was heard): answers, often garbled by Whisper, and room talk right after Jarvis spoke.
 # The answers are real misses from the 2026-11-02..06 logs (docs/research/voice-recognition-misses.md).
@@ -118,9 +128,14 @@ async def main(rounds: int) -> int:
                 got = await filt.classify_user_utterance(text, recent_jarvis_question=last_said)
                 latencies.append((time.perf_counter() - start) * 1000)
                 calls += 1
-                # Heard vs ignored is what matters most; on top, mute and unmute must be exact: "Stop it." read as
-                # MUTE silences Jarvis instead of stopping the agent, and a missed "shut up" keeps it talking.
-                if (got != I) == (want != I) and (got == M) == (want == M) and (got == U) == (want == U):
+                # Heard vs ignored is what matters most; on top, mute, unmute, and introduction must be exact:
+                # "Stop it." read as MUTE silences Jarvis instead of stopping the agent, and a missed "shut up" keeps it talking.
+                if (
+                    (got != I) == (want != I)
+                    and (got == M) == (want == M)
+                    and (got == U) == (want == U)
+                    and (got == N) == (want == N)
+                ):
                     hits += 1
                 else:
                     misses[text] = got.value

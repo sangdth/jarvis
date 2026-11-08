@@ -5,7 +5,16 @@ from pathlib import Path
 import numpy as np
 
 from jarvis.enroll import suggest_threshold
-from jarvis.speaker import FRAME, SAMPLE_RATE, cosine, save_voiceprint, trim_silence
+from jarvis.speaker import (
+    FRAME,
+    SAMPLE_RATE,
+    SpeakerRegistry,
+    cosine,
+    extract_introduced_name,
+    extract_speaker_name,
+    save_voiceprint,
+    trim_silence,
+)
 
 
 class TestSpeaker(unittest.TestCase):
@@ -28,6 +37,54 @@ class TestSpeaker(unittest.TestCase):
 
     def test_suggested_threshold_sits_under_the_lowest_score(self) -> None:
         self.assertEqual(suggest_threshold([0.52, 0.41, 0.47]), 0.36)
+
+    def test_extract_speaker_name_recognizes_self_introductions_and_ignores_adjectives(self) -> None:
+        self.assertEqual(extract_speaker_name("Hi Jarvis, I'm David."), "David")
+        self.assertEqual(extract_speaker_name("Hello, my name is David!"), "David")
+        self.assertEqual(extract_speaker_name("You can call me Sarah."), "Sarah")
+        self.assertEqual(extract_speaker_name("Mình là Minh."), "Minh")
+        self.assertEqual(extract_speaker_name("Tên em là Linh."), "Linh")
+        self.assertIsNone(extract_speaker_name("I'm tired today"))
+        self.assertIsNone(extract_speaker_name("I'm going to grab a coffee"))
+        self.assertIsNone(extract_speaker_name("Build a login page"))
+        self.assertEqual(extract_speaker_name("David.", allow_bare=True), "David")
+
+    def test_extract_introduced_name_from_master(self) -> None:
+        self.assertEqual(extract_introduced_name("Jarvis, this is David."), "David")
+        self.assertEqual(extract_introduced_name("Jarvis, this is my friend Sarah."), "Sarah")
+        self.assertEqual(extract_introduced_name("Hey Jarvis, meet Minh."), "Minh")
+        self.assertIsNone(extract_introduced_name("Jarvis, let me introduce my friend."))
+        self.assertIsNone(extract_introduced_name("Jarvis, I want to introduce someone to you."))
+
+    def test_speaker_registry_creates_profiles_links_identity_and_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "speakers"
+            reg = SpeakerRegistry(folder=folder)
+
+            # First utterance from an unknown voice creates a fingerprint profile
+            p1 = reg.observe(np.array([0.0, 1.0], dtype=np.float32), threshold=0.5)
+            assert p1 is not None
+            self.assertEqual(p1.id, "voice_1")
+            self.assertIsNone(p1.name)
+            self.assertEqual(p1.clips, 1)
+
+            # Second utterance from the same voice matches and refines the profile
+            p2 = reg.observe(np.array([0.1, 0.99], dtype=np.float32), threshold=0.5)
+            self.assertIs(p2, p1)
+            self.assertEqual(p1.clips, 2)
+
+            # Linking a name ("David") saves the profile to disk
+            linked = reg.link_name(p1.id, "David", enroll=True)
+            assert linked is not None
+            self.assertEqual(linked.name, "David")
+            self.assertTrue(linked.enrolled)
+
+            # A fresh SpeakerRegistry loads the saved profile and matches David's voice
+            reloaded = SpeakerRegistry(folder=folder)
+            matched = reloaded.match(np.array([0.05, 0.98], dtype=np.float32), threshold=0.5)
+            assert matched is not None
+            self.assertEqual(matched.name, "David")
+            self.assertTrue(matched.enrolled)
 
 
 if __name__ == "__main__":

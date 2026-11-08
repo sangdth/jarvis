@@ -15,10 +15,11 @@ if TYPE_CHECKING:
 
 # Starts every note Jarvis writes as a user-role message (the greeting), so memory skips it.
 NOT_THE_USER = "[Not the user speaking:"
-# `jarvis meeting` turns: what the room said before Jarvis was named, and a sentence from someone else. Memory skips
-# both, so colleagues' words never become facts about the user.
+# `jarvis meeting` and enrolled guest turns: what the room or a guest said. Memory skips these, so other people's
+# words never become facts about the user or query the user's private memories.
 MEETING_TRANSCRIPT = "[Meeting transcript:"
 ROOM = "[Room]:"
+SPEAKER = "[Speaker:"
 
 LANGUAGES_PATH = Path(__file__).with_name("languages.json")
 
@@ -33,6 +34,11 @@ class LanguageText(TypedDict):
     waiting: list[str]  # no agent name: Jarvis speaks as one assistant
     enroll: list[str]  # `jarvis enroll`: lines read aloud for the voiceprint
     enroll_check: list[str]  # read after it, unseen, to measure the score and suggest SPEAKER_THRESHOLD
+    enroll_start: str  # spoken first when a new speaker starts talking after master's INTRODUCTION
+    enroll_questions: list[str]  # conversational questions asked to sample the new speaker's voice
+    enroll_ask_name: str  # asked if the speaker hasn't stated their name yet
+    enroll_done: str  # {name}
+    speaker_greeting: str  # {name}
 
 
 LANGUAGES: dict[str, LanguageText] = json.loads(LANGUAGES_PATH.read_text(encoding="utf-8"))
