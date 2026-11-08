@@ -173,6 +173,8 @@ and you answer it at the keyboard. A saved session with no window open isn't lis
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.
 - **"Continue working on [project]" / "Open [project]"** — Starts a T3 Code thread in that repo that syncs with master.
+- **"Start a new Claude Code session" / "On OpenCode, continue the session about [topic]"** — Starts a clean
+  conversation, or goes back to the earlier session whose title, branch or folder matches what you said.
 - **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Hermes.
 - **Answering an agent** ("yes", "use Postgres") — Goes to the question or approval the agent is waiting on.
 - **"Stop it"** / **"Stop that"** / **"Cancel that"** / **"Stop Claude"** — Stops the agent's current turn; with

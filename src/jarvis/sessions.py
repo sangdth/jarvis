@@ -10,7 +10,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from jarvis.agent_adapter import BaseAgentAdapter
+from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig
+from jarvis.state import JarvisState
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,10 @@ class AgentSession:
 
 class CodingSessionAdapter(BaseAgentAdapter):
     """A coding client whose sessions Jarvis can list, continue and start."""
+
+    def __init__(self, config: WatchedAgentConfig, state: JarvisState) -> None:
+        super().__init__(config, state)
+        self.cwd = str(Path(config.cwd).expanduser().resolve())  # the folder the current session works in
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
         """The client's sessions in cwd (every folder when None), newest first. Raises when the client is unreachable."""

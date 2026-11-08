@@ -96,7 +96,7 @@ class TestPiAdapter(unittest.IsolatedAsyncioTestCase):
             sessions = await self.adapter.list_sessions()
             self.assertEqual(await self.adapter.list_sessions("/elsewhere"), [])
         self.assertEqual([(s.id, s.title, s.cwd) for s in sessions], [("s1", "fix login", "/p/jarvis")] * 2)
-        second = [{"session": "s1", "socket": str(Path(self.tmp.name) / "2.sock")}]
+        second = [{"session": "s1", "cwd": "/p/web", "socket": str(Path(self.tmp.name) / "2.sock")}]
         with patch.object(pi_adapter, "list_windows", new=AsyncMock(return_value=second)):
             self.assertTrue(await self.adapter.pick_session(sessions[0], connected=True))
         await until(lambda: other.writers and self.adapter._writer is not None)

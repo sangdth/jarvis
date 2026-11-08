@@ -21,7 +21,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Lint and types: `uv run ruff check src tests scripts` and `uv run mypy` (config in `pyproject.toml`)
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 150 at 3 rounds)
-- Routing benchmark: `uv run python scripts/bench_routing.py` (about 200 paid calls; `bench_routing.py 1` runs one round, 68)
+- Routing benchmark: `uv run python scripts/bench_routing.py` (about 220 paid calls; `bench_routing.py 1` runs one round, 74)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
   <https://sangdth.github.io/jarvis/> on every push to master that touches `site/`.
 
@@ -76,6 +76,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   others extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`); a new
   client of that kind implements those three, with no case of its own in `main.py`, `agent_tools.py` or
   `prompts.py`. A switch never happens mid-turn (`busy`). Hermes is not a coding client and stays on the base.
+  By voice, `send_agent_task` takes `session` (`"new"`, or words matched against titles by `match_sessions`) and
+  `project` (a listed folder: its newest session, or a new one) for these clients (`agent_tools.py`
+  `switch_session`); a connected session ignores both. The system prompt lists no sessions.
 - **Claude Code uses the user's own settings** (`~/.claude/settings.json`, `defaultMode` and allow rules), as in
   their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in

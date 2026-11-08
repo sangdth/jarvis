@@ -76,7 +76,6 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
         self.base_url = (config.url or DEFAULT_URL).rstrip("/")
         # A password or url set by the user pins their own `opencode serve`; otherwise find the registered service.
         self._pinned = bool(settings.opencode_server_password) or config.url not in (None, DEFAULT_URL)
-        self._cwd = str(Path(config.cwd).expanduser().resolve())
         # The folder Jarvis's sessions live in, set once on the shared service; None: the server serves one folder.
         self._directory: str | None = None
         self._ours: dict[str, bool] = {}  # session id -> in self._directory, looked up once
@@ -128,7 +127,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
         url, password = found
         self.base_url = self._http.base_url = url
         self._http.auth = ("opencode", password)
-        self._directory = self._cwd
+        self._directory = self.cwd
 
     def _scope(self) -> dict[str, str]:
         """The header that scopes a listing to Jarvis's folder on the shared service (it serves `$HOME` by default)."""
@@ -288,7 +287,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
             AgentSession(
                 id=s["id"],
                 title=s.get("title") or "(untitled)",
-                cwd=(s.get("location") or {}).get("directory") or self._cwd,
+                cwd=(s.get("location") or {}).get("directory") or self.cwd,
                 updated_at=((s.get("time") or {}).get("updated") or 0) / 1000,
             )
             for s in resp.json().get("data", [])
@@ -297,7 +296,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
 
     def _move_to(self, folder: str) -> None:
         """Tasks and events from now on belong to this folder: forget what was asked and looked up in the old one."""
-        self._cwd = folder
+        self.cwd = folder
         if self._directory is not None:  # the shared service; a pinned server serves one folder of its own
             self._directory = folder
         self._ours = {}
@@ -319,7 +318,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
     async def new_session(self, cwd: str | None = None) -> bool:
         if self.busy:
             return False
-        self._move_to(cwd or self._cwd)
+        self._move_to(cwd or self.cwd)
         self._session_id = None  # if making one fails, the next task makes it; it never goes to the old one
         try:
             # Made now, not with the next task: an event from another session in the folder would latch first.
