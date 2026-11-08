@@ -32,7 +32,7 @@ speech check dropping the sentence, not the conversation model.
 
 | Symptom                              | Where                                                           |
 | :----------------------------------- | :-------------------------------------------------------------- |
-| Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`                         |
+| Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`, Laya `jarvis-intent`   |
 | Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`                 |
 | Which model answered, corrections    | `~/.config/jarvis/feedback/intent.jsonl`, `feedback.py`         |
 | Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`, `languages.json` |
@@ -130,9 +130,10 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
   `DEFAULT_CODING_AGENT` stops Jarvis at startup.
-- **Three model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
-  `FILTER_MODEL` (a decision model on `/api/alpha/decisions`) decides whether a sentence is meant for Jarvis;
-  `EXTRACTION_MODEL` picks memory facts, a fast model with thinking always off.
+- **Model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
+  `LAYA_MODEL` (Laya's `jarvis-intent`) decides whether a sentence is meant for Jarvis, with `FILTER_MODEL` (an
+  OpenRouter decision model on `/api/alpha/decisions`) as its fallback; `EXTRACTION_MODEL` picks memory facts, a
+  fast model with thinking always off.
 - **The speech check asks Laya first.** `LAYA_MODEL` (`jarvis-intent`, fine-tuned for Jarvis, served by
   HappyVoxel's GPU box at `LAYA_BASE_URL` with a console `LAYA_API_KEY`) answers; `FILTER_MODEL` is asked at the
   same time and used when Laya fails or passes `LAYA_TIMEOUT_SECS`. Every decision, both answers and the
