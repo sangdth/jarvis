@@ -6,7 +6,7 @@ import re
 import time
 import wave
 from collections.abc import AsyncGenerator, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -27,8 +27,15 @@ from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
 from jarvis.config import JARVIS_HOME, settings
 from jarvis.executive_filter import ExecutiveFilter
-from jarvis.prompts import MEETING_TRANSCRIPT
-from jarvis.speaker import SpeakerEmbedder, cosine
+from jarvis.prompts import LANGUAGES, MEETING_TRANSCRIPT, SPEAKER
+from jarvis.speaker import (
+    SpeakerEmbedder,
+    SpeakerRegistry,
+    VoiceProfile,
+    cosine,
+    extract_introduced_name,
+    extract_speaker_name,
+)
 from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command, is_not_for_jarvis
 
 # Whisper ends a sentence that trails off mid-thought with one of these ("Open the...").
@@ -37,12 +44,23 @@ TRAILING_OFF = ("...", "…", "-", "—")
 HOLD_SECS = 2.0
 # A sentence this soon after Jarvis stopped talking is judged as a possible answer to what it said.
 REPLY_WINDOW_SECS = 20.0
+# How long after the master's INTRODUCTION Jarvis waits for a new speaker to start talking or answer.
+ENROLL_TIMEOUT_SECS = 120.0
 # SAVE_SEGMENTS keeps the newest sentences here, to re-run Whisper and the voice check on real misses.
 CLIPS_DIR = JARVIS_HOME / "clips"
 # How many recent meeting utterances to hold and pass as context the next time Jarvis is addressed.
 MEETING_LOG_LIMIT = 40
 # In a meeting, people talk to each other by default; unless Jarvis just asked a question, it only answers when named.
 _MEETING_ADDRESS_PATTERNS = re.compile(r"\b(jarvis|javis|jarvis's)\b", re.IGNORECASE)
+
+
+@dataclass
+class _Enrollment:
+    started_at: float
+    hint_name: str | None = None
+    profile_id: str | None = None
+    questions_asked: int = 0
+    asked_name: bool = False
 
 
 def is_meeting_addressed(transcript: str) -> bool:
@@ -71,8 +89,10 @@ def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> P
 
 class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
     """
-    MLX Whisper that only passes on the master's sentences (or tags owner vs room in meeting mode).
+    MLX Whisper that passes on the master's sentences, known enrolled speakers, or a new speaker being enrolled
+    (or tags owner / known speaker / room in meeting mode).
     Pipecat hands run_stt one whole VAD sentence; the voice score runs alongside Whisper, so it adds no delay.
+    Every heard non-owner voice builds a fingerprint profile in `SpeakerRegistry`.
     Mute / unmute phrases pass from any voice: the worst case is that someone else silences Jarvis.
     Without a voiceprint (MASTER_CHECK off) nothing is scored and every sentence counts as the master's.
     """
@@ -84,6 +104,8 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         voiceprint: np.ndarray | None,
         threshold: float,
         meeting: bool = False,
+        registry: SpeakerRegistry | None = None,
+        state: JarvisState | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -91,30 +113,45 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         self._voiceprint = voiceprint
         self._threshold = threshold
         self._meeting = meeting
+        self._registry = registry if registry is not None else SpeakerRegistry(folder=None)
+        self._state = state
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         checking = self._embedder is not None and self._voiceprint is not None
-        score_task = asyncio.create_task(asyncio.to_thread(self._score, audio)) if checking else None
+        score_task = asyncio.create_task(asyncio.to_thread(self._analyze, audio)) if checking else None
         frames = [frame async for frame in super().run_stt(audio)]
-        score = await score_task if score_task else None
+        emb, score = await score_task if score_task else (None, None)
         heard = f"score={score:.2f}" if score is not None else "off"
+        owner = score is None or score >= self._threshold
+        profile = self._registry.observe(emb, self._threshold) if not owner else None
         # Saved before any drop: the misses worth replaying are the ones Whisper or the voice check threw away.
         clip = save_clip(audio, self.sample_rate, settings.save_segments) if settings.save_segments > 0 else None
         saved = f" ({clip.name})" if clip else ""
         if clip and not any(isinstance(f, TranscriptionFrame) for f in frames):
             logger.info(f"[Speaker] {heard} no text{saved}")  # Whisper heard noise or nothing
+        enrolling = self._state.enrolling if self._state is not None else False
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
-                owner = score is None or score >= self._threshold
+                known = profile is not None and profile.enrolled and profile.name is not None
                 if self._meeting:
-                    role = "owner" if owner else "room"
+                    if owner:
+                        role = "owner"
+                    elif known and profile is not None and profile.name:
+                        role = profile.name
+                    elif enrolling and profile is not None:
+                        role = profile.id
+                    else:
+                        role = "room"
                     logger.info(f"[Speaker] {heard} {role}: {frame.text!r}{saved}")
                     frame = replace(frame, user_id=role)
                 else:
-                    passed = owner or classify_fast_command(frame.text) is not None
+                    fast = classify_fast_command(frame.text) in (UserIntent.MUTE, UserIntent.UNMUTE)
+                    passed = owner or known or (enrolling and profile is not None) or fast
                     logger.info(f"[Speaker] {heard} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
                     if not passed:
                         continue
+                    if not owner and profile is not None:
+                        frame = replace(frame, user_id=profile.name if known and profile.name else profile.id)
             yield frame
 
     async def start(self, frame: StartFrame) -> None:
@@ -126,9 +163,13 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
             mlx_whisper.transcribe, np.zeros(16000, dtype=np.float32), path_or_hf_repo=self._settings.model  # type: ignore[attr-defined]
         )
 
-    def _score(self, audio: bytes) -> float:
+    def _analyze(self, audio: bytes) -> tuple[np.ndarray | None, float]:
         assert self._embedder is not None and self._voiceprint is not None  # only called with the master check on
-        return cosine(self._embedder.embed(audio), self._voiceprint)
+        emb = self._embedder.embed(audio)
+        return emb, cosine(emb, self._voiceprint)
+
+    def _score(self, audio: bytes) -> float:
+        return self._analyze(audio)[1]
 
 
 class JarvisIntentGate(FrameProcessor):
@@ -137,7 +178,9 @@ class JarvisIntentGate(FrameProcessor):
     1. Immediately catches 'Shut up' / 'Be quiet' -> switches Jarvis to BEEP_ONLY mode.
     2. Immediately catches 'You can talk' -> restores VOICE mode and reads queued topics.
     3. When in BEEP_ONLY mode, suppresses all normal conversational responses.
-    4. When in VOICE mode, runs the Always-On Turn Classifier so Jarvis only responds
+    4. When the master's intent is INTRODUCTION, starts a conversational speaker enrollment once the new speaker
+       speaks, asking a couple of questions and linking their stated name ('I'm David') to their voice profile.
+    5. When in VOICE mode, runs the Always-On Turn Classifier so Jarvis only responds
        when actually needed (no wake word required; in meeting mode, buffers room talk until Jarvis is addressed).
     """
 
@@ -148,6 +191,7 @@ class JarvisIntentGate(FrameProcessor):
         last_said: Callable[[], str | None] = lambda: None,
         *,
         meeting: bool = False,
+        registry: SpeakerRegistry | None = None,
     ) -> None:
         super().__init__()
         self.state = state
@@ -155,6 +199,8 @@ class JarvisIntentGate(FrameProcessor):
         # What Jarvis said last (the conversation model's last reply), for answers to its own questions.
         self._last_said = last_said
         self._meeting = meeting
+        self.registry = registry if registry is not None else SpeakerRegistry(folder=None)
+        self._enrollment: _Enrollment | None = None
         self._meeting_log: list[str] = []
         self._bot_stopped_at: float | None = None
         # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
@@ -180,7 +226,7 @@ class JarvisIntentGate(FrameProcessor):
         if not transcript:
             return
 
-        # Mute / unmute act at once and never join a held sentence.
+        # Mute / unmute / introduction act at once and never join a held sentence.
         if classify_fast_command(transcript) is None:
             held = self._held
             if held is not None:
@@ -199,6 +245,14 @@ class JarvisIntentGate(FrameProcessor):
     async def cleanup(self) -> None:
         self._cancel_hold_timer()
         await super().cleanup()
+
+    def _start_enrollment(self, hint_name: str | None = None) -> None:
+        self._enrollment = _Enrollment(started_at=time.monotonic(), hint_name=hint_name)
+        self.state.enrolling = True
+
+    def _stop_enrollment(self) -> None:
+        self._enrollment = None
+        self.state.enrolling = False
 
     def _start_hold_timer(self, direction: FrameDirection) -> None:
         self._cancel_hold_timer()
@@ -232,13 +286,85 @@ class JarvisIntentGate(FrameProcessor):
             del self._meeting_log[: len(self._meeting_log) - MEETING_LOG_LIMIT]
         logger.info(f"[Meeting] buffered ({speaker}): {transcript!r}")
 
+    def _resolve_profile(self, user_id: str) -> VoiceProfile | None:
+        if user_id in ("owner", "u", "", "room"):
+            return None
+        profile = self.registry.get(user_id)
+        if profile is None:
+            profile = VoiceProfile(id=user_id, voiceprint=np.ones(1, dtype=np.float32))
+            self.registry.profiles[user_id] = profile
+        return profile
+
+    async def _handle_enrollment(self, profile: VoiceProfile) -> None:
+        """Run the conversational enrollment steps once a new speaker starts speaking to Jarvis."""
+        assert self._enrollment is not None
+        lang_text = LANGUAGES[settings.language]
+        if profile.enrolled and profile.name:
+            self._stop_enrollment()
+            profile.greeted = True
+            greeting = lang_text["speaker_greeting"].format(name=profile.name)
+            logger.info(f"[Enroll] recognized known speaker {profile.name!r}; greeting by name")
+            if self.state.on_speak:
+                await self.state.on_speak(greeting)
+            return
+
+        if self._enrollment.profile_id is None:
+            self._enrollment.profile_id = profile.id
+            if self._enrollment.hint_name and not profile.name:
+                profile.name = self._enrollment.hint_name
+        self._enrollment.started_at = time.monotonic()
+
+        questions = lang_text["enroll_questions"]
+        if self._enrollment.questions_asked == 0:
+            self._enrollment.questions_asked = 1
+            msg = f"{lang_text['enroll_start']} {questions[0]}"
+            logger.info(f"[Enroll] started chat with {profile.id} (name={profile.name!r}): {msg!r}")
+            if self.state.on_speak:
+                await self.state.on_speak(msg)
+            return
+
+        if self._enrollment.questions_asked < len(questions):
+            q = questions[self._enrollment.questions_asked]
+            self._enrollment.questions_asked += 1
+            if self._enrollment.questions_asked == len(questions) and not profile.name:
+                msg = f"{q} {lang_text['enroll_ask_name']}"
+                self._enrollment.asked_name = True
+            else:
+                msg = q
+            logger.info(f"[Enroll] follow-up question for {profile.id} (name={profile.name!r}): {msg!r}")
+            if self.state.on_speak:
+                await self.state.on_speak(msg)
+            return
+
+        if not profile.name:
+            self._enrollment.asked_name = True
+            msg = lang_text["enroll_ask_name"]
+            logger.info(f"[Enroll] asking {profile.id} for their name")
+            if self.state.on_speak:
+                await self.state.on_speak(msg)
+            return
+
+        enrolled = self.registry.link_name(profile.id, profile.name, enroll=True) or profile
+        self._stop_enrollment()
+        msg = lang_text["enroll_done"].format(name=enrolled.name)
+        logger.info(f"[Enroll] completed enrollment for {enrolled.name!r} ({enrolled.id}, clips={enrolled.clips})")
+        if self.state.on_speak:
+            await self.state.on_speak(msg)
+
     async def _gate(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
         transcript = frame.text.strip()
-        speaker = "Room" if frame.user_id == "room" else "User"
+        is_owner = frame.user_id in ("owner", "u", "")
+        profile = self._resolve_profile(frame.user_id)
+        speaker = "User" if is_owner else (profile.name if profile and profile.name else "Room")
         logger.info(f"[User Transcript] ({self.state.mode.value}): {transcript!r}")
 
+        if self._enrollment is not None and time.monotonic() - self._enrollment.started_at > ENROLL_TIMEOUT_SECS:
+            self._stop_enrollment()
+
+        fast = classify_fast_command(transcript)
+
         # While muted only "you can talk" matters; skip the paid LLM call for everything else.
-        if self.state.mode == JarvisMode.BEEP_ONLY and classify_fast_command(transcript) is None:
+        if self.state.mode == JarvisMode.BEEP_ONLY and fast not in (UserIntent.MUTE, UserIntent.UNMUTE):
             if self._meeting:
                 self._buffer_meeting(speaker, transcript)
             return
@@ -247,13 +373,34 @@ class JarvisIntentGate(FrameProcessor):
         if is_not_for_jarvis(transcript) and self.state.on_interrupt:
             await self.state.on_interrupt()
 
+        if profile is not None and fast != UserIntent.IGNORE_BACKGROUND and not is_not_for_jarvis(transcript):
+            allow_bare = (
+                self._enrollment is not None
+                and self._enrollment.profile_id == profile.id
+                and self._enrollment.asked_name
+            )
+            stated_name = extract_speaker_name(transcript, allow_bare=allow_bare)
+            if stated_name:
+                enrolling_this = self._enrollment is not None and self._enrollment.profile_id in (None, profile.id)
+                profile = self.registry.link_name(profile.id, stated_name, enroll=not enrolling_this) or profile
+                speaker = profile.name or speaker
+
+        if (
+            self._enrollment is not None
+            and profile is not None
+            and fast not in (UserIntent.MUTE, UserIntent.UNMUTE, UserIntent.IGNORE_BACKGROUND)
+            and not is_not_for_jarvis(transcript)
+        ):
+            await self._handle_enrollment(profile)
+            return
+
         question = self._recent_jarvis_question()
         # In a meeting only the user may answer Jarvis without naming it: the room keeps talking after each reply.
         if (
             self._meeting
-            and classify_fast_command(transcript) is None
+            and fast is None
             and not is_not_for_jarvis(transcript)
-            and (question is None or speaker == "Room")
+            and (question is None or not is_owner)
             and not is_meeting_addressed(transcript)
         ):
             self._buffer_meeting(speaker, transcript)
@@ -278,6 +425,13 @@ class JarvisIntentGate(FrameProcessor):
             logger.debug("Jarvis is in BEEP_ONLY mode; ignoring non-unmute speech.")
             return
 
+        if intent == UserIntent.INTRODUCTION:
+            if is_owner:
+                hint_name = extract_introduced_name(transcript)
+                self._start_enrollment(hint_name=hint_name)
+                logger.info(f"[Enroll] master introduced a new speaker (hint={hint_name!r}); waiting for their voice.")
+            return
+
         if intent == UserIntent.IGNORE_BACKGROUND:
             if self._meeting:
                 self._buffer_meeting(speaker, transcript)
@@ -285,12 +439,23 @@ class JarvisIntentGate(FrameProcessor):
                 logger.debug(f"Ignored self-talk / unaddressed speech: {transcript!r}")
             return
 
+        self.state.room_turn = not is_owner
+        if profile is not None and profile.enrolled and profile.name:
+            if not profile.greeted:
+                profile.greeted = True
+                if self.state.on_speak:
+                    await self.state.on_speak(
+                        LANGUAGES[settings.language]["speaker_greeting"].format(name=profile.name)
+                    )
+                    return
+            if not self._meeting:
+                frame = replace(frame, text=f"{SPEAKER} {profile.name}]: {transcript}")
+
         if self._meeting:
             history = "\n".join(self._meeting_log)
             self._meeting_log.clear()
             prefix = f"{MEETING_TRANSCRIPT}\n{history}]\n" if history else ""
             frame = replace(frame, text=f"{prefix}[{speaker}]: {transcript}")
-        self.state.room_turn = speaker == "Room"
 
         # User is addressing Jarvis: this sentence is the whole user turn. The aggregator runs on
         # ExternalUserTurnStrategies, so only these frames start a turn (and interrupt Jarvis).

@@ -194,6 +194,96 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         await gate.process_frame(ask, FrameDirection.DOWNSTREAM)
         self.assertTrue(self.state.room_turn)
 
+    async def test_master_introduction_runs_conversational_enrollment_and_greets_known_speaker_next_time(self) -> None:
+        spoken: list[str] = []
+
+        async def on_speak(text: str) -> None:
+            spoken.append(text)
+
+        self.state.on_speak = on_speak
+        down = FrameDirection.DOWNSTREAM
+
+        # 1. Master introduces a new speaker -> INTRODUCTION intent arms enrollment
+        self.filter.classify_user_utterance.return_value = UserIntent.INTRODUCTION
+        await self.gate.process_frame(heard("Jarvis, let me introduce my friend."), down)
+        self.assertTrue(self.state.enrolling)
+        self.assertEqual(spoken, [])
+
+        # 2. New speaker starts speaking -> Jarvis says "Let's have a chat so I can remember your voice" + Q1
+        self.filter.classify_user_utterance.return_value = UserIntent.ADDRESSED_TO_JARVIS
+        await self.gate.process_frame(TranscriptionFrame(text="Hello Jarvis!", user_id="voice_1", timestamp="0"), down)
+        self.assertEqual(len(spoken), 1)
+        self.assertIn("Let's have a chat so I can remember your voice.", spoken[-1])
+        self.assertIn("How is your day going so far?", spoken[-1])
+
+        # 3. New speaker answers Q1 -> Jarvis asks Q2 + asks for their name
+        await self.gate.process_frame(
+            TranscriptionFrame(text="My day is going great, thanks.", user_id="voice_1", timestamp="0"), down
+        )
+        self.assertEqual(len(spoken), 2)
+        self.assertIn("What do you enjoy doing in your free time?", spoken[-1])
+        self.assertIn("What should I call you?", spoken[-1])
+
+        # 4. New speaker answers Q2 and states "I'm David" -> identity linked to profile, enrollment done
+        await self.gate.process_frame(
+            TranscriptionFrame(text="I like hiking, and I'm David.", user_id="voice_1", timestamp="0"), down
+        )
+        self.assertFalse(self.state.enrolling)
+        profile = self.gate.registry.get("David")
+        assert profile is not None
+        self.assertTrue(profile.enrolled)
+        self.assertEqual(profile.name, "David")
+        self.assertIn("David", spoken[-1])
+
+        # 5. Next time David speaks -> Jarvis does not ask enrollment questions again, greets David by name
+        await self.gate.process_frame(
+            TranscriptionFrame(text="Hey Jarvis!", user_id="David", timestamp="0"), down
+        )
+        self.assertEqual(spoken[-1], "Hi David! Good to hear you again.")
+        self.assertNotIn("Let's have a chat", spoken[-1])
+
+        # 6. Subsequent turns from David go to the LLM tagged with David's name and guest permissions
+        await self.gate.process_frame(
+            TranscriptionFrame(text="What's the weather like?", user_id="David", timestamp="0"), down
+        )
+        self.assertEqual(self.turns(), ["[Speaker: David]: What's the weather like?"])
+        self.assertTrue(self.state.room_turn)
+
+    async def test_speaker_stating_name_early_links_identity_and_completes_after_questions(self) -> None:
+        spoken: list[str] = []
+
+        async def on_speak(text: str) -> None:
+            spoken.append(text)
+
+        self.state.on_speak = on_speak
+        down = FrameDirection.DOWNSTREAM
+
+        self.filter.classify_user_utterance.return_value = UserIntent.INTRODUCTION
+        await self.gate.process_frame(heard("Jarvis, meet my friend."), down)
+
+        # Speaker states "My name is David" on the very first turn
+        await self.gate.process_frame(
+            TranscriptionFrame(text="Hi Jarvis, my name is David.", user_id="voice_1", timestamp="0"), down
+        )
+        profile = self.gate.registry.get("David")
+        assert profile is not None
+        self.assertEqual(profile.name, "David")
+        self.assertIn("Let's have a chat so I can remember your voice.", spoken[-1])
+
+        # Answers Q1 -> Jarvis asks Q2 without needing to ask their name again
+        await self.gate.process_frame(
+            TranscriptionFrame(text="Pretty good day so far.", user_id="voice_1", timestamp="0"), down
+        )
+        self.assertNotIn("What should I call you?", spoken[-1])
+
+        # Answers Q2 -> enrollment finishes and remembers David
+        await self.gate.process_frame(
+            TranscriptionFrame(text="I enjoy playing tennis.", user_id="voice_1", timestamp="0"), down
+        )
+        self.assertTrue(profile.enrolled)
+        self.assertFalse(self.state.enrolling)
+        self.assertIn("Nice to meet you, David!", spoken[-1])
+
 
 class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
     """Whisper is mocked; the embedder returns a fixed vector so the score is known."""
@@ -206,7 +296,9 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         saving.start()
         self.addCleanup(saving.stop)
 
-    async def run_stt(self, text: str | None, embedding, *, meeting: bool = False, check: bool = True) -> list:
+    async def run_stt(
+        self, text: str | None, embedding, *, meeting: bool = False, check: bool = True, registry=None, state=None
+    ) -> list:
         import numpy as np
         from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
@@ -223,8 +315,11 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
             voiceprint=np.array([1.0, 0.0], dtype=np.float32) if check else None,
             threshold=0.5,
             meeting=meeting,
+            registry=registry,
+            state=state,
         )
         self.embedder = embedder
+        self.stt = stt
         with patch.object(WhisperSTTServiceMLX, "run_stt", new=whisper):
             return [f async for f in stt.run_stt(b"\x00\x00" * 16000)]
 
@@ -243,6 +338,25 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
 
     async def test_other_voice_is_dropped(self) -> None:
         self.assertEqual(await self.run_stt("build a login page", [0.1, 0.9]), [])
+        # Even when dropped, the voice fingerprint is profiled in the registry
+        self.assertIn("voice_1", self.stt._registry.profiles)
+
+    async def test_enrolling_passes_unknown_voice_and_known_speaker_passes_later(self) -> None:
+        from jarvis.speaker import SpeakerRegistry
+
+        registry = SpeakerRegistry(folder=None)
+        state = JarvisState()
+        state.enrolling = True
+
+        # During enrollment, the new voice passes tagged with its profile id
+        frames = await self.run_stt("Hi, I'm David", [0.0, 1.0], registry=registry, state=state)
+        self.assertEqual([(f.user_id, f.text) for f in frames], [("voice_1", "Hi, I'm David")])
+
+        # Once linked and enrolled as "David", it passes even after enrolling is turned off
+        registry.link_name("voice_1", "David", enroll=True)
+        state.enrolling = False
+        frames = await self.run_stt("Hello Jarvis", [0.05, 0.99], registry=registry, state=state)
+        self.assertEqual([(f.user_id, f.text) for f in frames], [("David", "Hello Jarvis")])
 
     async def test_other_voice_passes_as_room_in_meeting_mode(self) -> None:
         room = await self.run_stt("what about the deadline", [0.1, 0.9], meeting=True)

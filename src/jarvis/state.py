@@ -17,6 +17,7 @@ class UserIntent(str, Enum):
     MUTE = "MUTE"
     UNMUTE = "UNMUTE"
     ADDRESSED_TO_JARVIS = "ADDRESSED_TO_JARVIS"
+    INTRODUCTION = "INTRODUCTION"
     IGNORE_BACKGROUND = "IGNORE_BACKGROUND"
 
 
@@ -36,13 +37,21 @@ def _last_line(text: str) -> str:
     return lines[-1][:180] if lines else ""
 
 
-# Fast deterministic regex patterns for instant mute/unmute without waiting on an LLM call
+# Fast deterministic regex patterns for instant mute/unmute/introduction without waiting on an LLM call
 _MUTE_PATTERNS = re.compile(
     r"\b(shut\s*up|be\s*quiet|stay\s*quiet|mute\s*yourself|stop\s*talking|hush|im\s*đi|im\s*lặng|đừng\s*nói\s*nữa)\b",
     re.IGNORECASE,
 )
 _UNMUTE_PATTERNS = re.compile(
     r"\b(you\s*can\s*talk|unmute|speak\s*up|talk\s*to\s*me\s*again|jarvis\s*unmute|go\s*ahead\s*and\s*talk|nói\s*được\s*rồi)\b",
+    re.IGNORECASE,
+)
+_INTRODUCTION_PATTERNS = re.compile(
+    r"\b(introduce\s+(you\s+to|my|a|someone|somebody)|let\s+me\s+introduce|want\s+to\s+introduce|like\s+to\s+introduce"
+    r"|jarvis\s*,?\s*(this\s+is|meet|say\s+hi\s+to|say\s+hello\s+to)"
+    r"|(this\s+is|meet)\s+my\s+(friend|brother|sister|wife|husband|partner|colleague|coworker|guest|son|daughter|mom|mother|dad|father)"
+    r"|remember\s+(his|her|their|this)\s+voice|enroll\s+(a\s+)?(new\s+)?(voice|speaker)"
+    r"|giới\s+thiệu\s+với|làm\s+quen\s+với|nhớ\s+giọng)\b",
     re.IGNORECASE,
 )
 
@@ -53,7 +62,7 @@ _WHISPER_FILLERS = {"okay", "ok", "thank you", "thanks", "thank you for watching
 
 
 def classify_fast_command(transcript: str) -> UserIntent | None:
-    """Deterministic zero-latency check for 'shut up' / 'you can talk' commands."""
+    """Deterministic zero-latency check for 'shut up' / 'you can talk' / introduction commands."""
     cleaned = transcript.strip()
     if not cleaned or cleaned.lower().strip(" .!?,") in _WHISPER_FILLERS:
         return UserIntent.IGNORE_BACKGROUND
@@ -62,6 +71,8 @@ def classify_fast_command(transcript: str) -> UserIntent | None:
         return UserIntent.UNMUTE
     if _MUTE_PATTERNS.search(cleaned):
         return UserIntent.MUTE
+    if _INTRODUCTION_PATTERNS.search(cleaned):
+        return UserIntent.INTRODUCTION
     return None
 
 
@@ -119,9 +130,11 @@ class JarvisState:
         self.mode: JarvisMode = JarvisMode.VOICE
         self.pending_topics: list[AgentTopic] = []
         self.active_agent_context: dict[str, AgentTopic] = {}
-        # `jarvis meeting`: the turn the model is answering came from someone else, so agent tools that act on
-        # the user's behalf (answer, stop, replace) refuse it. Set by JarvisIntentGate on every turn it passes.
+        # `jarvis meeting` or an enrolled guest speaker: the turn came from someone other than the master, so agent
+        # tools that act on the user's behalf (answer, stop, replace) refuse it. Set by JarvisIntentGate on every turn.
         self.room_turn = False
+        # True after the master's INTRODUCTION intent while Jarvis is enrolling a new speaker's voice.
+        self.enrolling = False
         self.on_speak = on_speak
         self.on_beep = on_beep
         self.on_interrupt = on_interrupt

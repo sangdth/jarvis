@@ -32,7 +32,15 @@
       "Search for a good Italian restaurant near the office.",
       "How many projects do I have right now?",
       "Read me the last message from the team."
-    ]
+    ],
+    "enroll_start": "Let's have a chat so I can remember your voice.",
+    "enroll_questions": [
+      "How is your day going so far?",
+      "What do you enjoy doing in your free time?"
+    ],
+    "enroll_ask_name": "What should I call you?",
+    "enroll_done": "Nice to meet you, {name}! I'll remember your voice.",
+    "speaker_greeting": "Hi {name}! Good to hear you again."
   },
   "vi": {
     "system": "The user speaks English or Vietnamese, often mixed. Reply in the language of their last sentence. Agents only read English: write every tool argument (`task`, `answer`) in English, translating the user's words, and keep project folder names exactly as listed.",
@@ -67,6 +75,14 @@
       "Tìm giúp mình một quán ăn ngon gần văn phòng.",
       "Hiện giờ mình có bao nhiêu dự án?",
       "Đọc tin nhắn mới nhất của nhóm cho mình nghe."
-    ]
+    ],
+    "enroll_start": "Mình trò chuyện một chút để mình nhớ giọng bạn nhé.",
+    "enroll_questions": [
+      "Hôm nay của bạn thế nào?",
+      "Lúc rảnh bạn thường thích làm gì?"
+    ],
+    "enroll_ask_name": "Mình nên gọi bạn là gì nhỉ?",
+    "enroll_done": "Rất vui được gặp {name}! Mình sẽ nhớ giọng của bạn.",
+    "speaker_greeting": "Chào {name}! Rất vui được nghe lại giọng của bạn."
   }
 }

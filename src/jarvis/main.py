@@ -127,7 +127,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
     from jarvis.mac_audio import MacVoiceTransport
-    from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, load_voiceprint
+    from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, SpeakerRegistry, load_voiceprint
     from jarvis.voice_gates import CLIPS_DIR, JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
 
     voiceprint = None
@@ -194,13 +194,16 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     # voice so the user can talk over it on speakers
     transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
 
-    # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice
-    # (or tagging room in meetings). Off, the speaker model isn't even loaded.
+    # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice,
+    # known enrolled speakers, or a new speaker being enrolled (or tagging room in meetings).
+    registry = SpeakerRegistry()
     stt = SpeakerVerifiedWhisperSTT(
         embedder=SpeakerEmbedder() if voiceprint is not None else None,
         voiceprint=voiceprint,
         threshold=settings.speaker_threshold,
         meeting=meeting,
+        registry=registry,
+        state=state,
         settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model, language=Language(settings.language)),
     )
 
@@ -266,6 +269,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         executive_filter=executive_filter,
         last_said=lambda: last_assistant_text(context.messages),
         meeting=meeting,
+        registry=registry,
     )
 
     # 5. Text-to-Speech (ElevenLabs if configured)

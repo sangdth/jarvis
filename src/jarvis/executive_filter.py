@@ -35,6 +35,10 @@ INTENT_QUESTION = {
             "an answer, or tells it to stop or cancel the work an agent is doing. Pick this when no other person "
             "is named or clearly meant"
         ),
+        UserIntent.INTRODUCTION.value: (
+            "introduces a new person or speaker to Jarvis so Jarvis can meet them or remember their voice "
+            "(\"this is David\", \"meet my friend\", \"let me introduce someone\")"
+        ),
         UserIntent.IGNORE_BACKGROUND.value: (
             "talks to another person: names them, continues a story or plan with them (meetings, sports, family, "
             "errands), or the words only fit someone in the room; or thinks out loud, or says only filler words"
