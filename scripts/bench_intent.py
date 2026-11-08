@@ -128,7 +128,7 @@ async def main(rounds: int) -> int:
         await filt.aclose()
 
     accuracy = hits / calls
-    print(f"model {filt.model}: {accuracy:.0%} over {calls} calls, median {statistics.median(latencies):.0f} ms")
+    print(f"model {filt.name}: {accuracy:.0%} over {calls} calls, median {statistics.median(latencies):.0f} ms")
     for text, got in misses.items():
         print(f"  miss: {text!r} -> {got}")
     return 0 if accuracy >= MIN_ACCURACY else 1

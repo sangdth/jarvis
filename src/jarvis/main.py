@@ -16,6 +16,7 @@ from jarvis.agent_adapter import WatchedAgentConfig
 from jarvis.agent_tools import agent_tool_handlers, agent_tools
 from jarvis.config import WHISPER_MODELS, settings
 from jarvis.executive_filter import ExecutiveFilter
+from jarvis.feedback import FeedbackLog
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
 from jarvis.pi_adapter import PiAdapter, install_extension, list_windows
@@ -125,7 +126,7 @@ async def run_pipecat_harness(connect: str | None = None) -> None:
         logger.warning(f"SAVE_SEGMENTS={settings.save_segments}: every sentence heard is saved to {CLIPS_DIR}.")
     if settings.language != "en" and settings.whisper_model == WHISPER_MODELS["en"]:
         logger.warning(f"WHISPER_MODEL pins the English model; delete it from .env to hear {settings.language} better.")
-    executive_filter = ExecutiveFilter()
+    executive_filter = ExecutiveFilter(feedback=FeedbackLog())  # logs decisions and corrections for retraining
     task_ref: dict[str, PipelineTask] = {}
 
     async def on_speak(text: str) -> None:
