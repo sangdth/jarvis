@@ -71,13 +71,20 @@ def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> P
 
 class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
     """
-    MLX Whisper that only passes on the owner's sentences (or tags owner vs room in meeting mode).
+    MLX Whisper that only passes on the master's sentences (or tags owner vs room in meeting mode).
     Pipecat hands run_stt one whole VAD sentence; the voice score runs alongside Whisper, so it adds no delay.
     Mute / unmute phrases pass from any voice: the worst case is that someone else silences Jarvis.
+    Without a voiceprint (MASTER_CHECK off) nothing is scored and every sentence counts as the master's.
     """
 
     def __init__(
-        self, *, embedder: SpeakerEmbedder, voiceprint: np.ndarray, threshold: float, meeting: bool = False, **kwargs
+        self,
+        *,
+        embedder: SpeakerEmbedder | None,
+        voiceprint: np.ndarray | None,
+        threshold: float,
+        meeting: bool = False,
+        **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._embedder = embedder
@@ -86,24 +93,26 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         self._meeting = meeting
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
-        score_task = asyncio.create_task(asyncio.to_thread(self._score, audio))
+        checking = self._embedder is not None and self._voiceprint is not None
+        score_task = asyncio.create_task(asyncio.to_thread(self._score, audio)) if checking else None
         frames = [frame async for frame in super().run_stt(audio)]
-        score = await score_task
+        score = await score_task if score_task else None
+        heard = f"score={score:.2f}" if score is not None else "off"
         # Saved before any drop: the misses worth replaying are the ones Whisper or the voice check threw away.
         clip = save_clip(audio, self.sample_rate, settings.save_segments) if settings.save_segments > 0 else None
         saved = f" ({clip.name})" if clip else ""
         if clip and not any(isinstance(f, TranscriptionFrame) for f in frames):
-            logger.info(f"[Speaker] score={score:.2f} no text{saved}")  # Whisper heard noise or nothing
+            logger.info(f"[Speaker] {heard} no text{saved}")  # Whisper heard noise or nothing
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
-                owner = score >= self._threshold
+                owner = score is None or score >= self._threshold
                 if self._meeting:
                     role = "owner" if owner else "room"
-                    logger.info(f"[Speaker] score={score:.2f} {role}: {frame.text!r}{saved}")
+                    logger.info(f"[Speaker] {heard} {role}: {frame.text!r}{saved}")
                     frame = replace(frame, user_id=role)
                 else:
                     passed = owner or classify_fast_command(frame.text) is not None
-                    logger.info(f"[Speaker] score={score:.2f} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
+                    logger.info(f"[Speaker] {heard} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
                     if not passed:
                         continue
             yield frame
@@ -118,6 +127,7 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         )
 
     def _score(self, audio: bytes) -> float:
+        assert self._embedder is not None and self._voiceprint is not None  # only called with the master check on
         return cosine(self._embedder.embed(audio), self._voiceprint)
 
 

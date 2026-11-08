@@ -329,11 +329,12 @@
       </div>
       <div class="node-item warn-border">
         <div class="node-name">
-          <span>Sherpa-ONNX</span>
-          <span class="node-tag">Concurrent</span>
+          <span>Master Check</span>
+          <span class="node-tag">Opt-in</span>
         </div>
-        <div class="node-tech">3D-Speaker ERes2Net</div>
-        <div class="node-body">Scores vs <span class="tool-tag">owner_voice.npy</span>. Background/TV speech dropped!
+        <div class="node-tech">Sherpa-ONNX 3D-Speaker ERes2Net</div>
+        <div class="node-body">With <span class="tool-tag">MASTER_CHECK=true</span>: scores vs
+          <span class="tool-tag">owner_voice.npy</span>, drops other voices; in meetings, tags guests.
           With <span class="tool-tag">SAVE_SEGMENTS=N</span>, each segment (even Whisper's no-text drops) is kept in
           <span class="tool-tag">clips/</span>, newest N, owner-only.</div>
         <div class="node-time"><strong>⏱ ~0</strong>~100 ms, alongside Whisper</div>

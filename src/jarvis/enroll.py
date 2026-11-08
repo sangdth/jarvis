@@ -12,6 +12,7 @@ import time
 import numpy as np
 
 from jarvis.config import settings
+from jarvis.init import ENV_PATH, set_env
 from jarvis.prompts import LANGUAGES
 from jarvis.speaker import SAMPLE_RATE, SpeakerEmbedder, cosine, save_voiceprint
 
@@ -70,6 +71,9 @@ def main() -> None:
 
     print(f"\nYour scores: {', '.join(f'{s:.2f}' for s in scores)} (now SPEAKER_THRESHOLD={settings.speaker_threshold}).")
     print(f"Suggested: set SPEAKER_THRESHOLD={suggest_threshold(scores):.2f} in .env, then restart Jarvis.")
+    if not settings.master_check:
+        set_env("MASTER_CHECK", "true")  # enrolling means the user wants Jarvis to act only on this voice
+        print(f"Turned on MASTER_CHECK in {ENV_PATH}: Jarvis now acts only on your voice.")
 
 
 if __name__ == "__main__":

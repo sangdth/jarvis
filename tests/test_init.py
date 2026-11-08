@@ -53,6 +53,15 @@ class InitTest(unittest.TestCase):
                 init.ask_api_keys(env)
             self.assertEqual(env.read_text(), "OTHER=1\nOPENROUTER_API_KEY=sk-or-1\nELEVENLABS_API_KEY=sk-or-1\n")
 
+    def test_set_env_replaces_a_line_or_adds_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text("MASTER_CHECK=false\nOTHER=1\n")
+            init.set_env("MASTER_CHECK", "true", env)
+            init.set_env("MEETING_GUESTS", "allow", env)
+            self.assertEqual(env.read_text(), "MASTER_CHECK=true\nOTHER=1\nMEETING_GUESTS=allow\n")
+            self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()

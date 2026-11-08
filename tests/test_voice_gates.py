@@ -206,7 +206,7 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         saving.start()
         self.addCleanup(saving.stop)
 
-    async def run_stt(self, text: str | None, embedding, *, meeting: bool = False) -> list:
+    async def run_stt(self, text: str | None, embedding, *, meeting: bool = False, check: bool = True) -> list:
         import numpy as np
         from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
@@ -219,10 +219,23 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         embedder = MagicMock()
         embedder.embed.return_value = None if embedding is None else np.array(embedding, dtype=np.float32)
         stt = SpeakerVerifiedWhisperSTT(
-            embedder=embedder, voiceprint=np.array([1.0, 0.0], dtype=np.float32), threshold=0.5, meeting=meeting
+            embedder=embedder if check else None,
+            voiceprint=np.array([1.0, 0.0], dtype=np.float32) if check else None,
+            threshold=0.5,
+            meeting=meeting,
         )
+        self.embedder = embedder
         with patch.object(WhisperSTTServiceMLX, "run_stt", new=whisper):
             return [f async for f in stt.run_stt(b"\x00\x00" * 16000)]
+
+    async def test_master_check_off_passes_any_voice_unscored(self) -> None:
+        frames = await self.run_stt("build a login page", [0.1, 0.9], check=False)
+        self.assertEqual([f.text for f in frames], ["build a login page"])
+        self.embedder.embed.assert_not_called()
+
+    async def test_master_check_off_in_a_meeting_counts_everyone_as_the_master(self) -> None:
+        frames = await self.run_stt("what about the deadline", [0.1, 0.9], meeting=True, check=False)
+        self.assertEqual([(f.user_id, f.text) for f in frames], [("owner", "what about the deadline")])
 
     async def test_owner_voice_passes(self) -> None:
         frames = await self.run_stt("build a login page", [0.9, 0.1])
