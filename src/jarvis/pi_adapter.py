@@ -79,6 +79,7 @@ class PiAdapter(CodingSessionAdapter):
         while True:
             try:
                 reader, self._writer = await asyncio.open_unix_connection(self.socket_path)
+                self._ready.set()
                 misses = 0
                 logger.info(f"Connected to the Pi window at {self.socket_path}")
                 while line := await reader.readline():

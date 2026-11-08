@@ -162,6 +162,30 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((self.adapter._session_id, self.adapter.cwd), (None, "/p/api"))
             self.assertEqual(restart.await_count, 2)
 
+    async def test_a_task_sent_with_a_session_switch_reaches_the_new_process(self) -> None:
+        class Client:
+            def __init__(self, options) -> None:
+                self.query = AsyncMock()
+
+            async def __aenter__(self):
+                await asyncio.sleep(0.01)  # the CLI takes a moment to start
+                return self
+
+            async def __aexit__(self, *exc) -> None:
+                return None
+
+            async def receive_messages(self):
+                await asyncio.sleep(3600)
+                yield
+
+        self.adapter._client = None  # not the setUp mock: only the restarted process may take the task
+        with patch("jarvis.claude_adapter.ClaudeSDKClient", Client):
+            await self.adapter.start()
+            self.assertTrue(await self.adapter.new_session())  # "start a new session and run the tests"
+            self.assertTrue(await self.adapter.send_task("run the tests"))
+            self.adapter._client.query.assert_awaited_once_with("run the tests")
+            await self.adapter.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,7 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
             try:
                 async with ClaudeSDKClient(options) as client:
                     self._client = client
+                    self._ready.set()
                     logger.info(f"Started Claude Code [{self.config.id}] in {self.cwd} (session {self._session_id})")
                     async for message in client.receive_messages():
                         await self._handle_message(message)

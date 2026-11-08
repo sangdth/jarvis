@@ -6,12 +6,17 @@ reads that store and points the client at a session. T3 Code has its own threads
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
+
 from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig
 from jarvis.state import JarvisState
+
+READY_SECS = 15.0  # how long a session switch waits for the client to come back up (Claude Code starts in ~2 s)
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,7 @@ class CodingSessionAdapter(BaseAgentAdapter):
     def __init__(self, config: WatchedAgentConfig, state: JarvisState) -> None:
         super().__init__(config, state)
         self.cwd = str(Path(config.cwd).expanduser().resolve())  # the folder the current session works in
+        self._ready = asyncio.Event()  # set by the watch loop once the client can take a task
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
         """The client's sessions in cwd (every folder when None), newest first. Raises when the client is unreachable."""
@@ -46,7 +52,13 @@ class CodingSessionAdapter(BaseAgentAdapter):
         """Run the watch loop again for a new session. Before start_all (`jarvis connect`) there is none to restart."""
         if self._task is not None:
             await BaseAgentAdapter.stop(self)  # cancels the loop only: no subclass cleanup like closing the client
+            self._ready.clear()
             await self.start()
+            # A task said with the switch ("new session and run the tests") is sent right after this returns.
+            try:
+                await asyncio.wait_for(self._ready.wait(), READY_SECS)
+            except TimeoutError:
+                logger.warning(f"[{self.config.id}] Not connected {READY_SECS:.0f} s after switching sessions.")
 
 
 _WORD = re.compile(r"\w+")
