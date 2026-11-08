@@ -103,9 +103,15 @@ class AgentOrchestrator:
             lines.stop()  # the agent finished: no batch for a task that's over
 
     @property
+    def t3(self) -> T3Adapter | None:
+        """T3 Code, the first-class client: projects and threads of its own. None when it is not enabled."""
+        return next((a for a in self.adapters.values() if isinstance(a, T3Adapter)), None)
+
+    @property
     def default_agent_id(self) -> str | None:
-        """The configured default agent, or the first loaded one when DEFAULT_CODING_AGENT is empty."""
-        return settings.default_coding_agent or next(iter(self.adapters), None)
+        """The agent picked with `jarvis connect`, else DEFAULT_CODING_AGENT, else the first loaded one."""
+        connected = next((a.config.id for a in self.adapters.values() if a.connected), None)
+        return connected or settings.default_coding_agent or next(iter(self.adapters), None)
 
     def find_waiting(self, agent_id: str | None) -> BaseAgentAdapter | None:
         """For an answer: the named agent, else the one that asked last, else the default."""

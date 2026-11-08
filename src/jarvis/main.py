@@ -18,21 +18,25 @@ from jarvis.config import WHISPER_MODELS, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.memory import create_memory_service
 from jarvis.orchestrator import AgentOrchestrator
-from jarvis.pi_adapter import PiAdapter, install_extension, list_windows
+from jarvis.pi_adapter import PiAdapter, install_extension
 from jarvis.prompts import AGENT_REPORT_PROMPT, LANGUAGES, greeting_prompt, system_prompt
+from jarvis.sessions import CodingSessionAdapter
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
-from jarvis.t3_adapter import T3Adapter, current_thread, recent_threads
+from jarvis.t3_adapter import current_thread, recent_threads
 
 
 async def pick_connection(orchestrator: AgentOrchestrator, target: str) -> dict[str, Any]:
-    """`jarvis connect [pi]`: pick the T3 thread or Pi window that every task goes to this run."""
-    return await pick_pi_window(orchestrator) if target == "pi" else await pick_thread(orchestrator)
+    """`jarvis connect [agent]`: pick the T3 thread or the coding session that every task goes to this run."""
+    t3 = orchestrator.t3
+    if target == "t3" or (t3 is not None and target == t3.config.id):
+        return await pick_thread(orchestrator)
+    return await pick_session(orchestrator, target)
 
 
 async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
     """`jarvis connect`: attach T3 Code to the thread this runs in (a T3 project script), else to one picked here."""
-    t3 = next((a for a in orchestrator.adapters.values() if isinstance(a, T3Adapter)), None)
+    t3 = orchestrator.t3
     if t3 is None:
         sys.exit("jarvis connect needs a T3 Code agent enabled in agents.json.")
     try:
@@ -52,24 +56,40 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
     return {**thread, "agent_id": t3.config.id, "agent_name": t3.config.name}
 
 
-async def pick_pi_window(orchestrator: AgentOrchestrator) -> dict[str, Any]:
-    """`jarvis connect pi`: talk to a Pi window that is open now, through Jarvis's Pi extension."""
-    if install_extension():
-        sys.exit("Installed Jarvis's Pi extension. Run /reload in your open Pi windows, then run this again.")
-    windows = await list_windows()
-    if not windows:
-        sys.exit("No Pi window is open with Jarvis's extension. Open pi in the project, then run this again.")
-    labels = [f"{Path(w['cwd']).name}: {w['name'] or w['first'] or '(new session)'}" for w in windows]
-    window = windows[choose("Your open Pi windows", labels, "Window to connect")]
-    pi = PiAdapter(WatchedAgentConfig(id="pi", name="Pi", type="pi", cwd=window["cwd"]), orchestrator.state, window["socket"])
-    orchestrator.adapters[pi.config.id] = pi
-    title = window["name"] or window["first"] or "a new session"
-    logger.info(f"Connected to Pi session {window['session']} ({title}, {window['cwd']})")
-    return {"id": window["session"], "title": title, "project": Path(window["cwd"]).name, "agent_id": "pi", "agent_name": "Pi"}
+async def pick_session(orchestrator: AgentOrchestrator, agent_id: str) -> dict[str, Any]:
+    """`jarvis connect claude|opencode|pi`: continue one of that client's sessions, picked at the keyboard."""
+    adapter = orchestrator.adapters.get(agent_id)
+    if agent_id == "pi" and adapter is None:  # Pi is reached only through an open window, so it is not in agents.json
+        if install_extension():
+            sys.exit("Installed Jarvis's Pi extension. Run /reload in your open Pi windows, then run this again.")
+        adapter = PiAdapter(WatchedAgentConfig(id="pi", name="Pi", type="pi"), orchestrator.state)
+    if not isinstance(adapter, CodingSessionAdapter):
+        ids = [a.config.id for a in orchestrator.adapters.values() if isinstance(a, CodingSessionAdapter)] + ["pi"]
+        sys.exit(f"jarvis connect {agent_id}: not a coding agent enabled in agents.json; use one of {ids}.")
+    name = adapter.config.name
+    try:
+        sessions = await adapter.list_sessions()
+    except Exception as exc:
+        sys.exit(f"Could not read {name} sessions; is {name} running? ({exc!r})")
+    if not sessions:
+        sys.exit("No Pi window is open with Jarvis's extension. Open pi in the project, then run this again."
+                 if agent_id == "pi" else f"No {name} sessions to continue.")
+    labels = [f"{Path(s.cwd).name}: {s.title}  ({_when(s.updated_at)})" for s in sessions]
+    session = sessions[choose(f"Your recent {name} sessions", labels, "Session to continue")]
+    if not await adapter.pick_session(session, connected=True):
+        sys.exit(f"Could not connect to that {name} session; it is busy or gone. Try again.")
+    orchestrator.adapters[adapter.config.id] = adapter
+    logger.info(f"Connected to {name} session {session.id} ({session.title}, {session.cwd})")
+    return {"id": session.id, "title": session.title, "project": Path(session.cwd).name,
+            "agent_id": adapter.config.id, "agent_name": name}
 
 
-def _when(iso: str | None) -> str:
-    return datetime.fromisoformat(iso).astimezone().strftime("%b %d %H:%M") if iso else ""
+def _when(moment: str | float | None) -> str:
+    """A thread's ISO time or a session's epoch seconds, as "Nov 08 13:02" in local time."""
+    if not moment:
+        return ""
+    when = datetime.fromisoformat(moment) if isinstance(moment, str) else datetime.fromtimestamp(moment)
+    return when.astimezone().strftime("%b %d %H:%M")
 
 
 def choose(heading: str, labels: list[str], question: str) -> int:

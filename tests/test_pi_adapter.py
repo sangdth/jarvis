@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from fakes import make
 from jarvis import pi_adapter
@@ -88,6 +89,22 @@ class TestPiAdapter(unittest.IsolatedAsyncioTestCase):
         await until(lambda: not self.adapter._dialog)
         self.adapter.state.active_agent_context.pop.assert_called_with("a1", None)  # speech check forgets it
 
+    async def test_sessions_are_the_open_windows_and_a_pick_moves_to_that_socket(self) -> None:
+        other = FakePi()
+        await other.start(Path(self.tmp.name) / "2.sock")
+        with patch.object(pi_adapter, "list_windows", new=lambda: list_windows(Path(self.tmp.name))):
+            sessions = await self.adapter.list_sessions()
+            self.assertEqual(await self.adapter.list_sessions("/elsewhere"), [])
+        self.assertEqual([(s.id, s.title, s.cwd) for s in sessions], [("s1", "fix login", "/p/jarvis")] * 2)
+        second = [{"session": "s1", "socket": str(Path(self.tmp.name) / "2.sock")}]
+        with patch.object(pi_adapter, "list_windows", new=AsyncMock(return_value=second)):
+            self.assertTrue(await self.adapter.pick_session(sessions[0], connected=True))
+        await until(lambda: other.writers and self.adapter._writer is not None)
+        self.assertTrue(await self.adapter.send_task("run the tests"))
+        self.assertEqual(await other.received.get(), {"type": "prompt", "text": "run the tests"})  # the new window
+        self.assertFalse(await self.adapter.new_session())  # a new Pi session is a window the user opens
+        await other.stop()
+
 
 class TestPiWindows(unittest.IsolatedAsyncioTestCase):
     async def test_lists_open_windows_and_deletes_dead_sockets(self) -> None:
@@ -98,7 +115,7 @@ class TestPiWindows(unittest.IsolatedAsyncioTestCase):
             dead.touch()  # a crashed window leaves its file behind
             windows = await list_windows(Path(tmp))
             await pi.stop()
-        self.assertEqual(windows, [{**HELLO, "socket": str(Path(tmp) / "1.sock")}])
+        self.assertEqual(windows, [{**HELLO, "socket": str(Path(tmp) / "1.sock"), "mtime": windows[0]["mtime"]}])
         self.assertFalse(dead.exists())
 
 

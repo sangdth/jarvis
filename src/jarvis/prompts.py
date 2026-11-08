@@ -152,14 +152,14 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
 
 def project_list(orchestrator: AgentOrchestrator) -> str:
     """The user's project folders, for agents that can open one (T3 Code), so a spoken name maps to a folder."""
-    openers = [a.config.id for a in orchestrator.adapters.values() if hasattr(a, "open_project")]
-    if not openers:
+    t3 = orchestrator.t3
+    if t3 is None:
         return ""
     # shortcut: read once at startup; a repo cloned while Jarvis runs shows up after a restart.
     projects = list_projects()
     return (
         f"\n\nThe user's projects (folders under {PROJECTS_LABEL}). When the user wants to work on one (\"continue on the"
-        f" Hugger Hustle platform\"), call send_agent_task for `{openers[0]}` with `project` set to the folder exactly"
+        f" Hugger Hustle platform\"), call send_agent_task for `{t3.config.id}` with `project` set to the folder exactly"
         " as listed; speech recognition mishears names, so pick the closest one. Give a `task` only when the user"
         " says what to do there; \"continue on X\" or \"open X\" alone has no task. Set `project` also when the"
         " user names it in a reply to your question. Coding with no project named needs no `project`. Questions"

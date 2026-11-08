@@ -2,10 +2,11 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
+from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage, SDKSessionInfo, SystemMessage
 
 from fakes import make
 from jarvis.claude_adapter import ClaudeCodeAdapter
+from jarvis.sessions import AgentSession
 
 
 def context(**kw):
@@ -107,6 +108,7 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
                 yield
 
         self.adapter._running = True
+        await self.adapter._handle_message(SystemMessage(subtype="init", data={"session_id": "ses-9"}))
         real_sleep = asyncio.sleep
         with (
             patch("jarvis.claude_adapter.ClaudeSDKClient", Client),
@@ -118,6 +120,10 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(starts), 2)
             self.assertIsNotNone(self.adapter._client)
             self.assertFalse(self.adapter.busy)  # the dead turn no longer counts as running
+            self.assertEqual([o.resume for o in starts], ["ses-9", "ses-9"])  # the same conversation, not an empty one
+            self.adapter._surface.assert_awaited_once_with(
+                "stopped in the middle of a task; restarting it in the same conversation."
+            )
             loop.cancel()
 
     async def test_stop_then_send_keeps_the_new_task_running(self) -> None:
@@ -131,6 +137,30 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
         await self.adapter._handle_message(MagicMock(spec=ResultMessage, result="HuggerHustle is fine.", is_error=False))
         self.adapter._surface.assert_awaited_once_with("HuggerHustle is fine.", is_report=True)
         self.assertFalse(self.adapter.busy)
+
+
+    async def test_sessions_are_listed_from_the_sdk_newest_first(self) -> None:
+        info = SDKSessionInfo(session_id="u1", summary="fix login", last_modified=1_700_000_000_000, custom_title=None,
+                              first_prompt="fix the login", git_branch="fix/login", cwd="/p/web")
+        with patch("jarvis.claude_adapter.list_sessions", return_value=[info]) as listed:
+            sessions = await self.adapter.list_sessions("/p/web", limit=5)
+        listed.assert_called_once_with(directory="/p/web", limit=5)
+        self.assertEqual(sessions, [AgentSession("u1", "fix login", "/p/web", 1_700_000_000.0, "fix/login")])
+
+    async def test_pick_and_new_restart_the_process_but_never_mid_turn(self) -> None:
+        session = AgentSession("u1", "fix login", "/p/web", 1.0)
+        self.adapter._task = MagicMock()  # the watch loop is running
+        with patch.object(self.adapter, "_restart", new=AsyncMock()) as restart:
+            self.adapter._running = True
+            self.assertFalse(await self.adapter.pick_session(session))
+            self.assertFalse(await self.adapter.new_session())
+            restart.assert_not_awaited()
+            self.adapter._running = False
+            self.assertTrue(await self.adapter.pick_session(session))
+            self.assertEqual((self.adapter._session_id, self.adapter._cwd), ("u1", "/p/web"))
+            self.assertTrue(await self.adapter.new_session("/p/api"))
+            self.assertEqual((self.adapter._session_id, self.adapter._cwd), (None, "/p/api"))
+            self.assertEqual(restart.await_count, 2)
 
 
 if __name__ == "__main__":
