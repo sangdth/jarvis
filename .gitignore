@@ -8,3 +8,5 @@ __pycache__/
 /models/
 /memory/
 /clips/
+/voice_data/
+/feedback/
