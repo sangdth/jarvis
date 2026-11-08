@@ -1,8 +1,7 @@
 # Session management for the coding clients (plan, 2026-11-08)
 
-Status: Phase 1 built (2026-11-08). Phase 2 is on hold: the routing benchmark scored 53% on master's own prompt
-(`deepseek/deepseek-v4.1-flash`, 204 calls) before any change, so it can't gate this work until that is fixed.
-Phase 3 waits for its trigger.
+Status: Phases 1 and 2 built (2026-11-08). Routing benchmark: 94% before Phase 2 (204 calls), 96% after
+(222 calls, the session cases all hit). Phase 3 waits for its trigger.
 
 ## Why
 
@@ -121,9 +120,11 @@ on the best hit; `project` resolves to a folder under `PROJECTS` the same way `T
 (listed folders only, case-blind), and becomes that `cwd`. While `connected`, `session` and `project` are ignored
 with `nothing_to_send`, the same as T3 today.
 
-The system prompt gets, per coding client, its five most recent sessions (title and project), the way
-`project_list` lists projects. Questions about them ("what was I doing in OpenCode yesterday?") are answered
-from that list with no tool, mirroring the projects rule in `AGENTS.md`.
+Built without the session list in the system prompt: the prompt is built once at startup, so the list would go
+stale within the run, and OpenCode and Pi can only be read asynchronously. `session` words go to `match_sessions`
+at call time instead. Questions about past sessions ("what was I doing in OpenCode yesterday?") are not covered;
+add a tool result for them if users ask. The project list now shows whenever any coding client is enabled, not
+only T3 Code, and names the others for a project the user gives them.
 
 Gate: `uv run python scripts/bench_routing.py` before and after; add cases for "start a new session", "continue
 the session about X on OpenCode", and a plain task that must not set `session`. Stays at or above 95%.

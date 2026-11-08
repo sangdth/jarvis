@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from jarvis.sessions import CodingSessionAdapter
 from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
 
 if TYPE_CHECKING:
@@ -151,16 +152,23 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
 
 
 def project_list(orchestrator: AgentOrchestrator) -> str:
-    """The user's project folders, for agents that can open one (T3 Code), so a spoken name maps to a folder."""
+    """The user's project folders, for agents that can work in one, so a spoken name maps to a folder."""
+    coders = [a.config.id for a in orchestrator.adapters.values() if isinstance(a, CodingSessionAdapter)]
     t3 = orchestrator.t3
-    if t3 is None:
+    default = orchestrator.default_agent_id
+    opener = t3.config.id if t3 else default if default in coders else coders[0] if coders else None
+    if opener is None:
         return ""
+    others = [c for c in coders if c != opener]
     # shortcut: read once at startup; a repo cloned while Jarvis runs shows up after a restart.
     projects = list_projects()
     return (
         f"\n\nThe user's projects (folders under {PROJECTS_LABEL}). When the user wants to work on one (\"continue on the"
-        f" Hugger Hustle platform\"), call send_agent_task for `{t3.config.id}` with `project` set to the folder exactly"
-        " as listed; speech recognition mishears names, so pick the closest one. Give a `task` only when the user"
+        f" Hugger Hustle platform\"), call send_agent_task for `{opener}` with `project` set to the folder exactly"
+        " as listed; speech recognition mishears names, so pick the closest one."
+        + (f" When the user names {' or '.join(f'`{c}`' for c in others)} for it, send it there, with the same `project`."
+           if others else "")
+        + " Give a `task` only when the user"
         " says what to do there; \"continue on X\" or \"open X\" alone has no task. Set `project` also when the"
         " user names it in a reply to your question. Coding with no project named needs no `project`. Questions"
         " about the projects themselves (which exist, how many, what is in a group) you answer from this list"

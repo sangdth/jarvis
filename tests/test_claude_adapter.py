@@ -157,9 +157,9 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
             restart.assert_not_awaited()
             self.adapter._running = False
             self.assertTrue(await self.adapter.pick_session(session))
-            self.assertEqual((self.adapter._session_id, self.adapter._cwd), ("u1", "/p/web"))
+            self.assertEqual((self.adapter._session_id, self.adapter.cwd), ("u1", "/p/web"))
             self.assertTrue(await self.adapter.new_session("/p/api"))
-            self.assertEqual((self.adapter._session_id, self.adapter._cwd), (None, "/p/api"))
+            self.assertEqual((self.adapter._session_id, self.adapter.cwd), (None, "/p/api"))
             self.assertEqual(restart.await_count, 2)
 
 

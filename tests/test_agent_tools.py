@@ -98,5 +98,76 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         p.result_callback.assert_awaited_once_with({"status": "agent_not_active", "agent_id": "nope"})
 
 
+
+class TestSessionSwitch(unittest.IsolatedAsyncioTestCase):
+    """`session` and `project` on send_agent_task, for the coding clients other than T3 Code."""
+
+    def setUp(self) -> None:
+        from pathlib import Path
+
+        from jarvis.sessions import AgentSession, CodingSessionAdapter
+
+        self.orch = AgentOrchestrator(state=MagicMock())
+        self.orch._http = None
+        agent = MagicMock(spec=CodingSessionAdapter)
+        agent.config = MagicMock(id="claude")  # set in __init__, so not on the spec
+        agent.busy, agent.connected, agent.cwd = False, False, "/p/jarvis"
+        agent.send_task = AsyncMock(return_value=True)
+        agent.new_session = AsyncMock(return_value=True)
+        agent.pick_session = AsyncMock(return_value=True)
+        self.login = AgentSession("s1", "Fix the login bug", "/p/web", 2.0)
+        self.voice = AgentSession("s2", "Speaker verification", "/p/jarvis", 1.0)
+        agent.list_sessions = AsyncMock(return_value=[self.login, self.voice])
+        self.agent = agent
+        self.orch.adapters["claude"] = agent
+        self.handlers = agent_tool_handlers(self.orch)
+        self.projects = {"web": Path("/p/web"), "jarvis": Path("/p/jarvis")}
+
+    async def send(self, **arguments) -> dict:
+        from unittest.mock import patch
+
+        p = params({"agent_id": "claude", **arguments})
+        with patch("jarvis.agent_tools.resolve_project", new=self.projects.get):
+            await self.handlers["send_agent_task"](p)
+        return p.result_callback.await_args.args[0]
+
+    async def test_new_session_alone_is_ready_and_sends_nothing(self) -> None:
+        self.assertEqual(await self.send(session="new"), {"status": "session_ready", "agent_id": "claude"})
+        self.agent.new_session.assert_awaited_once_with(None)
+        self.agent.send_task.assert_not_awaited()
+
+    async def test_named_session_is_picked_then_the_task_goes_to_it(self) -> None:
+        result = await self.send(session="the speaker verification one", task="lower the threshold")
+        self.assertEqual(result["status"], "sent")
+        self.agent.pick_session.assert_awaited_once_with(self.voice)
+        self.agent.send_task.assert_awaited_once_with("lower the threshold")
+
+    async def test_no_match_unknown_project_and_mid_turn_send_nothing(self) -> None:
+        self.assertEqual((await self.send(session="billing", task="x"))["status"], "no_matching_session")
+        self.assertEqual((await self.send(project="nope", task="x"))["status"], "unknown_project")
+        self.agent.busy = True
+        self.agent.new_session = AsyncMock(return_value=False)
+        self.assertEqual((await self.send(session="new", task="x"))["status"], "busy")
+        self.agent.send_task.assert_not_awaited()
+
+    async def test_a_project_moves_to_its_newest_session_unless_already_there(self) -> None:
+        await self.send(project="jarvis", task="run the tests")  # already in /p/jarvis
+        self.agent.list_sessions.assert_not_awaited()
+        self.agent.list_sessions = AsyncMock(return_value=[self.login])
+        await self.send(project="web", task="fix it")
+        self.agent.list_sessions.assert_awaited_once_with("/p/web", limit=50)
+        self.agent.pick_session.assert_awaited_once_with(self.login)
+        self.agent.list_sessions = AsyncMock(return_value=[])
+        await self.send(project="web")
+        self.agent.new_session.assert_awaited_once_with("/p/web")  # no session there yet: a new one
+
+    async def test_connected_session_ignores_session_and_project(self) -> None:
+        self.agent.connected = True
+        self.assertEqual((await self.send(session="new", project="web", task="fix it"))["status"], "sent")
+        self.agent.new_session.assert_not_awaited()
+        self.agent.pick_session.assert_not_awaited()
+        self.agent.send_task.assert_awaited_once_with("fix it")
+
+
 if __name__ == "__main__":
     unittest.main()

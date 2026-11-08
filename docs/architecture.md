@@ -67,7 +67,10 @@ Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON p
 Each agent has three actions, one LLM tool each: `send_agent_task` (new work), `answer_agent` (reply to the question
 or approval the agent is waiting on) and `stop_agent`. An answer never becomes a new prompt, and a task never answers
 a pending question. With no agent named, a task goes to the default coding agent, an answer to the agent
-that asked last, and a stop to the agent that is working.
+that asked last, and a stop to the agent that is working. For Claude Code, OpenCode and Pi, `send_agent_task` also
+takes `session` (`"new"`, or the user's words naming an earlier session, matched against session titles, branches
+and folders) and `project` (a listed folder: its newest session there, or a new one), so the next task goes to
+that session. A connected session (`jarvis connect`) ignores both.
 
 1. **Claude Code (`ClaudeCodeAdapter`):** One `ClaudeSDKClient` (Python `claude-agent-sdk`) per session, with
    the user's own Claude settings and permission mode (Jarvis sets none). It starts with `resume=<session id>`: the

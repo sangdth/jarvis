@@ -165,7 +165,7 @@ class PiAdapter(CodingSessionAdapter):
         if self._writer is not None:
             self._writer.close()
             self._writer = None
-        self.socket_path, self.connected = window["socket"], connected
+        self.socket_path, self.cwd, self.connected = window["socket"], window["cwd"], connected
         await self._restart()
         return True
 

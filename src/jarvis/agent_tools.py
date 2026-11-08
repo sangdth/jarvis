@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from loguru import logger
+
 from jarvis.orchestrator import AgentOrchestrator
+from jarvis.sessions import CodingSessionAdapter, match_sessions
+from jarvis.t3_adapter import resolve_project
 
 
 def agent_tools() -> list:
@@ -37,6 +41,12 @@ def agent_tools() -> list:
                     "type": "string",
                     "description": "A folder from the user's project list (e.g. huggerhustle/platform-v2) when the"
                     " user names a project to work on. Omit otherwise.",
+                },
+                "session": {
+                    "type": "string",
+                    "description": "Claude Code, OpenCode or Pi only, when the user asks for it: \"new\" to start a"
+                    " clean conversation, or the user's words naming an earlier session of that agent to continue"
+                    " (e.g. 'the speaker verification one'). Omit otherwise; a plain task stays in the current session.",
                 },
                 "replace": {
                     "type": "boolean",
@@ -94,7 +104,14 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         if args.get("replace") and agent.busy:
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
         task, project = args.get("task", "").strip(), args.get("project")
-        # Only T3 Code opens a project; the others work in their configured folder, so a project alone is no task.
+        session = (args.get("session") or "").strip()
+        if isinstance(agent, CodingSessionAdapter) and (session or project) and not agent.connected:
+            moved = await switch_session(agent, session, project)
+            if moved is not True:
+                return moved  # a status: nothing went out
+            if not task:
+                return "session_ready"  # "continue the login session" alone: ready for the next words
+        # T3 Code opens a project in a thread of its own; while connected, a project is no reason to leave the session.
         opens = bool(project) and agent is orchestrator.t3
         if not task and not opens:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
@@ -102,6 +119,34 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         if ok is True:  # a status word means nothing went out, so nothing to wait on
             orchestrator.remind_while_busy(agent, task or f"open the {project} project")
         return ok
+
+    async def switch_session(agent: CodingSessionAdapter, session: str, project: str | None) -> bool | str:
+        """Point a coding client at the session the user named, a new one, or its newest one in a named project."""
+
+        def refused() -> str:  # pick and new say only False: mid-turn, or the client can't (Pi opens no window)
+            return "busy" if agent.busy else "not_switched"
+
+        cwd = None
+        if project:
+            folder = resolve_project(project)  # only a listed folder, as for T3 Code
+            if folder is None:
+                return "unknown_project"
+            cwd = str(folder)
+        if session.lower() == "new":
+            return await agent.new_session(cwd) or refused()
+        if not session and cwd == agent.cwd:
+            return True  # already working there
+        try:
+            found = await agent.list_sessions(cwd, limit=50)
+        except Exception as exc:
+            logger.warning(f"[{agent.config.id}] Could not list sessions ({exc!r}).")
+            return "sessions_unavailable"
+        hits = match_sessions(found, session) if session else found  # a project alone: its newest session
+        if not hits:
+            if session:
+                return "no_matching_session"
+            return await agent.new_session(cwd) or refused()  # a project with no session yet starts one
+        return await agent.pick_session(hits[0]) or refused()
 
     async def stop(agent: Any, args: dict) -> bool | str:
         # Nothing running: say so, instead of a "failed" the model would read out as "I couldn't stop it".

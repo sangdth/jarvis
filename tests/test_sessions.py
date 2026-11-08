@@ -52,7 +52,7 @@ class TestConnectPicker(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(thread, {"id": "s1", "title": AUTH.title, "project": "platform", "agent_id": "a1",
                                   "agent_name": "Agent One"})
         self.assertTrue(claude.connected)
-        self.assertEqual((claude._session_id, claude._cwd), ("s1", "/p/platform"))  # resumed when start_all runs
+        self.assertEqual((claude._session_id, claude.cwd), ("s1", "/p/platform"))  # resumed when start_all runs
 
     async def test_connect_to_an_agent_without_sessions_stops_with_a_reason(self) -> None:
         from jarvis import main

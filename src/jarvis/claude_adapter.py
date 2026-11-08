@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -55,12 +54,11 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
         self._stopped = False  # the user stopped this turn, so its error result is not news
         self._stops = 0  # counts stops, so a question queued before a stop is not asked after it
         self._session_id: str | None = None  # the conversation tasks go to; None until Claude Code names one
-        self._cwd = str(Path(config.cwd).expanduser().resolve())
 
     async def _run_loop(self) -> None:
         while True:
             options = ClaudeAgentOptions(
-                cwd=self._cwd,
+                cwd=self.cwd,
                 resume=self._session_id,  # after a crash or a pick: the same conversation, not an empty one
                 # No permission_mode: the user's own settings decide, the same as their Claude Code anywhere else.
                 can_use_tool=self._can_use_tool,
@@ -70,7 +68,7 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
             try:
                 async with ClaudeSDKClient(options) as client:
                     self._client = client
-                    logger.info(f"Started Claude Code [{self.config.id}] in {self._cwd} (session {self._session_id})")
+                    logger.info(f"Started Claude Code [{self.config.id}] in {self.cwd} (session {self._session_id})")
                     async for message in client.receive_messages():
                         await self._handle_message(message)
             except CLINotFoundError:
@@ -169,7 +167,7 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
             AgentSession(
                 id=s.session_id,
                 title=s.custom_title or s.summary or s.first_prompt or "(untitled)",
-                cwd=s.cwd or cwd or self._cwd,
+                cwd=s.cwd or cwd or self.cwd,
                 updated_at=s.last_modified / 1000,
                 branch=s.git_branch or "",
             )
@@ -179,13 +177,13 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
     async def pick_session(self, session: AgentSession, connected: bool = False) -> bool:
         if self.busy:  # restarting the process would drop the running turn without a word
             return False
-        self._session_id, self._cwd, self.connected = session.id, session.cwd, connected
+        self._session_id, self.cwd, self.connected = session.id, session.cwd, connected
         await self._restart()
         return True
 
     async def new_session(self, cwd: str | None = None) -> bool:
         if self.busy:
             return False
-        self._session_id, self._cwd = None, cwd or self._cwd
+        self._session_id, self.cwd = None, cwd or self.cwd
         await self._restart()
         return True

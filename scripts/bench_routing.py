@@ -1,6 +1,6 @@
 """Benchmark where Jarvis sends a request: runs the real system prompt, roster and tools on EXECUTIVE_MODEL.
 
-Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~120 paid calls at 3 rounds)
+Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~220 paid calls at 3 rounds)
 Exits 1 when accuracy drops below MIN_ACCURACY.
 """
 
@@ -63,6 +63,12 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Ask T3 Code to fix the navbar", "t3-code"),
     ("Have T3 add a dark mode toggle", "t3-code"),
     ("Have Claude Code add a dark mode toggle", "claude"),
+    # Sessions of Claude Code and OpenCode: a new one, or an earlier one named by its topic; a plain task sets none
+    ("Start a new Claude Code session", "claude+new"),
+    ("Open a fresh OpenCode session and add a health check endpoint", "opencode+new"),
+    ("On Claude Code, continue the session about speaker verification", "claude+session"),
+    ("Go back to the OpenCode session where we fixed the login bug", "opencode+session"),
+    ("Ask Claude to keep going on the current task", "claude"),
     # A named project opens it in T3 Code; the folder comes from the project list (names are often misheard)
     ("Continue working on the Hugger Hustle platform", "t3-code@huggerhustle/platform-v2"),
     ("Let's work on the Hacker Hustle platform v2 and fix the signup form", "t3-code@huggerhustle/platform-v2+task"),
@@ -134,6 +140,7 @@ VI_CASES: list[tuple[str | list[dict], str]] = [
     ("Fix cái bug login trong dashboard giúp mình", "t3-code"),
     ("Tiếp tục làm dự án Hugger Hustle platform", "t3-code@huggerhustle/platform-v2"),
     ("Gửi email cho Minh là anh sẽ đến muộn mười phút", "hermes"),
+    ("Mở một phiên Claude Code mới", "claude+new"),
     ("Bạn khỏe không?", SELF),
     (after("Sửa lỗi đăng nhập ở dashboard", "t3-code", "Fix the login bug in the dashboard", "Dừng lại đi."), "stop"),
     (waiting("Claude needs approval: run git push to origin.", "Có, cứ làm đi."), "answer"),
@@ -155,7 +162,11 @@ def outcome(message: dict, default_id: str | None) -> str:
     project = f"@{args['project'].removeprefix(f'{PROJECTS_LABEL}/').strip('/').lower()}" if args.get("project") else ""
     # Opening a project names work only when the user did ("+task"); an invented task is a miss.
     task = "+task" if project and args.get("task", "").strip() else ""
-    return (args.get("agent_id") or default_id or "?") + project + task + ("+replace" if args.get("replace") else "")
+    agent = args.get("agent_id") or default_id or "?"
+    named = (args.get("session") or "").strip().lower()
+    # T3 Code has no sessions of its own: the handler ignores `session` there, so it is no miss
+    session = "" if agent == "t3-code" or not named else "+new" if named == "new" else "+session"
+    return agent + project + task + session + ("+replace" if args.get("replace") else "")
 
 
 async def main(rounds: int) -> int:
