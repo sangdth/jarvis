@@ -48,6 +48,10 @@ class TestSpeaker(unittest.TestCase):
         self.assertIsNone(extract_speaker_name("I'm going to grab a coffee"))
         self.assertIsNone(extract_speaker_name("Build a login page"))
         self.assertEqual(extract_speaker_name("David.", allow_bare=True), "David")
+        self.assertEqual(extract_speaker_name("It's David", allow_bare=True), "David")
+        self.assertIsNone(extract_speaker_name("I don't know", allow_bare=True))
+        self.assertIsNone(extract_speaker_name("Pretty good thanks", allow_bare=True))
+        self.assertIsNone(extract_speaker_name("Pretty good thanks"))
 
     def test_extract_introduced_name_from_master(self) -> None:
         self.assertEqual(extract_introduced_name("Jarvis, this is David."), "David")

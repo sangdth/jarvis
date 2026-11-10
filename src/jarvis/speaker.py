@@ -30,14 +30,15 @@ FRAME = SAMPLE_RATE // 50  # 20 ms
 
 # Words that follow "I'm ..." or "this is ..." in normal speech and are never a person's name.
 _NON_NAMES = {
-    "a", "an", "the", "my", "your", "his", "her", "our", "their", "this", "that", "here", "there", "back",
-    "tired", "good", "fine", "great", "okay", "ok", "well", "ready", "busy", "done", "free", "home", "late",
-    "early", "going", "working", "talking", "listening", "looking", "thinking", "trying", "asking", "saying",
-    "doing", "having", "feeling", "just", "still", "also", "very", "so", "too", "not", "no", "yes", "sure",
-    "sorry", "happy", "glad", "excited", "new", "in", "on", "at", "from", "with", "for", "about", "someone",
-    "somebody", "anyone", "friend", "brother", "sister", "wife", "husband", "partner", "colleague", "coworker",
-    "guest", "mom", "mother", "dad", "father", "son", "daughter", "jarvis", "javis", "bạn", "anh", "em", "chị",
-    "mình", "tôi", "con", "người", "ai", "đây", "đó",
+    "a", "an", "the", "my", "your", "his", "her", "our", "their", "this", "that", "here", "there", "back", "tired",
+    "good", "fine", "great", "okay", "ok", "well", "ready", "busy", "done", "free", "home", "late", "early", "going",
+    "working", "talking", "listening", "looking", "thinking", "trying", "asking", "saying", "doing", "having",
+    "feeling", "just", "still", "also", "very", "so", "too", "not", "no", "yes", "sure", "sorry", "happy", "glad",
+    "excited", "new", "in", "on", "at", "from", "with", "for", "about", "someone", "thanks", "i", "me", "you", "it",
+    "we", "they", "don't", "dont", "can't", "cant", "um", "uh", "thank", "know", "please", "hello", "hi", "hey", "what",
+    "why", "how", "nothing", "again", "somebody", "anyone", "friend", "brother", "sister", "wife", "husband", "partner",
+    "colleague", "coworker", "guest", "mom", "mother", "dad", "father", "son", "daughter", "jarvis", "javis", "bạn",
+    "anh", "em", "chị", "mình", "tôi", "con", "người", "ai", "đây", "đó",
 }
 
 _EXPLICIT_NAME_RE = re.compile(
@@ -82,10 +83,12 @@ def extract_speaker_name(transcript: str, *, allow_bare: bool = False) -> str | 
     if allow_bare:
         if m := _SELF_INTRO_CI_RE.search(cleaned):
             return _clean_name(m.group(1))
-        tokens = [w.strip(".,!?;:\"'()[]{}") for w in cleaned.split()]
-        tokens = [w for w in tokens if w]
-        if 1 <= len(tokens) <= 3:
-            return _clean_name(tokens[-1])
+        # A bare reply to "What should I call you?": at most two spoken words ("David", "David Nguyen", "just David");
+        # anything longer ("pretty good thanks") is small talk, so Jarvis asks again instead of guessing.
+        words = [w.strip(".,!?;:\"'()[]{}") for w in cleaned.split()]
+        words = [w for w in words if w and w.lower() not in _NON_NAMES and not w.isdigit()]
+        if 1 <= len(words) <= 2 and len(cleaned.split()) <= 2:
+            return _clean_name(words[0])
     return None
 
 
@@ -317,4 +320,3 @@ def load_voiceprint(path: Path = VOICEPRINT_PATH) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(f"No owner voiceprint at {path}. Run `jarvis enroll` first.")
     return np.load(path)
-

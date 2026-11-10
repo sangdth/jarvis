@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     ProposedUserStartedSpeakingFrame,
@@ -204,6 +205,9 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         down = FrameDirection.DOWNSTREAM
 
         # 1. Master introduces a new speaker -> INTRODUCTION intent arms enrollment
+        from jarvis.config import settings
+
+        self.enterContext(patch.object(settings, "master_check", True))
         self.filter.classify_user_utterance.return_value = UserIntent.INTRODUCTION
         await self.gate.process_frame(heard("Jarvis, let me introduce my friend."), down)
         self.assertTrue(self.state.enrolling)
@@ -211,6 +215,7 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
 
         # 2. New speaker starts speaking -> Jarvis says "Let's have a chat so I can remember your voice" + Q1
         self.filter.classify_user_utterance.return_value = UserIntent.ADDRESSED_TO_JARVIS
+        self.gate.registry.observe(np.array([0.0, 1.0], dtype=np.float32), 0.35)
         await self.gate.process_frame(TranscriptionFrame(text="Hello Jarvis!", user_id="voice_1", timestamp="0"), down)
         self.assertEqual(len(spoken), 1)
         self.assertIn("Let's have a chat so I can remember your voice.", spoken[-1])
@@ -235,19 +240,48 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.name, "David")
         self.assertIn("David", spoken[-1])
 
-        # 5. Next time David speaks -> Jarvis does not ask enrollment questions again, greets David by name
+        # 5. Next time David speaks -> greeted by name once, and the request itself still reaches the model
         await self.gate.process_frame(
-            TranscriptionFrame(text="Hey Jarvis!", user_id="David", timestamp="0"), down
+            TranscriptionFrame(text="Jarvis, what's the weather like?", user_id="David", timestamp="0"), down
         )
         self.assertEqual(spoken[-1], "Hi David! Good to hear you again.")
-        self.assertNotIn("Let's have a chat", spoken[-1])
-
-        # 6. Subsequent turns from David go to the LLM tagged with David's name and guest permissions
-        await self.gate.process_frame(
-            TranscriptionFrame(text="What's the weather like?", user_id="David", timestamp="0"), down
-        )
-        self.assertEqual(self.turns(), ["[Speaker: David]: What's the weather like?"])
+        self.assertEqual(self.turns(), ["[Speaker: David]: Jarvis, what's the weather like?"])
         self.assertTrue(self.state.room_turn)
+
+        # 6. Small talk never renames a known guest; a second turn gets no second greeting
+        await self.gate.process_frame(
+            TranscriptionFrame(text="It's Friday, I'm Vietnamese by the way.", user_id="David", timestamp="0"), down
+        )
+        self.assertEqual(profile.name, "David")
+        self.assertEqual(len([s for s in spoken if s.startswith("Hi David")]), 1)
+
+    async def test_unknown_voice_after_the_enrollment_window_is_dropped(self) -> None:
+        from jarvis import voice_gates
+        from jarvis.config import settings
+
+        self.enterContext(patch.object(settings, "master_check", True))
+
+        self.filter.classify_user_utterance.return_value = UserIntent.INTRODUCTION
+        await self.gate.process_frame(heard("Jarvis, this is my friend."), FrameDirection.DOWNSTREAM)
+        self.filter.classify_user_utterance.return_value = UserIntent.ADDRESSED_TO_JARVIS
+        assert self.gate._enrollment is not None
+        self.gate._enrollment.started_at -= voice_gates.ENROLL_TIMEOUT_SECS + 1
+        self.gate.registry.observe(np.array([0.0, 1.0], dtype=np.float32), 0.35)  # the TV's fingerprint, voice_1
+        await self.gate.process_frame(
+            TranscriptionFrame(text="Tonight on the news", user_id="voice_1", timestamp="0"), FrameDirection.DOWNSTREAM
+        )
+        self.assertFalse(self.state.enrolling)
+        self.assertEqual(self.turns(), [])
+        self.filter.classify_user_utterance.assert_awaited_once()  # only the master's introduction
+
+    async def test_introduction_without_the_master_check_is_a_normal_turn(self) -> None:
+        from jarvis.config import settings
+
+        self.filter.classify_user_utterance.return_value = UserIntent.INTRODUCTION
+        with patch.object(settings, "master_check", False):
+            await self.gate.process_frame(heard("Jarvis, meet Sarah."), FrameDirection.DOWNSTREAM)
+        self.assertFalse(self.state.enrolling)
+        self.assertEqual(self.turns(), ["Jarvis, meet Sarah."])
 
     async def test_speaker_stating_name_early_links_identity_and_completes_after_questions(self) -> None:
         spoken: list[str] = []
@@ -258,10 +292,14 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.state.on_speak = on_speak
         down = FrameDirection.DOWNSTREAM
 
+        from jarvis.config import settings
+
+        self.enterContext(patch.object(settings, "master_check", True))
         self.filter.classify_user_utterance.return_value = UserIntent.INTRODUCTION
         await self.gate.process_frame(heard("Jarvis, meet my friend."), down)
 
         # Speaker states "My name is David" on the very first turn
+        self.gate.registry.observe(np.array([0.0, 1.0], dtype=np.float32), 0.35)
         await self.gate.process_frame(
             TranscriptionFrame(text="Hi Jarvis, my name is David.", user_id="voice_1", timestamp="0"), down
         )
@@ -338,8 +376,8 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
 
     async def test_other_voice_is_dropped(self) -> None:
         self.assertEqual(await self.run_stt("build a login page", [0.1, 0.9]), [])
-        # Even when dropped, the voice fingerprint is profiled in the registry
-        self.assertIn("voice_1", self.stt._registry.profiles)
+        # Not enrolling: the stranger's voice is not kept, so hours of TV never grow the registry
+        self.assertEqual(self.stt._registry.profiles, {})
 
     async def test_enrolling_passes_unknown_voice_and_known_speaker_passes_later(self) -> None:
         from jarvis.speaker import SpeakerRegistry
