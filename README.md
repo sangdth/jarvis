@@ -185,6 +185,9 @@ Who may do what depends on the master check. Off: Jarvis can't tell voices apart
 guests may ask questions and ask for work, and Jarvis asks you before it starts that work (`MEETING_GUESTS=ask`,
 the default); `MEETING_GUESTS=allow` starts it at once. Either way only your voice can answer an agent's question,
 approve, stop or replace a task.
+With the master check on you can also introduce someone: "Jarvis, this is David." Jarvis chats with the new voice
+for two questions, learns the name, and next time greets them by name and treats them as a guest. Off, it just
+says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there to forget a voice.
 `MEETING_VIRTUAL_MIC` in `.env` picks another virtual mic by name.
 
 ### Tuning and Troubleshooting

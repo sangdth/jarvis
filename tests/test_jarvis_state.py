@@ -16,8 +16,8 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_fast_command("Jarvis shut up please"), UserIntent.MUTE)
         self.assertEqual(classify_fast_command("be quiet for a second"), UserIntent.MUTE)
         self.assertEqual(classify_fast_command("Okay you can talk now"), UserIntent.UNMUTE)
-        self.assertEqual(classify_fast_command("Jarvis, this is David"), UserIntent.INTRODUCTION)
-        self.assertEqual(classify_fast_command("Let me introduce my friend"), UserIntent.INTRODUCTION)
+        # Introductions go to the model: "remind me to meet my friend" must not be swallowed by a regex.
+        self.assertIsNone(classify_fast_command("Remind me to meet my friend at five"))
         self.assertEqual(classify_fast_command("   "), UserIntent.IGNORE_BACKGROUND)
         self.assertIsNone(classify_fast_command("Tell Claude Code to use Postgres"))
         self.assertIsNone(classify_fast_command("Fix the silence threshold in the VAD"))
@@ -28,7 +28,6 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_fast_command("Jarvis, im lặng một chút"), UserIntent.MUTE)
         self.assertEqual(classify_fast_command("Đừng nói nữa"), UserIntent.MUTE)
         self.assertEqual(classify_fast_command("Jarvis, nói được rồi"), UserIntent.UNMUTE)
-        self.assertEqual(classify_fast_command("Anh giới thiệu với em đây là bạn anh"), UserIntent.INTRODUCTION)
         self.assertIsNone(classify_fast_command("Sửa lỗi đăng nhập giúp anh"))
         self.assertIsNone(classify_fast_command("Dừng lại đi."))  # stops the work, never mutes
 
