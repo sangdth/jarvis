@@ -109,6 +109,8 @@ def choose(heading: str, labels: list[str], question: str) -> int:
 
 async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = False) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.expressive.policy import ExpressionGuidance, ExpressionPolicy
@@ -205,6 +207,8 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         meeting=meeting,
         registry=registry,
         state=state,
+        # Its silence limit adds to the VAD's 0.2 s below: 1.5 s of silence ends a sentence held mid-thought.
+        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=1.3)) if settings.smart_turn else None,
         settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model, language=Language(settings.language)),
     )
 
@@ -251,8 +255,9 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     context_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            # A 0.6 s pause ends a Whisper sentence; shorter splits one sentence into two turns.
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.6, min_volume=0.5)),
+            # A pause ends a Whisper sentence: 0.2 s, then Smart Turn decides; without it 0.6 s, as shorter splits
+            # one sentence into two turns.
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2 if settings.smart_turn else 0.6, min_volume=0.5)),
             # Turns come only from JarvisIntentGate, after the voice and intent checks: raw room sound
             # would let background voices interrupt Jarvis and hold a turn open while they keep talking.
             user_turn_strategies=ExternalUserTurnStrategies(),

@@ -12,9 +12,11 @@ from pathlib import Path
 
 import numpy as np
 from loguru import logger
+from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     Frame,
+    InputAudioRawFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     StartFrame,
@@ -106,6 +108,7 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         meeting: bool = False,
         registry: SpeakerRegistry | None = None,
         state: JarvisState | None = None,
+        turn_analyzer: BaseTurnAnalyzer | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -115,6 +118,39 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         self._meeting = meeting
         self._registry = registry if registry is not None else SpeakerRegistry(folder=None)
         self._state = state
+        # Smart Turn (SMART_TURN): judges from the sound whether a pause ends the sentence. A pause mid-thought keeps
+        # the sentence open, so Whisper and the voice check get it whole instead of in two halves.
+        self._turn = turn_analyzer
+        self._vad_speaking = False
+        self._holding = False
+
+    async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame) -> None:
+        self._vad_speaking = True
+        self._holding = False  # the rest of a held sentence: it joins the same buffer
+        await super()._handle_user_started_speaking(frame)
+
+    async def _handle_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame) -> None:
+        self._vad_speaking = False
+        if self._turn is not None:
+            done, _ = await self._turn.analyze_end_of_turn()
+            if done == EndOfTurnState.INCOMPLETE:
+                # Pipecat trims its buffer to the last second only while nobody speaks, so the sentence counts as
+                # still spoken until it goes on below.
+                self._holding = True
+                logger.debug("[Turn] pause mid-sentence; waiting for the rest")
+                return
+        self._holding = False
+        await super()._handle_user_stopped_speaking(frame)
+
+    async def process_audio_frame(self, frame: InputAudioRawFrame, direction: FrameDirection) -> None:
+        await super().process_audio_frame(frame, direction)
+        if self._turn is None:
+            return
+        # COMPLETE here means silence ran past SmartTurnParams.stop_secs: a held sentence goes on as it is. Straight
+        # to Pipecat's flush: the analyzer has cleared its audio, so asking it again would hold the sentence forever.
+        if self._turn.append_audio(frame.audio, self._vad_speaking) == EndOfTurnState.COMPLETE and self._holding:
+            self._holding = False
+            await super()._handle_user_stopped_speaking(VADUserStoppedSpeakingFrame())
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         checking = self._embedder is not None and self._voiceprint is not None
@@ -160,6 +196,8 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
 
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
+        if self._turn is not None:
+            self._turn.set_sample_rate(self.sample_rate)
         # mlx_whisper loads the weights on the first call; do it now so the user's first sentence isn't the slow one.
         import mlx_whisper
 
