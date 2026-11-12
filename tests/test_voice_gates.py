@@ -208,6 +208,33 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         await gate.process_frame(ask, FrameDirection.DOWNSTREAM)
         self.assertTrue(self.state.room_turn)
 
+    async def test_cleanup_runs_after_the_check_and_before_the_speaker_labels(self) -> None:
+        cleaner = MagicMock(clean=AsyncMock(side_effect=lambda t, **_: t.replace("forty two", "42")))
+        down = FrameDirection.DOWNSTREAM
+        for gate, frame, expected in (
+            (JarvisIntentGate(self.state, self.filter, cleaner=cleaner), heard("make it forty two"), "make it 42"),
+            (
+                JarvisIntentGate(self.state, self.filter, meeting=True, cleaner=cleaner),
+                TranscriptionFrame(text="Jarvis, make it forty two", user_id="room", timestamp="0"),
+                "[Room]: Jarvis, make it 42",
+            ),
+        ):
+            gate.push_frame = AsyncMock()
+            await gate.process_frame(frame, down)
+            pushed = [c.args[0].text for c in gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)]
+            self.assertEqual(pushed, [expected])
+        # The speech check (and its feedback log) gets the words as heard.
+        self.assertEqual(self.filter.classify_user_utterance.await_args.kwargs["transcript"], "Jarvis, make it forty two")
+
+    async def test_cleanup_skips_sentences_not_passed_on(self) -> None:
+        cleaner = MagicMock(clean=AsyncMock(side_effect=lambda t, **_: t))
+        gate = JarvisIntentGate(self.state, self.filter, cleaner=cleaner)
+        gate.push_frame = AsyncMock()
+        for intent in (UserIntent.MUTE, UserIntent.UNMUTE, UserIntent.IGNORE_BACKGROUND, UserIntent.INTRODUCTION):
+            self.filter.classify_user_utterance.return_value = intent
+            await gate.process_frame(heard("some words said here"), FrameDirection.DOWNSTREAM)
+        cleaner.clean.assert_not_awaited()
+
     async def test_master_introduction_runs_conversational_enrollment_and_greets_known_speaker_next_time(self) -> None:
         spoken: list[str] = []
 

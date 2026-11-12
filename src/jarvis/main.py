@@ -24,6 +24,7 @@ from jarvis.prompts import AGENT_REPORT_PROMPT, LANGUAGES, greeting_prompt, syst
 from jarvis.sessions import CodingSessionAdapter
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
+from jarvis.system_prompts import load_overrides
 from jarvis.t3_adapter import current_thread, recent_threads
 
 
@@ -128,6 +129,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     from pipecat.transports.base_transport import TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
+    from jarvis.cleanup import TranscriptCleaner
     from jarvis.latency import latency_observer
     from jarvis.mac_audio import MacVoiceTransport
     from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, SpeakerRegistry, load_voiceprint
@@ -157,6 +159,13 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     if settings.language != "en" and settings.whisper_model == WHISPER_MODELS["en"]:
         logger.warning(f"WHISPER_MODEL pins the English model; delete it from .env to hear {settings.language} better.")
     executive_filter = ExecutiveFilter(feedback=FeedbackLog())  # logs decisions and corrections for retraining
+    overrides = load_overrides()
+    if overrides:
+        logger.info(f"SYSTEM.md overrides: {', '.join(name.capitalize() for name in overrides)}")
+    use_cleanup = settings.transcript_cleanup and settings.openrouter_api_key
+    cleaner = TranscriptCleaner(prompt=overrides.get("cleanup")) if use_cleanup else None
+    if cleaner is not None:
+        logger.info(f"Cleaning up sentences with {cleaner.model}")
     task_ref: dict[str, PipelineTask] = {}
 
     async def on_speak(text: str) -> None:
@@ -276,6 +285,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         last_said=lambda: last_assistant_text(context.messages),
         meeting=meeting,
         registry=registry,
+        cleaner=cleaner,
     )
 
     # 5. Text-to-Speech (ElevenLabs if configured)
@@ -353,3 +363,5 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     finally:
         await orchestrator.stop_all()
         await executive_filter.aclose()
+        if cleaner is not None:
+            await cleaner.aclose()
