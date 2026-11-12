@@ -508,8 +508,8 @@ class JarvisIntentGate(FrameProcessor):
                 self._bot_speaking = False
                 await self.push_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
             # After the speech check (it and its feedback log need the words as heard), before the speaker labels.
-            # Approvals never expose their raw command to a generative LLM that rewrites the user's answer.
-            context = "needs approval" if question and question.startswith("needs approval:") else question
+            # An open agent question or approval is agent text (maybe from a web page): it never steers the rewrite.
+            context = None if self.state.active_agent_context else question
             cleaned_at = time.monotonic()
             cleaned = await self.cleaner.clean(transcript, recent_jarvis_question=context)
             ms = (time.monotonic() - cleaned_at) * 1000

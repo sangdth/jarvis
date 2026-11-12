@@ -1,5 +1,6 @@
+import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -30,6 +31,7 @@ class TestCleanup(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(should_clean("À, quên, 24.", parse_cues("à quên")))
         self.assertFalse(should_clean("sorryful thing", CUES))  # whole words only
         self.assertTrue(should_clean("um make it forty two please", CUES))  # filler
+        self.assertFalse(should_clean("Sorry, open the jarvis project", CUES))  # an opening cue is kept anyway
         self.assertTrue(should_clean("open the platform project and fix the signup form validation", CUES))
 
     def test_an_answer_or_leaked_tag_is_rejected(self) -> None:
@@ -37,6 +39,7 @@ class TestCleanup(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(keep_cleaned("what time is it", "It is three o'clock. " * 10))
         self.assertFalse(keep_cleaned("make it 24", "<context>Which port?</context>\n<transcript>Make it 24."))
         self.assertTrue(keep_cleaned("um make it forty two", "Make it 42."))
+        self.assertFalse(keep_cleaned("can you tell me um what time the deploy finished", "I do not know."))
 
     async def test_cleans_strips_echoed_tags_and_sanitizes_context(self) -> None:
         post = AsyncMock(return_value=reply("<Transcript>Make it 24.</Transcript>"))
@@ -64,9 +67,17 @@ class TestCleanup(unittest.IsolatedAsyncioTestCase):
 
     async def test_timeout_error_or_bad_answer_keep_the_sentence_as_heard(self) -> None:
         raw = "um what is on my calendar today"
-        for outcome in (httpx.ReadTimeout("slow"), RuntimeError("down"), reply("Checking your calendar now! " * 9)):
+        for outcome in (httpx.ReadTimeout("slow"), TimeoutError(), RuntimeError("down"), reply("Checking now! " * 9)):
             post = AsyncMock(side_effect=outcome) if isinstance(outcome, Exception) else AsyncMock(return_value=outcome)
             self.assertEqual(await cleaner(post).clean(raw), raw)
+
+    async def test_a_slow_answer_is_cut_at_the_time_limit(self) -> None:
+        async def slow(*_: object, **__: object) -> MagicMock:
+            await asyncio.sleep(5)
+            return reply("Never used.")
+
+        with patch("jarvis.cleanup.TIMEOUT_SECS", 0.01):
+            self.assertEqual(await cleaner(AsyncMock(side_effect=slow)).clean("um make it forty two"), "um make it forty two")
 
     async def test_no_key_makes_no_call(self) -> None:
         c = TranscriptCleaner(api_key="", model="m")

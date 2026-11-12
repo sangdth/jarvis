@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 import httpx
@@ -31,14 +32,22 @@ def should_clean(transcript: str, cues: tuple[str, ...]) -> bool:
     if len(transcript.split()) > SHORT_WORDS:
         return True
     words = _words(transcript)
-    return any(re.search(rf"\b{re.escape(cue)}\b", words) for cue in (*cues, *FILLERS))
+    rest = words.partition(" ")[2]  # a one-word cue opening the sentence ("Actually, ...") stays, so no call for it
+    return any(_has(f, words) for f in FILLERS) or any(_has(c, words if " " in c else rest) for c in cues)
+
+
+def _has(phrase: str, words: str) -> bool:
+    return re.search(rf"\b{re.escape(phrase)}\b", words) is not None
 
 
 def keep_cleaned(raw: str, cleaned: str) -> bool:
-    """A cleaned sentence that is empty, leaks prompt tags, or is far longer than said is not a cleanup."""
+    """Not a cleanup: empty, far longer than said, leaked prompt tags, or mostly words the user never said (an answer)."""
     if not cleaned or len(cleaned) > max(len(raw) * 2, len(raw) + 80):
         return False
-    return not (_LEAKED_TAG.search(cleaned) and not _LEAKED_TAG.search(raw))
+    if _LEAKED_TAG.search(cleaned) and not _LEAKED_TAG.search(raw):
+        return False
+    said, new = set(_words(raw).split()), _words(cleaned).split()
+    return sum(w in said for w in new) * 2 >= len(new)
 
 
 class TranscriptCleaner:
@@ -76,18 +85,22 @@ class TranscriptCleaner:
         safe_question = re.sub(r"[<>]", "", recent_jarvis_question)[:MAX_CONTEXT_CHARS].strip() if recent_jarvis_question else ""
         context = f"<context>{safe_question}</context>\n" if safe_question else ""
         try:
-            resp = await self._http.post(
-                "/chat/completions",
-                json={
-                    "model": self.model,
-                    "reasoning": {"enabled": False},
-                    "provider": {"sort": "latency"},
-                    "temperature": 0,
-                    "messages": [
-                        {"role": "system", "content": self._system},
-                        {"role": "user", "content": f"{context}<transcript>{transcript}</transcript>"},
-                    ],
-                },
+            # httpx's timeout is per phase (connect, each read); this caps the whole call.
+            resp = await asyncio.wait_for(
+                self._http.post(
+                    "/chat/completions",
+                    json={
+                        "model": self.model,
+                        "reasoning": {"enabled": False},
+                        "provider": {"sort": "latency"},
+                        "temperature": 0,
+                        "messages": [
+                            {"role": "system", "content": self._system},
+                            {"role": "user", "content": f"{context}<transcript>{transcript}</transcript>"},
+                        ],
+                    },
+                ),
+                TIMEOUT_SECS,
             )
             resp.raise_for_status()
             cleaned = _TAGS.sub("", resp.json()["choices"][0]["message"]["content"] or "").strip()
