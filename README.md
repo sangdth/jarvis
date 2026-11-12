@@ -103,7 +103,7 @@ your shell wins over the file, so `op run -- jarvis` (1Password) works too:
   that tells whether a sentence is meant for Jarvis: Laya's `jarvis-intent` model, fine-tuned for Jarvis. `FILTER_MODEL`
   is asked at the same time and used when Laya fails or is slower than `LAYA_TIMEOUT_SECS`; left empty, only
   `FILTER_MODEL` is used.
-- `TRANSCRIPT_CLEANUP` (default `true`): each sentence meant for Jarvis — over eight words, or with a filler or a
+- `TRANSCRIPT_CLEANUP` (default `true`): each sentence meant for Jarvis — over 18 words, or with a filler or a
   phrase from `CLEANUP_CUES` — is tidied before Jarvis reads it: punctuation, fillers, and a slip fixed in the same
   sentence ("make it 42, sorry, 24" becomes "Make it 24"). It uses `CLEANUP_MODEL` (empty = `EXECUTIVE_MODEL`,
   thinking off), adds about 250-500 ms when it runs, and passes the sentence on as heard after 1.5 s or on any error.

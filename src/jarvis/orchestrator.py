@@ -12,6 +12,7 @@ from jarvis.claude_adapter import ClaudeCodeAdapter
 from jarvis.config import settings
 from jarvis.hermes_adapter import HermesAdapter
 from jarvis.opencode_adapter import OpenCodeSSEAdapter
+from jarvis.sessions import CodingSessionAdapter
 from jarvis.state import JarvisMode, JarvisState
 from jarvis.t3_adapter import T3Adapter
 from jarvis.waiting_lines import WaitingLines
@@ -68,7 +69,11 @@ class AgentOrchestrator:
             raise ValueError(f"DEFAULT_CODING_AGENT={default!r} is not an enabled agent id; use one of {list(self.adapters)}")
 
     async def start_all(self) -> None:
+        connected = next((a for a in self.adapters.values() if a.connected), None)
         for adapter in self.adapters.values():
+            # `jarvis connect` sends every coding task to `connected`; skip starting the other coding watchers.
+            if connected is not None and isinstance(adapter, (T3Adapter, CodingSessionAdapter)) and adapter is not connected:
+                continue
             await adapter.start()
 
     async def stop_all(self) -> None:

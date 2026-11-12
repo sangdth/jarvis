@@ -26,13 +26,20 @@ class TestCleanup(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(should_clean("Stop it", CUES))
         self.assertFalse(should_clean("yes go ahead", CUES))
         self.assertFalse(should_clean("What's on my calendar tomorrow?", CUES))  # clean 5-word command
+        self.assertFalse(should_clean("open the platform project and fix the signup form validation", CUES))  # 10 words
         self.assertTrue(should_clean("42, sorry, 24", CUES))
         self.assertTrue(should_clean("No, no, 24.", CUES))  # Whisper puts a comma inside "no no"
         self.assertTrue(should_clean("À, quên, 24.", parse_cues("à quên")))
         self.assertFalse(should_clean("sorryful thing", CUES))  # whole words only
         self.assertTrue(should_clean("um make it forty two please", CUES))  # filler
+        self.assertTrue(should_clean("open the the platform project", CUES))  # repeated-word stutter
         self.assertFalse(should_clean("Sorry, open the jarvis project", CUES))  # an opening cue is kept anyway
-        self.assertTrue(should_clean("open the platform project and fix the signup form validation", CUES))
+        self.assertTrue(
+            should_clean(
+                "open the platform project and fix the signup form validation so empty emails show an inline error right away",
+                CUES,
+            )
+        )  # >18 words
 
     def test_an_answer_or_leaked_tag_is_rejected(self) -> None:
         self.assertFalse(keep_cleaned("what time is it", ""))

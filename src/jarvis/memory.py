@@ -53,12 +53,30 @@ def mem0_config(memory_dir: Path | None = None) -> dict[str, Any]:
     }
 
 
+def _ensure_ollama_model_exists(self: Any) -> None:
+    """Require the Ollama embedding model to be pulled already (never freeze startup on a pull), and pin it in RAM."""
+    local_models = self.client.list()["models"]
+    target = self._normalize_model_name(self.config.model)
+    if not any(
+        self._normalize_model_name(model.get("name", "") or "") == target
+        or self._normalize_model_name(model.get("model", "") or "") == target
+        for model in local_models
+    ):
+        raise RuntimeError(f"Ollama model {self.config.model!r} is not pulled; run `ollama pull {self.config.model}`")
+    embed = self.client.embed
+    self.client.embed = lambda *a, **kw: embed(*a, **{"keep_alive": -1, **kw})
+    self.client.embed(model=self.config.model, input=".")
+
+
 def create_memory_service() -> Any | None:
     """The Pipecat memory processor, or None (Jarvis runs without memory) when it can't start."""
     if not settings.openrouter_api_key:
         logger.warning("No OPENROUTER_API_KEY: long-term memory is off (it needs a model to pick facts).")
         return None
+    from mem0.embeddings.ollama import OllamaEmbedding
     from pipecat.services.mem0.memory import Mem0MemoryService
+
+    OllamaEmbedding._ensure_model_exists = _ensure_ollama_model_exists  # type: ignore[method-assign]
 
     class LastExchangeMemory(Mem0MemoryService):
         """Pipecat saves the whole conversation after every turn; save only the newest exchange, once.
@@ -71,15 +89,45 @@ def create_memory_service() -> Any | None:
 
         async def _enhance_context_with_memories(self, context, query):  # type: ignore[override]
             # Jarvis's own notes (the greeting) are not a memory query; someone else in a meeting or guest gets no memories.
-            if not query.startswith((NOT_THE_USER, ROOM, SPEAKER)):
-                await super()._enhance_context_with_memories(context, query)
+            if query.startswith((NOT_THE_USER, ROOM, SPEAKER)) or self.last_query == query:
+                return
+            self.last_query = query
+            memories = await self._retrieve_memories(query)
+            if not memories:
+                return
+            memory_text = self.system_prompt + "".join(f"{i}. {m.get('memory', '')}\n\n" for i, m in enumerate(memories, 1))
+            memory_message = {
+                "role": "developer" if self.add_as_system_message else "user",
+                "content": memory_text,
+            }
+            # Replace any earlier recall block and place the new one right before the latest user message so earlier
+            # turns stay prefix-stable for LLM prompt caching.
+            messages = [
+                m
+                for m in context.get_messages()
+                if not (isinstance(m, dict) and str(m.get("content", "")).startswith(self.system_prompt))
+            ]
+            idx = next(
+                (
+                    i
+                    for i in range(len(messages) - 1, -1, -1)
+                    if isinstance(messages[i], dict) and messages[i].get("role") == "user"
+                ),
+                len(messages),
+            )
+            messages.insert(idx, memory_message)
+            context.set_messages(messages)
 
         async def _store_messages(self, messages):  # type: ignore[override]
             newest = messages[-2:]
-            if newest == self._last_saved or any(
-                m.get("role") == "user"
-                and str(m.get("content", "")).startswith((NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, SPEAKER))
-                for m in newest
+            if (
+                newest == self._last_saved
+                or not any(m.get("role") == "user" for m in newest)
+                or any(
+                    m.get("role") == "user"
+                    and str(m.get("content", "")).startswith((NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, SPEAKER))
+                    for m in newest
+                )
             ):
                 return
             self._last_saved = newest
@@ -90,8 +138,6 @@ def create_memory_service() -> Any | None:
         return LastExchangeMemory(
             local_config=mem0_config(),
             user_id=USER_ID,
-            # The system prompt is not in the context, so memories go first.
-            params=Mem0MemoryService.InputParams(position=0),
         )
     except Exception as exc:
         # Usually Ollama is not running: the embedder checks for bge-m3 at startup.

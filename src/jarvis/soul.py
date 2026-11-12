@@ -33,9 +33,21 @@ def parse_soul(text: str) -> Soul:
     )
 
 
+_cache: dict[Path, tuple[int | None, Soul]] = {}
+
+
 def load_soul(path: Path = SOUL_PATH) -> Soul:
     """The saved soul, or the defaults when there is none: Jarvis runs as shipped."""
-    return parse_soul(path.read_text(encoding="utf-8")) if path.is_file() else Soul()
+    try:
+        mtime: int | None = path.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    cached = _cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    soul = parse_soul(path.read_text(encoding="utf-8")) if mtime is not None else Soul()
+    _cache[path] = (mtime, soul)
+    return soul
 
 
 def render_soul(personality: str, user_name: str, projects_dir: str, extra: str) -> str:

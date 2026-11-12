@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import math
+import functools
 import re
-import struct
 from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, Callable
+
+import numpy as np
 
 
 class JarvisMode(str, Enum):
@@ -80,6 +81,7 @@ def is_not_for_jarvis(transcript: str) -> bool:
     return len(transcript.split()) <= 7 and _NOT_YOU_PATTERNS.search(transcript) is not None
 
 
+@functools.lru_cache(maxsize=4)
 def synthesize_beep_pcm(
     freq_hz: float = 880.0,
     duration_ms: int = 160,
@@ -88,23 +90,11 @@ def synthesize_beep_pcm(
 ) -> bytes:
     """Generate a clean sine-wave notification beep with fade-in/out envelope (16-bit mono PCM)."""
     num_samples = int(sample_rate * (duration_ms / 1000.0))
-    fade_samples = max(1, int(num_samples * 0.15))
-    buf = bytearray(num_samples * 2)
-
-    for i in range(num_samples):
-        # Smooth envelope to avoid speaker clicks
-        if i < fade_samples:
-            env = i / fade_samples
-        elif i > num_samples - fade_samples:
-            env = (num_samples - i) / fade_samples
-        else:
-            env = 1.0
-
-        sample = math.sin(2.0 * math.pi * freq_hz * (i / sample_rate)) * volume * env
-        clamped = max(-32767, min(32767, int(sample * 32767)))
-        struct.pack_into("<h", buf, i * 2, clamped)
-
-    return bytes(buf)
+    fade = max(1, int(num_samples * 0.15))
+    idx = np.arange(num_samples, dtype=np.float64)
+    env = np.minimum(1.0, np.minimum(idx / fade, (num_samples - idx) / fade))
+    samples = np.sin(2.0 * np.pi * freq_hz * (idx / sample_rate)) * volume * env * 32767
+    return np.clip(samples, -32767, 32767).astype("<i2").tobytes()
 
 
 class JarvisState:

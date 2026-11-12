@@ -198,7 +198,8 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         on_interrupt=on_interrupt,
         on_report=on_report if settings.openrouter_api_key else None,  # no LLM offline: last line only
     )
-    orchestrator = AgentOrchestrator(state=state, personality=load_soul().personality)
+    soul = load_soul()
+    orchestrator = AgentOrchestrator(state=state, personality=soul.personality)
     orchestrator.load_from_file(settings.watch_config_path)
     thread = await pick_connection(orchestrator, connect) if connect else None
 
@@ -231,7 +232,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(
-                    orchestrator, load_soul().personality, thread, settings.language, meeting=meeting
+                    orchestrator, soul.personality, thread, settings.language, meeting=meeting
                 ),
                 # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever
                 # provider currently answers fastest.

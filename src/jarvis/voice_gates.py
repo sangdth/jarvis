@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from loguru import logger
@@ -16,6 +17,7 @@ from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnSta
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    ErrorFrame,
     Frame,
     InputAudioRawFrame,
     InterruptionFrame,
@@ -27,10 +29,13 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.whisper.stt import WhisperSTTServiceMLX
+from pipecat.services.settings import STTSettings
+from pipecat.services.stt_service import SegmentedSTTService
+from pipecat.transcriptions.language import Language
+from pipecat.utils.time import time_now_iso8601
 
 from jarvis.cleanup import TranscriptCleaner
-from jarvis.config import JARVIS_HOME, settings
+from jarvis.config import JARVIS_HOME, WHISPER_MODELS, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.prompts import LANGUAGES, MEETING_TRANSCRIPT
 from jarvis.speaker import (
@@ -94,7 +99,13 @@ def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> P
         return None
 
 
-class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
+@dataclass
+class WhisperMLXSettings(STTSettings):
+    no_speech_prob: float = 0.6
+    temperature: float = 0.0
+
+
+class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
     """
     MLX Whisper that passes on the master's sentences, known enrolled speakers, or a new speaker being enrolled
     (or tags owner / known speaker / room in meeting mode).
@@ -103,6 +114,16 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
     Mute / unmute phrases pass from any voice: the worst case is that someone else silences Jarvis.
     Without a voiceprint (MASTER_CHECK off) nothing is scored and every sentence counts as the master's.
     """
+
+    Settings = WhisperMLXSettings
+    _settings: WhisperMLXSettings
+
+    @property
+    def wants_wav_segments(self) -> bool:
+        return False
+
+    def can_generate_metrics(self) -> bool:
+        return True
 
     def __init__(
         self,
@@ -114,9 +135,13 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         registry: SpeakerRegistry | None = None,
         state: JarvisState | None = None,
         turn_analyzer: BaseTurnAnalyzer | None = None,
-        **kwargs,
+        settings: WhisperMLXSettings | None = None,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        default_settings = self.Settings(model=WHISPER_MODELS["en"], language=Language.EN)
+        if settings is not None:
+            default_settings.apply_update(settings)
+        super().__init__(settings=default_settings, **kwargs)
         self._embedder = embedder
         self._voiceprint = voiceprint
         self._threshold = threshold
@@ -158,21 +183,47 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
             self._holding = False
             await super()._handle_user_stopped_speaking(VADUserStoppedSpeakingFrame())
 
+    async def _transcribe_mlx(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        try:
+            import mlx_whisper
+
+            await self.start_processing_metrics()
+            audio_float = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+            language = Language(self._settings.language) if self._settings.language else None
+            chunk = await asyncio.to_thread(
+                mlx_whisper.transcribe,
+                audio_float,
+                path_or_hf_repo=self._settings.model,
+                temperature=self._settings.temperature,
+                language=str(language) if language else None,
+            )
+            text = ""
+            for segment in chunk.get("segments", []):
+                if segment.get("compression_ratio") == 0.5555555555555556:
+                    continue
+                if segment.get("no_speech_prob", 0.0) < self._settings.no_speech_prob:
+                    text += f"{segment.get('text', '')} "
+            await self.stop_processing_metrics()
+            if text.strip():
+                logger.debug(f"Transcription: [{text}]")
+                yield TranscriptionFrame(text, self._user_id, time_now_iso8601(), language)
+        except Exception as exc:
+            yield ErrorFrame(error=f"Unknown error occurred: {exc}")
+
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         checking = self._embedder is not None and self._voiceprint is not None
-        score_task = asyncio.create_task(asyncio.to_thread(self._analyze, audio)) if checking else None
-        frames = [frame async for frame in super().run_stt(audio)]
-        emb, score = await score_task if score_task else (None, None)
+        enrolling = self._state.enrolling if self._state is not None else False
+        score_task = asyncio.create_task(asyncio.to_thread(self._analyze, audio, enrolling)) if checking else None
+        frames = [frame async for frame in self._transcribe_mlx(audio)]
+        score, profile = await score_task if score_task else (None, None)
         heard = f"score={score:.2f}" if score is not None else "off"
         owner = score is None or score >= self._threshold
-        enrolling = self._state.enrolling if self._state is not None else False
-        # Unknown voices get a profile only while the master is enrolling one; otherwise only enrolled voices match,
-        # so a day of TV never grows the registry.
-        profile = None
-        if not owner:
-            profile = self._registry.observe(emb, self._threshold) if enrolling else self._registry.match(emb, self._threshold)
         # Saved before any drop: the misses worth replaying are the ones Whisper or the voice check threw away.
-        clip = save_clip(audio, self.sample_rate, settings.save_segments) if settings.save_segments > 0 else None
+        clip = (
+            await asyncio.to_thread(save_clip, audio, self.sample_rate, settings.save_segments)
+            if settings.save_segments > 0
+            else None
+        )
         saved = f" ({clip.name})" if clip else ""
         if clip and not any(isinstance(f, TranscriptionFrame) for f in frames):
             logger.info(f"[Speaker] {heard} no text{saved}")  # Whisper heard noise or nothing
@@ -208,13 +259,30 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         import mlx_whisper
 
         await asyncio.to_thread(
-            mlx_whisper.transcribe, np.zeros(16000, dtype=np.float32), path_or_hf_repo=self._settings.model  # type: ignore[attr-defined]
+            mlx_whisper.transcribe,
+            np.zeros(16000, dtype=np.float32),
+            path_or_hf_repo=self._settings.model,
+            language=str(self._settings.language) if self._settings.language else None,
+            temperature=0.0,
         )
 
-    def _analyze(self, audio: bytes) -> tuple[np.ndarray | None, float]:
+    async def cleanup(self) -> None:
+        if self._turn is not None:
+            await self._turn.cleanup()
+        await super().cleanup()
+
+    def _analyze(self, audio: bytes, enrolling: bool) -> tuple[float, VoiceProfile | None]:
         assert self._embedder is not None and self._voiceprint is not None  # only called with the master check on
         emb = self._embedder.embed(audio)
-        return emb, cosine(emb, self._voiceprint)
+        score = cosine(emb, self._voiceprint)
+        if score >= self._threshold:
+            return score, None
+        # Unknown voices get a profile only while the master is enrolling one; otherwise only enrolled voices match,
+        # so a day of TV never grows the registry.
+        profile = (
+            self._registry.observe(emb, self._threshold) if enrolling else self._registry.match(emb, self._threshold)
+        )
+        return score, profile
 
 
 class JarvisIntentGate(FrameProcessor):
@@ -254,6 +322,22 @@ class JarvisIntentGate(FrameProcessor):
         # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
         self._held: TranscriptionFrame | None = None
         self._hold_timer: asyncio.Task | None = None
+        self._in_flight: asyncio.Task[None] | None = None
+
+    async def queue_frame(
+        self,
+        frame: Frame,
+        direction: FrameDirection = FrameDirection.DOWNSTREAM,
+        callback: Callable[..., Any] | None = None,
+    ) -> None:
+        if (
+            isinstance(frame, TranscriptionFrame)
+            and self._in_flight is not None
+            and not self._in_flight.done()
+            and classify_fast_command(frame.text.strip()) in (UserIntent.MUTE, UserIntent.UNMUTE)
+        ):
+            self._in_flight.cancel()
+        await super().queue_frame(frame, direction, callback)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -277,8 +361,11 @@ class JarvisIntentGate(FrameProcessor):
         if not transcript:
             return
 
+        fast = classify_fast_command(transcript)
+        if fast in (UserIntent.MUTE, UserIntent.UNMUTE) and self._in_flight is not None and not self._in_flight.done():
+            self._in_flight.cancel()
         # Mute / unmute / introduction act at once and never join a held sentence.
-        if classify_fast_command(transcript) is None:
+        if fast is None:
             held = self._held
             if held is not None:
                 self._cancel_hold_timer()
@@ -292,10 +379,25 @@ class JarvisIntentGate(FrameProcessor):
                 self._start_hold_timer(direction)
                 return
 
-        await self._gate(frame, direction)
+        await self._run_gate(frame, direction)
+
+    async def _run_gate(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
+        task = asyncio.create_task(self._gate(frame, direction))
+        self._in_flight = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            if (current := asyncio.current_task()) is not None and current.cancelling():
+                raise
+        finally:
+            if self._in_flight is task:
+                self._in_flight = None
 
     async def cleanup(self) -> None:
         self._cancel_hold_timer()
+        if self._in_flight is not None:
+            self._in_flight.cancel()
+            self._in_flight = None
         await super().cleanup()
 
     def _start_enrollment(self, hint_name: str | None = None) -> None:
@@ -320,7 +422,7 @@ class JarvisIntentGate(FrameProcessor):
         await asyncio.sleep(HOLD_SECS)
         frame, self._held, self._hold_timer = self._held, None, None
         if frame is not None:
-            await self._gate(frame, direction)
+            await self._run_gate(frame, direction)
 
     def _recent_jarvis_question(self) -> str | None:
         """An open agent question first; else Jarvis's own last reply, if it stopped talking moments ago."""
@@ -393,7 +495,7 @@ class JarvisIntentGate(FrameProcessor):
                 await self.state.on_speak(msg)
             return
 
-        enrolled = self.registry.link_name(profile.id, profile.name, enroll=True) or profile
+        enrolled = await asyncio.to_thread(self.registry.link_name, profile.id, profile.name, enroll=True) or profile
         self._stop_enrollment()
         msg = lang_text["enroll_done"].format(name=enrolled.name)
         logger.info(f"[Enroll] completed enrollment for {enrolled.name!r} ({enrolled.id}, clips={enrolled.clips})")

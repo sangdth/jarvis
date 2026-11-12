@@ -49,6 +49,7 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         pcm = synthesize_beep_pcm(freq_hz=880.0, duration_ms=100, sample_rate=16000)
         # 100ms at 16kHz, 16-bit mono = 1600 samples * 2 bytes = 3200 bytes
         self.assertEqual(len(pcm), 3200)
+        self.assertIs(pcm, synthesize_beep_pcm(freq_hz=880.0, duration_ms=100, sample_rate=16000))
 
     async def test_jarvis_mute_beep_and_unmute_digest(self) -> None:
         spoken_messages: list[str] = []

@@ -260,6 +260,8 @@ class TestSharedService(unittest.IsolatedAsyncioTestCase):
         event = {"type": "permission.asked", "data": {"id": "per_1", "sessionID": "ses_x", "action": "bash"}}
         get = self.session_in("/Users/someone/other-project")
         with patch.object(self.adapter._http, "get", new=get):
+            await self.adapter._handle_event({"type": "message.part.updated", "data": {"sessionID": "ses_noise"}})
+            get.assert_not_awaited()  # unhandled event types never look up the session
             await self.adapter._handle_event(event)
             await self.adapter._handle_event({"type": "session.text.ended", "data": {"sessionID": "ses_x"}})
         get.assert_awaited_once_with("/api/session/ses_x")  # looked up once, then remembered

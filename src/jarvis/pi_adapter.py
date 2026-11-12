@@ -51,9 +51,10 @@ async def _hello(path: Path) -> dict[str, Any] | None:
 
 async def list_windows(socket_dir: Path = SOCKET_DIR) -> list[dict[str, Any]]:
     """Open Pi windows with the extension, newest first. A socket nobody answers on (a crashed window) is deleted."""
+    paths = sorted(socket_dir.glob("*.sock"), key=lambda p: p.stat().st_mtime, reverse=True)
+    hellos = await asyncio.gather(*(_hello(path) for path in paths))
     windows = []
-    for path in sorted(socket_dir.glob("*.sock"), key=lambda p: p.stat().st_mtime, reverse=True):
-        hello = await _hello(path)
+    for path, hello in zip(paths, hellos):
         if hello is None:
             path.unlink(missing_ok=True)
             continue

@@ -23,6 +23,17 @@ def _request_of(data: dict[str, Any]) -> dict[str, Any]:
 
 
 DEFAULT_URL = "http://127.0.0.1:4096"
+_HANDLED_EVENTS = (
+    "permission.asked",
+    "permission.replied",
+    "form.created",
+    "form.replied",
+    "form.cancelled",
+    "session.text.ended",
+    "session.execution.interrupted",
+    "session.execution.succeeded",
+    "session.execution.failed",
+)
 
 
 def discover_service() -> tuple[str, str] | None:
@@ -103,7 +114,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
                     await self._resync()
                     async for line in response.aiter_lines():
                         raw_data = line.removeprefix("data:").strip() if line.startswith("data:") else ""
-                        if not raw_data:
+                        if not raw_data or not any(e in raw_data for e in _HANDLED_EVENTS):
                             continue
                         try:
                             event = json.loads(raw_data)
@@ -148,6 +159,8 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
             except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
                 logger.debug(f"[{self.config.id}] Could not look up session {session_id} ({exc!r}); ignored.")
                 return False  # not cached: a passing network error must not hide a session for good
+            if len(self._ours) >= 256:
+                self._ours.pop(next(iter(self._ours)))
             self._ours[session_id] = folder == self._directory
         return self._ours[session_id]
 
@@ -176,6 +189,8 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
         ev_type = event.get("type", "")
+        if ev_type not in _HANDLED_EVENTS:
+            return
         data = event.get("data") or {}
         session_id = data.get("sessionID") or _request_of(data).get("sessionID")
         if session_id and not await self._is_ours(session_id):

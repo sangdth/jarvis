@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     extraction_model: str = "deepseek/deepseek-v4.1-flash"
     # OpenRouter decision model for the speech check (is a sentence for Jarvis?), used when Laya fails or is slow
     filter_model: str = "typesafe/jev-1.14"
-    # Tidies spoken slips, fillers and long sentences (>8 words, or with a filler or CLEANUP_CUES phrase) before the
+    # Tidies spoken slips, fillers and long sentences (>18 words, or with a filler or CLEANUP_CUES phrase) before the
     # conversation model reads them; about 250-500 ms when it runs, never more than 1.5 s.
     transcript_cleanup: bool = True
     # The model for that cleanup, run with thinking off; empty = EXECUTIVE_MODEL

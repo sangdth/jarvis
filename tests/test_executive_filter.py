@@ -20,6 +20,7 @@ class TestExecutiveFilter(unittest.IsolatedAsyncioTestCase):
 
     async def test_classify_user_utterance_asks_the_decision_model(self) -> None:
         filt = online_filter()
+        self.addAsyncCleanup(filt.aclose)
         reply = MagicMock()
         reply.json.return_value = {"answers": {"intent": {"type": "choice", "choice": "ADDRESSED_TO_JARVIS"}}}
         post = AsyncMock(return_value=reply)
@@ -34,7 +35,22 @@ class TestExecutiveFilter(unittest.IsolatedAsyncioTestCase):
 
     async def test_classifier_failure_ignores_speech(self) -> None:
         filt = online_filter()
+        self.addAsyncCleanup(filt.aclose)
         with patch.object(filt._http, "post", new=AsyncMock(side_effect=httpx.ConnectError("network down"))):
+            intent = await filt.classify_user_utterance("Turn on the lights in the kitchen")
+        self.assertEqual(intent, UserIntent.IGNORE_BACKGROUND)
+
+    async def test_slow_jev_fallback_times_out_at_jev_timeout_secs(self) -> None:
+        filt = online_filter()
+        self.addAsyncCleanup(filt.aclose)
+
+        async def slow(*_: object, **__: object) -> MagicMock:
+            await asyncio.sleep(5)
+            return answer("ADDRESSED_TO_JARVIS")
+
+        with patch("jarvis.executive_filter.JEV_TIMEOUT_SECS", 0.01), patch.object(
+            filt._http, "post", new=AsyncMock(side_effect=slow)
+        ):
             intent = await filt.classify_user_utterance("Turn on the lights in the kitchen")
         self.assertEqual(intent, UserIntent.IGNORE_BACKGROUND)
 

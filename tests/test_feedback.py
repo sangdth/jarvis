@@ -15,6 +15,7 @@ class TestFeedbackLog(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.now = 0.0
         self.log = FeedbackLog(Path(self.dir.name) / "feedback" / "intent.jsonl", clock=lambda: self.now)
+        self.addCleanup(self.log.close)
 
     def heard(self, at: float, text: str, intent: UserIntent, source: str = "laya") -> str:
         self.now = at
@@ -97,6 +98,16 @@ class TestFeedbackLog(unittest.TestCase):
     def test_a_disk_error_does_not_raise(self) -> None:
         log = FeedbackLog(Path("/dev/null/feedback/intent.jsonl"))
         log.decision("hi", None, A, "laya")
+        self.assertIsNone(log._file)
+
+    def test_keeps_one_file_handle_open_across_writes_until_closed(self) -> None:
+        self.heard(0, "Push it", A)
+        first_handle = self.log._file
+        self.assertIsNotNone(first_handle)
+        self.heard(1, "Run tests", A)
+        self.assertIs(self.log._file, first_handle)
+        self.log.close()
+        self.assertIsNone(self.log._file)
 
     def test_overlap_counts_the_old_sentences_words(self) -> None:
         self.assertEqual(overlap("open the project", "jarvis open the project now"), 1.0)

@@ -72,7 +72,8 @@ class WaitingLines:
                 "/chat/completions",
                 json={
                     "model": settings.executive_model,
-                    "reasoning": {"enabled": True},
+                    "reasoning": {"enabled": False},
+                    "provider": {"sort": "latency"},
                     "messages": [
                         {
                             "role": "system",
