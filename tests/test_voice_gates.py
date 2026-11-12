@@ -32,6 +32,12 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         patcher = patch.object(FrameProcessor, "process_frame", new=AsyncMock())
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The "..." hold runs only with Smart Turn off, which the hold tests below need; the developer's .env may differ.
+        from jarvis.config import settings
+
+        smart_turn = patch.object(settings, "smart_turn", False)
+        smart_turn.start()
+        self.addCleanup(smart_turn.stop)
 
     async def test_other_frames_pass_through(self) -> None:
         frame = TextFrame(text="hi")
@@ -84,6 +90,13 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.gate.push_frame.assert_not_awaited()
         await asyncio.sleep(0.1)
         self.assertEqual(self.turns(), ["Hmm..."])
+
+    async def test_with_smart_turn_a_trailing_off_sentence_goes_on_at_once(self) -> None:
+        from jarvis.config import settings
+
+        with patch.object(settings, "smart_turn", True):  # it already held the audio across the pause
+            await self.gate.process_frame(heard("Open the..."), FrameDirection.DOWNSTREAM)
+        self.assertEqual(self.turns(), ["Open the..."])
 
     async def test_mute_does_not_wait_for_a_held_sentence(self) -> None:
         self.filter.classify_user_utterance.return_value = UserIntent.MUTE
@@ -441,6 +454,7 @@ class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
         self.turn.append_audio.return_value = EndOfTurnState.INCOMPLETE
         self.stt = SpeakerVerifiedWhisperSTT(embedder=None, voiceprint=None, threshold=0.5, turn_analyzer=self.turn)
         self.stt._audio_buffer_size_1s = 4  # normally one second; tiny so a trim would show
+        self.stt._sample_rate = 16000  # set by StartFrame in the pipeline
         flush = patch.object(SegmentedSTTService, "_handle_user_stopped_speaking", new_callable=AsyncMock)
         self.flush = flush.start()
         self.addCleanup(flush.stop)
@@ -474,6 +488,14 @@ class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
         await self.stt.process_audio_frame(InputAudioRawFrame(b"\x00\x00" * 8, 16000, 1), FrameDirection.DOWNSTREAM)
         self.flush.assert_awaited_once()
         self.turn.analyze_end_of_turn.assert_awaited_once()  # not asked again: it has no audio left to judge
+
+    async def test_a_sentence_held_past_the_cap_goes_on_anyway(self) -> None:
+        from jarvis.voice_gates import MAX_HELD_SECS
+
+        self.turn.analyze_end_of_turn.return_value = (self.states.INCOMPLETE, None)
+        self.stt._audio_buffer = bytearray(16000 * 2 * MAX_HELD_SECS)  # a TV that never sounds done
+        await self.speak(b"\x01\x00" * 8)
+        self.flush.assert_awaited_once()
 
     async def test_without_smart_turn_every_pause_ends_the_sentence(self) -> None:
         from jarvis.voice_gates import SpeakerVerifiedWhisperSTT
