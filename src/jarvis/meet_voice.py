@@ -5,18 +5,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
 from loguru import logger
-from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.typing import Origin
 
 PORT = 47123  # also in defaults/meet/jarvis.js
 ORIGIN = "https://meet.google.com"  # browsers set Origin and pages can't fake it, so no other site can listen in
-QUEUE_CHUNKS = 200  # a stalled tab drops audio past this (a few seconds), never blocks the speaker
 EXTENSION = Path(__file__).parent / "defaults" / "meet"  # Chrome loads it from here, unpacked; no copy
 
 
@@ -25,7 +23,7 @@ class MeetVoice:
 
     def __init__(self) -> None:
         self.rate = 0
-        self._clients: set[asyncio.Queue[bytes]] = set()
+        self._clients: set[ServerConnection] = set()
         self._server: Server | None = None
 
     async def start(self) -> None:
@@ -40,35 +38,24 @@ class MeetVoice:
         )
 
     async def _handle(self, ws: ServerConnection) -> None:
-        queue: asyncio.Queue[bytes] = asyncio.Queue(QUEUE_CHUNKS)
-        self._clients.add(queue)
+        self._clients.add(ws)
         logger.info(f"Meeting: Google Meet tab connected ({len(self._clients)} open); the call hears Jarvis.")
         try:
             await ws.send(json.dumps({"rate": self.rate}))
-            while chunk := await queue.get():  # b"" from stop(): the handler must end for the server to close
-                await ws.send(chunk)
+            await ws.wait_closed()
         except ConnectionClosed:
             pass
         finally:
-            self._clients.discard(queue)
+            self._clients.discard(ws)
             logger.info("Meeting: Google Meet tab disconnected.")
 
     def send(self, pcm16: bytes) -> None:
         """Called on the event loop from the output transport, as each piece of speech is queued to play."""
-        if not pcm16:
-            return
-        for queue in self._clients:
-            try:
-                queue.put_nowait(pcm16)
-            except asyncio.QueueFull:
-                pass
+        if pcm16:
+            broadcast(self._clients, pcm16)
 
     async def stop(self) -> None:
         if self._server is not None:
-            for queue in self._clients:
-                while not queue.empty():  # unsent speech is moot once Jarvis stops; make room for the b""
-                    queue.get_nowait()
-                queue.put_nowait(b"")
             self._server.close()
             await self._server.wait_closed()
             self._server = None

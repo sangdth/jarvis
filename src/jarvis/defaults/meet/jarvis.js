@@ -14,7 +14,7 @@
     let rate = 0;
     ws.onmessage = ({ data }) => {
       if (typeof data === "string") return void (rate = JSON.parse(data).rate);
-      if (!rate) return;
+      if (!rate || ctx.state !== "running") return;
       const pcm = new Int16Array(data);
       const buffer = ctx.createBuffer(1, pcm.length, rate);
       const samples = buffer.getChannelData(0);
@@ -26,7 +26,7 @@
       source.start(next);
       next += buffer.duration;
     };
-    ws.onclose = () => setTimeout(connect, 5000); // Jarvis not running yet, or restarted
+    ws.onclose = () => setTimeout(connect, 1000); // Jarvis not running yet, or restarted
   }
   connect();
 
@@ -49,11 +49,16 @@
     }
     const stop = mixed.stop.bind(mixed);
     mixed.stop = () => {
+      if (mixed.readyState === "ended") return;
       stop();
       mic.stop(); // or the mic light stays on after Meet lets go
       input.disconnect();
       voice.disconnect(out);
     };
+    mic.addEventListener("ended", () => {
+      mixed.stop();
+      mixed.dispatchEvent(new Event("ended"));
+    });
     return new MediaStream([mixed, ...stream.getVideoTracks()]);
   };
 })();
