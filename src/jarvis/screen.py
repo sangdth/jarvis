@@ -15,7 +15,7 @@ from loguru import logger
 
 from jarvis.config import JARVIS_HOME, settings
 
-# Outside every repo, so `git add .` never commits a screenshot; only the user can read it.
+# Only the user can read it. A dev checkout keeps JARVIS_HOME in the repo, so `.gitignore` lists `/screen/`.
 SCREEN_DIR = JARVIS_HOME / "screen"
 # An agent may still be reading the previous one when the next task comes.
 KEEP = 5
@@ -39,19 +39,17 @@ class ScreenCapture:
 
 
 def _front_window() -> tuple[int | None, str, str]:
-    """The frontmost app's top normal window: (window id or None, app name, window title)."""
+    """The top visible normal window: (window id or None, app name, window title)."""
     import Quartz
-    from AppKit import NSWorkspace
 
-    app = NSWorkspace.sharedWorkspace().frontmostApplication()
-    if app is None:  # an app just quit, Mission Control, a locked screen: the main display instead
-        return None, "", ""
-    pid, name = app.processIdentifier(), str(app.localizedName() or "")
+    # The list runs front to back. NSWorkspace's front app is no use here: it updates only on a Cocoa run loop, and
+    # Jarvis runs asyncio, so it would keep naming the app that was in front at the first look.
     options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
     for window in Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or []:
-        if window.get("kCGWindowOwnerPID") == pid and window.get("kCGWindowLayer") == 0:
-            return int(window["kCGWindowNumber"]), name, str(window.get("kCGWindowName") or "")
-    return None, name, ""
+        if window.get("kCGWindowLayer") == 0 and window.get("kCGWindowAlpha", 1) > 0:
+            name, title = str(window.get("kCGWindowOwnerName") or ""), str(window.get("kCGWindowName") or "")
+            return int(window["kCGWindowNumber"]), name, title
+    return None, "", ""  # Mission Control, a locked screen: the main display instead
 
 
 async def capture_front_window(folder: Path = SCREEN_DIR) -> ScreenCapture:

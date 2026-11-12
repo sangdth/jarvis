@@ -114,7 +114,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `bench_intent.py` scores mute exactly.
 - **Jarvis sees the screen only when pointed at it.** `look_at_screen` answers a question about the front window
   with one stateless `EXECUTIVE_MODEL` call; `send_agent_task` `include_screen` adds the PNG's path to the task. Shots
-  live in `JARVIS_HOME/screen` (0700/0600, newest 5), never in a repo; images never enter the context or memory. A
+  live in `JARVIS_HOME/screen` (0700/0600, newest 5; gitignored in a checkout); images never enter the context or memory. A
   meeting guest gets `owner_only`. Needs macOS Screen Recording for the app running Jarvis.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls

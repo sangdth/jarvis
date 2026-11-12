@@ -44,13 +44,31 @@ class TestCapture(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((shots[-1].app, shots[-1].title), ("Terminal", "zsh"))
 
 
+def window_list(*windows: dict) -> SimpleNamespace:
+    return SimpleNamespace(
+        kCGWindowListOptionOnScreenOnly=1, kCGWindowListExcludeDesktopElements=16, kCGNullWindowID=0,
+        CGWindowListCopyWindowInfo=lambda options, window_id: list(windows),
+    )
+
+
 class TestFrontWindow(unittest.TestCase):
-    def test_no_front_app_falls_back_to_the_main_display(self) -> None:
+    def test_the_top_visible_normal_window_wins(self) -> None:
         from jarvis.screen import _front_window
 
-        workspace = MagicMock()
-        workspace.sharedWorkspace.return_value.frontmostApplication.return_value = None  # an app just quit
-        with patch.dict(sys.modules, {"Quartz": MagicMock(), "AppKit": SimpleNamespace(NSWorkspace=workspace)}):
+        windows = window_list(
+            {"kCGWindowLayer": 25, "kCGWindowNumber": 1, "kCGWindowOwnerName": "Control Center"},  # menu bar
+            {"kCGWindowLayer": 0, "kCGWindowAlpha": 0, "kCGWindowNumber": 2, "kCGWindowOwnerName": "Overlay"},
+            {"kCGWindowLayer": 0, "kCGWindowAlpha": 1, "kCGWindowNumber": 3, "kCGWindowOwnerName": "Safari",
+             "kCGWindowName": "Update"},
+            {"kCGWindowLayer": 0, "kCGWindowAlpha": 1, "kCGWindowNumber": 4, "kCGWindowOwnerName": "Terminal"},
+        )
+        with patch.dict(sys.modules, {"Quartz": windows}):
+            self.assertEqual(_front_window(), (3, "Safari", "Update"))
+
+    def test_no_window_falls_back_to_the_main_display(self) -> None:
+        from jarvis.screen import _front_window
+
+        with patch.dict(sys.modules, {"Quartz": window_list()}):
             self.assertEqual(_front_window(), (None, "", ""))
 
 

@@ -1212,7 +1212,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "mem0ai", specifier = ">=2.2.1" },
     { name = "ollama", specifier = ">=0.4.0" },
-    { name = "pipecat-ai", extras = ["silero", "whisper", "mlx-whisper", "openai", "elevenlabs"], specifier = ">=0.0.50" },
+    { name = "pipecat-ai", extras = ["silero", "whisper", "mlx-whisper", "openai", "elevenlabs"], specifier = ">=1.15,<1.16" },
     { name = "pydantic-settings", specifier = ">=2.2.0" },
     { name = "pyobjc-framework-avfoundation", specifier = ">=11.0" },
     { name = "pyobjc-framework-quartz", specifier = ">=11.0" },
