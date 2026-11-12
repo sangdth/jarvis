@@ -44,6 +44,8 @@ def _front_window() -> tuple[int | None, str, str]:
     from AppKit import NSWorkspace
 
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    if app is None:  # an app just quit, Mission Control, a locked screen: the main display instead
+        return None, "", ""
     pid, name = app.processIdentifier(), str(app.localizedName() or "")
     options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
     for window in Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or []:

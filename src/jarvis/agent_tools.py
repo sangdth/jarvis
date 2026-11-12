@@ -148,14 +148,15 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         opens = bool(project) and agent is orchestrator.t3
         if not task and not opens:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
-        # A new T3 thread starts with only the sync, never the task, so a screenshot would go nowhere.
-        if args.get("include_screen") and task and not opens:
+        prompt = task
+        if args.get("include_screen") and task:
             try:
                 shot = await capture_front_window()
             except ScreenError as exc:
                 return exc.status  # nothing went out: the task needs the screen it points at
-            task += f"\n\n[Screenshot of the user's front window ({shot.app}: {shot.title}): {shot.path}]"
-        ok = await (agent.open_project(project, task) if opens else agent.send_task(task))
+            # Only the agent gets this line: the waiting lines below are written from `task` by a model and spoken.
+            prompt += f"\n\n[Screenshot of the user's front window ({shot.app}: {shot.title}): {shot.path}]"
+        ok = await (agent.open_project(project, prompt) if opens else agent.send_task(prompt))
         if ok is True:  # a status word means nothing went out, so nothing to wait on
             orchestrator.remind_while_busy(agent, task or f"open the {project} project")
         return ok

@@ -109,6 +109,27 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         sent = self.agent.send_task.await_args.args[0]
         self.assertTrue(sent.startswith("Fix this error\n\n[Screenshot of the user's front window (Terminal: zsh): "))
         self.assertIn("/home/.config/jarvis/screen/1.png", sent)
+        # The waiting lines are written by a model and spoken: they get the plain task, never the window title
+        self.assertEqual(self.orch._reminders["hermes"][1]._task, "Fix this error")
+
+    async def test_include_screen_reaches_a_t3_project_that_is_already_open(self) -> None:
+        from pathlib import Path
+
+        from jarvis.screen import ScreenCapture
+        from jarvis.t3_adapter import T3Adapter
+
+        t3 = MagicMock(spec=T3Adapter)
+        t3.config = MagicMock(id="t3-code")
+        t3.busy = False
+        t3.open_project = AsyncMock(return_value=True)  # already open: T3 sends the task to its thread
+        self.orch.adapters["t3-code"] = t3
+        shot = ScreenCapture(Path("/s/1.png"), "Safari", "Login")
+        with patch("jarvis.agent_tools.capture_front_window", AsyncMock(return_value=shot)):
+            p = params({"agent_id": "t3-code", "project": "jarvis", "task": "Fix this layout", "include_screen": True})
+            await self.handlers["send_agent_task"](p)
+        folder, sent = t3.open_project.await_args.args
+        self.assertEqual(folder, "jarvis")
+        self.assertIn("/s/1.png", sent)
 
     async def test_a_failed_capture_sends_nothing(self) -> None:
         from jarvis.screen import ScreenError
