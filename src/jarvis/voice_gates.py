@@ -27,6 +27,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
+from jarvis.cleanup import TranscriptCleaner
 from jarvis.config import JARVIS_HOME, settings
 from jarvis.executive_filter import ExecutiveFilter
 from jarvis.prompts import LANGUAGES, MEETING_TRANSCRIPT
@@ -234,10 +235,12 @@ class JarvisIntentGate(FrameProcessor):
         *,
         meeting: bool = False,
         registry: SpeakerRegistry | None = None,
+        cleaner: TranscriptCleaner | None = None,
     ) -> None:
         super().__init__()
         self.state = state
         self.executive_filter = executive_filter
+        self.cleaner = cleaner  # None: sentences go on as Whisper heard them
         # What Jarvis said last (the conversation model's last reply), for answers to its own questions.
         self._last_said = last_said
         self._meeting = meeting
@@ -493,6 +496,16 @@ class JarvisIntentGate(FrameProcessor):
             else:
                 logger.debug(f"Ignored self-talk / unaddressed speech: {transcript!r}")
             return
+
+        if self.cleaner is not None:
+            # After the speech check (it and its feedback log need the words as heard), before the speaker labels.
+            cleaned_at = time.monotonic()
+            cleaned = await self.cleaner.clean(transcript, recent_jarvis_question=question)
+            ms = (time.monotonic() - cleaned_at) * 1000
+            change = f": {transcript!r} -> {cleaned!r}" if cleaned != transcript else " (unchanged)"
+            logger.info(f"[Cleanup] {ms:.0f} ms{change}")
+            transcript = cleaned
+            frame = replace(frame, text=transcript)
 
         self.state.room_turn = not is_owner
         if profile is not None and profile.enrolled and profile.name and not profile.greeted:

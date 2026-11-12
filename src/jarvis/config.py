@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     extraction_model: str = "deepseek/deepseek-v4.1-flash"
     # OpenRouter decision model for the speech check (is a sentence for Jarvis?), used when Laya fails or is slow
     filter_model: str = "typesafe/jev-1.14"
+    # Tidies each sentence meant for Jarvis (punctuation, fillers, "42, sorry, 24") before the conversation model
+    # reads it; about 250-500 ms per sentence of four words or more, never more than 1.5 s.
+    transcript_cleanup: bool = True
+    # The model for that cleanup, run with thinking off; empty = EXECUTIVE_MODEL
+    cleanup_model: str = ""
+    # Words the user says to fix a slip mid-sentence, comma-separated; a short sentence with one is cleaned too
+    cleanup_cues: str = "sorry, no no, actually, scratch that, I mean, à quên, nhầm, ý mình là, ý anh là"
 
     # Laya (self-hosted, HappyVoxel's GPU box) answers the speech check first; FILTER_MODEL is the fallback.
     # A console key (laya_...) from https://laya.happyvoxel.com; empty = FILTER_MODEL only. Keys expire after 90 days.

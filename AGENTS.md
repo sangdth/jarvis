@@ -35,6 +35,7 @@ speech check dropping the sentence, not the conversation model.
 | Doesn't react to something said      | `executive_filter.py` `INTENT_QUESTION`, Laya `jarvis-intent`   |
 | Mute / unmute phrase missed          | `state.py` `_MUTE_PATTERNS`, `_UNMUTE_PATTERNS`                 |
 | Which model answered, corrections    | `~/.config/jarvis/feedback/intent.jsonl`, `feedback.py`         |
+| Heard right, reached the model wrong | `[Cleanup]` log, `prompts.py` `CLEANUP_PROMPT`, `cleanup.py`  |
 | Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`, `languages.json` |
 | Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                            |
 | Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`        |
@@ -102,7 +103,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Pi is reached only through an open window.** `jarvis connect pi` installs `defaults/pi/jarvis.ts` into
   `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
   make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.
-- **All user state lives in `JARVIS_HOME`** (`config.py`): `.env`, `agents.json`, `SOUL.md`, the voiceprint,
+- **All user state lives in `JARVIS_HOME`** (`config.py`): `.env`, `agents.json`, `SOUL.md`, `SYSTEM.md`, the voiceprint,
   models, memory. The installed `jarvis` uses `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's
   folder (`checkout_root`, found from the running code, never the current folder; gitignored) and stops without its
   `.env`. The T3 setup script copies that state into new worktrees. The one-mic lock stays in `~/.config/jarvis`
@@ -147,7 +148,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
   `LAYA_MODEL` (Laya's `jarvis-intent`) decides whether a sentence is meant for Jarvis, with `FILTER_MODEL` (an
   OpenRouter decision model on `/api/alpha/decisions`) as its fallback; `EXTRACTION_MODEL` picks memory facts, a
-  fast model with thinking always off.
+  fast model with thinking always off; `CLEANUP_MODEL` (empty = `EXECUTIVE_MODEL`, thinking off) tidies each passed
+  sentence after the speech check and before the speaker labels (`cleanup.py`).
 - **The speech check asks Laya first.** `LAYA_MODEL` (`jarvis-intent`, fine-tuned for Jarvis, served by
   HappyVoxel's GPU box at `LAYA_BASE_URL` with a console `LAYA_API_KEY`) answers; `FILTER_MODEL` is asked at the
   same time and used when Laya fails or passes `LAYA_TIMEOUT_SECS`. Every decision, both answers and the
@@ -165,6 +167,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **`~/.config/jarvis/SOUL.md` is the user's own setup** (`jarvis init` in `init.py`, read by `soul.py`): front
   matter holds settings (`projects_dir`), the body is personality, added to the system prompt as tone only. The name
   is always Jarvis.
+- **`SYSTEM.md` in `JARVIS_HOME` overrides shipped prompts, one `## Name` section each** (`system_prompts.py`,
+  `KNOWN`: only `Cleanup` today). Optional: `init` never writes it, and a missing section keeps the prompt in
+  `prompts.py`, so our fixes still reach the user. Read once at startup; the log names what it overrides.
 - Mock HTTP and the Claude SDK in unit tests. Live checks against real agents go in a throwaway script, not in `tests/`.
 
 ## Later, not now

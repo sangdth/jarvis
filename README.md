@@ -34,6 +34,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Background voices never interrupt | `ExternalUserTurnStrategies`                | `voice_gates.py`      |
 | Don't hear its own voice          | `MacVoiceTransport` (voice processing)      | `mac_audio.py`        |
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
+| Tidy a sentence before the model  | `TranscriptCleaner` (`CLEANUP_MODEL`)       | `cleanup.py`          |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
 | Claude Code, OpenCode, Hermes     | `*Adapter` classes                          | `*_adapter.py`        |
 | T3 Code, projects by name         | `T3Adapter`                                 | `t3_adapter.py`       |
@@ -58,11 +59,11 @@ folder and removes the `jarvis` command; it asks first and refuses while Jarvis 
 
 **Developing Jarvis:** in a checkout, `uv sync`, then `uv run jarvis` runs that checkout's code
 (`jarvis --version` there says `dev (<folder>)`). It keeps its own state in the checkout, not `~/.config/jarvis`:
-`.env`, `agents.json`, `SOUL.md`, `owner_voice.npy`, `models/` and `memory/` (all gitignored), and it stops at startup
+`.env`, `agents.json`, `SOUL.md`, `SYSTEM.md`, `owner_voice.npy`, `models/` and `memory/` (all gitignored), and it stops at startup
 without its `.env`. Fill them with `uv run jarvis init`, or copy them in with a T3 setup script for new worktrees:
 ```sh
 set -e
-for f in .env agents.json SOUL.md owner_voice.npy models; do
+for f in .env agents.json SOUL.md SYSTEM.md owner_voice.npy models; do
   [ -e "$f" ] || cp -R "$T3CODE_PROJECT_ROOT/$f" "$f"
 done
 uv sync
@@ -81,6 +82,10 @@ already set is never asked again. Then it asks a few questions (Jarvis's persona
 where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
 file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
 
+To change how Jarvis tidies what you say, write your own prompt under a `## Cleanup` heading in
+`~/.config/jarvis/SYSTEM.md` (create the file; `init` doesn't). It replaces the shipped one; with no file or no section
+Jarvis uses its own, and new versions keep improving it. Startup logs `SYSTEM.md overrides: Cleanup` while yours is used.
+
 Last, it offers to record your voice for the master check (default no; later: `jarvis enroll`). Without it, Jarvis
 acts on any voice it hears. With it, Jarvis acts only on yours: read eight everyday lines (5 s each, in the language
 `LANGUAGE` sets) with the mic Jarvis will use, then three more that Jarvis scores against your new voiceprint; it
@@ -98,6 +103,11 @@ your shell wins over the file, so `op run -- jarvis` (1Password) works too:
   that tells whether a sentence is meant for Jarvis: Laya's `jarvis-intent` model, fine-tuned for Jarvis. `FILTER_MODEL`
   is asked at the same time and used when Laya fails or is slower than `LAYA_TIMEOUT_SECS`; left empty, only
   `FILTER_MODEL` is used.
+- `TRANSCRIPT_CLEANUP` (default `true`): each sentence meant for Jarvis, of four words or more or with a word from
+  `CLEANUP_CUES`, is tidied before Jarvis reads it: punctuation, fillers, and a slip fixed in the same sentence
+  ("make it 42, sorry, 24" becomes "Make it 24"). It uses `CLEANUP_MODEL` (empty = `EXECUTIVE_MODEL`, thinking off),
+  adds about 250-500 ms, and passes the sentence on as heard after 1.5 s or on any error. `[Cleanup]` log lines show
+  the time and the change.
 - `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `t3-code`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
 - `LANGUAGE`: `en` (default) or `vi`. It sets the language Whisper listens for and, while `WHISPER_MODEL` is empty, the model: `mlx-community/whisper-large-v3-turbo` for `en`, [`sangdth/phowhisper-large-vien-cs-mlx-16bit`](https://huggingface.co/sangdth/phowhisper-large-vien-cs-mlx-16bit) for `vi`: VinAI's PhoWhisper-large tuned for Vietnamese with English words mixed in, about 3 GB, downloaded on first start. It takes about twice as long per sentence as turbo.
