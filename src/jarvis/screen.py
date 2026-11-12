@@ -87,7 +87,7 @@ def _jpeg_data_url(path: Path) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
 
 
-async def ask_screen(capture: ScreenCapture, question: str) -> str:
+async def ask_screen(capture: ScreenCapture, question: str, http: httpx.AsyncClient | None = None) -> str:
     """One stateless EXECUTIVE_MODEL call about the screenshot; the image never enters the conversation or memory."""
     if not settings.openrouter_api_key:
         raise ScreenError("no_model")
@@ -112,12 +112,15 @@ async def ask_screen(capture: ScreenCapture, question: str) -> str:
         "provider": {"sort": "latency"},
     }
     try:
-        async with httpx.AsyncClient(
-            timeout=30.0, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}
-        ) as http:
-            resp = await http.post(f"{settings.openrouter_base_url.rstrip('/')}/chat/completions", json=body)
-            resp.raise_for_status()
-            return str(resp.json()["choices"][0]["message"]["content"]).strip()
+        if http is not None:
+            resp = await http.post("/chat/completions", json=body)
+        else:
+            async with httpx.AsyncClient(
+                timeout=30.0, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}
+            ) as client:
+                resp = await client.post(f"{settings.openrouter_base_url.rstrip('/')}/chat/completions", json=body)
+        resp.raise_for_status()
+        return str(resp.json()["choices"][0]["message"]["content"]).strip()
     except httpx.HTTPStatusError as exc:
         # 400 or 404 when EXECUTIVE_MODEL takes no images.
         logger.warning(f"[Screen] {settings.executive_model} could not look ({exc.response.status_code}).")

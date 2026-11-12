@@ -195,7 +195,9 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             return
         try:
             shot = await capture_front_window()
-            answer = await ask_screen(shot, params.arguments.get("question", "What is on the screen?"))
+            answer = await ask_screen(
+                shot, params.arguments.get("question", "What is on the screen?"), orchestrator._http
+            )
         except ScreenError as exc:
             await params.result_callback({"status": exc.status})
             return

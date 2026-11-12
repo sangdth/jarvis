@@ -163,8 +163,12 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(restart.await_count, 2)
 
     async def test_a_task_sent_with_a_session_switch_reaches_the_new_process(self) -> None:
+        starts = 0
+
         class Client:
             def __init__(self, options) -> None:
+                nonlocal starts
+                starts += 1
                 self.query = AsyncMock()
 
             async def __aenter__(self):
@@ -181,7 +185,9 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.adapter._client = None  # not the setUp mock: only the restarted process may take the task
         with patch("jarvis.claude_adapter.ClaudeSDKClient", Client):
             await self.adapter.start()
+            self.assertEqual(starts, 0)  # lazy: no subprocess spawned until Claude is used
             self.assertTrue(await self.adapter.new_session())  # "start a new session and run the tests"
+            self.assertEqual(starts, 1)
             self.assertTrue(await self.adapter.send_task("run the tests"))
             self.adapter._client.query.assert_awaited_once_with("run the tests")
             await self.adapter.stop()

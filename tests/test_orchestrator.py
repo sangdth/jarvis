@@ -66,6 +66,20 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
             await state.notify_topic(AgentTopic(agent_id, agent_id, "needs approval: x"))
         self.assertIs(orch.find_waiting(None), hermes)
 
+    async def test_start_all_with_connected_agent_skips_other_coding_watchers(self) -> None:
+        from jarvis.sessions import CodingSessionAdapter
+        from jarvis.t3_adapter import T3Adapter
+
+        t3 = MagicMock(spec=T3Adapter, connected=True, start=AsyncMock())
+        opencode = MagicMock(spec=CodingSessionAdapter, connected=False, start=AsyncMock())
+        hermes = fake_adapter("hermes")
+        hermes.start = AsyncMock()
+        self.orch.adapters.update({"t3-code": t3, "opencode": opencode, "hermes": hermes})
+        await self.orch.start_all()
+        t3.start.assert_awaited_once()
+        hermes.start.assert_awaited_once()
+        opencode.start.assert_not_awaited()
+
 
 
 class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):

@@ -97,6 +97,9 @@ class TestAsk(unittest.IsolatedAsyncioTestCase):
         body = post.await_args.kwargs["json"]
         self.assertEqual(body["model"], "m")
         self.assertEqual(body["messages"][0]["content"][1]["image_url"]["url"], "data:image/jpeg;base64,AA")
+        shared = MagicMock(post=post)
+        self.assertEqual(await ask_screen(self.shot, "What is this?", shared), "It's an update.")
+        self.assertEqual(post.await_args.args[0], "/chat/completions")
 
     async def test_a_model_without_vision_says_so(self) -> None:
         request = httpx.Request("POST", "https://o/api/v1/chat/completions")

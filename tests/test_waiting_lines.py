@@ -31,6 +31,8 @@ class TestWaitingLines(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(said[4:], batch(1)[4:] + batch(2)[:2])  # never ran out, never used a base line
         already_said = http.post.await_args_list[1].kwargs["json"]["messages"][1]["content"]
         self.assertIn(batch(1)[3], already_said)  # the refill is told what not to repeat
+        body = http.post.await_args_list[0].kwargs["json"]
+        self.assertEqual((body["reasoning"], body["provider"]), ({"enabled": False}, {"sort": "latency"}))
 
     async def test_a_failed_call_uses_a_base_line_and_tries_again(self) -> None:
         http = MagicMock(post=AsyncMock(side_effect=[RuntimeError("down"), reply(batch(1))]))

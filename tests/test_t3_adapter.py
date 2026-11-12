@@ -213,6 +213,40 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(a._surface.await_args.args[0].startswith("needs approval:"))
         a._command.assert_not_awaited()
 
+    async def test_snapshot_ignores_completed_messages_from_past_runs(self) -> None:
+        a = make()
+        past = {"type": "assistant_message", "status": "completed", "runId": "run:old", "text": "Old"}
+        active = {"type": "assistant_message", "status": "completed", "runId": RUN, "text": "Current"}
+        await a._on_stream_item(
+            {
+                "kind": "snapshot",
+                "snapshotSequence": 5,
+                "projection": {"runs": [{"id": RUN, "status": "running"}], "turnItems": [past, active]},
+            }
+        )
+        self.assertEqual(a._last_text, {RUN: "Current"})
+
+    async def test_shell_snapshot_reuses_the_live_websocket(self) -> None:
+        a = make()
+        sent: list[dict] = []
+
+        async def send(raw: str) -> None:
+            msg = json.loads(raw)
+            sent.append(msg)
+            if msg.get("tag") == "orchestration.subscribeShell":
+                await a._on_message(
+                    a._ws,
+                    {
+                        "_tag": "Chunk",
+                        "requestId": msg["id"],
+                        "values": [{"kind": "snapshot", "snapshot": {"projects": [{"id": "p1"}]}}],
+                    },
+                )
+
+        a._ws = MagicMock(send=AsyncMock(side_effect=send))
+        self.assertEqual(await a.shell_snapshot(), {"projects": [{"id": "p1"}]})
+        self.assertEqual([m["_tag"] for m in sent], ["Request", "Ack", "Interrupt"])
+
 
 class TestHelpers(unittest.TestCase):
     def test_deepest_live_project_holds_cwd(self) -> None:
@@ -230,6 +264,8 @@ class TestHelpers(unittest.TestCase):
             self.assertEqual(list_projects(root), ["Org/app", "solo"])
             (root / "solo/.git/index").touch()  # git wrote the index just now: solo is the newest
             self.assertEqual(list_projects(root), ["solo", "Org/app"])
+            with patch("jarvis.t3_adapter._last_touched", side_effect=AssertionError("should not stat")):
+                self.assertEqual(list_projects(root, sort=False), ["Org/app", "solo"])
 
     def test_recent_threads_are_the_users_own_newest_first(self) -> None:
         snapshot = {

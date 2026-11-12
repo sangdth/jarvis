@@ -118,6 +118,23 @@ class TestPiWindows(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(windows, [{**HELLO, "socket": str(Path(tmp) / "1.sock"), "mtime": windows[0]["mtime"]}])
         self.assertFalse(dead.exists())
 
+    async def test_probes_sockets_concurrently(self) -> None:
+        in_flight = peak = 0
+
+        async def slow_hello(path: Path) -> dict | None:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.02)
+            in_flight -= 1
+            return HELLO
+
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp, patch("jarvis.pi_adapter._hello", side_effect=slow_hello):
+            for name in ("1.sock", "2.sock", "3.sock"):
+                (Path(tmp) / name).touch()
+            await list_windows(Path(tmp))
+        self.assertEqual(peak, 3)
+
 
 class TestInstallExtension(unittest.TestCase):
     def test_copies_once_and_again_after_an_update(self) -> None:

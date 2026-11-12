@@ -55,7 +55,7 @@ def _last_touched(repo: Path) -> float:
     return (git / "index").stat().st_mtime if (git / "index").exists() else git.stat().st_mtime
 
 
-def list_projects(root: Path = PROJECTS) -> list[str]:
+def list_projects(root: Path = PROJECTS, *, sort: bool = True) -> list[str]:
     """Git repos one or two folders under root, as relative paths ("HuggerHustle/platform-v2"), newest first."""
     found: list[str] = []
     for top in sorted(root.iterdir()) if root.is_dir() else []:
@@ -68,13 +68,15 @@ def list_projects(root: Path = PROJECTS) -> list[str]:
             found += [f"{top.name}/{sub.name}" for sub in sorted(top.iterdir()) if (sub / ".git").exists()]
         except OSError:
             continue  # unreadable folder: not a project Jarvis can open
-    return sorted(found, key=lambda folder: _last_touched(root / folder), reverse=True)
+    return sorted(found, key=lambda folder: _last_touched(root / folder), reverse=True) if sort else found
 
 
 def resolve_project(folder: str) -> Path | None:
     """A listed project's folder for the name the model gave, else None: the model never picks an arbitrary path.
     Case-blind, like the macOS file system."""
-    listed = {f.lower(): f for f in list_projects()}.get(folder.removeprefix(f"{PROJECTS_LABEL}/").strip("/").lower())
+    listed = {f.lower(): f for f in list_projects(sort=False)}.get(
+        folder.removeprefix(f"{PROJECTS_LABEL}/").strip("/").lower()
+    )
     return PROJECTS / listed if listed else None
 
 
@@ -138,6 +140,7 @@ class T3Adapter(BaseAgentAdapter):
         self._token: str | None = None
         self._ids = itertools.count(1)
         self._calls: dict[str, asyncio.Future[dict[str, Any]]] = {}  # request id -> its Exit
+        self._snapshots: dict[str, asyncio.Future[dict[str, Any]]] = {}  # request id -> its shell snapshot
         self._sub_id: str | None = None  # the thread subscription's request id
         self._thread_id: str | None = None
         self._root: str | None = None  # the project folder of the current thread
@@ -191,9 +194,10 @@ class T3Adapter(BaseAgentAdapter):
                 logger.debug(f"[{self.config.id}] T3 Code unavailable ({exc!r}); retrying in {wait:.0f}s.")
             finally:
                 self._ws = None
-                for call in self._calls.values():
+                for call in (*self._calls.values(), *self._snapshots.values()):
                     call.cancel()
                 self._calls.clear()
+                self._snapshots.clear()
             await asyncio.sleep(wait)
 
     async def _on_message(self, ws: ClientConnection, msg: dict[str, Any]) -> None:
@@ -205,9 +209,15 @@ class T3Adapter(BaseAgentAdapter):
             if msg["requestId"] == self._sub_id:
                 for item in msg.get("values", []):
                     await self._on_stream_item(item)
+            elif snap := self._snapshots.get(msg["requestId"]):
+                for item in msg.get("values", []):
+                    if item.get("kind") == "snapshot" and not snap.done():
+                        snap.set_result(item["snapshot"])
         elif tag == "Exit":
             if msg["requestId"] == self._sub_id:  # the subscription itself ended: start over
                 raise RuntimeError(f"thread subscription ended: {json.dumps(msg.get('exit'))[:300]}")
+            if (snap := self._snapshots.pop(msg["requestId"], None)) and not snap.done():
+                snap.set_exception(RuntimeError(f"T3 shell subscription failed: {json.dumps(msg)[:300]}"))
             call = self._calls.pop(msg["requestId"], None)
             if call and not call.done():
                 call.set_result(msg["exit"])
@@ -250,7 +260,31 @@ class T3Adapter(BaseAgentAdapter):
         return find_project((await self.shell_snapshot()).get("projects", []), cwd)
 
     async def shell_snapshot(self) -> dict[str, Any]:
-        """T3's projects and threads, read from a short-lived shell subscription."""
+        """T3's projects and threads, read over the open connection or a short-lived one before start_all."""
+        if self._ws is not None:
+            future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+            request_id = str(next(self._ids))
+            self._snapshots[request_id] = future
+            try:
+                await self._ws.send(
+                    json.dumps(
+                        {
+                            "_tag": "Request",
+                            "id": request_id,
+                            "tag": "orchestration.subscribeShell",
+                            "payload": {},
+                            "headers": [],
+                        }
+                    )
+                )
+                return await asyncio.wait_for(future, 10.0)
+            finally:
+                self._snapshots.pop(request_id, None)
+                if self._ws is not None:
+                    try:
+                        await self._ws.send(json.dumps({"_tag": "Interrupt", "id": request_id}))
+                    except OSError:
+                        pass
         self._token = self._token or await self._issue_token()
         async with self._connect() as ws:
             request = {"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell", "payload": {}, "headers": []}
@@ -298,7 +332,7 @@ class T3Adapter(BaseAgentAdapter):
 
     async def _on_turn_item(self, item: dict[str, Any]) -> None:
         kind = item.get("type")
-        if kind == "assistant_message" and item.get("status") == "completed" and item.get("runId"):
+        if kind == "assistant_message" and item.get("status") == "completed" and item.get("runId") in self._runs:
             self._last_text[item["runId"]] = item.get("text") or ""
         elif kind in _ASKS:
             if item.get("status") != "waiting":

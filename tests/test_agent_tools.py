@@ -161,7 +161,7 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         ):
             p = params({"question": "What does this popup mean?"})
             await self.handlers["look_at_screen"](p)
-        ask.assert_awaited_once_with(shot, "What does this popup mean?")
+        ask.assert_awaited_once_with(shot, "What does this popup mean?", self.orch._http)
         p.result_callback.assert_awaited_once_with({"status": "seen", "answer": "It asks to update macOS."})
 
 

@@ -17,7 +17,7 @@ from claude_agent_sdk import (
 from loguru import logger
 
 from jarvis.agent_adapter import WatchedAgentConfig, describe_fields, form_answer, is_approval
-from jarvis.sessions import AgentSession, CodingSessionAdapter
+from jarvis.sessions import READY_SECS, AgentSession, CodingSessionAdapter
 from jarvis.state import JarvisState
 
 
@@ -54,6 +54,28 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
         self._stopped = False  # the user stopped this turn, so its error result is not news
         self._stops = 0  # counts stops, so a question queued before a stop is not asked after it
         self._session_id: str | None = None  # the conversation tasks go to; None until Claude Code names one
+        self._unavailable = False  # `claude` CLI is missing on PATH; skip future starts
+
+    async def start(self) -> None:
+        # Spawn at startup only when picked with `jarvis connect claude`, or when _restart() restarts a running loop.
+        if self.connected or self._task is not None:
+            await super().start()
+
+    async def _ensure_started(self) -> bool:
+        """Start the Claude Code process on first use and wait until it can take a task."""
+        if self._unavailable:
+            return False
+        if self._client is not None:
+            return True
+        if self._task is None or self._task.done():
+            self._ready.clear()
+            await super().start()
+        try:
+            await asyncio.wait_for(self._ready.wait(), READY_SECS)
+        except TimeoutError:
+            logger.warning(f"[{self.config.id}] Claude Code did not become ready within {READY_SECS:.0f} s.")
+            return False
+        return self._client is not None
 
     async def _run_loop(self) -> None:
         while True:
@@ -73,6 +95,8 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
                     async for message in client.receive_messages():
                         await self._handle_message(message)
             except CLINotFoundError:
+                self._unavailable = True
+                self._ready.set()
                 logger.warning(f"[{self.config.id}] `claude` CLI not found on PATH; watcher idle.")
                 return
             except asyncio.CancelledError:
@@ -132,9 +156,10 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
         return PermissionResultDeny(message=f"The user declined: {said}")
 
     async def send_task(self, task: str) -> bool:
-        if not self._client:
+        if not self._client and not await self._ensure_started():
             logger.warning(f"[{self.config.id}] Cannot send task; Claude Code is not running.")
             return False
+        assert self._client is not None
         self._running = True
         await self._client.query(task)
         logger.info(f"Sent task to {self.config.name}: {task!r}")
@@ -179,12 +204,18 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
         if self.busy:  # restarting the process would drop the running turn without a word
             return False
         self._session_id, self.cwd, self.connected = session.id, session.cwd, connected
-        await self._restart()
+        if self._task is not None:
+            await self._restart()
+        elif not connected:
+            await self._ensure_started()
         return True
 
     async def new_session(self, cwd: str | None = None) -> bool:
         if self.busy:
             return False
         self._session_id, self.cwd = None, cwd or self.cwd
-        await self._restart()
+        if self._task is not None:
+            await self._restart()
+        else:
+            await self._ensure_started()
         return True
