@@ -426,6 +426,63 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         save.assert_not_called()
 
 
+class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
+    """The turn analyzer is mocked; Pipecat's flush (one Whisper segment per call) is counted, not run."""
+
+    def setUp(self) -> None:
+        from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
+        from pipecat.services.stt_service import SegmentedSTTService
+
+        from jarvis.voice_gates import SpeakerVerifiedWhisperSTT
+
+        self.states = EndOfTurnState
+        self.turn = MagicMock()
+        self.turn.analyze_end_of_turn = AsyncMock(return_value=(EndOfTurnState.COMPLETE, None))
+        self.turn.append_audio.return_value = EndOfTurnState.INCOMPLETE
+        self.stt = SpeakerVerifiedWhisperSTT(embedder=None, voiceprint=None, threshold=0.5, turn_analyzer=self.turn)
+        self.stt._audio_buffer_size_1s = 4  # normally one second; tiny so a trim would show
+        flush = patch.object(SegmentedSTTService, "_handle_user_stopped_speaking", new_callable=AsyncMock)
+        self.flush = flush.start()
+        self.addCleanup(flush.stop)
+
+    async def speak(self, audio: bytes) -> None:
+        from pipecat.frames.frames import InputAudioRawFrame
+
+        await self.stt._handle_user_started_speaking(VADUserStartedSpeakingFrame())
+        await self.stt.process_audio_frame(InputAudioRawFrame(audio, 16000, 1), FrameDirection.DOWNSTREAM)
+        await self.stt._handle_user_stopped_speaking(VADUserStoppedSpeakingFrame())
+
+    async def test_a_finished_sentence_goes_on_at_the_short_pause(self) -> None:
+        await self.speak(b"\x01\x00" * 8)
+        self.flush.assert_awaited_once()
+
+    async def test_a_pause_mid_thought_keeps_the_whole_sentence_for_one_segment(self) -> None:
+        self.turn.analyze_end_of_turn.return_value = (self.states.INCOMPLETE, None)
+        await self.speak(b"\x01\x00" * 8)  # "open the..."
+        self.flush.assert_not_awaited()
+        self.turn.analyze_end_of_turn.return_value = (self.states.COMPLETE, None)
+        await self.speak(b"\x02\x00" * 8)  # "...jarvis project"
+        self.flush.assert_awaited_once()
+        self.assertEqual(bytes(self.stt._audio_buffer), b"\x01\x00" * 8 + b"\x02\x00" * 8)  # no one-second trim
+
+    async def test_long_silence_after_a_pause_sends_what_was_said(self) -> None:
+        from pipecat.frames.frames import InputAudioRawFrame
+
+        self.turn.analyze_end_of_turn.return_value = (self.states.INCOMPLETE, None)
+        await self.speak(b"\x01\x00" * 8)
+        self.turn.append_audio.return_value = self.states.COMPLETE  # past SmartTurnParams.stop_secs of silence
+        await self.stt.process_audio_frame(InputAudioRawFrame(b"\x00\x00" * 8, 16000, 1), FrameDirection.DOWNSTREAM)
+        self.flush.assert_awaited_once()
+        self.turn.analyze_end_of_turn.assert_awaited_once()  # not asked again: it has no audio left to judge
+
+    async def test_without_smart_turn_every_pause_ends_the_sentence(self) -> None:
+        from jarvis.voice_gates import SpeakerVerifiedWhisperSTT
+
+        self.stt = SpeakerVerifiedWhisperSTT(embedder=None, voiceprint=None, threshold=0.5)
+        await self.speak(b"\x01\x00" * 8)
+        self.flush.assert_awaited_once()
+
+
 class TestSaveClip(unittest.TestCase):
     def test_writes_a_private_wav_and_keeps_the_newest(self) -> None:
         import os

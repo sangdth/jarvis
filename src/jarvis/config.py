@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     # Keep the last N sentences Whisper heard as WAVs in JARVIS_HOME/clips, dropped ones too; 0 = off. Your voice
     # goes to disk, so only while tracking down misses.
     save_segments: int = 0
+    # Smart Turn v3 (local, ~50 ms) decides from the sound whether a pause ends the sentence: a short pause ends it
+    # when the voice says done, a pause mid-thought waits up to 1.5 s. Off: every 0.6 s pause ends the sentence.
+    smart_turn: bool = True
     # `jarvis meeting`: the virtual mic to send your voice and Jarvis's into (part of its name); empty = the first of
     # mac_audio.VIRTUAL_MIC_NAMES that is installed. Pick the same device as the microphone in Google Meet.
     meeting_virtual_mic: str = ""

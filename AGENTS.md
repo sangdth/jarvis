@@ -52,7 +52,7 @@ speech check dropping the sentence, not the conversation model.
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
 | Meeting: call or Jarvis can't hear   | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |
-| Cut off, or splits one sentence      | `main.py` `VADParams` `stop_secs`, `JarvisIntentGate`           |
+| Cut off, or splits one sentence      | `SMART_TURN`, `SpeakerVerifiedWhisperSTT`, `VADParams`          |
 | Slow reply: where the time goes      | `[Latency]` and `[Intent] ... ms` log lines, `latency.py`       |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy`   |
 | Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.config/jarvis/memory`)            |
