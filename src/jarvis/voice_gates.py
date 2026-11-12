@@ -411,10 +411,13 @@ class JarvisIntentGate(FrameProcessor):
             self._buffer_meeting(speaker, transcript)
             return
 
+        asked_at = time.monotonic()
         intent = await self.executive_filter.classify_user_utterance(
             transcript=transcript,
             recent_jarvis_question=question,
         )
+        # Pipecat's `[Latency]` lines count this inside transcription (the gate re-sends the transcript), so say it here.
+        logger.info(f"[Intent] {intent.value} in {(time.monotonic() - asked_at) * 1000:.0f} ms")
 
         if intent == UserIntent.MUTE:
             logger.warning("User requested silence ('Shut up' / 'Be quiet'). Entering BEEP_ONLY mode.")

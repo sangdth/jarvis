@@ -126,6 +126,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     from pipecat.transports.base_transport import TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
+    from jarvis.latency import latency_observer
     from jarvis.mac_audio import MacVoiceTransport
     from jarvis.speaker import VOICEPRINT_PATH, SpeakerEmbedder, SpeakerRegistry, load_voiceprint
     from jarvis.voice_gates import CLIPS_DIR, JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
@@ -303,10 +304,13 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     task = PipelineTask(
         pipeline,
         params=PipelineParams(
+            # Services report their own times, so each `[Latency]` line names Whisper, the LLM and the voice.
+            enable_metrics=True,
             # Pipecat teaches the LLM the voice's tags ([laughs], excited...) and keeps them out of the context.
             enable_expressive_conversation=True,
             expression_policy=ExpressionPolicy(guidance=[ExpressionGuidance.MATCH_STYLE]),
         ),
+        observers=[latency_observer()],
     )
     task_ref["task"] = task
 
