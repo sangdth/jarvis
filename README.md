@@ -198,6 +198,8 @@ says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there t
   `SPEAKER_THRESHOLD` in `.env` between your scores and everyone else's (default 0.35), or enroll again.
 - **Jarvis splits one sentence into two.** Smart Turn waits up to 1.5 s when your voice sounds unfinished; with
   `SMART_TURN=false` a pause over 0.6 s ends a sentence (raise `stop_secs` in `main.py`).
+- **Jarvis can't see your screen.** Allow the app running Jarvis in System Settings > Privacy & Security > Screen
+  Recording; it looks only when you point ("this error", "on my screen").
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
   key: run `jarvis init` again; it asks only for the keys still empty.
 

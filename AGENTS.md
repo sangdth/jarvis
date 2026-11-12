@@ -21,7 +21,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 - Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
 - Lint and types: `uv run ruff check src tests scripts` and `uv run mypy` (config in `pyproject.toml`)
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 150 at 3 rounds)
-- Routing benchmark: `uv run python scripts/bench_routing.py` (about 220 paid calls; `bench_routing.py 1` runs one round, 74)
+- Routing benchmark: `uv run python scripts/bench_routing.py` (about 240 paid calls; `bench_routing.py 1` runs one round, 80)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
   <https://sangdth.github.io/jarvis/> on every push to master that touches `site/`.
 
@@ -54,6 +54,7 @@ speech check dropping the sentence, not the conversation model.
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |
 | Cut off, or splits one sentence      | `SMART_TURN`, `SpeakerVerifiedWhisperSTT`, `VADParams`          |
 | Slow reply: where the time goes      | `[Latency]` and `[Intent] ... ms` log lines, `latency.py`       |
+| Screen: unseen, or looked unasked    | `screen.py`, `look_at_screen`, `include_screen`, prompt rule 8  |
 | Voice sound, laughs, emotion         | `main.py` `ElevenLabsDialogueTTSService`, `expression_policy`   |
 | Forgets, remembers wrong, slow reply | `memory.py` (Mem0, Qdrant `~/.config/jarvis/memory`)            |
 | Model names, keys                    | `config.py`, `~/.config/jarvis/.env`, `defaults/env.example`    |
@@ -111,6 +112,10 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   conversation model, which calls `stop_agent` (`nothing_running` when idle); only "shut up" / "be quiet" (and
   "stop talking", "hush"; "im đi", "im lặng", "đừng nói nữa") mute, and agents keep working while muted.
   `bench_intent.py` scores mute exactly.
+- **Jarvis sees the screen only when pointed at it.** `look_at_screen` answers a question about the front window
+  with one stateless `EXECUTIVE_MODEL` call; `send_agent_task` `include_screen` adds the PNG's path to the task. Shots
+  live in `JARVIS_HOME/screen` (0700/0600, newest 5), never in a repo; images never enter the context or memory. A
+  meeting guest gets `owner_only`. Needs macOS Screen Recording for the app running Jarvis.
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.

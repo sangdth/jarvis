@@ -97,6 +97,52 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         await self.handlers["send_agent_task"](p)
         p.result_callback.assert_awaited_once_with({"status": "agent_not_active", "agent_id": "nope"})
 
+    async def test_include_screen_sends_the_screenshot_path_with_the_task(self) -> None:
+        from pathlib import Path
+
+        from jarvis.screen import ScreenCapture
+
+        shot = ScreenCapture(Path("/home/.config/jarvis/screen/1.png"), "Terminal", "zsh")
+        with patch("jarvis.agent_tools.capture_front_window", AsyncMock(return_value=shot)):
+            p = params({"agent_id": "hermes", "task": "Fix this error", "include_screen": True})
+            await self.handlers["send_agent_task"](p)
+        sent = self.agent.send_task.await_args.args[0]
+        self.assertTrue(sent.startswith("Fix this error\n\n[Screenshot of the user's front window (Terminal: zsh): "))
+        self.assertIn("/home/.config/jarvis/screen/1.png", sent)
+
+    async def test_a_failed_capture_sends_nothing(self) -> None:
+        from jarvis.screen import ScreenError
+
+        failed = AsyncMock(side_effect=ScreenError("screen_permission_missing"))
+        with patch("jarvis.agent_tools.capture_front_window", failed):
+            p = params({"agent_id": "hermes", "task": "Fix this error", "include_screen": True})
+            await self.handlers["send_agent_task"](p)
+        self.agent.send_task.assert_not_awaited()
+        p.result_callback.assert_awaited_once_with({"status": "screen_permission_missing", "agent_id": "hermes"})
+
+    async def test_a_meeting_guest_never_sees_the_screen(self) -> None:
+        self.orch.state.room_turn = True
+        capture = AsyncMock()
+        with patch("jarvis.agent_tools.capture_front_window", capture):
+            p = params({"agent_id": "hermes", "task": "Fix this", "include_screen": True})
+            await self.handlers["send_agent_task"](p)
+            p.result_callback.assert_awaited_once_with({"status": "owner_only", "agent_id": "hermes"})
+            p = params({"question": "What is this?"})
+            await self.handlers["look_at_screen"](p)
+            p.result_callback.assert_awaited_once_with({"status": "owner_only"})
+        capture.assert_not_awaited()
+
+    async def test_look_at_screen_returns_the_answer_to_speak(self) -> None:
+        shot = MagicMock()
+        with (
+            patch("jarvis.agent_tools.capture_front_window", AsyncMock(return_value=shot)),
+            patch("jarvis.agent_tools.ask_screen", AsyncMock(return_value="It asks to update macOS.")) as ask,
+        ):
+            p = params({"question": "What does this popup mean?"})
+            await self.handlers["look_at_screen"](p)
+        ask.assert_awaited_once_with(shot, "What does this popup mean?")
+        p.result_callback.assert_awaited_once_with({"status": "seen", "answer": "It asks to update macOS."})
+
 
 
 class TestSessionSwitch(unittest.IsolatedAsyncioTestCase):

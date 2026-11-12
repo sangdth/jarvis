@@ -18,6 +18,7 @@ dependencies = [
     "websockets>=13.0",
     "sherpa-onnx>=2.0.1",
     "pyobjc-framework-AVFoundation>=11.0",
+    "pyobjc-framework-Quartz>=11.0",
 ]
 
 [project.scripts]

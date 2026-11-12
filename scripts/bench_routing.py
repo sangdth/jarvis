@@ -1,6 +1,6 @@
 """Benchmark where Jarvis sends a request: runs the real system prompt, roster and tools on EXECUTIVE_MODEL.
 
-Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~220 paid calls at 3 rounds)
+Usage: uv run python scripts/bench_routing.py [rounds]   (needs OPENROUTER_API_KEY; ~240 paid calls at 3 rounds)
 Exits 1 when accuracy drops below MIN_ACCURACY.
 """
 
@@ -132,6 +132,11 @@ CASES: list[tuple[str | list[dict], str]] = [
     (after("Open the neuroparticles project", "t3-code", "Sync with master", "Stop that section."), "stop"),
     (after("Look up flights to Hanoi in December", "hermes", "Look up flights to Hanoi in December",
            "What does idempotent mean?"), SELF),
+    # Only pointing at the screen looks at it; every case above that sets include_screen is a miss ("+screen")
+    ("What does this popup on my screen mean?", "look"),
+    ("Read me the error I'm looking at", "look"),
+    ("Fix this error on my screen", "t3-code+screen"),
+    ("Can you see what's wrong with the layout on my screen? Fix it.", "t3-code+screen"),
 ]
 
 # Vietnamese or mixed speech, with the vi prompt: routed the same, with English arguments
@@ -145,6 +150,8 @@ VI_CASES: list[tuple[str | list[dict], str]] = [
     (after("Sửa lỗi đăng nhập ở dashboard", "t3-code", "Fix the login bug in the dashboard", "Dừng lại đi."), "stop"),
     (waiting("Claude needs approval: run git push to origin.", "Có, cứ làm đi."), "answer"),
     (waiting("T3 Code asks: Which database should I use, Postgres or SQLite?", "Dùng Postgres nhé."), "answer"),
+    ("Cái lỗi trên màn hình này nghĩa là gì?", "look"),
+    ("Sửa cái lỗi đang hiện trên màn hình giúp anh", "t3-code+screen"),
 ]
 
 
@@ -155,8 +162,10 @@ def outcome(message: dict, default_id: str | None) -> str:
     if calls[0]["function"]["name"] == "stop_agent":
         return "stop"  # stop_agent finds the busy agent itself when no id is given
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
-    if VIETNAMESE.search(args.get("task", "") + args.get("answer", "")):
-        return "not English: " + (args.get("task") or args.get("answer"))
+    if VIETNAMESE.search(args.get("task", "") + args.get("answer", "") + args.get("question", "")):
+        return "not English: " + (args.get("task") or args.get("answer") or args.get("question"))
+    if calls[0]["function"]["name"] == "look_at_screen":
+        return "look"
     if calls[0]["function"]["name"] == "answer_agent":
         return "answer"  # answer_agent finds the waiting agent itself when no id is given
     project = f"@{args['project'].removeprefix(f'{PROJECTS_LABEL}/').strip('/').lower()}" if args.get("project") else ""
@@ -166,7 +175,8 @@ def outcome(message: dict, default_id: str | None) -> str:
     named = (args.get("session") or "").strip().lower()
     # T3 Code has no sessions of its own: the handler ignores `session` there, so it is no miss
     session = "" if agent == "t3-code" or not named else "+new" if named == "new" else "+session"
-    return agent + project + task + session + ("+replace" if args.get("replace") else "")
+    screen = "+screen" if args.get("include_screen") else ""
+    return agent + project + task + session + screen + ("+replace" if args.get("replace") else "")
 
 
 async def main(rounds: int) -> int:
