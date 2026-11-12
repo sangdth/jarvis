@@ -8,9 +8,12 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 - **Hermes approves its own commands.** Its guardian model ran `rm -rf` on a test folder without asking during an
   integration run. Only commands it flags reach Jarvis. Tightening is a Hermes setting (`approvals` in
   `~/.hermes/config.yaml`), not Jarvis code.
-- **macOS voice processing needs a plain output device.** With a Multi-Output or aggregate device (BlackHole) as
-  the system output, the mic delivers nothing; `MacVoiceInputTransport` logs `SILENT_MIC_WARNING` after 3 s. To
-  record both voices, capture system audio in the recorder (OBS, Screen Studio) instead of routing through BlackHole.
+- **macOS voice processing needs a plain output device.** With a Multi-Output or aggregate device as the system
+  output, the mic delivers nothing; `MacVoiceInputTransport` logs `SILENT_MIC_WARNING` after 3 s. To record both
+  voices, capture system audio in the recorder (OBS, Screen Studio).
+- **Jarvis speaks into Meet through a Chrome extension, not a virtual audio device.** `defaults/meet/jarvis.js`
+  wraps Meet's `getUserMedia` and mixes in the speech `meet_voice.py` serves on `127.0.0.1:47123` (Meet's origin
+  only). Limits: Chrome only, and Jarvis shares the user's seat, so a Meet mute mutes it too.
 - **No Whisper vocabulary prompt.** An `initial_prompt` with project and agent names was tested on 2026-11-06: it
   leaked names into sentences that never said them and fixed none (`docs/research/voice-recognition-misses.md`,
   finding 6). Names are matched after Whisper, by the conversation model and `open_project`.

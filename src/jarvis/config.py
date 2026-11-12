@@ -65,9 +65,6 @@ class Settings(BaseSettings):
     # Smart Turn v3 (local, ~50 ms) decides from the sound whether a pause ends the sentence: a short pause ends it
     # when the voice says done, a pause mid-thought waits up to 1.5 s. Off: every 0.6 s pause ends the sentence.
     smart_turn: bool = True
-    # `jarvis meeting`: the virtual mic to send your voice and Jarvis's into (part of its name); empty = the first of
-    # mac_audio.VIRTUAL_MIC_NAMES that is installed. Pick the same device as the microphone in Google Meet.
-    meeting_virtual_mic: str = ""
     # `jarvis meeting`, master check on: work a guest asks for waits for the master's yes ("ask") or starts at once
     # ("allow"). Answering an agent, stopping or replacing work stays the master's either way.
     meeting_guests: Literal["ask", "allow"] = "ask"

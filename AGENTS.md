@@ -51,7 +51,8 @@ speech check dropping the sentence, not the conversation model.
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                            |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
-| Meeting: call or Jarvis can't hear   | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
+| Meeting: Jarvis can't hear the call  | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
+| Meeting: the call can't hear Jarvis  | `meet_voice.py` `MeetVoice`, `defaults/meet/jarvis.js`          |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |
 | Cut off, or splits one sentence      | `SMART_TURN`, `SpeakerVerifiedWhisperSTT`, `VADParams`          |
 | Slow reply: where the time goes      | `[Latency]` and `[Intent] ... ms` log lines, `latency.py`       |
