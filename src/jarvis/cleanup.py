@@ -11,25 +11,34 @@ from jarvis.config import settings
 from jarvis.prompts import CLEANUP_PROMPT
 
 TIMEOUT_SECS = 1.5  # past this the raw sentence goes on: a late cleanup is worse than none
-SHORT_WORDS = 3  # "Stop it", "yes go ahead": nothing to tidy, so no call unless a cue is in it
-_TAGS = re.compile(r"^\s*<transcript>\s*|\s*</transcript>\s*$")
+SHORT_WORDS = 8  # short, clean commands skip the call unless a filler or spoken fix is in them
+MAX_CONTEXT_CHARS = 300
+FILLERS = ("um", "uh", "uhm", "erm", "ờ", "ừm")
+_TAGS = re.compile(r"^\s*<transcript>\s*|\s*</transcript>\s*$", re.IGNORECASE)
+_LEAKED_TAG = re.compile(r"</?(?:transcript|context)\b", re.IGNORECASE)
+
+
+def _words(text: str) -> str:
+    return " ".join(re.findall(r"\w+", text.lower()))
 
 
 def parse_cues(raw: str) -> tuple[str, ...]:
-    return tuple(c.strip().lower() for c in raw.split(",") if c.strip())
+    return tuple(w for c in raw.split(",") if (w := _words(c)))
 
 
 def should_clean(transcript: str, cues: tuple[str, ...]) -> bool:
-    """Short sentences skip the call, unless they hold a spoken fix ("42, sorry, 24")."""
+    """Short sentences skip the call, unless they hold a filler or a spoken fix ("No, no, 24")."""
     if len(transcript.split()) > SHORT_WORDS:
         return True
-    text = transcript.lower()
-    return any(re.search(rf"\b{re.escape(cue)}\b", text) for cue in cues)
+    words = _words(transcript)
+    return any(re.search(rf"\b{re.escape(cue)}\b", words) for cue in (*cues, *FILLERS))
 
 
 def keep_cleaned(raw: str, cleaned: str) -> bool:
-    """A cleaned sentence that is empty or far longer than what was said is an answer, not a cleanup."""
-    return bool(cleaned) and len(cleaned) <= max(len(raw) * 2, len(raw) + 80)
+    """A cleaned sentence that is empty, leaks prompt tags, or is far longer than said is not a cleanup."""
+    if not cleaned or len(cleaned) > max(len(raw) * 2, len(raw) + 80):
+        return False
+    return not (_LEAKED_TAG.search(cleaned) and not _LEAKED_TAG.search(raw))
 
 
 class TranscriptCleaner:
@@ -64,7 +73,8 @@ class TranscriptCleaner:
         """The tidied sentence, or the sentence as heard on a skip, a failure or a bad answer (never raises)."""
         if not self.api_key or not should_clean(transcript, self.cues):
             return transcript
-        context = f"<context>{recent_jarvis_question}</context>\n" if recent_jarvis_question else ""
+        safe_question = re.sub(r"[<>]", "", recent_jarvis_question)[:MAX_CONTEXT_CHARS].strip() if recent_jarvis_question else ""
+        context = f"<context>{safe_question}</context>\n" if safe_question else ""
         try:
             resp = await self._http.post(
                 "/chat/completions",

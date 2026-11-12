@@ -64,7 +64,7 @@ without its `.env`. Fill them with `uv run jarvis init`, or copy them in with a 
 ```sh
 set -e
 for f in .env agents.json SOUL.md SYSTEM.md owner_voice.npy models; do
-  [ -e "$f" ] || cp -R "$T3CODE_PROJECT_ROOT/$f" "$f"
+  [ ! -e "$T3CODE_PROJECT_ROOT/$f" ] || [ -e "$f" ] || cp -R "$T3CODE_PROJECT_ROOT/$f" "$f"
 done
 uv sync
 ```
@@ -103,11 +103,11 @@ your shell wins over the file, so `op run -- jarvis` (1Password) works too:
   that tells whether a sentence is meant for Jarvis: Laya's `jarvis-intent` model, fine-tuned for Jarvis. `FILTER_MODEL`
   is asked at the same time and used when Laya fails or is slower than `LAYA_TIMEOUT_SECS`; left empty, only
   `FILTER_MODEL` is used.
-- `TRANSCRIPT_CLEANUP` (default `true`): each sentence meant for Jarvis, of four words or more or with a word from
-  `CLEANUP_CUES`, is tidied before Jarvis reads it: punctuation, fillers, and a slip fixed in the same sentence
-  ("make it 42, sorry, 24" becomes "Make it 24"). It uses `CLEANUP_MODEL` (empty = `EXECUTIVE_MODEL`, thinking off),
-  adds about 250-500 ms, and passes the sentence on as heard after 1.5 s or on any error. `[Cleanup]` log lines show
-  the time and the change.
+- `TRANSCRIPT_CLEANUP` (default `true`): each sentence meant for Jarvis — over eight words, or with a filler or a
+  phrase from `CLEANUP_CUES` — is tidied before Jarvis reads it: punctuation, fillers, and a slip fixed in the same
+  sentence ("make it 42, sorry, 24" becomes "Make it 24"). It uses `CLEANUP_MODEL` (empty = `EXECUTIVE_MODEL`,
+  thinking off), adds about 250-500 ms when it runs, and passes the sentence on as heard after 1.5 s or on any error.
+  `[Cleanup]` log lines show the time and the change.
 - `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `t3-code`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
 - `LANGUAGE`: `en` (default) or `vi`. It sets the language Whisper listens for and, while `WHISPER_MODEL` is empty, the model: `mlx-community/whisper-large-v3-turbo` for `en`, [`sangdth/phowhisper-large-vien-cs-mlx-16bit`](https://huggingface.co/sangdth/phowhisper-large-vien-cs-mlx-16bit) for `vi`: VinAI's PhoWhisper-large tuned for Vietnamese with English words mixed in, about 3 GB, downloaded on first start. It takes about twice as long per sentence as turbo.

@@ -18,6 +18,7 @@ KNOWN = ("cleanup",)  # the section names Jarvis reads, lower case
 def parse_overrides(text: str) -> dict[str, str]:
     """`## Name` sections by lower-case name; empty and unknown ones are left out (unknown ones logged)."""
     overrides: dict[str, str] = {}
+    warned = False
     name: str | None = None
     lines: list[str] = []
     for line in [*text.splitlines(), "## "]:  # the sentinel heading closes the last section
@@ -29,7 +30,10 @@ def parse_overrides(text: str) -> dict[str, str]:
             overrides[name] = body
         elif name is not None and name not in KNOWN:
             logger.warning(f"SYSTEM.md: unknown section {name!r} is ignored; known: {', '.join(KNOWN)}.")
+            warned = True
         name, lines = line[3:].strip().lower() or None, []
+    if text.strip() and not overrides and not warned:
+        logger.warning(f"SYSTEM.md has no non-empty '## Name' section (known: {', '.join(KNOWN)}); nothing overridden.")
     return overrides
 
 

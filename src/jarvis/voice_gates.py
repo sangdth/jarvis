@@ -14,9 +14,11 @@ import numpy as np
 from loguru import logger
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
     InputAudioRawFrame,
+    InterruptionFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     StartFrame,
@@ -247,6 +249,7 @@ class JarvisIntentGate(FrameProcessor):
         self.registry = registry if registry is not None else SpeakerRegistry(folder=None)
         self._enrollment: _Enrollment | None = None
         self._meeting_log: list[str] = []
+        self._bot_speaking = False
         self._bot_stopped_at: float | None = None
         # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
         self._held: TranscriptionFrame | None = None
@@ -256,7 +259,10 @@ class JarvisIntentGate(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if not isinstance(frame, TranscriptionFrame):
-            if isinstance(frame, BotStoppedSpeakingFrame):
+            if isinstance(frame, BotStartedSpeakingFrame):
+                self._bot_speaking = True
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                self._bot_speaking = False
                 self._bot_stopped_at = time.monotonic()
             if self._held is not None:
                 # The user speaks again: wait for that sentence; once they stop, give Whisper the window again.
@@ -498,9 +504,14 @@ class JarvisIntentGate(FrameProcessor):
             return
 
         if self.cleaner is not None:
+            if self._bot_speaking:  # stop playback before waiting up to 1.5 s on OpenRouter
+                self._bot_speaking = False
+                await self.push_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
             # After the speech check (it and its feedback log need the words as heard), before the speaker labels.
+            # Approvals never expose their raw command to a generative LLM that rewrites the user's answer.
+            context = "needs approval" if question and question.startswith("needs approval:") else question
             cleaned_at = time.monotonic()
-            cleaned = await self.cleaner.clean(transcript, recent_jarvis_question=question)
+            cleaned = await self.cleaner.clean(transcript, recent_jarvis_question=context)
             ms = (time.monotonic() - cleaned_at) * 1000
             change = f": {transcript!r} -> {cleaned!r}" if cleaned != transcript else " (unchanged)"
             logger.info(f"[Cleanup] {ms:.0f} ms{change}")
