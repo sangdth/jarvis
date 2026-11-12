@@ -9,6 +9,8 @@ from jarvis.config import settings
 from jarvis.feedback import FeedbackLog
 from jarvis.state import UserIntent, classify_fast_command, is_not_for_jarvis
 
+JEV_TIMEOUT_SECS = 1.5
+
 _CONTEXT = (
     "Jarvis is a voice assistant that hands work to agents (coding, research, email, calendar, notes) "
     "and chats with its user. "
@@ -71,7 +73,7 @@ class ExecutiveFilter:
         self.feedback = feedback
         # One long-lived client each keeps the TLS connection warm between calls.
         self._http = httpx.AsyncClient(
-            timeout=12.0,
+            timeout=JEV_TIMEOUT_SECS,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "HTTP-Referer": "https://github.com/sangdth/jarvis",
@@ -94,11 +96,16 @@ class ExecutiveFilter:
             task.cancel()
         await self._http.aclose()
         await self._laya_http.aclose()
+        if self.feedback is not None:
+            self.feedback.close()
 
-    async def _ask(self, http: httpx.AsyncClient, url: str, body: dict) -> dict:
+    async def _ask(
+        self, http: httpx.AsyncClient, url: str, body: dict, timeout: float = JEV_TIMEOUT_SECS
+    ) -> dict:
         """One model's answer as {choice, probabilities}, or {error} on any failure (never raises)."""
         try:
-            resp = await http.post(url, json=body)
+            # httpx's timeout is per phase (connect, each read); wait_for caps the whole call.
+            resp = await asyncio.wait_for(http.post(url, json=body), timeout)
             resp.raise_for_status()
             answer = resp.json()["answers"]["intent"]
             return {"choice": UserIntent(answer["choice"]).value, "probabilities": answer.get("probabilities")}
@@ -127,15 +134,24 @@ class ExecutiveFilter:
             state["jarvis_last_said"] = recent_jarvis_question
         body = {"state": state, "questions": {"intent": INTENT_QUESTION}}
         jev = (
-            asyncio.create_task(self._ask(self._http, self.decisions_url, {"model": self.model, **body}))
+            asyncio.create_task(
+                self._ask(self._http, self.decisions_url, {"model": self.model, **body}, JEV_TIMEOUT_SECS)
+            )
             if self.api_key
             else None
         )
-        laya = (
-            await self._ask(self._laya_http, self.laya_url, {"model": settings.laya_model, **body})
-            if self.laya_api_key
-            else None
-        )
+        try:
+            laya = (
+                await self._ask(
+                    self._laya_http, self.laya_url, {"model": settings.laya_model, **body}, settings.laya_timeout_secs
+                )
+                if self.laya_api_key
+                else None
+            )
+        except asyncio.CancelledError:
+            if jev is not None:
+                jev.cancel()
+            raise
 
         if laya and "choice" in laya:
             intent = UserIntent(laya["choice"])

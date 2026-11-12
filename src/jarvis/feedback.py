@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import IO
 
 from loguru import logger
 
@@ -58,6 +59,18 @@ class FeedbackLog:
         self.path = path
         self._clock = clock
         self._recent: deque[_Seen] = deque(maxlen=20)
+        self._file: IO[str] | None = None
+
+    def close(self) -> None:
+        if self._file is not None:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+            self._file = None
+
+    def __del__(self) -> None:
+        self.close()
 
     def decision(
         self,
@@ -129,9 +142,13 @@ class FeedbackLog:
 
     def _write(self, record: dict) -> None:
         try:
-            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as file:
-                file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if self._file is None or not self.path.exists():
+                self.close()
+                self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                self._file = os.fdopen(fd, "a", encoding="utf-8")
+            self._file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._file.flush()
         except OSError as exc:
+            self.close()
             logger.warning(f"Could not write speech-check feedback to {self.path} ({exc!r}).")

@@ -107,6 +107,24 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.filter.classify_user_utterance.assert_awaited_once_with(transcript="shut up", recent_jarvis_question=None)
         await self.gate.cleanup()
 
+    async def test_shut_up_cancels_an_in_flight_slow_classifier_call(self) -> None:
+        started = asyncio.Event()
+
+        async def slow_classify(transcript: str, **_: object) -> UserIntent:
+            if transcript == "shut up":
+                return UserIntent.MUTE
+            started.set()
+            await asyncio.sleep(5)
+            return UserIntent.ADDRESSED_TO_JARVIS
+
+        self.filter.classify_user_utterance = AsyncMock(side_effect=slow_classify)
+        slow_turn = asyncio.create_task(self.gate.process_frame(heard("Tell me a long story"), FrameDirection.DOWNSTREAM))
+        await started.wait()
+        await self.gate.process_frame(heard("shut up"), FrameDirection.DOWNSTREAM)
+        await slow_turn
+        self.assertEqual(self.state.mode, JarvisMode.BEEP_ONLY)
+        self.assertEqual(self.turns(), [])
+
     @patch("jarvis.voice_gates.HOLD_SECS", 0.05)
     async def test_a_joined_sentence_is_not_held_again(self) -> None:
         down = FrameDirection.DOWNSTREAM
@@ -405,7 +423,6 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         self, text: str | None, embedding, *, meeting: bool = False, check: bool = True, registry=None, state=None
     ) -> list:
         import numpy as np
-        from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 
         from jarvis.voice_gates import SpeakerVerifiedWhisperSTT
 
@@ -425,7 +442,7 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         )
         self.embedder = embedder
         self.stt = stt
-        with patch.object(WhisperSTTServiceMLX, "run_stt", new=whisper):
+        with patch.object(SpeakerVerifiedWhisperSTT, "_transcribe_mlx", new=whisper):
             return [f async for f in stt.run_stt(b"\x00\x00" * 16000)]
 
     async def test_master_check_off_passes_any_voice_unscored(self) -> None:
@@ -491,6 +508,38 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
             settings.save_segments = 0
             await self.run_stt("build a login page", [0.9, 0.1])
         save.assert_not_called()
+
+    async def test_start_warms_up_mlx_whisper_with_language_and_zero_temperature_and_cleanup_releases_turn(self) -> None:
+        import sys
+
+        from pipecat.frames.frames import StartFrame
+        from pipecat.services.stt_service import SegmentedSTTService
+        from pipecat.transcriptions.language import Language
+
+        from jarvis.voice_gates import SpeakerVerifiedWhisperSTT
+
+        turn = MagicMock(cleanup=AsyncMock())
+        stt = SpeakerVerifiedWhisperSTT(
+            embedder=None,
+            voiceprint=None,
+            threshold=0.5,
+            turn_analyzer=turn,
+            settings=SpeakerVerifiedWhisperSTT.Settings(model="mlx-community/whisper-tiny", language=Language.VI),
+        )
+        stt._sample_rate = 16000
+        mlx_mock = MagicMock()
+        with (
+            patch.dict(sys.modules, {"mlx_whisper": mlx_mock}),
+            patch.object(SegmentedSTTService, "start", new=AsyncMock()),
+            patch.object(SegmentedSTTService, "cleanup", new=AsyncMock()),
+        ):
+            await stt.start(StartFrame())
+            await stt.cleanup()
+        mlx_mock.transcribe.assert_called_once()
+        self.assertEqual(mlx_mock.transcribe.call_args.kwargs["path_or_hf_repo"], "mlx-community/whisper-tiny")
+        self.assertEqual(mlx_mock.transcribe.call_args.kwargs["language"], "vi")
+        self.assertEqual(mlx_mock.transcribe.call_args.kwargs["temperature"], 0.0)
+        turn.cleanup.assert_awaited_once()
 
 
 class TestSmartTurn(unittest.IsolatedAsyncioTestCase):

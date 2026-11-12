@@ -12,9 +12,10 @@ from jarvis.config import settings
 from jarvis.prompts import CLEANUP_PROMPT
 
 TIMEOUT_SECS = 1.5  # past this the raw sentence goes on: a late cleanup is worse than none
-SHORT_WORDS = 8  # short, clean commands skip the call unless a filler or spoken fix is in them
+SHORT_WORDS = 18  # short, clean commands skip the call unless a filler, stutter or spoken fix is in them
 MAX_CONTEXT_CHARS = 300
 FILLERS = ("um", "uh", "uhm", "erm", "ờ", "ừm")
+_STUTTER = re.compile(r"\b(\w+)\s+\1\b", re.IGNORECASE)
 _TAGS = re.compile(r"^\s*<transcript>\s*|\s*</transcript>\s*$", re.IGNORECASE)
 _LEAKED_TAG = re.compile(r"</?(?:transcript|context)\b", re.IGNORECASE)
 
@@ -28,12 +29,16 @@ def parse_cues(raw: str) -> tuple[str, ...]:
 
 
 def should_clean(transcript: str, cues: tuple[str, ...]) -> bool:
-    """Short sentences skip the call, unless they hold a filler or a spoken fix ("No, no, 24")."""
+    """Short sentences skip the call, unless they hold a filler, a repeated word, or a spoken fix ("No, no, 24")."""
     if len(transcript.split()) > SHORT_WORDS:
         return True
     words = _words(transcript)
     rest = words.partition(" ")[2]  # a one-word cue opening the sentence ("Actually, ...") stays, so no call for it
-    return any(_has(f, words) for f in FILLERS) or any(_has(c, words if " " in c else rest) for c in cues)
+    return (
+        _STUTTER.search(words) is not None
+        or any(_has(f, words) for f in FILLERS)
+        or any(_has(c, words if " " in c else rest) for c in cues)
+    )
 
 
 def _has(phrase: str, words: str) -> bool:
