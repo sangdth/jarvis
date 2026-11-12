@@ -21,22 +21,20 @@ from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
-from jarvis.config import settings
+from jarvis.meet_voice import MeetVoice
 
 PLAY_AHEAD_SECS = 0.08  # audio queued in the player beyond what is playing; an interruption cuts in after this
 SILENT_MIC_SECS = 3.0  # this long after start without real sound means the mic is not reaching Jarvis
 SILENT_MIC_PEAK = 1e-3  # -60 dBFS; a quiet room through voice processing peaks near 1e-2
 SILENT_MIC_WARNING = (
     "Mic is silent: macOS voice processing delivers no sound. Set System Settings > Sound > Output to speakers "
-    "or headphones; a Multi-Output or aggregate device (BlackHole and similar) stops the mic."
+    "or headphones; a Multi-Output or aggregate device stops the mic."
 )
 # Logged when Jarvis can't hear the call: the system audio tap needs macOS 14.2 or later and this permission.
 TAP_FAILED = (
     "Can't hear the call: allow your terminal (or T3 Code) in System Settings > Privacy & Security > "
     "Screen & System Audio Recording > System Audio Recording Only, then restart Jarvis"
 )
-# Virtual audio cables checked in order for `jarvis meeting` so Google Meet can hear both the user and Jarvis.
-VIRTUAL_MIC_NAMES = ("BlackHole 2ch", "BlackHole 16ch", "Microsoft Teams Audio", "ZoomAudioDevice")
 
 
 class _AudioObjectPropertyAddress(ctypes.Structure):
@@ -80,53 +78,6 @@ class MixBuffer:
         return mic.astype(np.int16).tobytes()
 
 
-def find_virtual_mic(preferred: str = "") -> tuple[int, str] | None:
-    """Find a virtual audio device by name (BlackHole, Teams, Zoom): its CoreAudio id and full name."""
-    ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
-    cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
-    cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
-    cf.CFStringGetCString.restype = ctypes.c_bool
-
-    addr = _AudioObjectPropertyAddress(_fourcc("dev#"), _fourcc("glob"), 0)
-    size = ctypes.c_uint32(0)
-    if ca.AudioObjectGetPropertyDataSize(1, ctypes.byref(addr), 0, None, ctypes.byref(size)) != 0 or not size.value:
-        return None
-    count = size.value // 4
-    ids = (ctypes.c_uint32 * count)()
-    if ca.AudioObjectGetPropertyData(1, ctypes.byref(addr), 0, None, ctypes.byref(size), ids) != 0:
-        return None
-
-    devices: dict[str, int] = {}
-    name_addr = _AudioObjectPropertyAddress(_fourcc("lnam"), _fourcc("glob"), 0)
-    for dev_id in ids:
-        cfstr = ctypes.c_void_p()
-        sz = ctypes.c_uint32(ctypes.sizeof(cfstr))
-        if ca.AudioObjectGetPropertyData(dev_id, ctypes.byref(name_addr), 0, None, ctypes.byref(sz), ctypes.byref(cfstr)) == 0:
-            buf = ctypes.create_string_buffer(256)
-            if cfstr.value and cf.CFStringGetCString(cfstr.value, buf, 256, 0x08000100):
-                devices[buf.value.decode("utf-8", errors="replace")] = int(dev_id)
-
-    candidates = (preferred, *VIRTUAL_MIC_NAMES) if preferred else VIRTUAL_MIC_NAMES
-    return next(
-        ((dev_id, name) for target in candidates if target for name, dev_id in devices.items() if target.lower() in name.lower()),
-        None,
-    )
-
-
-def swap_volume(dev_id: int, volumes: tuple[float, float]) -> tuple[float, float]:
-    """Set a device's (output, input) master volume and return the old pair, so stop() can put it back."""
-    ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
-    addrs = [_AudioObjectPropertyAddress(_fourcc("volm"), _fourcc(scope), 0) for scope in ("outp", "inpt")]
-    old = [ctypes.c_float(value) for value in volumes]
-    # Read both before writing either: BlackHole links its input and output volume.
-    for addr, current in zip(addrs, old, strict=True):
-        size = ctypes.c_uint32(4)
-        ca.AudioObjectGetPropertyData(dev_id, ctypes.byref(addr), 0, None, ctypes.byref(size), ctypes.byref(current))
-    for addr, value in zip(addrs, volumes, strict=True):
-        ca.AudioObjectSetPropertyData(dev_id, ctypes.byref(addr), 0, None, 4, ctypes.byref(ctypes.c_float(value)))
-    return old[0].value, old[1].value
-
-
 class MicConverter:
     """The processed mic (float32, 48 kHz on Macs) as 16-bit PCM at Jarvis's rate, one stream per input rate."""
 
@@ -147,11 +98,9 @@ class MicConverter:
 
 class MeetingAudioBridge:
     """
-    Meeting mode audio:
-    1. Taps system audio (Google Meet, Zoom, browser) via CoreAudio CATapDescription excluding Jarvis's own PID,
-       so Jarvis hears remote participants even on headphones without changing macOS System Output.
-    2. Forwards both the user's processed mic and Jarvis's TTS voice into a virtual mic (BlackHole / Teams / Zoom),
-       so picking that virtual mic in Google Meet lets the room hear both the user and Jarvis.
+    Meeting mode hearing: taps system audio (Google Meet, Zoom, browser) via CoreAudio CATapDescription excluding
+    Jarvis's own PID, so Jarvis hears remote participants even on headphones without changing macOS System Output.
+    Speaking into the call is `meet_voice.MeetVoice`.
     """
 
     def __init__(self, out_rate: int = 16000) -> None:
@@ -175,71 +124,8 @@ class MeetingAudioBridge:
         self._tap_id = 0
         self._agg_id = 0
         self._tap_engine: Any = None
-        self._vmic_dev_id = 0
-        self._vmic_engine: Any = None
-        self._vmic_mic_player: Any = None
-        self._vmic_tts_player: Any = None
-        self._vmic_mic_format: Any = None
-        self._vmic_tts_format: Any = None
-        self.virtual_mic_name: str | None = None
-
-        self._vmic_volumes: tuple[float, float] | None = None
-        vmic = find_virtual_mic(settings.meeting_virtual_mic)
-        if vmic is not None:
-            self._vmic_dev_id, self.virtual_mic_name = vmic
-            eng = AVFoundation.AVAudioEngine.alloc().init()
-            # Touch mainMixerNode first: creating the mixer later resets outputNode's deviceID to the default speaker.
-            eng.outputNode(), eng.mainMixerNode()
-            if eng.outputNode().AUAudioUnit().setDeviceID_error_(self._vmic_dev_id, None):
-                self._vmic_engine = eng
-                self._vmic_mic_player = AVFoundation.AVAudioPlayerNode.alloc().init()
-                self._vmic_tts_player = AVFoundation.AVAudioPlayerNode.alloc().init()
-                eng.attachNode_(self._vmic_mic_player)
-                eng.attachNode_(self._vmic_tts_player)
-
-    def _connect(self, player: Any, rate: int) -> Any:
-        """Wire a player into the virtual mic's mixer at `rate` (mono float32); its format, or None without one."""
-        if self._vmic_engine is None:
-            return None
-        av = self._av
-        fmt = av.AVAudioFormat.alloc().initWithCommonFormat_sampleRate_channels_interleaved_(
-            av.AVAudioPCMFormatFloat32, float(rate), 1, False
-        )
-        self._vmic_engine.connect_to_format_(player, self._vmic_engine.mainMixerNode(), fmt)
-        return fmt
-
-    def connect_tts(self, rate: int) -> None:
-        self._vmic_tts_format = self._connect(self._vmic_tts_player, rate)
-
-    def connect_mic(self, rate: int) -> None:
-        self._vmic_mic_format = self._connect(self._vmic_mic_player, rate)
 
     def start(self) -> None:
-        self._start_system_tap()
-        if self._vmic_engine is not None and not self._vmic_engine.isRunning():
-            self._vmic_engine.outputNode().AUAudioUnit().setDeviceID_error_(self._vmic_dev_id, None)
-            ok, err = self._vmic_engine.startAndReturnError_(None)
-            if ok:
-                # BlackHole often ships below full volume, which makes Jarvis quiet in the call; put it back on stop.
-                self._vmic_volumes = swap_volume(self._vmic_dev_id, (1.0, 1.0))
-                if self._vmic_mic_format is not None:
-                    self._vmic_mic_player.play()
-                if self._vmic_tts_format is not None:
-                    self._vmic_tts_player.play()
-                logger.info(
-                    f"Meeting virtual mic ready: set your Google Meet microphone to '{self.virtual_mic_name}' "
-                    "so the room hears both you and Jarvis. Use headphones: on speakers the mic hears the call twice."
-                )
-            else:
-                logger.warning(f"Could not start virtual mic '{self.virtual_mic_name}': {err}")
-                self._vmic_engine = None
-        elif self.virtual_mic_name is None:
-            logger.warning(
-                "Meeting mode: no virtual mic (BlackHole) found; speaking on speakers only. "
-                "Install `brew install blackhole-2ch` to share a virtual mic with Google Meet."
-            )
-
-    def _start_system_tap(self) -> None:
         if self._tap_engine is not None:
             return
         try:
@@ -305,24 +191,6 @@ class MeetingAudioBridge:
         except Exception as exc:
             logger.warning(f"System audio tap unavailable ({exc!r}); hearing microphone only.")
 
-    def _schedule(self, player: Any, fmt: Any, samples: np.ndarray) -> None:
-        """Queue float samples (-1..1) on one of the virtual mic's players."""
-        if self._vmic_engine is None or fmt is None or not len(samples):
-            return
-        if self._vmic_engine.isRunning() and not player.isPlaying():
-            player.play()
-        buf = self._av.AVAudioPCMBuffer.alloc().initWithPCMFormat_frameCapacity_(fmt, len(samples))
-        np.frombuffer(buf.floatChannelData()[0].as_buffer(len(samples)), dtype=np.float32)[:] = samples
-        buf.setFrameLength_(len(samples))
-        player.scheduleBuffer_completionHandler_(buf, None)
-
-    def forward_mic(self, samples: np.ndarray) -> None:
-        self._schedule(self._vmic_mic_player, self._vmic_mic_format, samples)
-
-    def play_tts(self, samples: np.ndarray) -> None:
-        """`samples` are int16 values, as MacVoiceAudio.play gets them."""
-        self._schedule(self._vmic_tts_player, self._vmic_tts_format, samples / 32768)
-
     def stop(self) -> None:
         if self._tap_engine is not None:
             self._tap_engine.inputNode().removeTapOnBus_(0)
@@ -334,14 +202,6 @@ class MeetingAudioBridge:
         if self._tap_id:
             self._ca.AudioHardwareDestroyProcessTap(self._tap_id)
             self._tap_id = 0
-        if self._vmic_volumes is not None:
-            swap_volume(self._vmic_dev_id, self._vmic_volumes)
-            self._vmic_volumes = None
-        if self._vmic_engine is not None:
-            self._vmic_mic_player.stop()
-            self._vmic_tts_player.stop()
-            self._vmic_engine.stop()
-            self._vmic_engine = None
 
 
 class MacVoiceAudio:
@@ -365,21 +225,18 @@ class MacVoiceAudio:
         self.engine.attachNode_(self.player)
         self._play_format = None
         self._tapped = False
-        self.bridge = MeetingAudioBridge() if meeting else None
+        self.bridge = MeetingAudioBridge() if meeting else None  # hears the call
+        self.meet_voice = MeetVoice() if meeting else None  # speaks into it
 
     def on_mic(self, callback: Callable[[np.ndarray, int], None]) -> None:
         """Call `callback(samples, rate)` from the audio thread with each block of the processed mic."""
         mic = self.engine.inputNode()
         fmt = mic.outputFormatForBus_(0)  # several identical channels with voice processing on; channel 0 is enough
         rate = int(fmt.sampleRate())
-        if self.bridge is not None:
-            self.bridge.connect_mic(rate)
 
         def tap(buffer, when) -> None:  # an Objective-C void block: it must return None
             n = buffer.frameLength()
             samples = np.frombuffer(buffer.floatChannelData()[0].as_buffer(n), dtype=np.float32).copy()
-            if self.bridge is not None:
-                self.bridge.forward_mic(samples)
             callback(samples, rate)
 
         mic.installTapOnBus_bufferSize_format_block_(0, rate // 50, fmt, tap)  # asks for 20 ms blocks
@@ -392,8 +249,8 @@ class MacVoiceAudio:
             av.AVAudioPCMFormatFloat32, float(rate), 1, False
         )
         self.engine.connect_to_format_(self.player, self.engine.mainMixerNode(), self._play_format)
-        if self.bridge is not None:
-            self.bridge.connect_tts(rate)
+        if self.meet_voice is not None:
+            self.meet_voice.rate = rate
 
     def start(self) -> None:
         if self.bridge is not None:
@@ -414,8 +271,8 @@ class MacVoiceAudio:
         np.frombuffer(buffer.floatChannelData()[0].as_buffer(len(samples)), dtype=np.float32)[:] = samples / 32768
         buffer.setFrameLength_(len(samples))
         self.player.scheduleBuffer_completionHandler_(buffer, None)
-        if self.bridge is not None:
-            self.bridge.play_tts(samples)
+        if self.meet_voice is not None:
+            self.meet_voice.send(pcm16)
         return len(samples) / self._play_format.sampleRate()
 
     def stop(self) -> None:
@@ -484,7 +341,14 @@ class MacVoiceOutputTransport(BaseOutputTransport):
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
         self._audio.start()
+        if self._audio.meet_voice is not None:
+            await self._audio.meet_voice.start()
         await self.set_transport_ready(frame)
+
+    async def cleanup(self) -> None:
+        await super().cleanup()
+        if self._audio.meet_voice is not None:
+            await self._audio.meet_voice.stop()
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # The player queues instantly; waiting here paces the output like a blocking speaker write, so an

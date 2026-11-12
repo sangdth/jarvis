@@ -21,7 +21,7 @@ from jarvis.config import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, inst
 
 USAGE = """usage: jarvis [command]
   (none)     listen and hand work to the agents
-  meeting    sit in a call with you (hears the call, speaks into it through a virtual mic); also `--meeting`
+  meeting    sit in a call with you (hears the call, speaks into Google Meet through a Chrome extension); also `--meeting`
              after `connect`
   connect    continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
   connect X  continue a session of agent X (claude, opencode or pi), picked from a list; for pi, a window open

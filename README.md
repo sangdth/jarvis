@@ -182,14 +182,17 @@ and you answer it at the keyboard. A saved session with no window open isn't lis
 
 ### Sit in a Google Meet call
 ```bash
-brew install blackhole-2ch   # once: the virtual mic the call hears
 jarvis meeting               # or: jarvis connect --meeting
 ```
-In Google Meet, set the microphone to **BlackHole 2ch**; Jarvis sends your voice and its own into it. Keep the
-speakers on your normal output and wear headphones: on speakers the mic hears the call a second time. Jarvis hears
-the call through macOS's system audio tap (macOS 14.2 or later), so allow your terminal under System Settings >
-Privacy & Security > Screen & System Audio Recording. People on the call talk to each other until someone says
-"Jarvis"; Jarvis then gets what was said since. Meeting talk is never saved to memory.
+Load the Chrome extension once from the source: `chrome://extensions`, turn on Developer mode, **Load unpacked**,
+pick `src/jarvis/defaults/meet` (the installed `jarvis` logs its own copy's path on start). After a change to it,
+press its reload button there. Then open the call in Chrome (reload a tab that was already open). Keep your usual mic in
+Meet: the extension mixes Jarvis's voice into it, so the call hears you both, and muting yourself in Meet mutes
+Jarvis too. If Chrome asks whether Meet may reach apps on this device, allow it: that is Jarvis's voice socket
+(`127.0.0.1:47123`, Meet's page only). Wear headphones: on speakers the mic hears the call a second time. Jarvis
+hears the call through macOS's system audio tap (macOS 14.2 or later), so allow your terminal under System
+Settings > Privacy & Security > Screen & System Audio Recording. People on the call talk to each other until
+someone says "Jarvis"; Jarvis then gets what was said since. Meeting talk is never saved to memory.
 
 Who may do what depends on the master check. Off: Jarvis can't tell voices apart, so everyone counts as you. On:
 guests may ask questions and ask for work, and Jarvis asks you before it starts that work (`MEETING_GUESTS=ask`,
@@ -198,7 +201,6 @@ approve, stop or replace a task.
 With the master check on you can also introduce someone: "Jarvis, this is David." Jarvis chats with the new voice
 for two questions, learns the name, and next time greets them by name and treats them as a guest. Off, it just
 says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there to forget a voice.
-`MEETING_VIRTUAL_MIC` in `.env` picks another virtual mic by name.
 
 ### Tuning and Troubleshooting
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence

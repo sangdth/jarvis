@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Jarvis in Google Meet",
+  "version": "1.0",
+  "description": "Mixes Jarvis's voice into the mic Google Meet uses, so the call hears it. Needs `jarvis meeting` running.",
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["jarvis.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}
