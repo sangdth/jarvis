@@ -9,12 +9,13 @@ from loguru import logger
 
 from jarvis.config import settings
 from jarvis.orchestrator import AgentOrchestrator
+from jarvis.screen import ScreenError, ask_screen, capture_front_window
 from jarvis.sessions import CodingSessionAdapter, match_sessions
 from jarvis.t3_adapter import resolve_project
 
 
 def agent_tools() -> list:
-    """The three agent tools the conversation model can call (also used by scripts/bench_routing.py)."""
+    """The tools the conversation model can call (also used by scripts/bench_routing.py)."""
     from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
 
     agent_id_property = {
@@ -49,6 +50,12 @@ def agent_tools() -> list:
                     " clean conversation, or the user's words naming an earlier session of that agent to continue"
                     " (e.g. 'the speaker verification one'). Omit otherwise; a plain task stays in the current session.",
                 },
+                "include_screen": {
+                    "type": "boolean",
+                    "description": "True only when the task is about what the user points at on their screen right"
+                    " now ('fix this error', 'the popup on my screen'): a screenshot of their front window goes with"
+                    " it. Omit for ordinary tasks, even about code or a build.",
+                },
                 "replace": {
                     "type": "boolean",
                     "description": (
@@ -82,6 +89,18 @@ def agent_tools() -> list:
             properties={"agent_id": agent_id_property},
             required=[],
         ),
+        FunctionSchema(
+            name="look_at_screen",
+            description=(
+                "Look at the user's front window to answer a question about what is on their screen right now"
+                " ('what does this popup mean?', 'read me that error'). Returns the answer to speak. For work on"
+                " it, use send_agent_task with include_screen instead."
+            ),
+            properties={
+                "question": {"type": "string", "description": "The user's question, in English."},
+            },
+            required=["question"],
+        ),
     ]
 
 
@@ -94,8 +113,8 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         async def handle(params: Any) -> None:
             args = params.arguments
             guest = orchestrator.state.room_turn is True  # `jarvis meeting`, master check on, not the master's voice
-            # A guest may ask for work, never approve, stop or replace it.
-            if guest and (owner_only or args.get("replace")):
+            # A guest may ask for work, never approve, stop or replace it, nor see the master's screen.
+            if guest and (owner_only or args.get("replace") or args.get("include_screen")):
                 await params.result_callback({"status": "owner_only", "agent_id": args.get("agent_id")})
                 return
             # MEETING_GUESTS=ask: nothing runs until the master says yes; the model then sends it again on that turn.
@@ -129,6 +148,13 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         opens = bool(project) and agent is orchestrator.t3
         if not task and not opens:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
+        # A new T3 thread starts with only the sync, never the task, so a screenshot would go nowhere.
+        if args.get("include_screen") and task and not opens:
+            try:
+                shot = await capture_front_window()
+            except ScreenError as exc:
+                return exc.status  # nothing went out: the task needs the screen it points at
+            task += f"\n\n[Screenshot of the user's front window ({shot.app}: {shot.title}): {shot.path}]"
         ok = await (agent.open_project(project, task) if opens else agent.send_task(task))
         if ok is True:  # a status word means nothing went out, so nothing to wait on
             orchestrator.remind_while_busy(agent, task or f"open the {project} project")
@@ -162,6 +188,18 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             return await agent.new_session(cwd) or refused()  # a project with no session yet starts one
         return await agent.pick_session(hits[0]) or refused()
 
+    async def look(params: Any) -> None:
+        if orchestrator.state.room_turn is True:  # a meeting guest never sees the master's screen
+            await params.result_callback({"status": "owner_only"})
+            return
+        try:
+            shot = await capture_front_window()
+            answer = await ask_screen(shot, params.arguments.get("question", "What is on the screen?"))
+        except ScreenError as exc:
+            await params.result_callback({"status": exc.status})
+            return
+        await params.result_callback({"status": "seen", "answer": answer})
+
     async def stop(agent: Any, args: dict) -> bool | str:
         # Nothing running: say so, instead of a "failed" the model would read out as "I couldn't stop it".
         return await agent.interrupt() if agent.busy else "nothing_running"
@@ -177,4 +215,5 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             owner_only=True,
         ),
         "stop_agent": handler(stop, "stopped", "failed", orchestrator.find_busy, owner_only=True),
+        "look_at_screen": look,
     }
