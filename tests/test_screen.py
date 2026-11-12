@@ -44,6 +44,16 @@ class TestCapture(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((shots[-1].app, shots[-1].title), ("Terminal", "zsh"))
 
 
+class TestFrontWindow(unittest.TestCase):
+    def test_no_front_app_falls_back_to_the_main_display(self) -> None:
+        from jarvis.screen import _front_window
+
+        workspace = MagicMock()
+        workspace.sharedWorkspace.return_value.frontmostApplication.return_value = None  # an app just quit
+        with patch.dict(sys.modules, {"Quartz": MagicMock(), "AppKit": SimpleNamespace(NSWorkspace=workspace)}):
+            self.assertEqual(_front_window(), (None, "", ""))
+
+
 class TestAsk(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.shot = ScreenCapture(Path("/x.png"), "Safari", "Update")
