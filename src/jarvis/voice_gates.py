@@ -40,6 +40,8 @@ from jarvis.speaker import (
 )
 from jarvis.state import JarvisMode, JarvisState, UserIntent, classify_fast_command, is_not_for_jarvis
 
+# Longest sentence Smart Turn keeps open across pauses; past this it goes to Whisper as it is.
+MAX_HELD_SECS = 30
 # Whisper ends a sentence that trails off mid-thought with one of these ("Open the...").
 TRAILING_OFF = ("...", "…", "-", "—")
 # How long a trailing-off sentence waits for the rest, counted from the last stretch of silence.
@@ -133,7 +135,8 @@ class SpeakerVerifiedWhisperSTT(WhisperSTTServiceMLX):
         self._vad_speaking = False
         if self._turn is not None:
             done, _ = await self._turn.analyze_end_of_turn()
-            if done == EndOfTurnState.INCOMPLETE:
+            # A TV or a meeting that never sounds done would grow the buffer for minutes, then stall Whisper on it.
+            if done == EndOfTurnState.INCOMPLETE and len(self._audio_buffer) < self.sample_rate * 2 * MAX_HELD_SECS:
                 # Pipecat trims its buffer to the last second only while nobody speaks, so the sentence counts as
                 # still spoken until it goes on below.
                 self._holding = True
@@ -273,7 +276,8 @@ class JarvisIntentGate(FrameProcessor):
                 frame = replace(frame, text=f"{held.text.strip()} {transcript}")
                 self._held = None
             # Hold once: a joined sentence that trails off again goes on now instead of waiting another HOLD_SECS.
-            if held is None and frame.text.strip().endswith(TRAILING_OFF):
+            # Smart Turn already held the audio across the pause, so with it on a second wait only adds delay.
+            if held is None and not settings.smart_turn and frame.text.strip().endswith(TRAILING_OFF):
                 logger.info(f"[User Transcript] holding for the rest: {frame.text.strip()!r}")
                 self._held = frame
                 self._start_hold_timer(direction)
