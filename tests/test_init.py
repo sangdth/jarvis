@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from jarvis import init
+from jarvis.config import Settings
 from jarvis.soul import load_soul
 
 
@@ -70,8 +71,18 @@ class InitTest(unittest.TestCase):
             with patch.object(init, "getpass") as ask, patch("builtins.print"), \
                     patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-shell", "ELEVENLABS_API_KEY": "sk_shell"}):
                 init.ask_api_keys(env)
+                self.assertEqual(Settings(_env_file=env).openrouter_api_key, "sk-or-shell")  # shell beats blank .env
             ask.assert_not_called()
             self.assertEqual(env.read_text(), "OPENROUTER_API_KEY=\nELEVENLABS_API_KEY=\n")  # no copy on disk
+
+    def test_settings_falls_back_to_env_for_empty_or_padded_shell_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text("OPENROUTER_API_KEY=sk-or-file\n")
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+                self.assertEqual(Settings(_env_file=env).openrouter_api_key, "sk-or-file")
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": " sk-or-shell\n"}):
+                self.assertEqual(Settings(_env_file=env).openrouter_api_key, "sk-or-shell")
 
     def test_set_env_replaces_a_line_or_adds_one(self):
         with tempfile.TemporaryDirectory() as tmp:
