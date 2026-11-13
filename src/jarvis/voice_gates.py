@@ -322,6 +322,7 @@ class JarvisIntentGate(FrameProcessor):
         # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
         self._held: TranscriptionFrame | None = None
         self._hold_timer: asyncio.Task | None = None
+        self._released: TranscriptionFrame | None = None
         self._in_flight: asyncio.Task[None] | None = None
 
     async def queue_frame(
@@ -361,9 +362,17 @@ class JarvisIntentGate(FrameProcessor):
         if not transcript:
             return
 
+        if frame is self._released:
+            self._released = None
+            await self._run_gate(frame, direction)
+            return
+
         fast = classify_fast_command(transcript)
-        if fast in (UserIntent.MUTE, UserIntent.UNMUTE) and self._in_flight is not None and not self._in_flight.done():
-            self._in_flight.cancel()
+        if fast in (UserIntent.MUTE, UserIntent.UNMUTE):
+            self._cancel_hold_timer()
+            self._held = None
+            if self._in_flight is not None and not self._in_flight.done():
+                self._in_flight.cancel()
         # Mute / unmute / introduction act at once and never join a held sentence.
         if fast is None:
             held = self._held
@@ -422,7 +431,9 @@ class JarvisIntentGate(FrameProcessor):
         await asyncio.sleep(HOLD_SECS)
         frame, self._held, self._hold_timer = self._held, None, None
         if frame is not None:
-            await self._run_gate(frame, direction)
+            # Re-enter via queue_frame so the released frame serializes with incoming frames on FrameProcessor's queue.
+            self._released = frame
+            await self.queue_frame(frame, direction)
 
     def _recent_jarvis_question(self) -> str | None:
         """An open agent question first; else Jarvis's own last reply, if it stopped talking moments ago."""
@@ -553,12 +564,14 @@ class JarvisIntentGate(FrameProcessor):
             return
 
         question = self._recent_jarvis_question()
-        # In a meeting only the user may answer Jarvis without naming it: the room keeps talking after each reply.
+        open_question = question is not None and (bool(self.state.active_agent_context) or "?" in question)
+        # In a meeting only the user may answer Jarvis without naming it, and only when Jarvis left a question open:
+        # a plain statement ("Added to your calendar.") must not let subsequent talk bypass buffering.
         if (
             self._meeting
             and fast is None
             and not is_not_for_jarvis(transcript)
-            and (question is None or not is_owner)
+            and (not open_question or not is_owner)
             and not is_meeting_addressed(transcript)
         ):
             self._buffer_meeting(speaker, transcript)

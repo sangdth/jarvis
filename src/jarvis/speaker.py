@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import threading
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,7 +108,8 @@ def ensure_model(path: Path = MODEL_PATH) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".part")
     logger.info(f"Downloading speaker model to {path}")
-    urllib.request.urlretrieve(MODEL_URL, tmp)
+    with urllib.request.urlopen(MODEL_URL, timeout=60) as resp, tmp.open("wb") as out:
+        shutil.copyfileobj(resp, out)
     if _sha256(tmp) != MODEL_SHA256:
         tmp.unlink()
         raise RuntimeError(f"Speaker model download failed its checksum: {MODEL_URL}")
@@ -190,6 +193,7 @@ class SpeakerRegistry:
     """Tracks voice fingerprints for every heard speaker and persists named/enrolled profiles in SPEAKERS_DIR."""
 
     def __init__(self, folder: Path | None = SPEAKERS_DIR) -> None:
+        self._lock = threading.RLock()
         self.folder = folder
         self.profiles: dict[str, VoiceProfile] = {}
         self._next_id = 1
@@ -198,121 +202,134 @@ class SpeakerRegistry:
 
     def match(self, emb: np.ndarray | None, threshold: float) -> VoiceProfile | None:
         """Return the closest profile at or above `threshold`, or None."""
-        if emb is None or not self.profiles:
-            return None
-        best_profile: VoiceProfile | None = None
-        best_score = threshold
-        for profile in self.profiles.values():
-            score = cosine(emb, profile.voiceprint)
-            if score >= best_score:
-                best_score = score
-                best_profile = profile
-        return best_profile
+        with self._lock:
+            if emb is None or not self.profiles:
+                return None
+            best_profile: VoiceProfile | None = None
+            best_score = threshold
+            for profile in self.profiles.values():
+                score = cosine(emb, profile.voiceprint)
+                if score >= best_score:
+                    best_score = score
+                    best_profile = profile
+            return best_profile
 
     def observe(self, emb: np.ndarray | None, threshold: float) -> VoiceProfile | None:
         """Match a heard voice embedding to an existing profile (refining it) or create a new fingerprint profile."""
-        if emb is None:
-            return None
-        norm = float(np.linalg.norm(emb))
-        if norm == 0.0 or not np.isfinite(norm):
-            return None
-        matched = self.match(emb, threshold)
-        if matched is not None:
-            was_under_cap = len(matched._embeddings) < MAX_PROFILE_CLIPS
-            matched.add_embedding(emb)
-            if matched.enrolled and was_under_cap:
-                self._save()
-            return matched
-        while f"voice_{self._next_id}" in self.profiles:
+        with self._lock:
+            if emb is None:
+                return None
+            norm = float(np.linalg.norm(emb))
+            if norm == 0.0 or not np.isfinite(norm):
+                return None
+            matched = self.match(emb, threshold)
+            if matched is not None:
+                was_under_cap = len(matched._embeddings) < MAX_PROFILE_CLIPS
+                matched.add_embedding(emb)
+                if matched.enrolled and was_under_cap:
+                    self._save()
+                return matched
+            while f"voice_{self._next_id}" in self.profiles:
+                self._next_id += 1
+            pid = f"voice_{self._next_id}"
             self._next_id += 1
-        pid = f"voice_{self._next_id}"
-        self._next_id += 1
-        unit = _unit(emb)
-        profile = VoiceProfile(id=pid, voiceprint=unit, clips=1, _embeddings=[unit])
-        self.profiles[pid] = profile
-        return profile
+            unit = _unit(emb)
+            profile = VoiceProfile(id=pid, voiceprint=unit, clips=1, _embeddings=[unit])
+            self.profiles[pid] = profile
+            return profile
 
     def get(self, key: str | None) -> VoiceProfile | None:
         """Look up a profile by its id ('voice_1') or linked speaker name ('David')."""
-        if not key:
-            return None
-        if key in self.profiles:
-            return self.profiles[key]
-        low = key.lower()
-        return next((p for p in self.profiles.values() if p.name and p.name.lower() == low), None)
+        with self._lock:
+            if not key:
+                return None
+            if key in self.profiles:
+                return self.profiles[key]
+            low = key.lower()
+            return next((p for p in self.profiles.values() if p.name and p.name.lower() == low), None)
 
     def link_name(self, profile_id: str, name: str, *, enroll: bool = True) -> VoiceProfile | None:
         """Associate a speaker identity ('David') with a voice fingerprint profile and persist if enrolled."""
-        profile = self.get(profile_id)
-        cleaned = _clean_name(name) or name.strip()
-        if profile is None or not cleaned:
-            return None
-        existing = self.get(cleaned)
-        if existing is not None and existing is not profile:
-            for emb in profile._embeddings or [_unit(profile.voiceprint)]:
-                existing.add_embedding(emb)
-            self.profiles.pop(profile.id, None)
-            profile = existing
-        profile.name = cleaned
-        if enroll:
-            profile.enrolled = True
-            self._save()
-        return profile
+        with self._lock:
+            profile = self.get(profile_id)
+            cleaned = _clean_name(name) or name.strip()
+            if profile is None or not cleaned:
+                return None
+            existing = self.get(cleaned)
+            if existing is not None and existing is not profile:
+                for emb in profile._embeddings or [_unit(profile.voiceprint)]:
+                    existing.add_embedding(emb)
+                self.profiles.pop(profile.id, None)
+                profile = existing
+            profile.name = cleaned
+            if enroll:
+                profile.enrolled = True
+                self._save()
+            return profile
 
     def _load(self) -> None:
-        if self.folder is None:
-            return
-        index_path = self.folder / "speakers.json"
-        if not index_path.is_file():
-            return
-        try:
-            entries = json.loads(index_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            logger.warning(f"Could not read speaker profiles from {index_path} ({exc!r}).")
-            return
-        for pid, meta in entries.items():
-            npy_path = self.folder / f"{pid}.npy"
-            if not isinstance(meta, dict) or not npy_path.is_file():
-                continue
+        with self._lock:
+            if self.folder is None:
+                return
+            index_path = self.folder / "speakers.json"
+            if not index_path.is_file():
+                return
             try:
-                vec = np.load(npy_path).astype(np.float32)
-            except (OSError, ValueError):
-                continue
-            clips = int(meta.get("clips", 1))
-            name = str(meta["name"]) if meta.get("name") else None
-            self.profiles[pid] = VoiceProfile(
-                id=pid,
-                voiceprint=vec,
-                name=name,
-                clips=clips,
-                enrolled=True,
-                _embeddings=[_unit(vec)] * max(1, min(clips, MAX_PROFILE_CLIPS)),
-            )
+                entries = json.loads(index_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                logger.warning(f"Could not read speaker profiles from {index_path} ({exc!r}).")
+                return
+            for pid, meta in entries.items():
+                npy_path = self.folder / f"{pid}.npy"
+                if not isinstance(meta, dict) or not npy_path.is_file():
+                    continue
+                try:
+                    vec = np.load(npy_path).astype(np.float32)
+                except (OSError, ValueError):
+                    continue
+                clips = int(meta.get("clips", 1))
+                name = str(meta["name"]) if meta.get("name") else None
+                self.profiles[pid] = VoiceProfile(
+                    id=pid,
+                    voiceprint=vec,
+                    name=name,
+                    clips=clips,
+                    enrolled=True,
+                    _embeddings=[_unit(vec)] * max(1, min(clips, MAX_PROFILE_CLIPS)),
+                )
 
     def _save(self) -> None:
-        if self.folder is None:
-            return
-        try:
-            self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-            index: dict[str, dict[str, str | int]] = {}
-            for pid, profile in self.profiles.items():
-                if not profile.enrolled or not profile.name:
-                    continue
-                npy_path = self.folder / f"{pid}.npy"
-                np.save(npy_path, profile.voiceprint)
-                os.chmod(npy_path, 0o600)
-                index[pid] = {"name": profile.name, "clips": profile.clips}
-            index_path = self.folder / "speakers.json"
-            index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            os.chmod(index_path, 0o600)
-        except OSError as exc:
-            logger.warning(f"Could not save speaker profiles to {self.folder} ({exc!r}).")
+        with self._lock:
+            if self.folder is None:
+                return
+            try:
+                self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+                index: dict[str, dict[str, str | int]] = {}
+                for pid, profile in self.profiles.items():
+                    if not profile.enrolled or not profile.name:
+                        continue
+                    npy_path = self.folder / f"{pid}.npy"
+                    npy_tmp = self.folder / f"{pid}.tmp.npy"
+                    with os.fdopen(os.open(npy_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+                        np.save(f, profile.voiceprint)
+                    os.chmod(npy_tmp, 0o600)
+                    npy_tmp.replace(npy_path)
+                    index[pid] = {"name": profile.name, "clips": profile.clips}
+                index_path = self.folder / "speakers.json"
+                index_tmp = index_path.with_suffix(".tmp")
+                with os.fdopen(os.open(index_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+                    f.write(json.dumps(index, ensure_ascii=False, indent=2) + "\n")
+                os.chmod(index_tmp, 0o600)
+                index_tmp.replace(index_path)
+            except OSError as exc:
+                logger.warning(f"Could not save speaker profiles to {self.folder} ({exc!r}).")
 
 
 def save_voiceprint(embeddings: list[np.ndarray], path: Path = VOICEPRINT_PATH) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     # Each clip scaled to length 1 first, so one loud or odd clip doesn't pull the average toward itself
     np.save(path, np.mean([e / np.linalg.norm(e) for e in embeddings], axis=0))
+    os.chmod(path, 0o600)
     return path
 
 
