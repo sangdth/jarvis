@@ -78,7 +78,8 @@ jarvis init
 It creates `~/.config/jarvis/` with a `.env` and an `agents.json` from
 [`src/jarvis/defaults/`](src/jarvis/defaults/); it never overwrites them. It asks for your OpenRouter and
 ElevenLabs keys (typing stays hidden; Enter skips one) and saves them in `.env`, readable only by you; a key
-already set is never asked again. Then it asks a few questions (Jarvis's personality, what to call you,
+already set, in `.env` or exported in your shell, is never asked. A shell key stays out of `.env`, so it must be
+exported wherever Jarvis runs. Then it asks a few questions (Jarvis's personality, what to call you,
 where you keep your projects, default `~/Projects`) and saves the answers to `~/.config/jarvis/SOUL.md`. Edit that
 file by hand any time; Jarvis reads it at startup. The personality sets tone only, and the name stays Jarvis.
 
@@ -96,7 +97,7 @@ quiet moment: background voices in the recording weaken the voiceprint. `MASTER_
 again and keeps the voiceprint.
 
 ### 3. Configure `.env`
-`jarvis init` fills the two API keys; set the rest in `~/.config/jarvis/.env`. A variable set in
+`jarvis init` fills the two API keys unless your shell exports them; set the rest in `~/.config/jarvis/.env`. A variable set in
 your shell wins over the file, so `op run -- jarvis` (1Password) works too:
 - `OPENROUTER_API_KEY`: used for Jarvis's conversational brain (`EXECUTIVE_MODEL`, `deepseek/deepseek-v4.1-flash`, thinking on), which also retells each finished agent turn as one short first-person outcome ("I pushed it, but there was nothing for a PR"), and for the fallback speech check (`FILTER_MODEL`, `typesafe/jev-1.14`), and for picking memory facts out of each exchange (`EXTRACTION_MODEL`, a fast non-thinking model). Left empty, Jarvis only hears "shut up" / "you can talk" and reads the last line of a finished turn.
 - `LAYA_API_KEY`: a console key (`laya_...`, from https://laya.happyvoxel.com, valid 90 days) for the speech check
@@ -213,7 +214,8 @@ says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there t
 - **Jarvis can't see your screen.** Allow the app running Jarvis in System Settings > Privacy & Security > Screen
   Recording; it looks only when you point ("this error", "on my screen").
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
-  key: run `jarvis init` again; it asks only for the keys still empty.
+  key: run `jarvis init` again; it asks only for the keys still empty. A key that lives only in your shell is
+  missing when Jarvis starts from an app that doesn't load your shell profile: put it in `.env` instead.
 
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.

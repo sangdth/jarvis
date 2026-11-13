@@ -42,6 +42,8 @@ class Settings(BaseSettings):
         env_file=JARVIS_HOME / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        env_ignore_empty=True,  # an empty shell export falls back to .env, as `jarvis init` assumes
+        str_strip_whitespace=True,  # a key exported with a trailing newline would break the HTTP header
     )
 
     # LLMs (OpenRouter for both the executive and the filter)

@@ -52,7 +52,7 @@ def ask_api_keys(env: Path = ENV_PATH) -> None:
         return
     for name, question, prefix in API_KEYS:
         if os.environ.get(name, "").strip():  # Settings reads the shell's value first, so .env needs no copy
-            print(f"{name} is set in your shell; using it.")
+            print(f"{name} is set in your shell; using it and leaving {env} empty. Keep it exported where Jarvis runs.")
             continue
         text = env.read_text(encoding="utf-8")
         line = re.search(rf"^{name}=(.*)$", text, re.MULTILINE)
