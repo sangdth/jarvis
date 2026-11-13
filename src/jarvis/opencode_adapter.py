@@ -166,11 +166,33 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
 
     async def _resync(self) -> None:
         """Events are not replayed, so pick up permissions and questions that were asked while disconnected."""
+        seen: dict[str, set[str]] = {}
         for path, on_request in (("/api/permission/request", self._on_permission), ("/api/form", self._on_form)):
             resp = await self._http.get(path, headers=self._scope())
             resp.raise_for_status()
+            active: set[str] = set()
             for request in resp.json().get("data", []):
+                if self._session_id and request.get("sessionID") != self._session_id:
+                    continue
+                active.add(request["id"])
                 await on_request(request)
+            seen[path] = active
+        if self._pending_permission and self._pending_permission.get("id") not in seen["/api/permission/request"]:
+            self._pending_permission = None
+            self._question_settled()
+        if self._pending_form and self._pending_form.get("id") not in seen["/api/form"]:
+            self._pending_form = None
+            self._question_settled()
+        if self._running and self._session_id:
+            try:
+                resp = await self._http.get(f"/api/session/{self._session_id}", headers=self._scope())
+                resp.raise_for_status()
+                data = resp.json().get("data")
+                time_info = data.get("time") if isinstance(data, dict) else None
+                if isinstance(time_info, dict) and (time_info.get("idle") or not time_info.get("busy")):
+                    self._running = False
+            except httpx.HTTPError as exc:
+                logger.debug(f"[{self.config.id}] Could not check session {self._session_id} status ({exc!r}).")
 
     async def _on_permission(self, request: dict[str, Any]) -> None:
         self._pending_permission = request
@@ -225,8 +247,10 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
         elif ev_type in ("session.execution.succeeded", "session.execution.failed") and session_id:
             self._running = False
             text = self._last_text.pop(session_id, "")
-            if text:
-                await self._surface(("The turn failed. " if ev_type.endswith("failed") else "") + text, is_report=True)
+            if ev_type.endswith("failed"):
+                await self._surface(f"The turn failed. {text}".strip(), is_report=True)
+            elif text:
+                await self._surface(text, is_report=True)
 
     async def _create_session(self) -> None:
         """Start a session in the agent's folder (a pinned server uses its own) and send tasks to it."""

@@ -131,6 +131,30 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
         self.adapter._surface.assert_awaited_once()
         self.assertEqual(self.adapter._pending_form["id"], "frm_1")
 
+    async def test_failed_turn_with_empty_text_still_surfaces(self) -> None:
+        self.adapter._session_id, self.adapter._running = "ses_1", True
+        await self.adapter._handle_event({"type": "session.execution.failed", "data": {"sessionID": "ses_1"}})
+        self.assertFalse(self.adapter.busy)
+        self.adapter._surface.assert_awaited_once_with("The turn failed.", is_report=True)
+
+    async def test_resync_clears_stale_pending_requests_and_idle_running(self) -> None:
+        self.adapter._session_id = "ses_1"
+        self.adapter._running = True
+        self.adapter._pending_permission = {"id": "per_old", "sessionID": "ses_1"}
+        self.adapter._pending_form = {"id": "frm_old", "sessionID": "ses_1"}
+        responses = {
+            "/api/permission/request": {"data": []},
+            "/api/form": {"data": []},
+            "/api/session/ses_1": {"data": {"time": {"idle": True}}},
+        }
+        get = AsyncMock(side_effect=lambda path, **_: MagicMock(json=MagicMock(return_value=responses[path])))
+        with patch.object(self.adapter._http, "get", new=get):
+            await self.adapter._resync()
+        self.assertIsNone(self.adapter._pending_permission)
+        self.assertIsNone(self.adapter._pending_form)
+        self.assertFalse(self.adapter.busy)
+        self.assertEqual(self.adapter.state.active_agent_context.pop.call_count, 2)
+
     async def test_stop_interrupts_the_session(self) -> None:
         self.adapter._session_id = "ses_1"
         with patch.object(self.adapter._http, "post", new=self.post):

@@ -62,6 +62,47 @@ class TestConnectPicker(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SystemExit, "not a coding agent"):
             await main.pick_connection(orch, "hermes")
 
+    async def test_pick_thread_attaches_worktree_thread_without_prompting(self) -> None:
+        from jarvis import main
+
+        orch = AgentOrchestrator(state=MagicMock())
+        t3 = MagicMock(spec=T3Adapter)
+        t3.config = MagicMock(id="t3-code", name="T3 Code")
+        t3.shell_snapshot = AsyncMock(
+            return_value={
+                "projects": [{"id": "p1", "title": "jarvis", "workspaceRoot": "/r/jarvis"}],
+                "threads": [
+                    {
+                        "id": "t-main",
+                        "projectId": "p1",
+                        "createdBy": "user",
+                        "title": "Main",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                    },
+                    {
+                        "id": "t-wt",
+                        "projectId": "p1",
+                        "createdBy": "user",
+                        "title": "Worktree fix",
+                        "updatedAt": "2026-01-02T00:00:00Z",
+                        "worktreePath": "/wt/fix",
+                    },
+                ],
+            }
+        )
+        orch.adapters["t3-code"] = t3
+        with (
+            patch.dict(
+                main.os.environ,
+                {"T3CODE_PROJECT_ROOT": "/r/jarvis", "T3CODE_WORKTREE_PATH": "/wt/fix"},
+            ),
+            patch.object(main, "choose", side_effect=AssertionError("should not prompt")),
+        ):
+            picked = await main.pick_thread(orch)
+        t3.attach.assert_called_once_with("t-wt", "/wt/fix", connected=True)
+        self.assertEqual(picked["id"], "t-wt")
+        self.assertEqual(picked["agent_id"], "t3-code")
+
 
 if __name__ == "__main__":
     unittest.main()

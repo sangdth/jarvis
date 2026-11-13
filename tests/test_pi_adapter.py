@@ -105,6 +105,23 @@ class TestPiAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.adapter.new_session())  # a new Pi session is a window the user opens
         await other.stop()
 
+    async def test_closed_window_after_three_misses_clears_dialog_and_reports(self) -> None:
+        self.adapter._running = True
+        self.adapter._dialog = True
+        await self.adapter.stop()
+        with (
+            patch("jarvis.pi_adapter.asyncio.open_unix_connection", side_effect=OSError("gone")),
+            patch("jarvis.pi_adapter.asyncio.sleep", AsyncMock(side_effect=[None, None, asyncio.CancelledError()])),
+            self.assertRaises(asyncio.CancelledError),
+        ):
+            await self.adapter._run_loop()
+        self.assertFalse(self.adapter.busy)
+        self.assertFalse(self.adapter._dialog)
+        self.adapter.state.active_agent_context.pop.assert_called_with("a1", None)
+        self.adapter._surface.assert_awaited_once_with(
+            "closed its window. Run jarvis connect pi again to pick another.", is_report=True
+        )
+
 
 class TestPiWindows(unittest.IsolatedAsyncioTestCase):
     async def test_lists_open_windows_and_deletes_dead_sockets(self) -> None:

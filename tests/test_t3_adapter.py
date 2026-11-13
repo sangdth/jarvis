@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import tempfile
@@ -5,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from jarvis.agent_adapter import WatchedAgentConfig
+from jarvis.agent_adapter import WatchedAgentConfig, question_fields
 from jarvis.t3_adapter import (
     PROJECTS,
     PROJECTS_LABEL,
@@ -14,7 +15,6 @@ from jarvis.t3_adapter import (
     find_project,
     list_projects,
     recent_threads,
-    t3_question_fields,
 )
 
 RUN = "run:thread:t1:ordinal:1"
@@ -145,7 +145,7 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         defaults = {"defaultModelSelection": {"instanceId": "claudeAgent", "model": "g"}}
         with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2"]), \
                 patch("jarvis.t3_adapter.t3_defaults", return_value=defaults):
-            self.assertTrue(await a.open_project("HuggerHustle/platform-v2", "fix the login"))
+            self.assertEqual(await a.open_project("HuggerHustle/platform-v2", "fix the login"), "project_syncing")
             created, launched = (c.args for c in a._call.await_args_list)
             root = str(PROJECTS / "huggerhustle/platform-v2")
             self.assertEqual((created[1]["type"], created[1]["workspaceRoot"]), ("project.create", root))
@@ -165,10 +165,10 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         a._call = AsyncMock(side_effect=[{}, {"threadId": "t9"}])
         with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2"]), \
                 patch("jarvis.t3_adapter.t3_defaults", return_value={"defaultModelSelection": {"instanceId": "c", "model": "g"}}):
-            self.assertTrue(await a.open_project("huggerhustle/platform-v2", ""))
+            self.assertEqual(await a.open_project("huggerhustle/platform-v2", ""), "project_syncing")
             self.assertEqual(a._call.await_args.args[1]["initialMessage"]["text"], "Sync with the master branch.")
             a._command = AsyncMock()
-            self.assertTrue(await a.open_project("huggerhustle/platform-v2", ""))  # already open
+            self.assertEqual(await a.open_project("huggerhustle/platform-v2", ""), "project_already_open")
         a._command.assert_not_awaited()
 
     async def test_connected_thread_never_starts_a_new_one(self) -> None:
@@ -247,6 +247,76 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await a.shell_snapshot(), {"projects": [{"id": "p1"}]})
         self.assertEqual([m["_tag"] for m in sent], ["Request", "Ack", "Interrupt"])
 
+    async def test_run_loop_disconnect_clears_runs_and_pending_question(self) -> None:
+        a = make()
+        a._token = "tok"
+        a._runs = {RUN: "running"}
+        a._pending = APPROVAL
+
+        class FailingConnect:
+            async def __aenter__(self):
+                raise OSError("down")
+
+            async def __aexit__(self, *exc) -> None:
+                return None
+
+        with (
+            patch.object(a, "_connect", return_value=FailingConnect()),
+            patch("jarvis.t3_adapter.asyncio.sleep", AsyncMock(side_effect=asyncio.CancelledError())),
+            self.assertRaises(asyncio.CancelledError),
+        ):
+            await a._run_loop()
+        self.assertEqual(a._runs, {})
+        self.assertIsNone(a._pending)
+        a.state.active_agent_context.pop.assert_called_with("t3-code", None)
+
+    async def test_short_lived_shell_snapshot_answers_ping_and_times_out(self) -> None:
+        a = make()
+        a._token = "tok"
+        sent: list[dict] = []
+
+        class FakeWS:
+            def __init__(self, messages: list[str]) -> None:
+                self._messages = iter(messages)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc) -> None:
+                return None
+
+            async def send(self, raw: str) -> None:
+                sent.append(json.loads(raw))
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self) -> str:
+                try:
+                    return next(self._messages)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        ping_then_snap = FakeWS([
+            json.dumps({"_tag": "Ping"}),
+            json.dumps({"_tag": "Chunk", "values": [{"kind": "snapshot", "snapshot": {"projects": []}}]}),
+        ])
+        with patch.object(a, "_connect", return_value=ping_then_snap):
+            self.assertEqual(await a.shell_snapshot(), {"projects": []})
+        self.assertEqual([m["_tag"] for m in sent], ["Request", "Pong"])
+
+        class HangingWS(FakeWS):
+            async def __anext__(self) -> str:
+                await asyncio.sleep(3600)
+                return ""
+
+        with (
+            patch.object(a, "_connect", return_value=HangingWS([])),
+            patch("jarvis.t3_adapter.asyncio.timeout", return_value=asyncio.timeout(0.01)),
+            self.assertRaises(TimeoutError),
+        ):
+            await a.shell_snapshot()
+
 
 class TestHelpers(unittest.TestCase):
     def test_deepest_live_project_holds_cwd(self) -> None:
@@ -301,7 +371,7 @@ class TestHelpers(unittest.TestCase):
         self.assertIsNone(current_thread(snapshot, "/r/other", None))
 
     def test_question_fields_use_value_or_label(self) -> None:
-        fields = t3_question_fields(QUESTION["questions"])
+        fields = question_fields(QUESTION["questions"])
         self.assertEqual([o["value"] for o in fields[0]["options"]], ["Tests", "docs"])
 
 

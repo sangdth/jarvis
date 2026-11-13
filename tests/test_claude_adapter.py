@@ -108,6 +108,7 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
                 yield
 
         self.adapter._running = True
+        self.adapter._question = asyncio.get_running_loop().create_future()
         await self.adapter._handle_message(SystemMessage(subtype="init", data={"session_id": "ses-9"}))
         real_sleep = asyncio.sleep
         with (
@@ -120,9 +121,11 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(starts), 2)
             self.assertIsNotNone(self.adapter._client)
             self.assertFalse(self.adapter.busy)  # the dead turn no longer counts as running
+            self.assertIsNone(self.adapter._question)
+            self.adapter.state.active_agent_context.pop.assert_called_with("a1", None)
             self.assertEqual([o.resume for o in starts], ["ses-9", "ses-9"])  # the same conversation, not an empty one
             self.adapter._surface.assert_awaited_once_with(
-                "stopped in the middle of a task; restarting it in the same conversation."
+                "stopped in the middle of a task; restarting it in the same conversation.", is_report=True
             )
             loop.cancel()
 

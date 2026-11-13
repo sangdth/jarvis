@@ -149,7 +149,13 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         if not task and not opens:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
         prompt = task
-        if args.get("include_screen") and task:
+        resolved = resolve_project(project) if opens and project else None
+        sync_only = bool(
+            opens
+            and not getattr(agent, "connected", False)
+            and not (getattr(agent, "_thread_id", None) and resolved and getattr(agent, "_root", None) == str(resolved))
+        )
+        if args.get("include_screen") and task and not sync_only:
             try:
                 shot = await capture_front_window()
             except ScreenError as exc:
@@ -159,6 +165,8 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         ok = await (agent.open_project(project, prompt) if opens else agent.send_task(prompt))
         if ok is True:  # a status word means nothing went out, so nothing to wait on
             orchestrator.remind_while_busy(agent, task or f"open the {project} project")
+        elif ok == "project_syncing":
+            orchestrator.remind_while_busy(agent, "sync with master")
         return ok
 
     async def switch_session(agent: CodingSessionAdapter, session: str, project: str | None) -> bool | str:
@@ -192,6 +200,9 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
     async def look(params: Any) -> None:
         if orchestrator.state.room_turn is True:  # a meeting guest never sees the master's screen
             await params.result_callback({"status": "owner_only"})
+            return
+        if orchestrator._http is None:
+            await params.result_callback({"status": "no_model"})
             return
         try:
             shot = await capture_front_window()

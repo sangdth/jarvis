@@ -16,23 +16,9 @@ from claude_agent_sdk import (
 )
 from loguru import logger
 
-from jarvis.agent_adapter import WatchedAgentConfig, describe_fields, form_answer, is_approval
+from jarvis.agent_adapter import WatchedAgentConfig, describe_fields, form_answer, is_approval, question_fields
 from jarvis.sessions import READY_SECS, AgentSession, CodingSessionAdapter
 from jarvis.state import JarvisState
-
-
-def claude_question_fields(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Claude Code AskUserQuestion questions in the OpenCode form-field shape, so form_answer works for both."""
-    return [
-        {
-            "key": q["question"],
-            "description": q["question"],
-            "type": "multiselect" if q.get("multiSelect") else "string",
-            "options": [{"value": o["label"], "label": o["label"]} for o in q.get("options", [])],
-        }
-        for q in questions
-    ]
-
 
 
 class ClaudeCodeAdapter(CodingSessionAdapter):
@@ -105,9 +91,13 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
                 logger.error(f"[{self.config.id}] Claude Code stopped ({exc!r}); restarting in 10s.")
             finally:
                 self._client = None
+                if self._question is not None and not self._question.done():
+                    self._question.set_result(None)
+                self._question = None
+                self._question_settled()
             # The turn in flight died with the process: no result will come, so it is not running any more.
             if self._running:
-                await self._surface("stopped in the middle of a task; restarting it in the same conversation.")
+                await self._surface("stopped in the middle of a task; restarting it in the same conversation.", is_report=True)
             self._running = self._stopped = False
             await asyncio.sleep(10.0)
 
@@ -140,7 +130,7 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
         self, tool_name: str, tool_input: dict[str, Any], context: ToolPermissionContext
     ) -> PermissionResultAllow | PermissionResultDeny:
         if tool_name == "AskUserQuestion":
-            fields = claude_question_fields(tool_input.get("questions", []))
+            fields = question_fields(tool_input.get("questions", []))
             said = await self._ask(f"asks: {describe_fields(fields)}")
             if said is None:
                 return PermissionResultDeny(message="Stopped by the user.", interrupt=True)
