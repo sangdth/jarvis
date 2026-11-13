@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,7 +42,8 @@ class InitTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = Path(tmp) / ".env"
             env.write_text("OPENROUTER_API_KEY=sk-or-kept\nELEVENLABS_API_KEY=\nOTHER=1\n")
-            with patch.object(init, "getpass", return_value=" sk_new \n") as ask, patch("builtins.print"):
+            with patch.object(init, "getpass", return_value=" sk_new \n") as ask, patch("builtins.print"), \
+                    patch.dict(os.environ, {}, clear=True):
                 init.ask_api_keys(env)
             ask.assert_called_once()  # OpenRouter is already set
             self.assertEqual(env.read_text(), "OPENROUTER_API_KEY=sk-or-kept\nELEVENLABS_API_KEY=sk_new\nOTHER=1\n")
@@ -52,12 +54,24 @@ class InitTest(unittest.TestCase):
             env = Path(tmp) / ".env"
             env.write_text("OTHER=1")
             answers = iter(["", "sk_a b"])  # Enter, then a key with a space that would break the line
-            with patch.object(init, "getpass", lambda _: next(answers)), patch("builtins.print"):
+            with patch.object(init, "getpass", lambda _: next(answers)), patch("builtins.print"), \
+                    patch.dict(os.environ, {}, clear=True):
                 init.ask_api_keys(env)
             self.assertEqual(env.read_text(), "OTHER=1")
-            with patch.object(init, "getpass", return_value="sk-or-1"), patch("builtins.print"):
+            with patch.object(init, "getpass", return_value="sk-or-1"), patch("builtins.print"), \
+                    patch.dict(os.environ, {}, clear=True):
                 init.ask_api_keys(env)
             self.assertEqual(env.read_text(), "OTHER=1\nOPENROUTER_API_KEY=sk-or-1\nELEVENLABS_API_KEY=sk-or-1\n")
+
+    def test_init_uses_keys_from_the_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / ".env"
+            env.write_text("OPENROUTER_API_KEY=\nELEVENLABS_API_KEY=\n")
+            with patch.object(init, "getpass") as ask, patch("builtins.print"), \
+                    patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-shell", "ELEVENLABS_API_KEY": "sk_shell"}):
+                init.ask_api_keys(env)
+            ask.assert_not_called()
+            self.assertEqual(env.read_text(), "OPENROUTER_API_KEY=\nELEVENLABS_API_KEY=\n")  # no copy on disk
 
     def test_set_env_replaces_a_line_or_adds_one(self):
         with tempfile.TemporaryDirectory() as tmp:
