@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from fakes import fake_adapter, make
 from jarvis.claude_adapter import ClaudeCodeAdapter
@@ -22,6 +22,14 @@ class TestMatchSessions(unittest.TestCase):
         self.assertEqual(match_sessions([AUTH, VOICE], "jwt"), [AUTH])
         self.assertEqual(match_sessions([AUTH, VOICE], "platform"), [AUTH])
         self.assertEqual(match_sessions([AUTH, VOICE], "continue the session from yesterday"), [])
+        self.assertEqual(match_sessions([AUTH, VOICE], "open the thread in my section"), [])
+
+    def test_short_words_and_word_starts_count(self) -> None:
+        pr = AgentSession("s4", "Review PR 42 for the UI", "/p/web", 10.0)
+        self.assertEqual(match_sessions([AUTH, VOICE, pr], "the pr one"), [pr])
+        self.assertEqual(match_sessions([AUTH, VOICE, pr], "authentication"), [AUTH])  # "auth" starts it
+        self.assertEqual(match_sessions([AUTH, VOICE, pr], "refactoring"), [AUTH])
+        self.assertEqual(match_sessions([AUTH, VOICE, pr], "speak"), [VOICE])  # "speaker"
 
 
 class TestConnectedAndT3(unittest.TestCase):
@@ -99,7 +107,7 @@ class TestConnectPicker(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "choose", side_effect=AssertionError("should not prompt")),
         ):
             picked = await main.pick_thread(orch)
-        t3.attach.assert_called_once_with("t-wt", "/wt/fix", connected=True)
+        t3.attach.assert_called_once_with("t-wt", "/wt/fix", connected=True, title=ANY)
         self.assertEqual(picked["id"], "t-wt")
         self.assertEqual(picked["agent_id"], "t3-code")
 

@@ -65,14 +65,21 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Have Claude Code add a dark mode toggle", "claude"),
     # Sessions of Claude Code and OpenCode: a new one, or an earlier one named by its topic; a plain task sets none
     ("Start a new Claude Code session", "claude+new"),
-    ("Open a fresh OpenCode session and add a health check endpoint", "opencode+new"),
+    ("Open a fresh OpenCode session and add a health check endpoint", "opencode+task+new"),
     ("On Claude Code, continue the session about speaker verification", "claude+session"),
     ("Go back to the OpenCode session where we fixed the login bug", "opencode+session"),
     ("Ask Claude to keep going on the current task", "claude"),
+    # Sessions are listed by tool, with titles, never guessed from the screen ("sections" is how Whisper hears it)
+    ("How many sections we have inside the T3 code right now?", "list"),
+    ("What sessions do I have open?", "list"),
+    ("Tell me the names of my T3 threads", "list"),
+    ("Which sessions are there in the Jarvis project?", "list"),
+    ("Go back to the T3 thread about the meeting bridge", "t3-code+session"),
+    ("Start a new session and fix the failing tests", "t3-code+task+new"),
     # A named project opens it in T3 Code; the folder comes from the project list (names are often misheard)
     ("Continue working on the Hugger Hustle platform", "t3-code@huggerhustle/platform-v2"),
     ("Let's work on the Hacker Hustle platform v2 and fix the signup form", "t3-code@huggerhustle/platform-v2+task"),
-    ("Open a new session in the Hugger Hustle platform project", "t3-code@huggerhustle/platform-v2"),
+    ("Open a new session in the Hugger Hustle platform project", "t3-code@huggerhustle/platform-v2+new"),
     ("Open the OpsCom status project", "t3-code@opscom/status"),
     ("I want to work on Jarvis today", "t3-code@jarvis"),
     ("Continue to work with hugger hustle platform", "t3-code@huggerhustle/platform-v2"),
@@ -87,7 +94,7 @@ CASES: list[tuple[str | list[dict], str]] = [
     # The project named in a reply to Jarvis's question still opens it (misheard, 2026-11-03)
     ([{"role": "user", "content": "Open a new session on..."},
       {"role": "assistant", "content": "Which project should the new session go in?"},
-      {"role": "user", "content": "the hacker hustle platform"}], "t3-code@huggerhustle/platform-v2"),
+      {"role": "user", "content": "the hacker hustle platform"}], "t3-code@huggerhustle/platform-v2+new"),
     ("What's on my calendar tomorrow?", "hermes"),
     ("Email Minh that I'll be ten minutes late", "hermes"),
     ("Find me the best rated ramen place nearby", "hermes"),
@@ -166,15 +173,16 @@ def outcome(message: dict, default_id: str | None) -> str:
         return "not English: " + (args.get("task") or args.get("answer") or args.get("question"))
     if calls[0]["function"]["name"] == "look_at_screen":
         return "look"
+    if calls[0]["function"]["name"] == "list_sessions":
+        return "list"
     if calls[0]["function"]["name"] == "answer_agent":
         return "answer"  # answer_agent finds the waiting agent itself when no id is given
     project = f"@{args['project'].removeprefix(f'{PROJECTS_LABEL}/').strip('/').lower()}" if args.get("project") else ""
-    # Opening a project names work only when the user did ("+task"); an invented task is a miss.
-    task = "+task" if project and args.get("task", "").strip() else ""
-    agent = args.get("agent_id") or default_id or "?"
     named = (args.get("session") or "").strip().lower()
-    # T3 Code has no sessions of its own: the handler ignores `session` there, so it is no miss
-    session = "" if agent == "t3-code" or not named else "+new" if named == "new" else "+session"
+    # Opening a project or session names work only when the user did ("+task"); an invented task is a miss.
+    task = "+task" if (project or named) and args.get("task", "").strip() else ""
+    agent = args.get("agent_id") or default_id or "?"
+    session = "" if not named else "+new" if named == "new" else "+session"
     screen = "+screen" if args.get("include_screen") else ""
     return agent + project + task + session + screen + ("+replace" if args.get("replace") else "")
 

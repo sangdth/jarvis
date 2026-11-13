@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -46,9 +48,10 @@ def agent_tools() -> list:
                 },
                 "session": {
                     "type": "string",
-                    "description": "Claude Code, OpenCode or Pi only, when the user asks for it: \"new\" to start a"
-                    " clean conversation, or the user's words naming an earlier session of that agent to continue"
-                    " (e.g. 'the speaker verification one'). Omit otherwise; a plain task stays in the current session.",
+                    "description": "Only when the user asks for it: \"new\" to start a clean session (a T3 Code thread"
+                    " or a Claude Code, OpenCode or Pi conversation), or the user's words naming an earlier session to"
+                    " continue (e.g. 'the speaker verification one'), matched against session titles. Omit otherwise;"
+                    " a plain task stays in the current session.",
                 },
                 "include_screen": {
                     "type": "boolean",
@@ -90,6 +93,25 @@ def agent_tools() -> list:
             required=[],
         ),
         FunctionSchema(
+            name="list_sessions",
+            description=(
+                "List a coding agent's sessions (T3 Code calls them threads; speech recognition often hears"
+                " \"sections\"): their titles, project, when last used, which one is running and which one you are"
+                " on. Use it when the user asks what sessions exist, how many, or their names. Read the titles out."
+                " Not for continuing a session the user describes ('go back to the login one'): that is"
+                " send_agent_task with `session`."
+            ),
+            properties={
+                "agent_id": agent_id_property,
+                "project": {
+                    "type": "string",
+                    "description": "A folder from the user's project list, to list only that project's sessions."
+                    " Omit for every project.",
+                },
+            },
+            required=[],
+        ),
+        FunctionSchema(
             name="look_at_screen",
             description=(
                 "Look at the user's front window to answer a question about what is on their screen right now"
@@ -127,75 +149,112 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             if agent is None:
                 await params.result_callback({"status": "agent_not_active", "agent_id": args.get("agent_id")})
                 return
-            ok = await action(agent, args)  # True, False, or a status of its own
+            ok = await action(agent, args)  # True, False, a status of its own, or a result with its status
+            if isinstance(ok, dict):
+                await params.result_callback({"agent_id": agent.config.id, **ok})
+                return
             status = ok if isinstance(ok, str) else ok_status if ok else fail_status
             await params.result_callback({"status": status, "agent_id": agent.config.id})
 
         return handle
 
-    async def send(agent: Any, args: dict) -> bool | str:
+    async def send(agent: Any, args: dict) -> bool | str | dict:
         if args.get("replace") and agent.busy:
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
         task, project = args.get("task", "").strip(), args.get("project")
         session = (args.get("session") or "").strip()
+        moved: dict = {}
         if isinstance(agent, CodingSessionAdapter) and (session or project) and not agent.connected:
             moved = await switch_session(agent, session, project)
-            if moved is not True:
-                return moved  # a status: nothing went out
-            if not task:
-                return "session_ready"  # "continue the login session" alone: ready for the next words
-        # T3 Code opens a project in a thread of its own; while connected, a project is no reason to leave the session.
-        opens = bool(project) and agent is orchestrator.t3
-        if not task and not opens:
+            if moved["status"] != "session_ready" or not task:
+                return moved  # nothing went out: a refusal, or "continue the login session" alone
+        if not task:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
         prompt = task
-        resolved = resolve_project(project) if opens and project else None
-        sync_only = bool(
-            opens
-            and not getattr(agent, "connected", False)
-            and not (getattr(agent, "_thread_id", None) and resolved and getattr(agent, "_root", None) == str(resolved))
-        )
-        if args.get("include_screen") and task and not sync_only:
+        if args.get("include_screen"):
             try:
                 shot = await capture_front_window()
             except ScreenError as exc:
                 return exc.status  # nothing went out: the task needs the screen it points at
             # Only the agent gets this line: the waiting lines below are written from `task` by a model and spoken.
             prompt += f"\n\n[Screenshot of the user's front window ({shot.app}: {shot.title}): {shot.path}]"
-        ok = await (agent.open_project(project, prompt) if opens else agent.send_task(prompt))
-        if ok is True:  # a status word means nothing went out, so nothing to wait on
-            orchestrator.remind_while_busy(agent, task or f"open the {project} project")
-        elif ok == "project_syncing":
-            orchestrator.remind_while_busy(agent, "sync with master")
-        return ok
+        before = agent.session_id if isinstance(agent, CodingSessionAdapter) else None
+        if not await agent.send_task(prompt):
+            return False
+        orchestrator.remind_while_busy(agent, task)
+        t3 = orchestrator.t3
+        if agent is t3 and t3 is not None and t3.session_id != before:  # T3 continued its newest thread, or started one
+            moved = {**moved, "session": t3.title or "new"}
+        return {**moved, "status": "sent"}
 
-    async def switch_session(agent: CodingSessionAdapter, session: str, project: str | None) -> bool | str:
+    async def switch_session(agent: CodingSessionAdapter, session: str, project: str | None) -> dict:
         """Point a coding client at the session the user named, a new one, or its newest one in a named project."""
 
-        def refused() -> str:  # pick and new say only False: mid-turn, or the client can't (Pi opens no window)
-            return "busy" if agent.busy else "not_switched"
+        def refused() -> dict:  # pick and new say only False: mid-turn, or the client can't (Pi opens no window)
+            return {"status": "busy" if agent.busy else "not_switched"}
 
         cwd = None
         if project:
-            folder = resolve_project(project)  # only a listed folder, as for T3 Code
+            folder = resolve_project(project)  # only a listed folder
             if folder is None:
-                return "unknown_project"
+                return {"status": "unknown_project"}
             cwd = str(folder)
         if session.lower() == "new":
-            return await agent.new_session(cwd) or refused()
-        if not session and cwd == agent.cwd:
-            return True  # already working there
+            if not await agent.new_session(cwd):
+                return refused()
+            return {"status": "session_ready", "session": "new", "project": Path(cwd or agent.cwd).name}
+        if not session and cwd == agent.cwd and agent.session_id:
+            return {"status": "session_ready"}  # already working there
         try:
-            found = await agent.list_sessions(cwd, limit=50)
+            found = await agent.list_sessions(cwd or (None if session else agent.cwd), limit=50)
         except Exception as exc:
             logger.warning(f"[{agent.config.id}] Could not list sessions ({exc!r}).")
-            return "sessions_unavailable"
-        hits = match_sessions(found, session) if session else found  # a project alone: its newest session
-        if not hits:
-            if session:
-                return "no_matching_session"
-            return await agent.new_session(cwd) or refused()  # a project with no session yet starts one
-        return await agent.pick_session(hits[0]) or refused()
+            return {"status": "sessions_unavailable"}
+        if session:
+            hits = match_sessions(found, session)
+            if not hits:
+                return {"status": "no_matching_session", "sessions": [s.title for s in found[:8]]}
+        else:  # a project alone: its newest session, never one running now (it may be the user's own, typed by hand)
+            hits = [s for s in found if not s.running]
+            if not hits:
+                if not await agent.new_session(cwd):  # a project with no session yet starts one
+                    return refused()
+                return {"status": "session_ready", "session": "new", "project": Path(cwd or agent.cwd).name}
+        if not await agent.pick_session(hits[0]):
+            return refused()
+        return {"status": "session_ready", "session": hits[0].title, "project": Path(hits[0].cwd).name}
+
+    async def sessions(params: Any) -> None:
+        args = params.arguments
+        if orchestrator.state.room_turn is True:  # a meeting guest never hears the master's session titles
+            await params.result_callback({"status": "owner_only"})
+            return
+        agent = orchestrator.find(args.get("agent_id"))
+        if not isinstance(agent, CodingSessionAdapter):
+            await params.result_callback({"status": "no_sessions", "agent_id": args.get("agent_id")})
+            return
+        cwd = None
+        if args.get("project"):
+            folder = resolve_project(args["project"])
+            if folder is None:
+                await params.result_callback({"status": "unknown_project", "agent_id": agent.config.id})
+                return
+            cwd = str(folder)
+        try:
+            found = await agent.list_sessions(cwd, limit=10)
+        except Exception as exc:
+            logger.warning(f"[{agent.config.id}] Could not list sessions ({exc!r}).")
+            await params.result_callback({"status": "sessions_unavailable", "agent_id": agent.config.id})
+            return
+        await params.result_callback({
+            "status": "listed", "agent_id": agent.config.id, "count": len(found),
+            "sessions": [
+                {"title": s.title, "project": Path(s.cwd).name,
+                 "updated": time.strftime("%b %d %H:%M", time.localtime(s.updated_at)),
+                 **({"running": True} if s.running else {}), **({"current": True} if s.id == agent.session_id else {})}
+                for s in found
+            ],
+        })
 
     async def look(params: Any) -> None:
         if orchestrator.state.room_turn is True:  # a meeting guest never sees the master's screen
@@ -229,5 +288,6 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             owner_only=True,
         ),
         "stop_agent": handler(stop, "stopped", "failed", orchestrator.find_busy, owner_only=True),
+        "list_sessions": sessions,
         "look_at_screen": look,
     }

@@ -5,6 +5,7 @@ import itertools
 import json
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,8 @@ from loguru import logger
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import InvalidStatus
 
-from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig, describe_fields, form_answer, is_approval, question_fields
+from jarvis.agent_adapter import WatchedAgentConfig, describe_fields, form_answer, is_approval, question_fields
+from jarvis.sessions import AgentSession, CodingSessionAdapter
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
 
@@ -78,7 +80,8 @@ def recent_threads(snapshot: dict[str, Any], limit: int | None = 15) -> list[dic
     return [
         {
             "id": t["id"], "title": t.get("title") or "Untitled", "status": t.get("status") or "idle",
-            "updatedAt": t.get("updatedAt") or "",
+            "updatedAt": t.get("updatedAt") or "", "projectId": t["projectId"],
+            "projectRoot": projects[t["projectId"]]["workspaceRoot"], "branch": t.get("branch") or "",
             "project": projects[t["projectId"]].get("title") or Path(projects[t["projectId"]]["workspaceRoot"]).name,
             "root": t.get("worktreePath") or projects[t["projectId"]]["workspaceRoot"],
             "worktree": bool(t.get("worktreePath")), "visitedAt": t.get("lastVisitedAt") or t.get("updatedAt") or "",
@@ -112,11 +115,12 @@ def t3_defaults() -> dict[str, Any]:
         return {}
 
 
-class T3Adapter(BaseAgentAdapter):
+class T3Adapter(CodingSessionAdapter):
     """
     Drives T3 Code through its app server's WebSocket (`/ws`), the same API the T3 window uses: Effect RPC
-    messages as JSON. One T3 thread per Jarvis run, in the T3 project that holds `cwd`, so the user can watch
-    and take over in T3. Auth: a bearer token from `t3 auth session issue`, run as the machine's owner.
+    messages as JSON. Jarvis watches one T3 thread at a time (its sessions), in the T3 project that holds `cwd`,
+    so the user can watch and take over in T3. Auth: a bearer token from `t3 auth session issue`, run as the
+    machine's owner.
     """
 
     def __init__(self, config: WatchedAgentConfig, state: JarvisState) -> None:
@@ -130,7 +134,8 @@ class T3Adapter(BaseAgentAdapter):
         self._snapshots: dict[str, asyncio.Future[dict[str, Any]]] = {}  # request id -> its shell snapshot
         self._sub_id: str | None = None  # the thread subscription's request id
         self._thread_id: str | None = None
-        self._root: str | None = None  # the project folder of the current thread
+        self.title: str | None = None  # the watched thread's title, said back to the user; None until T3 names it
+        self._fresh = False  # after new_session: the next task starts a thread instead of continuing the newest
         self._sequence: int | None = None  # last event seen, to resume after a reconnect
         self._runs: dict[str, str] = {}  # active run id -> status
         self._last_text: dict[str, str] = {}  # run id -> latest finished assistant text
@@ -181,6 +186,7 @@ class T3Adapter(BaseAgentAdapter):
                 logger.debug(f"[{self.config.id}] T3 Code unavailable ({exc!r}); retrying in {wait:.0f}s.")
             finally:
                 self._ws = None
+                self._sub_id = None  # it died with the connection; the next connect subscribes again
                 for call in (*self._calls.values(), *self._snapshots.values()):
                     call.cancel()
                 self._calls.clear()
@@ -241,7 +247,17 @@ class T3Adapter(BaseAgentAdapter):
         payload = {"commandId": str(uuid.uuid4()), "threadId": self._thread_id, **command}
         return await self._call("orchestration.dispatchCommand", payload) is not None
 
+    async def _unsubscribe(self) -> None:
+        """Close the stream of the thread watched before, so its events stop coming over the socket."""
+        old, self._sub_id = self._sub_id, None
+        if old is not None and self._ws is not None:
+            try:
+                await self._ws.send(json.dumps({"_tag": "Interrupt", "id": old}))
+            except OSError:
+                pass
+
     async def _subscribe(self) -> None:
+        await self._unsubscribe()
         payload: dict[str, Any] = {"threadId": self._thread_id}
         if self._sequence is not None:
             payload["afterSequence"] = self._sequence
@@ -347,10 +363,48 @@ class T3Adapter(BaseAgentAdapter):
             self._pending = None
             self._question_settled()
 
+    @property
+    def session_id(self) -> str | None:
+        return self._thread_id
+
+    async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
+        """The user's T3 threads in the project holding cwd (every project when None), newest first."""
+        snapshot = await self.shell_snapshot()
+        project = find_project(snapshot.get("projects", []), cwd) if cwd else None
+        if cwd and project is None:
+            return []  # T3 has no project there yet
+        return [
+            AgentSession(
+                id=t["id"], title=t["title"], cwd=t["projectRoot"], branch=t["branch"], running=t["status"] in _ACTIVE,
+                updated_at=datetime.fromisoformat(t["updatedAt"]).timestamp() if t["updatedAt"] else 0.0,
+            )
+            for t in recent_threads(snapshot, limit=None)
+            if project is None or t["projectId"] == project["id"]
+        ][:limit]
+
+    async def pick_session(self, session: AgentSession, connected: bool = False) -> bool:
+        if self.busy:  # the running turn's result would never be told: Jarvis watches one thread
+            return False
+        self.attach(session.id, session.cwd, connected, title=session.title)
+        if self._ws is not None:
+            await self._subscribe()
+        return True
+
+    async def new_session(self, cwd: str | None = None) -> bool:
+        """The next task starts a new thread in cwd. Nothing is sent now: a thread without a task is an empty one."""
+        if self.busy or self.connected:
+            return False
+        await self._unsubscribe()
+        self.attach(None, cwd or self.cwd)
+        self._fresh = True
+        return True
+
     async def send_task(self, task: str) -> bool:
         if self._ws is None:
             logger.warning(f"[{self.config.id}] Cannot send task; T3 Code is not connected.")
             return False
+        if not self._thread_id and not self._fresh:
+            await self._continue_newest()
         if self._thread_id:
             # "auto" is a send from the T3 window: start when idle, queue behind a stopping run, steer a running one.
             return await self._command({
@@ -358,28 +412,22 @@ class T3Adapter(BaseAgentAdapter):
                 "messageId": str(uuid.uuid4()), "text": task, "attachments": [],
                 "deliveryIntent": "auto", "dispatchMode": {"type": "queue_after_active"},
             })
-        return await self._launch(self.config.cwd, task)
+        return await self._launch(self.cwd, task)
 
-    async def open_project(self, folder: str, task: str) -> bool | str:
-        """Work in a project under PROJECTS: a new thread there that syncs with master first, or the current one."""
-        if self.connected:  # the user's own thread: a project name is no reason to leave it
-            return await self.send_task(task) if task else "nothing_to_send"
-        project = resolve_project(folder)
-        if project is None:
-            logger.warning(f"[{self.config.id}] {folder!r} is not a project under {PROJECTS}.")
-            return False
-        root = str(project)
-        if self._thread_id and self._root == root:
-            return await self.send_task(task) if task else "project_already_open"
-        if self._ws is None:
-            logger.warning(f"[{self.config.id}] Cannot open {folder}; T3 Code is not connected.")
-            return False
-        # A new thread gets only the sync. The model's task is dropped: for "continue on X" it restates the
-        # request, and the user's next words go to this thread anyway.
-        return "project_syncing" if await self._launch(root, f"{SYNC_MASTER}.", create=True) else False
+    async def _continue_newest(self) -> None:
+        """No thread yet: continue the newest idle one in cwd. A running one may be the user's own, typed in T3."""
+        try:
+            idle = [s for s in await self.list_sessions(self.cwd, limit=50) if not s.running]
+        except Exception as exc:
+            logger.warning(f"[{self.config.id}] Could not read T3 threads ({exc!r}); starting a new one.")
+            return
+        if idle:
+            await self.pick_session(idle[0])
+            logger.info(f"[{self.config.id}] Continuing T3 thread {self._thread_id} ({self.title})")
 
-    async def _launch(self, cwd: str, text: str, create: bool = False) -> bool:
-        """Start a T3 thread in the project holding cwd (made first when create is set) and watch it."""
+    async def _launch(self, cwd: str, task: str) -> bool:
+        """Start a T3 thread in the project holding cwd (made first for a listed folder T3 doesn't know) and watch it.
+        It syncs with master first, then does the task; T3 titles it from that message."""
         if self.connected:
             logger.error(f"[{self.config.id}] Not starting a thread: Jarvis is connected to {self._thread_id}.")
             return False
@@ -388,7 +436,7 @@ class T3Adapter(BaseAgentAdapter):
         except Exception as exc:
             logger.error(f"[{self.config.id}] Could not read T3 projects: {exc!r}")
             return False
-        if project is None and create:
+        if project is None and Path(cwd).expanduser().resolve().is_relative_to(PROJECTS.expanduser().resolve()):
             project = {"id": str(uuid.uuid4()), "workspaceRoot": cwd}
             created = await self._call("orchestration.dispatchCommand", {
                 "type": "project.create", "commandId": str(uuid.uuid4()), "projectId": project["id"],
@@ -403,10 +451,11 @@ class T3Adapter(BaseAgentAdapter):
             return False
         thread_id = str(uuid.uuid4())
         launched = await self._call("orchestration.launchThread", {
-            "commandId": str(uuid.uuid4()), "threadId": thread_id, "projectId": project["id"], "title": "Jarvis",
+            "commandId": str(uuid.uuid4()), "threadId": thread_id, "projectId": project["id"],
+            "title": "New thread", "generateTitle": True,  # T3's own placeholder, replaced by a title from the task
             "modelSelection": model, "runtimeMode": defaults.get("defaultRuntimeMode") or "auto",  # T3's own default
             "interactionMode": "default", "workspaceStrategy": {"type": "root"},
-            "initialMessage": {"text": text, "attachments": []},
+            "initialMessage": {"text": f"{SYNC_MASTER} first. Then: {task}", "attachments": []},
         })
         if launched is None:
             return False
@@ -415,13 +464,14 @@ class T3Adapter(BaseAgentAdapter):
         logger.info(f"Started T3 thread {self._thread_id} in {project['workspaceRoot']}")
         return True
 
-    def attach(self, thread_id: str, root: str, connected: bool = False) -> None:
+    def attach(self, thread_id: str | None, root: str, connected: bool = False, title: str | None = None) -> None:
         """
-        Watch this thread from now on; it gets no message. Subscribes on the next connect, or call _subscribe.
-        connected: picked with `jarvis connect`, so Jarvis never starts another thread this run.
+        Watch this thread from now on (None: none until the next task); it gets no message. Subscribes on the next
+        connect, or call _subscribe. connected: picked with `jarvis connect`, so Jarvis never leaves it this run.
         """
         # shortcut: Jarvis watches one thread; the previous one keeps running in T3 unwatched. Track several if needed.
-        self._thread_id, self._root, self._sequence, self.connected = thread_id, root, None, connected
+        self._thread_id, self.cwd, self._sequence, self.connected = thread_id, root, None, connected
+        self.title, self._fresh = title, False
         self._runs, self._last_text = {}, {}
         if self._pending:  # a question on the old thread can no longer be answered from here
             self._pending = None

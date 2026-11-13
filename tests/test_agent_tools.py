@@ -112,20 +112,22 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         # The waiting lines are written by a model and spoken: they get the plain task, never the window title
         self.assertEqual(self.orch._reminders["hermes"][1]._task, "Fix this error")
 
-    async def test_include_screen_reaches_a_t3_project_that_is_already_open(self) -> None:
-        from pathlib import Path
-
-        from jarvis.screen import ScreenCapture
+    def t3(self, thread: str | None) -> MagicMock:
         from jarvis.t3_adapter import T3Adapter
 
         t3 = MagicMock(spec=T3Adapter)
         t3.config = MagicMock(id="t3-code")
-        t3.busy = False
-        t3.connected = False
-        t3._thread_id = "t1"
-        t3._root = "/p/jarvis"
-        t3.open_project = AsyncMock(return_value=True)  # already open: T3 sends the task to its thread
+        t3.busy, t3.connected, t3.cwd, t3.session_id, t3.title = False, False, "/p/jarvis", thread, None
+        t3.send_task = AsyncMock(return_value=True)
         self.orch.adapters["t3-code"] = t3
+        return t3
+
+    async def test_include_screen_reaches_a_t3_project_that_is_already_open(self) -> None:
+        from pathlib import Path
+
+        from jarvis.screen import ScreenCapture
+
+        t3 = self.t3("t1")
         shot = ScreenCapture(Path("/s/1.png"), "Safari", "Login")
         with (
             patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/jarvis")),
@@ -133,43 +135,64 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         ):
             p = params({"agent_id": "t3-code", "project": "jarvis", "task": "Fix this layout", "include_screen": True})
             await self.handlers["send_agent_task"](p)
-        folder, sent = t3.open_project.await_args.args
-        self.assertEqual(folder, "jarvis")
-        self.assertIn("/s/1.png", sent)
+        self.assertIn("/s/1.png", t3.send_task.await_args.args[0])
+        p.result_callback.assert_awaited_once_with({"agent_id": "t3-code", "status": "sent"})  # same thread: no news
 
-    async def test_opening_new_t3_project_skips_screenshot_and_uses_sync_status(self) -> None:
+    async def test_t3_project_continues_its_newest_idle_thread_and_says_which(self) -> None:
         from pathlib import Path
 
-        from jarvis.t3_adapter import T3Adapter
+        from jarvis.sessions import AgentSession
 
-        t3 = MagicMock(spec=T3Adapter)
-        t3.config = MagicMock(id="t3-code")
-        t3.busy = False
-        t3.connected = False
-        t3._thread_id = None
-        t3._root = None
-        t3.open_project = AsyncMock(return_value="project_syncing")
-        self.orch.adapters["t3-code"] = t3
-        capture = AsyncMock()
-        with (
-            patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/jarvis")),
-            patch("jarvis.agent_tools.capture_front_window", capture),
-        ):
-            p = params({"agent_id": "t3-code", "project": "jarvis", "task": "Fix this", "include_screen": True})
+        t3 = self.t3(None)
+        running = AgentSession("t0", "Typed by hand", "/p/web", 3.0, running=True)
+        login = AgentSession("t1", "Fix the login bug", "/p/web", 2.0)
+        t3.list_sessions = AsyncMock(return_value=[running, login])
+        t3.pick_session = AsyncMock(return_value=True)
+        with patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/web")):
+            p = params({"agent_id": "t3-code", "project": "web"})
             await self.handlers["send_agent_task"](p)
-        capture.assert_not_awaited()
-        t3.open_project.assert_awaited_once_with("jarvis", "Fix this")
-        p.result_callback.assert_awaited_once_with({"status": "project_syncing", "agent_id": "t3-code"})
-        self.assertEqual(self.orch._reminders["t3-code"][1]._task, "sync with master")
+        t3.pick_session.assert_awaited_once_with(login)  # never the running one
+        t3.send_task.assert_not_awaited()  # no task said: nothing goes out
+        p.result_callback.assert_awaited_once_with(
+            {"agent_id": "t3-code", "status": "session_ready", "session": "Fix the login bug", "project": "web"}
+        )
 
-        t3.open_project = AsyncMock(return_value="project_already_open")
-        t3._thread_id, t3._root = "t1", "/p/jarvis"
-        self.orch._reminders.pop("t3-code", None)
-        with patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/jarvis")):
-            p = params({"agent_id": "t3-code", "project": "jarvis"})
-            await self.handlers["send_agent_task"](p)
-        p.result_callback.assert_awaited_once_with({"status": "project_already_open", "agent_id": "t3-code"})
-        self.assertNotIn("t3-code", self.orch._reminders)
+    async def test_t3_first_task_says_the_thread_it_landed_in(self) -> None:
+        t3 = self.t3(None)
+
+        async def lands(task: str) -> bool:
+            t3.session_id, t3.title = "t5", "Fix the navbar"
+            return True
+
+        t3.send_task = AsyncMock(side_effect=lands)
+        p = params({"agent_id": "t3-code", "task": "And the footer"})
+        await self.handlers["send_agent_task"](p)
+        p.result_callback.assert_awaited_once_with({"agent_id": "t3-code", "status": "sent", "session": "Fix the navbar"})
+
+    async def test_list_sessions_reads_titles_and_marks_the_current_one(self) -> None:
+        from jarvis.sessions import AgentSession
+
+        t3 = self.t3("t1")
+        t3.list_sessions = AsyncMock(return_value=[
+            AgentSession("t1", "Fix Jarvis tone", "/p/jarvis", 2.0, running=True), AgentSession("t2", "Login", "/p/web", 1.0)
+        ])
+        p = params({"agent_id": "t3-code"})
+        await self.handlers["list_sessions"](p)
+        result = p.result_callback.await_args.args[0]
+        self.assertEqual((result["status"], result["count"]), ("listed", 2))
+        first, second = result["sessions"]
+        self.assertEqual((first["title"], first["project"], first["running"], first["current"]),
+                         ("Fix Jarvis tone", "jarvis", True, True))
+        self.assertEqual(set(second), {"title", "project", "updated"})
+        t3.list_sessions.assert_awaited_once_with(None, limit=10)
+
+        p = params({"agent_id": "hermes"})  # not a coding agent: no sessions to list
+        await self.handlers["list_sessions"](p)
+        self.assertEqual(p.result_callback.await_args.args[0]["status"], "no_sessions")
+        self.orch.state.room_turn = True  # a meeting guest never hears the master's session titles
+        p = params({"agent_id": "t3-code"})
+        await self.handlers["list_sessions"](p)
+        p.result_callback.assert_awaited_once_with({"status": "owner_only"})
 
     async def test_a_failed_capture_sends_nothing(self) -> None:
         from jarvis.screen import ScreenError
@@ -240,18 +263,21 @@ class TestSessionSwitch(unittest.IsolatedAsyncioTestCase):
         return p.result_callback.await_args.args[0]
 
     async def test_new_session_alone_is_ready_and_sends_nothing(self) -> None:
-        self.assertEqual(await self.send(session="new"), {"status": "session_ready", "agent_id": "claude"})
+        self.assertEqual(await self.send(session="new"),
+                         {"status": "session_ready", "agent_id": "claude", "session": "new", "project": "jarvis"})
         self.agent.new_session.assert_awaited_once_with(None)
         self.agent.send_task.assert_not_awaited()
 
     async def test_named_session_is_picked_then_the_task_goes_to_it(self) -> None:
         result = await self.send(session="the speaker verification one", task="lower the threshold")
-        self.assertEqual(result["status"], "sent")
+        self.assertEqual((result["status"], result["session"], result["project"]), ("sent", "Speaker verification", "jarvis"))
         self.agent.pick_session.assert_awaited_once_with(self.voice)
         self.agent.send_task.assert_awaited_once_with("lower the threshold")
 
     async def test_no_match_unknown_project_and_mid_turn_send_nothing(self) -> None:
-        self.assertEqual((await self.send(session="billing", task="x"))["status"], "no_matching_session")
+        missed = await self.send(session="billing", task="x")
+        self.assertEqual(missed["status"], "no_matching_session")
+        self.assertEqual(missed["sessions"], ["Fix the login bug", "Speaker verification"])  # titles to offer instead
         self.assertEqual((await self.send(project="nope", task="x"))["status"], "unknown_project")
         self.agent.busy = True
         self.agent.new_session = AsyncMock(return_value=False)

@@ -177,6 +177,10 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
         await self._client.interrupt()
         return True
 
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
         found = await asyncio.to_thread(list_sessions, directory=cwd, limit=limit)  # reads ~/.claude/projects
         return [
