@@ -7,6 +7,7 @@ depend on it.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from getpass import getpass
@@ -46,10 +47,13 @@ def copy_config(home: Path = JARVIS_HOME, defaults: Path = DEFAULTS) -> list[Pat
 
 
 def ask_api_keys(env: Path = ENV_PATH) -> None:
-    """Fill each empty key in .env from a hidden prompt; a key already set is kept, Enter skips."""
+    """Fill each empty key in .env from a hidden prompt; a key set in .env or the shell is kept, Enter skips."""
     if not env.is_file():
         return
     for name, question, prefix in API_KEYS:
+        if os.environ.get(name, "").strip():  # Settings reads the shell's value first, so .env needs no copy
+            print(f"{name} is set in your shell; using it.")
+            continue
         text = env.read_text(encoding="utf-8")
         line = re.search(rf"^{name}=(.*)$", text, re.MULTILINE)
         if line and line.group(1).strip():
