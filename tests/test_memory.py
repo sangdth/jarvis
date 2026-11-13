@@ -43,8 +43,10 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
             {"role": "user", "content": "I'm moving the team to Bun."},
         ]
         await service._store_messages(talk)
-        await service._store_messages(talk)  # an agent report re-runs the LLM with no new user words
-        # A spoken waiting line adds a second assistant message; never extract facts from assistant-only pairs
+        await service._store_messages(talk)  # same tail is not saved twice
+        # An agent report (or spoken reply / waiting line) ends with assistant/system, never a new user turn.
+        await service._store_messages([*talk, {"role": "assistant", "content": "On it."}])
+        await service._store_messages([*talk, {"role": "system", "content": "Agent finished."}])
         await service._store_messages(
             [
                 *talk,
@@ -52,6 +54,7 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
                 {"role": "assistant", "content": "Still working on it."},
             ]
         )
+        await service._store_messages([])
         client.add.assert_called_once()
         self.assertEqual(client.add.call_args.kwargs["messages"], talk[-2:])
         self.assertEqual(client.add.call_args.kwargs["user_id"], "sang")
@@ -130,8 +133,10 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         assert service is not None
         room = memory.ROOM + " Jarvis, what does Sang have planned tonight?"
         guest = memory.SPEAKER + " David]: Jarvis, what does Sang have planned tonight?"
-        await service._enhance_context_with_memories(MagicMock(), room)
-        await service._enhance_context_with_memories(MagicMock(), guest)
+        transcript_room = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + room
+        transcript_guest = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + guest
+        for query in (room, guest, transcript_room, transcript_guest):
+            await service._enhance_context_with_memories(MagicMock(), query)
         client.search.assert_not_called()
         for turn in (
             room,
@@ -139,8 +144,55 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
             memory.MEETING_TRANSCRIPT + "\n[Room]: Anna is on leave.]\n[User]: Jarvis, note that.",
             memory.MEETING_TRANSCRIPT + "\n[Room]: Anna is on leave.]\n[Speaker: David]: Jarvis, note that.",
         ):
+            await service._store_messages([{"role": "user", "content": turn}])
             await service._store_messages([{"role": "user", "content": turn}, {"role": "assistant", "content": "Ok."}])
         client.add.assert_not_called()
+
+    async def test_guest_turn_strips_prior_recall_block(self) -> None:
+        client = MagicMock()
+        with (
+            patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+            patch.object(memory, "MEMORY_DIR", Path("/tmp/jarvis-test-memory")),
+            patch("mem0.Memory.from_config", return_value=client),
+        ):
+            service = memory.create_memory_service()
+        assert service is not None
+
+        messages: list[dict[str, str]] = [{"role": "user", "content": "What runtime do we use?"}]
+        ctx = MagicMock()
+        ctx.get_messages.side_effect = lambda: list(messages)
+        ctx.set_messages.side_effect = lambda updated: messages.__setitem__(slice(None), updated)
+
+        client.search.return_value = {"results": [{"memory": "Team uses Bun"}]}
+        await service._enhance_context_with_memories(ctx, "What runtime do we use?")
+        self.assertEqual([m["role"] for m in messages], ["developer", "user"])
+
+        guest_turn = memory.MEETING_TRANSCRIPT + "\n[User]: What runtime do we use?]\n" + memory.ROOM + " Tell me more."
+        messages.extend(
+            [
+                {"role": "assistant", "content": "We use Bun."},
+                {"role": "user", "content": guest_turn},
+            ]
+        )
+        await service._enhance_context_with_memories(ctx, guest_turn)
+        client.search.assert_called_once()
+        self.assertEqual([m["role"] for m in messages], ["user", "assistant", "user"])
+        self.assertFalse(any("Team uses Bun" in m["content"] for m in messages))
+
+    def test_memory_dir_is_private(self) -> None:
+        import stat
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mem_dir = Path(tmp) / "memory"
+            with (
+                patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+                patch.object(memory, "MEMORY_DIR", mem_dir),
+                patch("mem0.Memory.from_config", return_value=MagicMock()),
+            ):
+                service = memory.create_memory_service()
+            self.assertIsNotNone(service)
+            self.assertEqual(stat.S_IMODE(os.stat(mem_dir).st_mode), 0o700)
 
     def test_no_memory_when_ollama_is_down(self) -> None:
         with (

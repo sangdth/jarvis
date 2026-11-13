@@ -88,8 +88,22 @@ def create_memory_service() -> Any | None:
         _last_saved: list[Any] | None = None
 
         async def _enhance_context_with_memories(self, context, query):  # type: ignore[override]
+            # Strip any prior recall block first so a skipped turn (guest, non-user) never keeps the master's memories.
+            raw = list(context.get_messages())
+            messages = [
+                m
+                for m in raw
+                if not (isinstance(m, dict) and str(m.get("content", "")).startswith(self.system_prompt))
+            ]
+            if len(messages) != len(raw):
+                context.set_messages(messages)
             # Jarvis's own notes (the greeting) are not a memory query; someone else in a meeting or guest gets no memories.
-            if query.startswith((NOT_THE_USER, ROOM, SPEAKER)) or self.last_query == query:
+            last_line = next((line for line in reversed(query.splitlines()) if line.strip()), "")
+            if (
+                query.startswith((NOT_THE_USER, ROOM, SPEAKER))
+                or last_line.lstrip().startswith((ROOM, SPEAKER))
+                or self.last_query == query
+            ):
                 return
             self.last_query = query
             memories = await self._retrieve_memories(query)
@@ -100,13 +114,7 @@ def create_memory_service() -> Any | None:
                 "role": "developer" if self.add_as_system_message else "user",
                 "content": memory_text,
             }
-            # Replace any earlier recall block and place the new one right before the latest user message so earlier
-            # turns stay prefix-stable for LLM prompt caching.
-            messages = [
-                m
-                for m in context.get_messages()
-                if not (isinstance(m, dict) and str(m.get("content", "")).startswith(self.system_prompt))
-            ]
+            # Place the new recall block right before the latest user message so earlier turns stay prefix-stable for caching.
             idx = next(
                 (
                     i
@@ -119,21 +127,21 @@ def create_memory_service() -> Any | None:
             context.set_messages(messages)
 
         async def _store_messages(self, messages):  # type: ignore[override]
+            # process_frame runs before the LLM responds, so a new user turn ends with "user"; agent reports do not.
+            if not messages or messages[-1].get("role") != "user":
+                return
             newest = messages[-2:]
-            if (
-                newest == self._last_saved
-                or not any(m.get("role") == "user" for m in newest)
-                or any(
-                    m.get("role") == "user"
-                    and str(m.get("content", "")).startswith((NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, SPEAKER))
-                    for m in newest
-                )
+            if newest == self._last_saved or any(
+                m.get("role") == "user"
+                and str(m.get("content", "")).startswith((NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, SPEAKER))
+                for m in newest
             ):
                 return
             self._last_saved = newest
             await super()._store_messages(newest)
 
-    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    MEMORY_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(MEMORY_DIR, 0o700)
     try:
         return LastExchangeMemory(
             local_config=mem0_config(),
