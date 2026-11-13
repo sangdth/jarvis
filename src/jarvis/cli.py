@@ -67,19 +67,25 @@ def uninstall(home: Path = SHARED_HOME) -> None:
     uv = shutil.which("uv")
     if installed and uv is None:
         sys.exit("`jarvis uninstall` needs uv on the PATH to remove the jarvis command; nothing was deleted.")
-    if home.exists():
-        lock = hold_lock(home)  # a listening Jarvis is still writing memory there
-        print(f"This deletes {home} ({folder_size(home)}): API keys, SOUL.md, your voiceprint, models and memory.")
-    if installed:
-        print("It also removes the jarvis command from your PATH.")
-    if not home.exists() and not installed:
-        return print(f"Nothing to uninstall: {home} is gone, and a dev checkout's command is `uv run jarvis`.")
-    if input("Delete it all? y/N: ").strip().lower() != "y":
-        return print("Nothing was deleted.")
-    if home.exists():
-        shutil.rmtree(home)  # still holding the lock, so no Jarvis starts halfway through
-        lock.close()
-        print(f"Deleted {home}.")
+    lock: IO[str] | None = None
+    try:
+        if home.exists():
+            lock = hold_lock(home)  # a listening Jarvis is still writing memory there
+            print(f"This deletes {home} ({folder_size(home)}): API keys, SOUL.md, your voiceprint, models and memory.")
+        if installed:
+            print("It also removes the jarvis command from your PATH.")
+        if not home.exists() and not installed:
+            return print(f"Nothing to uninstall: {home} is gone, and a dev checkout's command is `uv run jarvis`.")
+        if input("Delete it all? y/N: ").strip().lower() != "y":
+            return print("Nothing was deleted.")
+        if home.exists():
+            shutil.rmtree(home)  # still holding the lock, so no Jarvis starts halfway through
+            if lock is not None:
+                lock.close()
+            print(f"Deleted {home}.")
+    finally:
+        if lock is not None and not lock.closed:
+            lock.close()
     if installed and uv and subprocess.run([uv, "tool", "uninstall", PACKAGE]).returncode != 0:
         sys.exit(f"Removing the jarvis command failed; run `uv tool uninstall {PACKAGE}` yourself.")
     print("Left in place, shared with other tools: uv, Whisper models in ~/.cache/huggingface, Ollama's bge-m3 "
@@ -94,7 +100,9 @@ def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the OS drops it when the process ends, even on a crash
     except BlockingIOError:
         lock.seek(0)
-        sys.exit(f"Jarvis is already running (pid {lock.read().strip() or '?'}); stop it first.")
+        pid = lock.read().strip() or "?"
+        lock.close()
+        sys.exit(f"Jarvis is already running (pid {pid}); stop it first.")
     lock.seek(0)
     lock.truncate()
     lock.write(str(os.getpid()))

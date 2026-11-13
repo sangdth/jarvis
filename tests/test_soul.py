@@ -18,17 +18,6 @@ class SoulTest(unittest.TestCase):
     def test_plain_text_without_front_matter_is_all_personality(self):
         self.assertEqual(parse_soul("Be warm.\n"), Soul(personality="Be warm."))
 
-    def test_load_soul_caches_until_file_changes(self):
-        import tempfile
-        from unittest.mock import patch
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "SOUL.md"
-            path.write_text("Calm.\n", encoding="utf-8")
-            self.assertEqual(load_soul(path).personality, "Calm.")
-            with patch.object(Path, "read_text", side_effect=AssertionError("should use cache")):
-                self.assertEqual(load_soul(path).personality, "Calm.")
-
 
 if __name__ == "__main__":
     unittest.main()

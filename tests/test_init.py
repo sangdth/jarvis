@@ -10,20 +10,26 @@ from jarvis.soul import load_soul
 class InitTest(unittest.TestCase):
     def test_interview_writes_soul_and_skips_enrollment(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "SOUL.md"
+            home = Path(tmp) / "shared"
+            path = home / "SOUL.md"
             answers = iter(["warm, playful", "Sang", tmp, "", "n"])
-            with patch.object(init, "SOUL_PATH", path), patch("builtins.input", lambda _: next(answers)), \
-                    patch("jarvis.enroll.main") as enroll, patch("builtins.print"), \
-                    patch.object(init, "copy_config", return_value=[]), patch.object(init, "ask_api_keys"):
+            with patch.object(init, "SHARED_HOME", home), patch.object(init, "SOUL_PATH", path), \
+                    patch("builtins.input", lambda _: next(answers)), patch("jarvis.enroll.main") as enroll, \
+                    patch("builtins.print"), patch.object(init, "copy_config", return_value=[]), \
+                    patch.object(init, "ask_api_keys"):
                 init.main()
             enroll.assert_not_called()
             self.assertEqual(load_soul(path).projects_dir, tmp)
             self.assertIn("warm, playful", load_soul(path).personality)
+            self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_init_copies_the_defaults_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
-            self.assertEqual(sorted(p.name for p in init.copy_config(home)), [".env", "agents.json"])
+            with patch.object(init, "SHARED_HOME", home):
+                self.assertEqual(sorted(p.name for p in init.copy_config(home)), [".env", "agents.json"])
+            self.assertEqual(home.stat().st_mode & 0o777, 0o700)
             self.assertIn("OPENROUTER_API_KEY=", (home / ".env").read_text())
             self.assertIn('"t3-code"', (home / "agents.json").read_text())
             self.assertEqual((home / ".env").stat().st_mode & 0o777, 0o600)

@@ -12,7 +12,7 @@ import shutil
 from getpass import getpass
 from pathlib import Path
 
-from jarvis.config import JARVIS_HOME
+from jarvis.config import JARVIS_HOME, SHARED_HOME
 from jarvis.soul import DEFAULT_PROJECTS_DIR, SOUL_PATH, render_soul
 
 ENV_PATH = JARVIS_HOME / ".env"
@@ -37,6 +37,8 @@ def copy_config(home: Path = JARVIS_HOME, defaults: Path = DEFAULTS) -> list[Pat
         if target.exists():
             continue
         home.mkdir(parents=True, exist_ok=True)
+        if home == SHARED_HOME:
+            home.chmod(0o700)
         shutil.copyfile(source, target)
         target.chmod(0o600 if name == ".env" else 0o644)  # .env holds API keys
         copied.append(target)
@@ -91,7 +93,10 @@ def main() -> None:
             print(f"Note: {projects_dir} is not a folder yet; Jarvis will list no projects until it is.")
         extra = ask("Anything else about how Jarvis should talk to you?")
         SOUL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if SOUL_PATH.parent == SHARED_HOME:
+            SOUL_PATH.parent.chmod(0o700)
         SOUL_PATH.write_text(render_soul(personality, user_name, projects_dir, extra), encoding="utf-8")
+        SOUL_PATH.chmod(0o600)
         print(f"\nSaved {SOUL_PATH}. Edit it by hand any time; Jarvis reads it at startup.\n")
 
     question = "Record your voice so Jarvis acts only on yours? It turns on MASTER_CHECK (later: `jarvis enroll`). y/N"
