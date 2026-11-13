@@ -209,7 +209,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
 
     # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice,
     # known enrolled speakers, or a new speaker being enrolled (or tagging room in meetings).
-    registry = SpeakerRegistry()
+    registry = SpeakerRegistry() if voiceprint is not None else SpeakerRegistry(folder=None)
     stt = SpeakerVerifiedWhisperSTT(
         embedder=SpeakerEmbedder() if voiceprint is not None else None,
         voiceprint=voiceprint,
@@ -232,7 +232,12 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
             settings=OpenRouterLLMService.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(
-                    orchestrator, soul.personality, thread, settings.language, meeting=meeting
+                    orchestrator,
+                    soul.personality,
+                    thread,
+                    settings.language,
+                    meeting=meeting,
+                    guests=settings.master_check,
                 ),
                 # Thinking stays on for better replies, at a slower first word; sort=latency routes to whichever
                 # provider currently answers fastest.
@@ -344,7 +349,8 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         memories: list[str] = []
         if memory is not None:
             try:
-                memories = [m["memory"] for m in (await memory.get_memories())[-10:]]
+                query = f"{datetime.now():%A %B %d} today tomorrow schedule upcoming"
+                memories = [m["memory"] for m in (await memory._retrieve_memories(query))[:10]]
             except Exception as exc:
                 logger.warning(f"Could not read memories for the greeting ({exc!r}).")
         await task.queue_frame(

@@ -128,6 +128,7 @@ def system_prompt(
     thread: dict[str, Any] | None = None,
     language: str = "en",
     meeting: bool = False,
+    guests: bool = False,
 ) -> str:
     """The conversation model's instructions: the rules, the language, the user's SOUL.md personality, the agents, the thread."""
     soul = (
@@ -143,23 +144,29 @@ def system_prompt(
         + soul
         + agent_roster(orchestrator)
         + connected_thread(thread)
-        + meeting_mode(meeting)
+        + meeting_mode(meeting, guests=guests)
     )
 
 
-def meeting_mode(meeting: bool) -> str:
-    """`jarvis meeting`: instructions for sitting in a room or call with `[User]` and `[Room]`."""
-    if not meeting:
+def meeting_mode(meeting: bool, guests: bool = False) -> str:
+    """`jarvis meeting` or enrolled guests: rules for `[User]`, `[Room]` and `[Speaker: <name>]`."""
+    if not meeting and not guests:
         return ""
-    return (
-        "\n\nYou are sitting in a meeting with the user (`[User]`) and other participants (`[Room]`)."
-        " Lines in `[Meeting transcript: ...]` are what was said in the room before someone spoke to you; use them"
-        " to answer questions, summarize decisions, or hand tasks to agents."
-        " Anyone in the meeting may ask you questions or ask for work. Only `[User]` may answer an agent, stop one or"
-        " replace its task: for `[Room]` those calls return owner_only, so say only the user can do that."
-        " A `[Room]` task may return needs_owner_ok: nothing ran. Ask the user in one short line whether to do it;"
-        " when `[User]` says yes, call send_agent_task again with that task."
+    guest_rules = (
+        " Anyone may ask you questions or ask for work. Only the user (`[User]` or unlabelled turns) may answer an agent,"
+        " stop one, replace its task, or look at the screen: for `[Room]` or `[Speaker: <name>]` those calls return"
+        " owner_only, so say only the user can do that."
+        " A guest task may return needs_owner_ok: nothing ran. Ask the user in one short line whether to do it;"
+        " when the user says yes, call send_agent_task again with that task."
     )
+    if meeting:
+        return (
+            "\n\nYou are sitting in a meeting with the user (`[User]`) and other participants (`[Room]` or `[Speaker: <name>]`)."
+            " Lines in `[Meeting transcript: ...]` are what was said in the room before someone spoke to you; use them"
+            " to answer questions, summarize decisions, or hand tasks to agents."
+            + guest_rules
+        )
+    return "\n\nEnrolled guests may also speak to you, tagged `[Speaker: <name>]`." + guest_rules
 
 
 def connected_thread(thread: dict[str, Any] | None) -> str:

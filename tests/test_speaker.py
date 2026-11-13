@@ -1,3 +1,5 @@
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,7 +34,10 @@ class TestSpeaker(unittest.TestCase):
     def test_a_loud_clip_does_not_outweigh_the_others(self) -> None:
         quiet, loud = np.array([1.0, 0.0]), np.array([0.0, 100.0])
         with tempfile.TemporaryDirectory() as tmp:
-            voiceprint = np.load(save_voiceprint([quiet, loud], Path(tmp) / "v.npy"))
+            path = save_voiceprint([quiet, loud], Path(tmp) / "sub" / "v.npy")
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(os.stat(path.parent).st_mode), 0o700)
+            voiceprint = np.load(path)
         self.assertAlmostEqual(cosine(quiet, voiceprint), cosine(loud, voiceprint))
 
     def test_suggested_threshold_sits_under_the_lowest_score(self) -> None:
@@ -89,6 +94,33 @@ class TestSpeaker(unittest.TestCase):
             assert matched is not None
             self.assertEqual(matched.name, "David")
             self.assertTrue(matched.enrolled)
+
+    def test_link_name_merges_newly_observed_profile_into_existing_named_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "speakers"
+            reg = SpeakerRegistry(folder=folder)
+
+            p1 = reg.observe(np.array([0.0, 1.0], dtype=np.float32), threshold=0.5)
+            assert p1 is not None
+            reg.link_name(p1.id, "David", enroll=True)
+
+            # A distinct second embedding creates a new temporary profile, then merges into David's profile on link_name.
+            p2 = reg.observe(np.array([1.0, 0.0], dtype=np.float32), threshold=0.5)
+            assert p2 is not None
+            self.assertNotEqual(p2.id, p1.id)
+
+            merged = reg.link_name(p2.id, "David", enroll=True)
+            self.assertIs(merged, p1)
+            self.assertEqual(p1.clips, 2)
+            self.assertIsNone(reg.get(p2.id))
+            self.assertEqual(stat.S_IMODE(os.stat(folder / "speakers.json").st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(os.stat(folder / f"{p1.id}.npy").st_mode), 0o600)
+
+            reloaded = SpeakerRegistry(folder=folder)
+            david = reloaded.get("David")
+            assert david is not None
+            self.assertEqual(david.clips, 2)
+            self.assertGreater(cosine(np.array([0.7, 0.7], dtype=np.float32), david.voiceprint), 0.99)
 
 
 if __name__ == "__main__":

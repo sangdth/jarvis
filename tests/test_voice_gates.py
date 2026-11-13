@@ -30,6 +30,7 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.filter = MagicMock()
         self.filter.classify_user_utterance = AsyncMock(return_value=UserIntent.ADDRESSED_TO_JARVIS)
         self.gate = JarvisIntentGate(self.state, self.filter)
+        self.gate._enable_direct_mode = True
         self.gate.push_frame = AsyncMock()
         patcher = patch.object(FrameProcessor, "process_frame", new=AsyncMock())
         patcher.start()
@@ -106,6 +107,25 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         await self.gate.process_frame(heard("shut up"), FrameDirection.DOWNSTREAM)
         self.filter.classify_user_utterance.assert_awaited_once_with(transcript="shut up", recent_jarvis_question=None)
         await self.gate.cleanup()
+
+    async def test_mute_clears_held_sentence_before_unmute(self) -> None:
+        async def classify(transcript: str, **_: object) -> UserIntent:
+            if transcript == "shut up":
+                return UserIntent.MUTE
+            if transcript == "you can talk":
+                return UserIntent.UNMUTE
+            return UserIntent.ADDRESSED_TO_JARVIS
+
+        self.filter.classify_user_utterance.side_effect = classify
+        down = FrameDirection.DOWNSTREAM
+        await self.gate.process_frame(heard("Open the..."), down)
+        self.assertIsNotNone(self.gate._held)
+        await self.gate.process_frame(heard("shut up"), down)
+        self.assertIsNone(self.gate._held)
+        self.assertIsNone(self.gate._hold_timer)
+        await self.gate.process_frame(heard("you can talk"), down)
+        await self.gate.process_frame(heard("build X"), down)
+        self.assertEqual(self.turns(), ["build X"])
 
     async def test_shut_up_cancels_an_in_flight_slow_classifier_call(self) -> None:
         started = asyncio.Event()
@@ -227,6 +247,25 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         ask = TranscriptionFrame(text="Jarvis, yes, approve it.", user_id="room", timestamp="0")
         await gate.process_frame(ask, FrameDirection.DOWNSTREAM)
         self.assertTrue(self.state.room_turn)
+
+    async def test_meeting_mode_only_bypasses_wake_word_for_a_question(self) -> None:
+        said = "Added to your calendar."
+        gate = JarvisIntentGate(self.state, self.filter, last_said=lambda: said, meeting=True)
+        gate.push_frame = AsyncMock()
+        down = FrameDirection.DOWNSTREAM
+
+        await gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        gate.push_frame.reset_mock()
+        await gate.process_frame(TranscriptionFrame(text="Let's check the budget next.", user_id="owner", timestamp="0"), down)
+        self.filter.classify_user_utterance.assert_not_awaited()
+        gate.push_frame.assert_not_awaited()
+
+        said = "Which day?"
+        await gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await gate.process_frame(TranscriptionFrame(text="Friday", user_id="owner", timestamp="0"), down)
+        self.filter.classify_user_utterance.assert_awaited_once_with(transcript="Friday", recent_jarvis_question="Which day?")
+        pushed = [c.args[0].text for c in gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)]
+        self.assertEqual(pushed, ["[Meeting transcript:\n[User]: Let's check the budget next.]\n[User]: Friday"])
 
     async def test_cleanup_runs_after_the_check_and_before_the_speaker_labels(self) -> None:
         cleaner = MagicMock(clean=AsyncMock(side_effect=lambda t, **_: t.replace("forty two", "42")))

@@ -28,12 +28,30 @@ class PromptTest(unittest.TestCase):
         self.assertIn('T3 Code session "Fix login" in platform-v2', prompt)
         self.assertIn("send_agent_task for `t3-code`", prompt)
 
-    def test_prompt_adds_meeting_rules_only_in_meeting_mode(self):
+    def test_prompt_adds_meeting_and_guest_rules_only_when_enabled(self):
         orchestrator = MagicMock(adapters={})
-        self.assertNotIn("sitting in a meeting", system_prompt(orchestrator, ""))
-        prompt = system_prompt(orchestrator, "", meeting=True)
-        self.assertIn("sitting in a meeting", prompt)
-        self.assertIn("`[Room]`", prompt)
+        base = system_prompt(orchestrator, "")
+        self.assertNotIn("sitting in a meeting", base)
+        self.assertNotIn("[Speaker:", base)
+        self.assertNotIn("needs_owner_ok", base)
+
+        guests_only = system_prompt(orchestrator, "", guests=True)
+        self.assertNotIn("sitting in a meeting", guests_only)
+        self.assertNotIn("[Meeting transcript:", guests_only)
+        self.assertIn("`[Speaker: <name>]`", guests_only)
+        self.assertIn("owner_only", guests_only)
+        self.assertIn("needs_owner_ok", guests_only)
+
+        for meeting_prompt in (
+            system_prompt(orchestrator, "", meeting=True),
+            system_prompt(orchestrator, "", meeting=True, guests=True),
+        ):
+            self.assertIn("sitting in a meeting", meeting_prompt)
+            self.assertIn("[Meeting transcript:", meeting_prompt)
+            self.assertIn("`[Room]`", meeting_prompt)
+            self.assertIn("`[Speaker: <name>]`", meeting_prompt)
+            self.assertIn("owner_only", meeting_prompt)
+            self.assertIn("needs_owner_ok", meeting_prompt)
 
     def test_prompt_includes_only_active_language_instructions(self):
         orchestrator = MagicMock(adapters={})
