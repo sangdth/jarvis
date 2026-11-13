@@ -1,8 +1,12 @@
+import sys
 import unittest
+from unittest.mock import MagicMock, patch
 
 import numpy as np
+from pipecat.frames.frames import OutputAudioRawFrame, TTSAudioRawFrame
+from pipecat.transports.base_transport import TransportParams
 
-from jarvis.mac_audio import MicConverter, MixBuffer
+from jarvis.mac_audio import MacVoiceAudio, MacVoiceOutputTransport, MeetingAudioBridge, MicConverter, MixBuffer
 
 
 class TestMicConverter(unittest.TestCase):
@@ -56,6 +60,126 @@ class TestMixBuffer(unittest.TestCase):
         buf.push(np.array([1, 2, 3, 4], dtype=np.int16).tobytes())
         mic = np.zeros(2, dtype=np.int16).tobytes()
         self.assertEqual(np.frombuffer(buf.mix(mic), dtype=np.int16).tolist(), [3, 4])
+
+
+def _fake_audio() -> MacVoiceAudio:
+    audio = object.__new__(MacVoiceAudio)
+    audio._av = MagicMock()
+    pcm_buf = MagicMock()
+    pcm_buf.floatChannelData.return_value = [MagicMock(as_buffer=lambda n: bytearray(n * 4))]
+    audio._av.AVAudioPCMBuffer.alloc.return_value.initWithPCMFormat_frameCapacity_.return_value = pcm_buf
+    audio.player = MagicMock()
+    audio._play_format = MagicMock()
+    audio._play_format.sampleRate.return_value = 16000.0
+    audio.meet_voice = MagicMock()
+    return audio
+
+
+class TestMacVoiceOutput(unittest.IsolatedAsyncioTestCase):
+    """TTS speech is sent to Meet, while notification/mute beeps play only on local speakers."""
+
+    def test_play_skips_meet_voice_when_not_speech(self) -> None:
+        audio = _fake_audio()
+        pcm = np.array([100, -100], dtype=np.int16).tobytes()
+
+        audio.play(pcm, speech=False)
+        audio.meet_voice.send.assert_not_called()
+        audio.player.scheduleBuffer_completionHandler_.assert_called_once()
+
+        audio.play(pcm)
+        audio.meet_voice.send.assert_called_once_with(pcm)
+
+    async def test_write_audio_frame_marks_only_tts_frames_as_speech(self) -> None:
+        audio = _fake_audio()
+        transport = MacVoiceOutputTransport(audio, TransportParams(audio_out_enabled=True))
+        tts_pcm = np.array([120, -120], dtype=np.int16).tobytes()
+        beep_pcm = np.array([300, -300], dtype=np.int16).tobytes()
+
+        with patch.object(audio, "play", wraps=audio.play) as play_spy:
+            await transport.write_audio_frame(TTSAudioRawFrame(audio=tts_pcm, sample_rate=16000, num_channels=1))
+            await transport.write_audio_frame(OutputAudioRawFrame(audio=beep_pcm, sample_rate=16000, num_channels=1))
+
+        self.assertEqual(play_spy.call_args_list[0].kwargs, {"speech": True})
+        self.assertEqual(play_spy.call_args_list[1].kwargs, {"speech": False})
+        audio.meet_voice.send.assert_called_once_with(tts_pcm)
+
+
+class TestMeetingAudioBridge(unittest.TestCase):
+    """Failed system-audio tap setup cleans up CoreAudio handles and is not retried on dual start()."""
+
+    def _make_bridge(self, *, sample_rate: float = 48000.0, start_ok: bool = True, start_exc: Exception | None = None):
+        fake_ca = MagicMock()
+
+        def create_tap(_desc, tap_ptr) -> int:
+            tap_ptr._obj.value = 101
+            return 0
+
+        def create_agg(_dict, agg_ptr) -> int:
+            agg_ptr._obj.value = 202
+            return 0
+
+        fake_ca.AudioHardwareCreateProcessTap.side_effect = create_tap
+        fake_ca.AudioHardwareCreateAggregateDevice.side_effect = create_agg
+
+        fake_eng = MagicMock()
+        fake_inp = fake_eng.inputNode.return_value
+        fake_inp.outputFormatForBus_.return_value.sampleRate.return_value = sample_rate
+        if start_exc is not None:
+            fake_eng.startAndReturnError_.side_effect = start_exc
+        else:
+            fake_eng.startAndReturnError_.return_value = (start_ok, None if start_ok else "tap failed")
+
+        fake_av = MagicMock()
+        fake_av.AVAudioEngine.alloc.return_value.init.return_value = fake_eng
+        fake_objc = MagicMock()
+
+        with (
+            patch.dict(sys.modules, {"AVFoundation": fake_av, "objc": fake_objc}),
+            patch("jarvis.mac_audio.ctypes.CDLL", return_value=fake_ca),
+        ):
+            bridge = MeetingAudioBridge()
+        return bridge, fake_ca, fake_inp
+
+    def test_start_engine_failure_cleans_up_and_does_not_retry(self) -> None:
+        bridge, fake_ca, _ = self._make_bridge(start_ok=False)
+        with patch.object(bridge, "stop", wraps=bridge.stop) as stop_spy:
+            bridge.start()
+            bridge.start()
+
+        stop_spy.assert_called_once()
+        self.assertEqual(bridge._tap_id, 0)
+        self.assertEqual(bridge._agg_id, 0)
+        self.assertIsNone(bridge._tap_engine)
+        fake_ca.AudioHardwareDestroyAggregateDevice.assert_called_once_with(202)
+        fake_ca.AudioHardwareDestroyProcessTap.assert_called_once_with(101)
+        self.assertEqual(fake_ca.AudioHardwareCreateProcessTap.call_count, 1)
+
+    def test_zero_sample_rate_cleans_up_and_does_not_retry(self) -> None:
+        bridge, fake_ca, fake_inp = self._make_bridge(sample_rate=0.0)
+        with patch.object(bridge, "stop", wraps=bridge.stop) as stop_spy:
+            bridge.start()
+            bridge.start()
+
+        stop_spy.assert_called_once()
+        fake_inp.installTapOnBus_bufferSize_format_block_.assert_not_called()
+        self.assertEqual(bridge._tap_id, 0)
+        self.assertEqual(bridge._agg_id, 0)
+        fake_ca.AudioHardwareDestroyAggregateDevice.assert_called_once_with(202)
+        fake_ca.AudioHardwareDestroyProcessTap.assert_called_once_with(101)
+        self.assertEqual(fake_ca.AudioHardwareCreateProcessTap.call_count, 1)
+
+    def test_exception_in_start_cleans_up_and_does_not_retry(self) -> None:
+        bridge, fake_ca, _ = self._make_bridge(start_exc=RuntimeError("boom"))
+        with patch.object(bridge, "stop", wraps=bridge.stop) as stop_spy:
+            bridge.start()
+            bridge.start()
+
+        stop_spy.assert_called_once()
+        self.assertEqual(bridge._tap_id, 0)
+        self.assertEqual(bridge._agg_id, 0)
+        fake_ca.AudioHardwareDestroyAggregateDevice.assert_called_once_with(202)
+        fake_ca.AudioHardwareDestroyProcessTap.assert_called_once_with(101)
+        self.assertEqual(fake_ca.AudioHardwareCreateProcessTap.call_count, 1)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import soxr
 from loguru import logger
-from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, StartFrame
+from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, StartFrame, TTSAudioRawFrame
 from pipecat.processors.frame_processor import FrameProcessor, FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -124,9 +124,10 @@ class MeetingAudioBridge:
         self._tap_id = 0
         self._agg_id = 0
         self._tap_engine: Any = None
+        self._started = False
 
     def start(self) -> None:
-        if self._tap_engine is not None:
+        if self._started:
             return
         try:
             pid = ctypes.c_int32(os.getpid())
@@ -164,8 +165,7 @@ class MeetingAudioBridge:
             status = self._ca.AudioHardwareCreateAggregateDevice(self._objc.pyobjc_id(agg_dict), ctypes.byref(agg_id))
             if status != 0:
                 logger.warning(f"{TAP_FAILED} (AudioHardwareCreateAggregateDevice status {status})")
-                self._ca.AudioHardwareDestroyProcessTap(self._tap_id)
-                self._tap_id = 0
+                self.stop()
                 return
             self._agg_id = agg_id.value
 
@@ -174,6 +174,10 @@ class MeetingAudioBridge:
             inp.AUAudioUnit().setDeviceID_error_(self._agg_id, None)
             fmt = inp.outputFormatForBus_(0)
             rate = int(fmt.sampleRate())
+            if rate <= 0:
+                logger.warning(f"{TAP_FAILED} (tap sample rate {rate})")
+                self.stop()
+                return
 
             def on_tap(buffer, when) -> None:
                 n = buffer.frameLength()
@@ -182,14 +186,19 @@ class MeetingAudioBridge:
                     self.mix_buffer.push(self._tap_converter.convert(samples, rate))
 
             inp.installTapOnBus_bufferSize_format_block_(0, max(1, rate // 50), fmt, on_tap)
+            self._tap_engine = eng
             ok, err = eng.startAndReturnError_(None)
             if ok:
-                self._tap_engine = eng
                 logger.info("Meeting system audio tap active (hearing Google Meet / room audio).")
             else:
                 logger.warning(f"Could not start system audio tap: {err}")
+                self.stop()
         except Exception as exc:
             logger.warning(f"System audio tap unavailable ({exc!r}); hearing microphone only.")
+            self.stop()
+        finally:
+            # Mark attempted even on failure so dual input/output transport starts do not retry and leak taps.
+            self._started = True
 
     def stop(self) -> None:
         if self._tap_engine is not None:
@@ -202,6 +211,7 @@ class MeetingAudioBridge:
         if self._tap_id:
             self._ca.AudioHardwareDestroyProcessTap(self._tap_id)
             self._tap_id = 0
+        self._started = False
 
 
 class MacVoiceAudio:
@@ -262,7 +272,7 @@ class MacVoiceAudio:
         if self._play_format is not None and not self.player.isPlaying():
             self.player.play()
 
-    def play(self, pcm16: bytes) -> float:
+    def play(self, pcm16: bytes, *, speech: bool = True) -> float:
         """Queue 16-bit mono audio; returns its length in seconds. It plays after what is already queued."""
         samples = np.frombuffer(pcm16, dtype=np.int16)
         if self._play_format is None or not len(samples):
@@ -271,7 +281,7 @@ class MacVoiceAudio:
         np.frombuffer(buffer.floatChannelData()[0].as_buffer(len(samples)), dtype=np.float32)[:] = samples / 32768
         buffer.setFrameLength_(len(samples))
         self.player.scheduleBuffer_completionHandler_(buffer, None)
-        if self.meet_voice is not None:
+        if self.meet_voice is not None and speech:
             self.meet_voice.send(pcm16)
         return len(samples) / self._play_format.sampleRate()
 
@@ -354,7 +364,7 @@ class MacVoiceOutputTransport(BaseOutputTransport):
         # The player queues instantly; waiting here paces the output like a blocking speaker write, so an
         # interruption drops the audio Pipecat still holds instead of letting everything already queued play out.
         now = asyncio.get_running_loop().time()
-        self._until = max(self._until, now) + self._audio.play(frame.audio)
+        self._until = max(self._until, now) + self._audio.play(frame.audio, speech=isinstance(frame, TTSAudioRawFrame))
         await asyncio.sleep(max(0.0, self._until - now - PLAY_AHEAD_SECS))
         return True
 
