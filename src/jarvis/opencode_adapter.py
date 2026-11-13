@@ -317,6 +317,10 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
             logger.error(f"Failed to interrupt OpenCode: {exc}")
             return False
 
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
         self._use_service()  # before start_all (`jarvis connect`) the watch loop has not found the service yet
         headers = {"x-opencode-directory": cwd} if cwd else {}  # no header: every folder the service serves

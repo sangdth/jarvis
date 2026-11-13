@@ -41,7 +41,7 @@ def load_soul(path: Path = SOUL_PATH) -> Soul:
 def render_soul(personality: str, user_name: str, projects_dir: str, extra: str) -> str:
     lines = [f"Personality: {personality}."]
     if user_name:
-        lines.append(f'Call the user "{user_name}".')
+        lines.append(f'The user\'s name is "{user_name}"; use it rarely, not in every reply.')
     if extra:
         lines.append(extra)
     return f"---\nprojects_dir: {projects_dir}\n---\n" + "\n".join(lines) + "\n"

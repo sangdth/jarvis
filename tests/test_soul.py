@@ -12,7 +12,11 @@ class SoulTest(unittest.TestCase):
         text = render_soul("calm, dry wit", "Sang", "~/Code", "Short answers.")
         self.assertEqual(
             parse_soul(text),
-            Soul(personality='Personality: calm, dry wit.\nCall the user "Sang".\nShort answers.', projects_dir="~/Code"),
+            Soul(
+                personality='Personality: calm, dry wit.\nThe user\'s name is "Sang"; use it rarely, not in every reply.'
+                "\nShort answers.",
+                projects_dir="~/Code",
+            ),
         )
 
     def test_plain_text_without_front_matter_is_all_personality(self):

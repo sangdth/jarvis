@@ -37,6 +37,8 @@ speech check dropping the sentence, not the conversation model.
 | Which model answered, corrections    | `~/.config/jarvis/feedback/intent.jsonl`, `feedback.py`         |
 | Heard right, reached the model wrong | `[Cleanup]` log, `prompts.py` `CLEANUP_PROMPT`, `cleanup.py`  |
 | Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`, `languages.json` |
+| Says the user's name too often       | `prompts.py` rule 9, `soul.py` `render_soul`, user's `SOUL.md`  |
+| Lists sessions wrong, no titles      | `agent_tools.py` `list_sessions`, `prompts.py` rule 10          |
 | Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                            |
 | Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`        |
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`               |
@@ -76,22 +78,26 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Hermes decides its own approvals.** Its guardian model (`approvals` in `~/.hermes/config.yaml`) lets safe
   commands run; only flagged ones reach Jarvis as `approval.request`. A question Hermes asks ends its turn, so
   the reply goes back with `send_agent_task` into the same Hermes session.
-- **T3 Code is the first-class client; Claude Code, OpenCode and Pi share one session contract.** T3 keeps its own
-  projects and threads (`T3Adapter`), reached only through `orchestrator.t3`, never by checking for a method. The
-  others extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`); a new
-  client of that kind implements those three, with no case of its own in `main.py`, `agent_tools.py` or
-  `prompts.py`. A switch never happens mid-turn (`busy`). Hermes is not a coding client and stays on the base.
+- **Every coding client shares one session contract; T3 Code is the first-class one.** T3 Code, Claude Code,
+  OpenCode and Pi extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`,
+  `session_id`); T3's sessions are its threads. A new client implements those, with no case of its own in
+  `main.py`, `agent_tools.py` or `prompts.py`. What only T3 does (its projects, `jarvis connect` with no agent,
+  continuing its newest thread on the first task) is reached through `orchestrator.t3`, never by checking for a
+  method. A switch never happens mid-turn (`busy`). Hermes is not a coding client and stays on the base.
   By voice, `send_agent_task` takes `session` (`"new"`, or words matched against titles by `match_sessions`) and
-  `project` (a listed folder: its newest session, or a new one) for these clients (`agent_tools.py`
-  `switch_session`); a connected session ignores both. The system prompt lists no sessions.
+  `project` (a listed folder: its newest session that is not running, or a new one) (`agent_tools.py`
+  `switch_session`); a connected session ignores both. Results name the session the work went to.
+  `list_sessions` reads titles out on request (`owner_only` for a meeting guest); the system prompt lists none.
 - **Claude Code uses the user's own settings** (`~/.claude/settings.json`, `defaultMode` and allow rules), as in
   their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
 - **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir`
   (`SOUL.md`, default `~/Projects`) go into the prompt, newest first (`.git/index` time, `_last_touched`);
-  `T3Adapter.open_project` only opens a listed folder and starts its thread with only "Sync with the
-  master branch."; the model's task is not sent. Later requests go to that thread. Questions about the list
+  only a listed folder is opened. With no thread picked, T3's first task continues the newest idle thread in its
+  folder (`_continue_newest`); a running one may be the user's own, typed in T3, so it is never steered. With no
+  idle thread, or after `session: "new"`, the next task starts a thread with "Sync with the master branch first.
+  Then: <task>" (`_launch`, `generateTitle`, so T3 titles it); `new_session` sends nothing on its own. Questions about the list
   itself ("how many projects in OpsCom?") are answered from it, with no agent.
   A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
   at all: it is the user's work in progress. For the rest of that run every task goes to it, even one naming a

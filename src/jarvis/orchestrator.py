@@ -72,7 +72,7 @@ class AgentOrchestrator:
         connected = next((a for a in self.adapters.values() if a.connected), None)
         for adapter in self.adapters.values():
             # `jarvis connect` sends every coding task to `connected`; skip starting the other coding watchers.
-            if connected is not None and isinstance(adapter, (T3Adapter, CodingSessionAdapter)) and adapter is not connected:
+            if connected is not None and isinstance(adapter, CodingSessionAdapter) and adapter is not connected:
                 continue
             await adapter.start()
 

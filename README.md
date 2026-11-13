@@ -13,8 +13,8 @@ What it does:
   every sentence against your voice. Other people, the TV and its own voice are dropped, and they can't interrupt
   Jarvis or keep it waiting. Off by default: any voice may talk to it.
 - **Answers only when you mean it.** A decision model tells talk aimed at Jarvis from talk around it.
-- **Opens your projects by name.** "Continue working on the Hugger Hustle platform" starts a T3 Code thread in that
-  repo that syncs with master; then you say what to do. Questions about the list itself ("how many projects in
+- **Opens your projects by name.** "Continue working on the Hugger Hustle platform" picks up your newest T3 Code
+  thread in that repo, or starts one that syncs with master, and tells you which. Questions about the list itself ("how many projects in
   OpsCom?") are answered right away, with no agent.
 - **Stays out of the way.** A two-to-five-word greeting at startup, beeps instead of speech when you say "shut up",
   and a short digest when you say "you can talk". While an agent works, a short "still working on it" now and then,
@@ -127,10 +127,11 @@ what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path
   `~/.hermes/.env`, then `hermes gateway install` (port 8642). Hermes's own approval settings decide what it asks.
 - **T3 Code** (the default) needs the T3 Code app running (port 3773). Jarvis gets its own token through the `t3`
   CLI. Say "continue working on the Hugger Hustle platform" and Jarvis picks the folder from your git repos one or
-  two levels under your projects folder (`~/Projects/` unless `SOUL.md` says otherwise; read at startup), adds it to T3 as a project if it isn't one, and starts a "Jarvis"
-  thread there whose only first message is "Sync with the master branch." Tell it what to do next; later requests
-  go to that thread. Coding with no project named runs in `cwd` from `agents.json`. Threads use your T3 default
-  model and mode; Jarvis watches only its newest thread.
+  two levels under your projects folder (`~/Projects/` unless `SOUL.md` says otherwise; read at startup) and
+  continues your newest thread there that isn't running. With none, or when you ask for a new session, your next
+  task starts a thread (adding the folder to T3 as a project if needed) that syncs with master first, then does the
+  task; T3 titles it. Coding with no project named works in `cwd` from `agents.json` the same way. Threads use your
+  T3 default model and mode; Jarvis watches one thread at a time and says its title when it changes.
 
 ### 5. Memory
 Jarvis remembers facts about you between runs (local [Mem0](https://github.com/mem0ai/mem0) with Qdrant in
@@ -219,9 +220,10 @@ says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there t
 
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.
-- **"Continue working on [project]" / "Open [project]"** — Starts a T3 Code thread in that repo that syncs with master.
-- **"Start a new Claude Code session" / "On OpenCode, continue the session about [topic]"** — Starts a clean
-  conversation, or goes back to the earlier session whose title, branch or folder matches what you said.
+- **"Continue working on [project]" / "Open [project]"** — Continues your newest T3 Code thread in that repo.
+- **"What sessions do I have?" / "Name the threads in [project]"** — Reads out session titles, newest first.
+- **"Start a new session" / "Go back to the thread about [topic]" / "On OpenCode, continue the session about
+  [topic]"** — Starts a clean session, or goes back to the earlier one whose title, branch or folder matches.
 - **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Hermes.
 - **Answering an agent** ("yes", "use Postgres") — Goes to the question or approval the agent is waiting on.
 - **"Stop it"** / **"Stop that"** / **"Cancel that"** / **"Stop Claude"** — Stops the agent's current turn; with

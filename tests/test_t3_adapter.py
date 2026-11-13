@@ -7,9 +7,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from jarvis.agent_adapter import WatchedAgentConfig, question_fields
+from jarvis.sessions import AgentSession
 from jarvis.t3_adapter import (
     PROJECTS,
-    PROJECTS_LABEL,
     T3Adapter,
     current_thread,
     find_project,
@@ -114,11 +114,13 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
                                                   "defaultModelSelection": {"instanceId": "claudeAgent", "model": "m"}})
         a._call = AsyncMock(return_value={"threadId": "t9"})
         a._ws.send = AsyncMock()
-        self.assertTrue(await a.send_task("fix the navbar"))
+        a.list_sessions = AsyncMock(return_value=[AgentSession("busy", "Mine", "/tmp", 1.0, running=True)])
+        self.assertTrue(await a.send_task("fix the navbar"))  # the only thread there is running: never steered
         method, payload = a._call.await_args.args
         self.assertEqual((method, payload["projectId"], payload["initialMessage"]["text"]),
-                         ("orchestration.launchThread", "p1", "fix the navbar"))
-        self.assertEqual(a._thread_id, "t9")
+                         ("orchestration.launchThread", "p1", "Sync with the master branch first. Then: fix the navbar"))
+        self.assertEqual((payload["title"], payload["generateTitle"]), ("New thread", True))  # T3 titles it
+        self.assertEqual((a._thread_id, a.title), ("t9", None))
         subscribe = json.loads(a._ws.send.await_args.args[0])
         self.assertEqual((subscribe["tag"], subscribe["payload"]), ("orchestration.subscribeThread", {"threadId": "t9"}))
 
@@ -136,62 +138,96 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         payload = a._call.await_args.args[1]
         self.assertEqual((payload["modelSelection"]["model"], payload["runtimeMode"]), ("g", "auto-accept-edits"))
 
-    async def test_new_project_is_created_and_synced_first(self) -> None:
+    async def test_first_task_continues_the_newest_idle_thread(self) -> None:
+        a = make()
+        a._thread_id, a._ws = None, MagicMock()
+        a._ws.send = AsyncMock()
+        a._call = AsyncMock()
+        a.list_sessions = AsyncMock(return_value=[
+            AgentSession("running", "Typed in T3", "/tmp", 3.0, running=True),
+            AgentSession("t5", "Fix the navbar", "/tmp", 2.0),
+            AgentSession("t4", "Older", "/tmp", 1.0),
+        ])
+        self.assertTrue(await a.send_task("and the footer"))
+        a.list_sessions.assert_awaited_once_with(str(Path("/tmp").resolve()), limit=50)
+        self.assertEqual((a._thread_id, a.title), ("t5", "Fix the navbar"))
+        self.assertEqual(a._command.await_args.args[0]["text"], "and the footer")
+        a._call.assert_not_awaited()  # no new thread
+
+    async def test_new_project_is_created_then_the_task_starts_a_synced_thread(self) -> None:
         a = make()
         a._ws = MagicMock()
         a._ws.send = AsyncMock()
         a._find_project = AsyncMock(return_value=None)
         a._call = AsyncMock(side_effect=[{}, {"threadId": "t9"}])  # project.create, then launchThread
-        defaults = {"defaultModelSelection": {"instanceId": "claudeAgent", "model": "g"}}
-        with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2"]), \
-                patch("jarvis.t3_adapter.t3_defaults", return_value=defaults):
-            self.assertEqual(await a.open_project("HuggerHustle/platform-v2", "fix the login"), "project_syncing")
-            created, launched = (c.args for c in a._call.await_args_list)
-            root = str(PROJECTS / "huggerhustle/platform-v2")
-            self.assertEqual((created[1]["type"], created[1]["workspaceRoot"]), ("project.create", root))
-            self.assertEqual(launched[1]["projectId"], created[1]["projectId"])
-            self.assertEqual(launched[1]["initialMessage"]["text"], "Sync with the master branch.")
-            a._command.assert_not_awaited()  # the task is not sent to a new thread
-            self.assertEqual(a._thread_id, "t9")
-            self.assertTrue(await a.open_project(f"{PROJECTS_LABEL}/huggerhustle/platform-v2", "now the tests"))  # same project
+        root = str(PROJECTS / "huggerhustle/platform-v2")
+        with patch("jarvis.t3_adapter.t3_defaults", return_value={"defaultModelSelection": {"instanceId": "c", "model": "g"}}):
+            self.assertTrue(await a.new_session(root))
+            self.assertIsNone(a.session_id)
+            a._call.assert_not_awaited()  # nothing in T3 until there is a task: no empty threads
+            a.list_sessions = AsyncMock(side_effect=AssertionError("a new session continues no thread"))
+            self.assertTrue(await a.send_task("fix the login"))
+        created, launched = (c.args for c in a._call.await_args_list)
+        self.assertEqual((created[1]["type"], created[1]["workspaceRoot"]), ("project.create", root))
+        self.assertEqual(launched[1]["projectId"], created[1]["projectId"])
+        self.assertEqual(launched[1]["initialMessage"]["text"], "Sync with the master branch first. Then: fix the login")
+        self.assertEqual(a._thread_id, "t9")
+        a._command.reset_mock()
+        self.assertTrue(await a.send_task("now the tests"))  # the same thread
         self.assertEqual(a._command.await_args.args[0]["text"], "now the tests")
-        self.assertEqual(a._call.await_count, 2)  # no second thread
+        self.assertEqual(a._call.await_count, 2)
 
-    async def test_opening_a_project_without_a_task_only_syncs(self) -> None:
+    async def test_a_folder_outside_projects_is_never_created(self) -> None:
+        a = make()
+        a._find_project = AsyncMock(return_value=None)
+        a._call = AsyncMock()
+        self.assertFalse(await a._launch("/etc", "read it"))
+        a._call.assert_not_awaited()
+
+    async def test_connected_thread_never_starts_or_switches(self) -> None:
+        a = make()
+        a.attach("t9", "/Users/x/.t3/worktrees/platform-v2/t3-abc", connected=True, title="Mine")  # a worktree
+        a._ws = MagicMock()
+        a._call = AsyncMock()
+        self.assertTrue(await a.send_task("ok go ahead"))
+        self.assertFalse(await a.new_session(str(PROJECTS / "jarvis")))
+        self.assertFalse(await a._launch("/tmp", "x"))
+        a._call.assert_not_awaited()  # no project.create, no launchThread
+        self.assertEqual(a._command.await_args.args[0]["text"], "ok go ahead")
+        self.assertEqual((a._thread_id, a.title), ("t9", "Mine"))
+
+    async def test_a_switch_waits_for_the_running_turn_and_closes_the_old_stream(self) -> None:
         a = make()
         a._ws = MagicMock()
         a._ws.send = AsyncMock()
-        a._find_project = AsyncMock(return_value=None)
-        a._call = AsyncMock(side_effect=[{}, {"threadId": "t9"}])
-        with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2"]), \
-                patch("jarvis.t3_adapter.t3_defaults", return_value={"defaultModelSelection": {"instanceId": "c", "model": "g"}}):
-            self.assertEqual(await a.open_project("huggerhustle/platform-v2", ""), "project_syncing")
-            self.assertEqual(a._call.await_args.args[1]["initialMessage"]["text"], "Sync with the master branch.")
-            a._command = AsyncMock()
-            self.assertEqual(await a.open_project("huggerhustle/platform-v2", ""), "project_already_open")
-        a._command.assert_not_awaited()
+        await a._subscribe()
+        old = a._sub_id
+        a._runs = {RUN: "running"}
+        self.assertFalse(await a.pick_session(AgentSession("t2", "Other", "/tmp", 1.0)))
+        self.assertFalse(await a.new_session())
+        a._runs = {}
+        self.assertTrue(await a.pick_session(AgentSession("t2", "Other", "/tmp", 1.0)))
+        interrupt, subscribe = (json.loads(c.args[0]) for c in a._ws.send.await_args_list[-2:])
+        self.assertEqual(interrupt, {"_tag": "Interrupt", "id": old})
+        self.assertEqual(subscribe["payload"], {"threadId": "t2"})
+        self.assertEqual((a.session_id, a.title), ("t2", "Other"))
 
-    async def test_connected_thread_never_starts_a_new_one(self) -> None:
+    async def test_list_sessions_keeps_to_the_project_holding_cwd(self) -> None:
         a = make()
-        a.attach("t9", "/Users/x/.t3/worktrees/platform-v2/t3-abc", connected=True)  # a worktree, not ~/Projects/...
-        a._ws = MagicMock()
-        a._call = AsyncMock()
-        with patch("jarvis.t3_adapter.list_projects", return_value=["huggerhustle/platform-v2", "jarvis"]):
-            self.assertTrue(await a.open_project("huggerhustle/platform-v2", "ok go ahead"))
-            self.assertTrue(await a.open_project("jarvis", "and the tests"))  # another project: still this thread
-            self.assertEqual(await a.open_project("jarvis", ""), "nothing_to_send")
-            self.assertEqual(await a.open_project("misheard", ""), "nothing_to_send")
-        self.assertFalse(await a._launch("/tmp", "x", create=True))
-        a._call.assert_not_awaited()  # no project.create, no launchThread
-        self.assertEqual([c.args[0]["text"] for c in a._command.await_args_list], ["ok go ahead", "and the tests"])
-        self.assertEqual(a._thread_id, "t9")
-
-    async def test_folder_outside_projects_is_refused(self) -> None:
-        a = make()
-        a._call = AsyncMock()
-        with patch("jarvis.t3_adapter.list_projects", return_value=["HuggerHustle/platform-v2"]):
-            self.assertFalse(await a.open_project("../../etc", "read it"))
-        a._call.assert_not_awaited()
+        a.shell_snapshot = AsyncMock(return_value={
+            "projects": [{"id": "p1", "title": "jarvis", "workspaceRoot": "/r/jarvis"},
+                         {"id": "p2", "title": "web", "workspaceRoot": "/r/web"}],
+            "threads": [
+                {"id": "a", "projectId": "p1", "createdBy": "user", "title": "Tone", "status": "running",
+                 "updatedAt": "2026-11-13T08:54:27.805Z", "worktreePath": "/wt/a", "branch": "fix/tone"},
+                {"id": "b", "projectId": "p2", "createdBy": "user", "title": "Login", "updatedAt": "2026-11-12T08:00:00Z"},
+            ],
+        })
+        jarvis = await a.list_sessions("/r/jarvis")
+        self.assertEqual(jarvis, [AgentSession("a", "Tone", "/r/jarvis", jarvis[0].updated_at, "fix/tone", True)])
+        self.assertGreater(jarvis[0].updated_at, 0)
+        self.assertEqual([s.id for s in await a.list_sessions()], ["a", "b"])
+        self.assertEqual(await a.list_sessions("/r/unknown"), [])
 
     async def test_resubscribe_resumes_after_last_sequence(self) -> None:
         a = make()

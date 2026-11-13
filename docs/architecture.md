@@ -67,10 +67,12 @@ Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON p
 Each agent has three actions, one LLM tool each: `send_agent_task` (new work), `answer_agent` (reply to the question
 or approval the agent is waiting on) and `stop_agent`. An answer never becomes a new prompt, and a task never answers
 a pending question. With no agent named, a task goes to the default coding agent, an answer to the agent
-that asked last, and a stop to the agent that is working. For Claude Code, OpenCode and Pi, `send_agent_task` also
-takes `session` (`"new"`, or the user's words naming an earlier session, matched against session titles, branches
-and folders) and `project` (a listed folder: its newest session there, or a new one), so the next task goes to
-that session. A connected session (`jarvis connect`) ignores both.
+that asked last, and a stop to the agent that is working. For every coding client (T3 Code, Claude Code, OpenCode,
+Pi), `send_agent_task` also takes `session` (`"new"`, or the user's words naming an earlier session, matched against
+session titles, branches and folders) and `project` (a listed folder: its newest session there that is not running,
+or a new one), so the next task goes to that session, and its result names that session. `list_sessions` returns
+a client's session titles, project, time, and which is running or current. A connected session (`jarvis connect`)
+ignores `session` and `project`.
 
 1. **Claude Code (`ClaudeCodeAdapter`):** One `ClaudeSDKClient` (Python `claude-agent-sdk`) per session, with
    the user's own Claude settings and permission mode (Jarvis sets none). It starts with `resume=<session id>`: the
@@ -106,11 +108,16 @@ that session. A connected session (`jarvis connect`) ignores both.
    (`?orchestrationProtocol=2`), the API the T3 window itself uses: Effect RPC messages as JSON (`Request`, `Exit`,
    `Chunk`, and an `Ack` for every chunk). Auth is a 30-day bearer token from
    `t3 auth session issue --scope orchestration:read --scope orchestration:operate`, issued once per run and again
-   only after a 401/403. A task looks up the T3 project holding its folder (`orchestration.subscribeShell`) and
-   starts a thread (`orchestration.launchThread`) with the user's T3 default model and runtime mode. The folder is
-   `cwd`, or a `project` the conversation model picks from the git repos under `projects_dir` from `~/.config/jarvis/SOUL.md`, default `~/Projects/` (`list_projects`); a
-   project folder T3 doesn't know yet is added with `project.create`, and its thread opens with only "Sync with the master
-   branch." (the model's task is not sent; later requests go to that thread). Jarvis watches one thread, the newest, or the one `jarvis connect` attached (`current_thread` from the T3 project script's folder env, else picked from `recent_threads`); later tasks for the same folder are `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
+   only after a 401/403. Its sessions are the user's threads in the T3 project holding a folder
+   (`orchestration.subscribeShell`, `recent_threads`). The folder is `cwd`, or a `project` the conversation model
+   picks from the git repos under `projects_dir` from `~/.config/jarvis/SOUL.md`, default `~/Projects/`
+   (`list_projects`). The first task continues the newest thread there that is not running; with none, or after a
+   new session, it starts a thread (`orchestration.launchThread`, `generateTitle`) with the user's T3 default model
+   and runtime mode, whose first message is "Sync with the master branch first. Then: <task>". A project folder T3
+   doesn't know yet is added with `project.create`. Jarvis watches one thread (picked, continued, started, or the
+   one `jarvis connect` attached: `current_thread` from the T3 project script's folder env, else picked from
+   `recent_threads`); a switch closes the old thread's stream with `Interrupt`. Tasks to it are `message.dispatch`
+   with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
    (resumed with `afterSequence`) gives `run.updated`, finished `assistant_message` items (retold when the run
    completes) and `approval_request` / `user_input_request` items (read out; answered with `runtime-request.respond`).
    Stop is `run.interrupt`. A 426 means T3 changed its protocol version.

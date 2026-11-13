@@ -53,7 +53,8 @@ async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
             sys.exit("No T3 threads to connect to.")
         labels = [f"{t['project']}: {t['title']}  ({t['status']}, {_when(t['updatedAt'])})" for t in threads]
         thread = threads[choose("Your recent T3 Code threads", labels, "Thread to continue")]
-    t3.attach(thread["id"], thread["root"], connected=True)  # its waiting question, if any, is read out once T3 Code connects
+    # Its waiting question, if any, is read out once T3 Code connects.
+    t3.attach(thread["id"], thread["root"], connected=True, title=thread["title"])
     logger.info(f"Connected to T3 thread {thread['id']} ({thread['title']}, {thread['root']})")
     return {**thread, "agent_id": t3.config.id, "agent_name": t3.config.name}
 
