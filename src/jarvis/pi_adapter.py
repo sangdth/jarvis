@@ -95,7 +95,9 @@ class PiAdapter(CodingSessionAdapter):
                 logger.debug(f"[{self.config.id}] Pi socket unavailable ({exc!r}).")
                 if misses == 3:  # /reload reopens the socket within a second; three misses is a closed window
                     self._running = False
-                    await self._surface("closed its window. Run jarvis connect pi again to pick another.")
+                    self._dialog = False
+                    self._question_settled()
+                    await self._surface("closed its window. Run jarvis connect pi again to pick another.", is_report=True)
             self._writer = None
             await asyncio.sleep(1.0)
 

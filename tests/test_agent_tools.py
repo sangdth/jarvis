@@ -121,15 +121,55 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         t3 = MagicMock(spec=T3Adapter)
         t3.config = MagicMock(id="t3-code")
         t3.busy = False
+        t3.connected = False
+        t3._thread_id = "t1"
+        t3._root = "/p/jarvis"
         t3.open_project = AsyncMock(return_value=True)  # already open: T3 sends the task to its thread
         self.orch.adapters["t3-code"] = t3
         shot = ScreenCapture(Path("/s/1.png"), "Safari", "Login")
-        with patch("jarvis.agent_tools.capture_front_window", AsyncMock(return_value=shot)):
+        with (
+            patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/jarvis")),
+            patch("jarvis.agent_tools.capture_front_window", AsyncMock(return_value=shot)),
+        ):
             p = params({"agent_id": "t3-code", "project": "jarvis", "task": "Fix this layout", "include_screen": True})
             await self.handlers["send_agent_task"](p)
         folder, sent = t3.open_project.await_args.args
         self.assertEqual(folder, "jarvis")
         self.assertIn("/s/1.png", sent)
+
+    async def test_opening_new_t3_project_skips_screenshot_and_uses_sync_status(self) -> None:
+        from pathlib import Path
+
+        from jarvis.t3_adapter import T3Adapter
+
+        t3 = MagicMock(spec=T3Adapter)
+        t3.config = MagicMock(id="t3-code")
+        t3.busy = False
+        t3.connected = False
+        t3._thread_id = None
+        t3._root = None
+        t3.open_project = AsyncMock(return_value="project_syncing")
+        self.orch.adapters["t3-code"] = t3
+        capture = AsyncMock()
+        with (
+            patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/jarvis")),
+            patch("jarvis.agent_tools.capture_front_window", capture),
+        ):
+            p = params({"agent_id": "t3-code", "project": "jarvis", "task": "Fix this", "include_screen": True})
+            await self.handlers["send_agent_task"](p)
+        capture.assert_not_awaited()
+        t3.open_project.assert_awaited_once_with("jarvis", "Fix this")
+        p.result_callback.assert_awaited_once_with({"status": "project_syncing", "agent_id": "t3-code"})
+        self.assertEqual(self.orch._reminders["t3-code"][1]._task, "sync with master")
+
+        t3.open_project = AsyncMock(return_value="project_already_open")
+        t3._thread_id, t3._root = "t1", "/p/jarvis"
+        self.orch._reminders.pop("t3-code", None)
+        with patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/jarvis")):
+            p = params({"agent_id": "t3-code", "project": "jarvis"})
+            await self.handlers["send_agent_task"](p)
+        p.result_callback.assert_awaited_once_with({"status": "project_already_open", "agent_id": "t3-code"})
+        self.assertNotIn("t3-code", self.orch._reminders)
 
     async def test_a_failed_capture_sends_nothing(self) -> None:
         from jarvis.screen import ScreenError
@@ -154,6 +194,7 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         capture.assert_not_awaited()
 
     async def test_look_at_screen_returns_the_answer_to_speak(self) -> None:
+        self.orch._http = MagicMock()
         shot = MagicMock()
         with (
             patch("jarvis.agent_tools.capture_front_window", AsyncMock(return_value=shot)),

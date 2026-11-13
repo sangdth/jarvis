@@ -16,6 +16,31 @@ _REJECT_WORDS = re.compile(r"\b(no|not|don'?t|do not|never|reject|deny|denied|ca
 _APPROVE_WORDS = re.compile(r"\b(yes|yep|yeah|approve|approved|allow|go ahead|sure|do it|ok|okay|proceed)\b", re.IGNORECASE)
 
 
+def question_fields(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Claude Code and T3 questions in the OpenCode form-field shape, so form_answer works for all three."""
+    return [
+        {
+            "key": q.get("id") or q["question"],
+            "description": q["question"],
+            "type": "multiselect" if q.get("multiSelect") else "string",
+            "options": [{"value": o.get("value") or o["label"], "label": o["label"]} for o in q.get("options", [])],
+        }
+        for q in questions
+    ]
+
+
+def _option_matched(label: str, said: str) -> bool:
+    """True when the user named this option (with or without `(recommended)`) and did not negate it."""
+    bare = re.sub(r"\s*\(recommended\)$", "", label, flags=re.IGNORECASE)
+    candidates = [label] + ([bare] if bare and bare != label else [])
+    for cand in candidates:
+        # (?<!\w)/(?!\w), not \b: a label like "C++" or ".env" has no word edge at its punctuation.
+        for match in re.finditer(rf"(?<!\w){re.escape(cand.lower())}(?!\w)", said):
+            if not re.search(r"\b(?:not|no|don'?t)\s+$", said[: match.start()]):
+                return True
+    return False
+
+
 def form_answer(fields: list[dict[str, Any]], instruction: str) -> dict[str, Any]:
     """Map a spoken answer onto OpenCode form fields: a named option, yes/no, or the user's own words."""
     said = instruction.lower()
@@ -24,8 +49,7 @@ def form_answer(fields: list[dict[str, Any]], instruction: str) -> dict[str, Any
         if field.get("hidden"):
             continue
         options = field.get("options") or []
-        # (?<!\w)/(?!\w), not \b: a label like "C++" or ".env" has no word edge at its punctuation.
-        named = [o["value"] for o in options if re.search(rf"(?<!\w){re.escape(o['label'].lower())}(?!\w)", said)]
+        named = [o["value"] for o in options if _option_matched(o["label"], said)]
         if field.get("type") == "boolean":
             answer[field["key"]] = is_approval(instruction)
         elif field.get("type") == "multiselect":

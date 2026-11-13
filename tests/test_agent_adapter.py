@@ -1,7 +1,7 @@
 import unittest
 
 from fakes import QUESTION_FORM
-from jarvis.agent_adapter import form_answer, is_approval
+from jarvis.agent_adapter import form_answer, is_approval, question_fields
 
 
 class TestIsApproval(unittest.TestCase):
@@ -38,6 +38,33 @@ class TestFormAnswer(unittest.TestCase):
             },
         ]
         self.assertEqual(form_answer(fields, "yes, run lint and tests"), {"ok": True, "pick": ["a", "b"]})
+
+    def test_recommended_suffix_is_optional_when_matching(self) -> None:
+        fields = [{
+            "key": "db",
+            "options": [{"value": "pg", "label": "Postgres (Recommended)"}, {"value": "sq", "label": "SQLite (recommended)"}],
+        }]
+        self.assertEqual(form_answer(fields, "use postgres"), {"db": "pg"})
+        self.assertEqual(form_answer(fields, "SQLite"), {"db": "sq"})
+        self.assertEqual(form_answer(fields, "Postgres (Recommended)"), {"db": "pg"})
+
+    def test_negated_options_are_excluded(self) -> None:
+        fields = [{"key": "db", "options": [{"value": "Postgres", "label": "Postgres"}, {"value": "SQLite", "label": "SQLite"}]}]
+        self.assertEqual(form_answer(fields, "not Postgres, use SQLite"), {"db": "SQLite"})
+        self.assertEqual(form_answer(fields, "no Postgres, SQLite please"), {"db": "SQLite"})
+        self.assertEqual(form_answer(fields, "don't Postgres, use SQLite"), {"db": "SQLite"})
+        self.assertEqual(form_answer(fields, "dont Postgres"), {"db": "dont Postgres"})
+
+    def test_question_fields_unifies_claude_and_t3_shapes(self) -> None:
+        fields = question_fields([
+            {"question": "Pick one", "multiSelect": True, "options": [{"label": "A"}, {"label": "B", "value": "b"}]}
+        ])
+        self.assertEqual(fields, [{
+            "key": "Pick one",
+            "description": "Pick one",
+            "type": "multiselect",
+            "options": [{"value": "A", "label": "A"}, {"value": "b", "label": "B"}],
+        }])
 
 
 if __name__ == "__main__":

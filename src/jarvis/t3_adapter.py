@@ -12,7 +12,7 @@ from loguru import logger
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import InvalidStatus
 
-from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig, describe_fields, form_answer, is_approval
+from jarvis.agent_adapter import BaseAgentAdapter, WatchedAgentConfig, describe_fields, form_answer, is_approval, question_fields
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
 
@@ -23,19 +23,6 @@ _ASKS = {"approval_request", "user_input_request"}
 PROJECTS_LABEL = load_soul().projects_dir  # as written in SOUL.md, e.g. "~/Projects"; also what the model sees
 PROJECTS = Path(PROJECTS_LABEL).expanduser()  # every project of the user's lives here, one or two folders deep
 SYNC_MASTER = "Sync with the master branch"
-
-
-def t3_question_fields(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """T3 user-input questions in the OpenCode form-field shape, so form_answer works for them too."""
-    return [
-        {
-            "key": q["id"],
-            "description": q["question"],
-            "type": "multiselect" if q.get("multiSelect") else "string",
-            "options": [{"value": o.get("value") or o["label"], "label": o["label"]} for o in q.get("options", [])],
-        }
-        for q in questions
-    ]
 
 
 def find_project(projects: list[dict[str, Any]], cwd: str) -> dict[str, Any] | None:
@@ -198,6 +185,10 @@ class T3Adapter(BaseAgentAdapter):
                     call.cancel()
                 self._calls.clear()
                 self._snapshots.clear()
+                self._runs.clear()
+                if self._pending is not None:
+                    self._pending = None
+                    self._question_settled()
             await asyncio.sleep(wait)
 
     async def _on_message(self, ws: ClientConnection, msg: dict[str, Any]) -> None:
@@ -286,12 +277,14 @@ class T3Adapter(BaseAgentAdapter):
                     except OSError:
                         pass
         self._token = self._token or await self._issue_token()
-        async with self._connect() as ws:
+        async with asyncio.timeout(10.0), self._connect() as ws:
             request = {"_tag": "Request", "id": "1", "tag": "orchestration.subscribeShell", "payload": {}, "headers": []}
             await ws.send(json.dumps(request))
             async for raw in ws:
                 msg = json.loads(raw)
-                if msg.get("_tag") == "Exit":
+                if msg.get("_tag") == "Ping":
+                    await ws.send(json.dumps({"_tag": "Pong"}))
+                elif msg.get("_tag") == "Exit":
                     raise RuntimeError(f"T3 shell subscription failed: {json.dumps(msg)[:300]}")
                 for item in msg.get("values", []) if msg.get("_tag") == "Chunk" else []:
                     if item.get("kind") == "snapshot":
@@ -347,7 +340,7 @@ class T3Adapter(BaseAgentAdapter):
                 reason = f". {item['reason']}" if item.get("reason") else ""
                 await self._surface(f"needs approval: {what}{reason}")
             else:
-                await self._surface(f"asks: {describe_fields(t3_question_fields(item.get('questions', [])))}")
+                await self._surface(f"asks: {describe_fields(question_fields(item.get('questions', [])))}")
 
     def _settle(self, request_id: str | None) -> None:
         if self._pending and self._pending.get("requestId") == request_id:
@@ -377,13 +370,13 @@ class T3Adapter(BaseAgentAdapter):
             return False
         root = str(project)
         if self._thread_id and self._root == root:
-            return await self.send_task(task) if task else True  # already open; nothing new to say
+            return await self.send_task(task) if task else "project_already_open"
         if self._ws is None:
             logger.warning(f"[{self.config.id}] Cannot open {folder}; T3 Code is not connected.")
             return False
         # A new thread gets only the sync. The model's task is dropped: for "continue on X" it restates the
         # request, and the user's next words go to this thread anyway.
-        return await self._launch(root, f"{SYNC_MASTER}.", create=True)
+        return "project_syncing" if await self._launch(root, f"{SYNC_MASTER}.", create=True) else False
 
     async def _launch(self, cwd: str, text: str, create: bool = False) -> bool:
         """Start a T3 thread in the project holding cwd (made first when create is set) and watch it."""
@@ -446,7 +439,7 @@ class T3Adapter(BaseAgentAdapter):
         if item["type"] == "approval_request":
             command["decision"] = "accept" if is_approval(answer) else "decline"
         else:
-            command["answers"] = form_answer(t3_question_fields(item.get("questions", [])), answer)
+            command["answers"] = form_answer(question_fields(item.get("questions", [])), answer)
         ok = await self._command(command)
         if ok:  # cleared only once T3 took it, so a network error leaves it answerable
             self._settle(item["requestId"])

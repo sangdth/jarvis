@@ -76,36 +76,34 @@ class TestAsk(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.shot = ScreenCapture(Path("/x.png"), "Safari", "Update")
 
-    async def post(self, response: httpx.Response) -> AsyncMock:
-        post = AsyncMock(return_value=response)
+    async def post(self, response: httpx.Response) -> MagicMock:
+        http = MagicMock(post=AsyncMock(return_value=response))
         self.patches = [
             patch("jarvis.screen._jpeg_data_url", return_value="data:image/jpeg;base64,AA"),
-            patch.object(httpx.AsyncClient, "post", post),
             patch("jarvis.screen.settings", openrouter_api_key="k", openrouter_base_url="https://o/api/v1",
                   executive_model="m"),
         ]
         for p in self.patches:
             p.start()
             self.addCleanup(p.stop)
-        return post
+        return http
 
     async def test_one_stateless_call_with_the_image(self) -> None:
         request = httpx.Request("POST", "https://o/api/v1/chat/completions")
-        post = await self.post(httpx.Response(200, json={"choices": [{"message": {"content": " It's an update. "}}]},
-                                              request=request))
-        self.assertEqual(await ask_screen(self.shot, "What is this?"), "It's an update.")
-        body = post.await_args.kwargs["json"]
+        http = await self.post(
+            httpx.Response(200, json={"choices": [{"message": {"content": " It's an update. "}}]}, request=request)
+        )
+        self.assertEqual(await ask_screen(self.shot, "What is this?", http), "It's an update.")
+        self.assertEqual(http.post.await_args.args[0], "/chat/completions")
+        body = http.post.await_args.kwargs["json"]
         self.assertEqual(body["model"], "m")
         self.assertEqual(body["messages"][0]["content"][1]["image_url"]["url"], "data:image/jpeg;base64,AA")
-        shared = MagicMock(post=post)
-        self.assertEqual(await ask_screen(self.shot, "What is this?", shared), "It's an update.")
-        self.assertEqual(post.await_args.args[0], "/chat/completions")
 
     async def test_a_model_without_vision_says_so(self) -> None:
         request = httpx.Request("POST", "https://o/api/v1/chat/completions")
-        await self.post(httpx.Response(400, json={"error": "no image input"}, request=request))
+        http = await self.post(httpx.Response(400, json={"error": "no image input"}, request=request))
         with self.assertRaises(ScreenError) as caught:
-            await ask_screen(self.shot, "What is this?")
+            await ask_screen(self.shot, "What is this?", http)
         self.assertEqual(caught.exception.status, "model_has_no_vision")
 
     async def test_the_jpeg_is_downscaled(self) -> None:
