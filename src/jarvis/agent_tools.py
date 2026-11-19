@@ -135,8 +135,10 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         async def handle(params: Any) -> None:
             args = params.arguments
             guest = orchestrator.state.room_turn is True  # `jarvis meeting`, master check on, not the master's voice
-            # A guest may ask for work, never approve, stop or replace it, nor see the master's screen.
-            if guest and (owner_only or args.get("replace") or args.get("include_screen")):
+            # A guest may ask for work, never approve, stop, replace, switch sessions/projects, nor see the master's screen.
+            if guest and (
+                owner_only or args.get("replace") or args.get("include_screen") or args.get("session") or args.get("project")
+            ):
                 await params.result_callback({"status": "owner_only", "agent_id": args.get("agent_id")})
                 return
             # MEETING_GUESTS=ask: nothing runs until the master says yes; the model then sends it again on that turn.
@@ -203,7 +205,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             if not await agent.new_session(cwd):
                 return refused()
             return {"status": "session_ready", "session": "new", "project": Path(cwd or agent.cwd).name}
-        if not session and cwd == agent.cwd and agent.session_id:
+        if not session and cwd == agent.cwd and (agent.session_id or getattr(agent, "_fresh", False)):
             return {"status": "session_ready"}  # already working there
         try:
             found = await agent.list_sessions(cwd or (None if session else agent.cwd), limit=50)
@@ -250,7 +252,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             "status": "listed", "agent_id": agent.config.id, "count": len(found),
             "sessions": [
                 {"title": s.title, "project": Path(s.cwd).name,
-                 "updated": time.strftime("%b %d %H:%M", time.localtime(s.updated_at)),
+                 "updated": time.strftime("%b %d %H:%M", time.localtime(s.updated_at)) if s.updated_at > 0 else "",
                  **({"running": True} if s.running else {}), **({"current": True} if s.id == agent.session_id else {})}
                 for s in found
             ],

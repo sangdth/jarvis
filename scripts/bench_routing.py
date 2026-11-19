@@ -21,7 +21,7 @@ from jarvis.orchestrator import AgentOrchestrator
 from jarvis.prompts import system_prompt
 from jarvis.soul import load_soul
 from jarvis.state import JarvisState
-from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
+from jarvis.t3_adapter import list_projects, projects_dir
 
 MIN_ACCURACY = 0.95  # 91% on 2026-11-05 (DeepSeek V4 Pro, thinking on): below the bar
 
@@ -48,6 +48,10 @@ def waiting(spoken: str, reply: str) -> list[dict]:
 
 # Agents only read English: a Vietnamese letter in `task` or `answer` is a miss.
 VIETNAMESE = re.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE)
+
+_projects = list_projects()
+_latest_project = _projects[0].lower() if _projects else "jarvis"
+_latest_hugger = next((p.lower() for p in _projects if p.lower().startswith("huggerhustle/")), "huggerhustle/platform-v2")
 
 CASES: list[tuple[str | list[dict], str]] = [
     ("Build a login page with email and password", "t3-code"),
@@ -84,8 +88,8 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("I want to work on Jarvis today", "t3-code@jarvis"),
     ("Continue to work with hugger hustle platform", "t3-code@huggerhustle/platform-v2"),
     # A vague or shared name picks the project worked on most recently (live: depends on the machine's repos)
-    ("Continue where I left off", f"t3-code@{list_projects()[0].lower()}"),
-    ("Continue on Hugger Hustle", f"t3-code@{next(p for p in list_projects() if p.startswith('huggerhustle/'))}"),
+    ("Continue where I left off", f"t3-code@{_latest_project}"),
+    ("Continue on Hugger Hustle", f"t3-code@{_latest_hugger}"),
     ("Let's work on the Hugger Hustle blog", "t3-code@huggerhustle/simple-blog"),
     # Questions about the project list itself are answered from the list in the prompt, not sent to an agent
     ("How many projects do we have in Happy Voxel?", SELF),
@@ -177,7 +181,11 @@ def outcome(message: dict, default_id: str | None) -> str:
         return "list"
     if calls[0]["function"]["name"] == "answer_agent":
         return "answer"  # answer_agent finds the waiting agent itself when no id is given
-    project = f"@{args['project'].removeprefix(f'{PROJECTS_LABEL}/').strip('/').lower()}" if args.get("project") else ""
+    label = projects_dir()[0].strip("/")
+    raw_project = (args.get("project") or "").strip("/")
+    if raw_project.lower().startswith(f"{label.lower()}/"):
+        raw_project = raw_project[len(label) + 1 :].strip("/")
+    project = f"@{raw_project.lower()}" if raw_project else ""
     named = (args.get("session") or "").strip().lower()
     # Opening a project or session names work only when the user did ("+task"); an invented task is a miss.
     task = "+task" if (project or named) and args.get("task", "").strip() else ""

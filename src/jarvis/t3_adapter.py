@@ -22,8 +22,13 @@ T3_HOME = Path.home() / ".t3"
 PROTOCOL = 2  # T3's ORCHESTRATION_PROTOCOL_VERSION; the server answers 426 to any other
 _ACTIVE = {"preparing", "queued", "starting", "running", "waiting"}
 _ASKS = {"approval_request", "user_input_request"}
-PROJECTS_LABEL = load_soul().projects_dir  # as written in SOUL.md, e.g. "~/Projects"; also what the model sees
-PROJECTS = Path(PROJECTS_LABEL).expanduser()  # every project of the user's lives here, one or two folders deep
+def projects_dir() -> tuple[str, Path]:
+    """The projects folder from SOUL.md, as written (for the model) and expanded (for the filesystem)."""
+    label = load_soul().projects_dir
+    return label, Path(label).expanduser()
+
+
+PROJECTS_LABEL, PROJECTS = projects_dir()  # initial values, kept for callers that import them directly
 SYNC_MASTER = "Sync with the master branch"
 
 
@@ -44,10 +49,11 @@ def _last_touched(repo: Path) -> float:
     return (git / "index").stat().st_mtime if (git / "index").exists() else git.stat().st_mtime
 
 
-def list_projects(root: Path = PROJECTS, *, sort: bool = True) -> list[str]:
+def list_projects(root: Path | None = None, *, sort: bool = True) -> list[str]:
     """Git repos one or two folders under root, as relative paths ("HuggerHustle/platform-v2"), newest first."""
+    base = projects_dir()[1] if root is None else root
     found: list[str] = []
-    for top in sorted(root.iterdir()) if root.is_dir() else []:
+    for top in sorted(base.iterdir()) if base.is_dir() else []:
         if top.name.startswith(".") or not top.is_dir():
             continue
         if (top / ".git").exists():
@@ -57,16 +63,19 @@ def list_projects(root: Path = PROJECTS, *, sort: bool = True) -> list[str]:
             found += [f"{top.name}/{sub.name}" for sub in sorted(top.iterdir()) if (sub / ".git").exists()]
         except OSError:
             continue  # unreadable folder: not a project Jarvis can open
-    return sorted(found, key=lambda folder: _last_touched(root / folder), reverse=True) if sort else found
+    return sorted(found, key=lambda folder: _last_touched(base / folder), reverse=True) if sort else found
 
 
 def resolve_project(folder: str) -> Path | None:
     """A listed project's folder for the name the model gave, else None: the model never picks an arbitrary path.
     Case-blind, like the macOS file system."""
-    listed = {f.lower(): f for f in list_projects(sort=False)}.get(
-        folder.removeprefix(f"{PROJECTS_LABEL}/").strip("/").lower()
-    )
-    return PROJECTS / listed if listed else None
+    label, root = projects_dir()
+    cleaned = folder.strip("/")
+    prefix = f"{label.strip('/')}/"
+    if cleaned.lower().startswith(prefix.lower()):
+        cleaned = cleaned[len(prefix):].strip("/")
+    listed = {f.lower(): f for f in list_projects(root, sort=False)}.get(cleaned.lower())
+    return root / listed if listed else None
 
 
 def recent_threads(snapshot: dict[str, Any], limit: int | None = 15) -> list[dict[str, Any]]:
@@ -436,7 +445,7 @@ class T3Adapter(CodingSessionAdapter):
         except Exception as exc:
             logger.error(f"[{self.config.id}] Could not read T3 projects: {exc!r}")
             return False
-        if project is None and Path(cwd).expanduser().resolve().is_relative_to(PROJECTS.expanduser().resolve()):
+        if project is None and Path(cwd).expanduser().resolve().is_relative_to(projects_dir()[1].expanduser().resolve()):
             project = {"id": str(uuid.uuid4()), "workspaceRoot": cwd}
             created = await self._call("orchestration.dispatchCommand", {
                 "type": "project.create", "commandId": str(uuid.uuid4()), "projectId": project["id"],

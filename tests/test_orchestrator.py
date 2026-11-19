@@ -90,8 +90,7 @@ class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
         orch = AgentOrchestrator(state=state)
         agent = MagicMock()
         agent.config.id, agent.config.name = "hermes", "Hermes"
-        busy = iter([True, True, True, True, False])  # done at the 5th check
-        type(agent).busy = property(lambda _: next(busy))
+        agent.busy = True
         waits: list[int] = []
 
         async def fake_sleep(seconds: int) -> None:
@@ -103,6 +102,8 @@ class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
                 state.mode = JarvisMode.BEEP_ONLY  # muted: no reminder
             elif len(waits) == 4:
                 state.mode = JarvisMode.VOICE
+            elif len(waits) == 5:
+                agent.busy = False
 
         with patch("jarvis.orchestrator.asyncio.sleep", fake_sleep):
             await orch._remind(agent, WaitingLines("check my calendar"))  # no client: the base lines
@@ -112,6 +113,58 @@ class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
         first, second = (c.args[0] for c in state.on_speak.await_args_list)
         self.assertNotEqual(first, second)  # varied, never the same line twice in a row
         self.assertLessEqual({first, second}, set(LANGUAGES["en"]["waiting"]))
+
+    async def test_remind_skips_speaking_if_state_changes_during_lines_next(self) -> None:
+        from jarvis.state import JarvisMode
+
+        for change in ("finish", "mute"):
+            with self.subTest(change=change):
+                state = JarvisState(on_speak=AsyncMock())
+                orch = AgentOrchestrator(state=state)
+                agent = MagicMock()
+                agent.config.id, agent.busy = "hermes", True
+                lines = MagicMock(spec=WaitingLines)
+
+                async def slow_next() -> str:
+                    if change == "finish":
+                        agent.busy = False
+                    else:
+                        state.mode = JarvisMode.BEEP_ONLY
+                    return "Still on it."
+
+                lines.next = AsyncMock(side_effect=slow_next)
+                calls = 0
+
+                async def fake_sleep(_: int) -> None:
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        agent.busy = False
+
+                with patch("jarvis.orchestrator.asyncio.sleep", fake_sleep):
+                    await orch._remind(agent, lines)
+                state.on_speak.assert_not_awaited()
+                lines.stop.assert_called_once()
+
+    async def test_stop_all_cancels_active_reminders(self) -> None:
+        import asyncio
+
+        orch = AgentOrchestrator(state=JarvisState())
+        orch._http = None
+        agent = fake_adapter("hermes")
+        agent.stop = AsyncMock()
+        orch.adapters["hermes"] = agent
+        orch.remind_while_busy(agent, "check my calendar")
+        task, lines = orch._reminders["hermes"]
+        lines.stop = MagicMock(wraps=lines.stop)
+
+        await orch.stop_all()
+        await asyncio.sleep(0)
+
+        self.assertEqual(orch._reminders, {})
+        self.assertTrue(task.cancelled())
+        self.assertGreaterEqual(lines.stop.call_count, 1)
+        agent.stop.assert_awaited_once()
 
 
 if __name__ == "__main__":

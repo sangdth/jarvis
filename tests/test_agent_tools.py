@@ -169,6 +169,32 @@ class TestAgentToolHandlers(unittest.IsolatedAsyncioTestCase):
         await self.handlers["send_agent_task"](p)
         p.result_callback.assert_awaited_once_with({"agent_id": "t3-code", "status": "sent", "session": "Fix the navbar"})
 
+    async def test_staged_new_t3_session_is_preserved_on_next_turn(self) -> None:
+        from pathlib import Path
+
+        t3 = self.t3(None)
+        t3.cwd = "/p/web"
+        t3._fresh = True
+        t3.list_sessions = AsyncMock()
+        t3.pick_session = AsyncMock()
+        with patch("jarvis.agent_tools.resolve_project", return_value=Path("/p/web")):
+            p = params({"agent_id": "t3-code", "project": "web", "task": "Fix the login"})
+            await self.handlers["send_agent_task"](p)
+        t3.list_sessions.assert_not_awaited()
+        t3.pick_session.assert_not_awaited()
+        self.assertTrue(t3._fresh)
+        t3.send_task.assert_awaited_once_with("Fix the login")
+
+    async def test_list_sessions_formats_epoch_zero_as_empty(self) -> None:
+        from jarvis.sessions import AgentSession
+
+        t3 = self.t3("t1")
+        t3.list_sessions = AsyncMock(return_value=[AgentSession("t1", "Fresh", "/p/jarvis", 0.0)])
+        p = params({"agent_id": "t3-code"})
+        await self.handlers["list_sessions"](p)
+        result = p.result_callback.await_args.args[0]
+        self.assertEqual(result["sessions"][0]["updated"], "")
+
     async def test_list_sessions_reads_titles_and_marks_the_current_one(self) -> None:
         from jarvis.sessions import AgentSession
 
@@ -330,6 +356,19 @@ class TestSessionSwitch(unittest.IsolatedAsyncioTestCase):
         with patch.object(settings, "meeting_guests", "allow"):
             self.assertEqual((await self.send(task="fix it"))["status"], "sent")
             self.assertEqual((await self.send(task="fix it", replace=True))["status"], "owner_only")
+
+    async def test_guest_cannot_switch_session_or_project_even_when_guests_allowed(self) -> None:
+        from jarvis.config import settings
+
+        self.orch.state.room_turn = True
+        with patch.object(settings, "meeting_guests", "allow"):
+            self.assertEqual((await self.send(session="new", task="fix it"))["status"], "owner_only")
+            self.assertEqual((await self.send(session="login", task="fix it"))["status"], "owner_only")
+            self.assertEqual((await self.send(project="web", task="fix it"))["status"], "owner_only")
+        self.agent.list_sessions.assert_not_awaited()
+        self.agent.pick_session.assert_not_awaited()
+        self.agent.new_session.assert_not_awaited()
+        self.agent.send_task.assert_not_awaited()
 
 
 if __name__ == "__main__":
