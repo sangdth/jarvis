@@ -6,7 +6,7 @@
   const voice = ctx.createGain(); // Jarvis's speech; every mic Meet gets mixes it in
   let next = 0;
   // Chrome keeps the context silent until the page gets a click or a key; joining the call is one.
-  for (const type of ["pointerdown", "keydown"]) addEventListener(type, () => ctx.resume(), { capture: true });
+  for (const type of ["pointerdown", "keydown"]) addEventListener(type, () => ctx.resume(), { capture: true, once: true });
 
   function connect() {
     const ws = new WebSocket(SOCKET);

@@ -37,37 +37,42 @@ def main() -> None:
     audio, mic, clip = MacVoiceAudio(), MicConverter(SAMPLE_RATE), []
     audio.on_mic(lambda samples, rate: clip.append(mic.convert(samples, rate)))
     audio.start()
+    try:
 
-    def record(label: str, line: str) -> bytes:
-        input(f"{label} Press Enter, then say:\n    {line}\n")
-        print(f"Recording {SECONDS_PER_CLIP} s...")
-        clip.clear()
-        time.sleep(SECONDS_PER_CLIP)
-        return b"".join(list(clip))
+        def record(label: str, line: str) -> bytes:
+            input(f"{label} Press Enter, then say:\n    {line}\n")
+            print(f"Recording {SECONDS_PER_CLIP} s...")
+            clip.clear()
+            time.sleep(SECONDS_PER_CLIP)
+            return b"".join(list(clip))
 
-    print("\n=== Jarvis owner voice enrollment ===")
-    print("Use the mic Jarvis will use, where you usually sit. Read each line in your normal voice.\n")
-    embeddings = []
-    for i, line in enumerate(text["enroll"], 1):
-        emb = embedder.embed(record(f"[{i}/{len(text['enroll'])}]", line))
-        if emb is None:
-            sys.exit("Recording was empty; check the mic and try again.")
-        embeddings.append(emb)
-    for i, emb in enumerate(embeddings):
-        # Each clip against the average of the others: a low number means a noisy or inconsistent recording.
-        others = np.mean([e for j, e in enumerate(embeddings) if j != i], axis=0)
-        print(f"Clip {i + 1} matches the others at {cosine(emb, others):.2f}")
-    path = save_voiceprint(embeddings)
-    voiceprint = np.load(path)
-    print(f"\nSaved owner voiceprint to {path}")
+        print("\n=== Jarvis owner voice enrollment ===")
+        print("Use the mic Jarvis will use, where you usually sit. Read each line in your normal voice.\n")
+        embeddings = []
+        for i, line in enumerate(text["enroll"], 1):
+            emb = embedder.embed(record(f"[{i}/{len(text['enroll'])}]", line))
+            if emb is None:
+                sys.exit("Recording was empty; check the mic and try again.")
+            embeddings.append(emb)
+        for i, emb in enumerate(embeddings):
+            # Each clip against the average of the others: a low number means a noisy or inconsistent recording.
+            others = np.mean([e for j, e in enumerate(embeddings) if j != i], axis=0)
+            print(f"Clip {i + 1} matches the others at {cosine(emb, others):.2f}")
+        path = save_voiceprint(embeddings)
+        voiceprint = np.load(path)
+        print(f"\nSaved owner voiceprint to {path}")
 
-    print("\nNow three new lines, to measure how Jarvis will score you.\n")
-    scores = []
-    for i, line in enumerate(text["enroll_check"], 1):
-        score = cosine(embedder.embed(record(f"[check {i}/{len(text['enroll_check'])}]", line)), voiceprint)
-        scores.append(score)
-        print(f"Score {score:.2f}")
-    audio.stop()
+        print("\nNow three new lines, to measure how Jarvis will score you.\n")
+        scores = []
+        for i, line in enumerate(text["enroll_check"], 1):
+            emb = embedder.embed(record(f"[check {i}/{len(text['enroll_check'])}]", line))
+            if emb is None:
+                sys.exit("Recording was empty; check the mic and try again.")
+            score = cosine(emb, voiceprint)
+            scores.append(score)
+            print(f"Score {score:.2f}")
+    finally:
+        audio.stop()
 
     print(f"\nYour scores: {', '.join(f'{s:.2f}' for s in scores)} (now SPEAKER_THRESHOLD={settings.speaker_threshold}).")
     print(f"Suggested: set SPEAKER_THRESHOLD={suggest_threshold(scores):.2f} in .env, then restart Jarvis.")

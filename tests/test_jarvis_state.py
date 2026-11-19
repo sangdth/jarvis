@@ -85,6 +85,8 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.mode, JarvisMode.BEEP_ONLY)
         self.assertEqual(interrupts_called, 1)
         self.assertEqual(len(beeps_played), 1)
+        self.assertEqual(len(beeps_played[0]), 3840)  # 120 ms at 16 kHz int16 mono (3 × 40 ms chunks)
+        self.assertEqual(len(beeps_played[0]) % 1280, 0)
 
         # 3. While muted, OpenCode finishes a task needing a decision -> Jarvis only beeps and queues
         topic2 = AgentTopic(
