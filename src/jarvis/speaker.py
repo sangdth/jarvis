@@ -264,6 +264,7 @@ class SpeakerRegistry:
             profile.name = cleaned
             if enroll:
                 profile.enrolled = True
+            if profile.enrolled:
                 self._save()
             return profile
 

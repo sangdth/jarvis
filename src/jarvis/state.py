@@ -126,8 +126,8 @@ class JarvisState:
         if self.on_interrupt:
             await self.on_interrupt()
         if self.on_beep:
-            # Play a low double-tone to confirm mute
-            low_beep = synthesize_beep_pcm(freq_hz=440.0, duration_ms=100)
+            # Play a low tone to confirm mute (120 ms = 3 × 40 ms audio_out chunks)
+            low_beep = synthesize_beep_pcm(freq_hz=440.0, duration_ms=120)
             await self.on_beep(low_beep)
 
     async def set_unmute(self) -> str:

@@ -122,6 +122,26 @@ class TestSpeaker(unittest.TestCase):
             self.assertEqual(david.clips, 2)
             self.assertGreater(cosine(np.array([0.7, 0.7], dtype=np.float32), david.voiceprint), 0.99)
 
+    def test_link_name_without_enroll_persists_when_merging_into_enrolled_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "speakers"
+            reg = SpeakerRegistry(folder=folder)
+
+            p1 = reg.observe(np.array([0.0, 1.0], dtype=np.float32), threshold=0.5)
+            assert p1 is not None
+            reg.link_name(p1.id, "David", enroll=True)
+
+            p2 = reg.observe(np.array([1.0, 0.0], dtype=np.float32), threshold=0.5)
+            assert p2 is not None
+            merged = reg.link_name(p2.id, "David", enroll=False)
+            self.assertIs(merged, p1)
+
+            reloaded = SpeakerRegistry(folder=folder)
+            david = reloaded.get("David")
+            assert david is not None
+            self.assertEqual(david.clips, 2)
+            self.assertGreater(cosine(np.array([0.7, 0.7], dtype=np.float32), david.voiceprint), 0.99)
+
 
 if __name__ == "__main__":
     unittest.main()

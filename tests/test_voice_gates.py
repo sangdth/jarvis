@@ -152,6 +152,14 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         await self.gate.process_frame(heard("The tree is walking under the..."), down)
         self.assertEqual(self.turns(), ["Yes, you should have got me how the... The tree is walking under the..."])
 
+    @patch("jarvis.voice_gates.HOLD_SECS", 0.05)
+    async def test_trailing_off_does_not_join_frames_from_different_speakers(self) -> None:
+        down = FrameDirection.DOWNSTREAM
+        await self.gate.process_frame(TranscriptionFrame(text="Well...", user_id="room", timestamp="0"), down)
+        await self.gate.process_frame(TranscriptionFrame(text="Jarvis, approve it.", user_id="owner", timestamp="0"), down)
+        self.assertEqual(self.turns(), ["Jarvis, approve it."])
+        await self.gate.cleanup()
+
     async def test_answer_right_after_jarvis_speaks_carries_its_reply(self) -> None:
         self.gate = JarvisIntentGate(self.state, self.filter, last_said=lambda: "Which project, Opscom or another?")
         self.gate.push_frame = AsyncMock()
@@ -446,6 +454,52 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.state.enrolling)
         self.assertIn("Nice to meet you, David!", spoken[-1])
 
+    async def test_other_voices_mid_enrollment_do_not_advance_or_cancel_enrollment(self) -> None:
+        from jarvis.config import settings
+
+        spoken: list[str] = []
+
+        async def on_speak(text: str) -> None:
+            spoken.append(text)
+
+        self.state.on_speak = on_speak
+        down = FrameDirection.DOWNSTREAM
+        self.enterContext(patch.object(settings, "master_check", True))
+
+        sarah = self.gate.registry.observe(np.array([0.0, 0.0, 1.0], dtype=np.float32), 0.35)
+        assert sarah is not None
+        self.gate.registry.link_name(sarah.id, "Sarah", enroll=True)
+        sarah.greeted = True
+
+        self.filter.classify_user_utterance.return_value = UserIntent.INTRODUCTION
+        await self.gate.process_frame(heard("Jarvis, meet my friend."), down)
+        self.filter.classify_user_utterance.return_value = UserIntent.ADDRESSED_TO_JARVIS
+
+        p1 = self.gate.registry.observe(np.array([0.0, 1.0, 0.0], dtype=np.float32), 0.35)
+        p2 = self.gate.registry.observe(np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.35)
+        assert p1 is not None and p2 is not None
+
+        # p1 starts enrollment (Q1 asked)
+        await self.gate.process_frame(TranscriptionFrame(text="Hello Jarvis!", user_id=p1.id, timestamp="0"), down)
+        self.assertEqual(len(spoken), 1)
+        assert self.gate._enrollment is not None
+        self.assertEqual(self.gate._enrollment.profile_id, p1.id)
+        self.assertEqual(self.gate._enrollment.questions_asked, 1)
+
+        # A second unknown voice mid-enrollment is dropped without advancing enrollment
+        await self.gate.process_frame(TranscriptionFrame(text="Background chatter", user_id=p2.id, timestamp="0"), down)
+        self.assertEqual(len(spoken), 1)
+        self.assertEqual(self.turns(), [])
+        self.assertTrue(self.state.enrolling)
+        self.assertEqual(self.gate._enrollment.questions_asked, 1)
+
+        # An already-enrolled guest speaking mid-enrollment is handled normally and does not cancel p1's enrollment
+        await self.gate.process_frame(TranscriptionFrame(text="What time is it?", user_id="Sarah", timestamp="0"), down)
+        self.assertTrue(self.state.enrolling)
+        self.assertEqual(self.gate._enrollment.profile_id, p1.id)
+        self.assertEqual(self.gate._enrollment.questions_asked, 1)
+        self.assertEqual(self.turns(), ["[Speaker: Sarah]: What time is it?"])
+
 
 class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
     """Whisper is mocked; the embedder returns a fixed vector so the score is known."""
@@ -597,6 +651,9 @@ class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
         self.stt = SpeakerVerifiedWhisperSTT(embedder=None, voiceprint=None, threshold=0.5, turn_analyzer=self.turn)
         self.stt._audio_buffer_size_1s = 4  # normally one second; tiny so a trim would show
         self.stt._sample_rate = 16000  # set by StartFrame in the pipeline
+        push = patch.object(SpeakerVerifiedWhisperSTT, "push_frame", new_callable=AsyncMock)
+        push.start()
+        self.addCleanup(push.stop)
         flush = patch.object(SegmentedSTTService, "_handle_user_stopped_speaking", new_callable=AsyncMock)
         self.flush = flush.start()
         self.addCleanup(flush.stop)
@@ -604,22 +661,28 @@ class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
     async def speak(self, audio: bytes) -> None:
         from pipecat.frames.frames import InputAudioRawFrame
 
-        await self.stt._handle_user_started_speaking(VADUserStartedSpeakingFrame())
-        await self.stt.process_audio_frame(InputAudioRawFrame(audio, 16000, 1), FrameDirection.DOWNSTREAM)
-        await self.stt._handle_user_stopped_speaking(VADUserStoppedSpeakingFrame())
+        await self.stt.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await self.stt.process_frame(InputAudioRawFrame(audio, 16000, 1), FrameDirection.DOWNSTREAM)
+        await self.stt.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
 
     async def test_a_finished_sentence_goes_on_at_the_short_pause(self) -> None:
         await self.speak(b"\x01\x00" * 8)
         self.flush.assert_awaited_once()
 
     async def test_a_pause_mid_thought_keeps_the_whole_sentence_for_one_segment(self) -> None:
+        from pipecat.frames.frames import InputAudioRawFrame
+
         self.turn.analyze_end_of_turn.return_value = (self.states.INCOMPLETE, None)
         await self.speak(b"\x01\x00" * 8)  # "open the..."
         self.flush.assert_not_awaited()
+        # Silent frames exceeding _audio_buffer_size_1s during the pause must not trim pre-pause audio.
+        pause = b"\x00\x00" * 4
+        await self.stt.process_frame(InputAudioRawFrame(pause, 16000, 1), FrameDirection.DOWNSTREAM)
+        self.assertEqual(bytes(self.stt._audio_buffer), b"\x01\x00" * 8 + pause)
         self.turn.analyze_end_of_turn.return_value = (self.states.COMPLETE, None)
         await self.speak(b"\x02\x00" * 8)  # "...jarvis project"
         self.flush.assert_awaited_once()
-        self.assertEqual(bytes(self.stt._audio_buffer), b"\x01\x00" * 8 + b"\x02\x00" * 8)  # no one-second trim
+        self.assertEqual(bytes(self.stt._audio_buffer), b"\x01\x00" * 8 + pause + b"\x02\x00" * 8)
 
     async def test_long_silence_after_a_pause_sends_what_was_said(self) -> None:
         from pipecat.frames.frames import InputAudioRawFrame
@@ -627,7 +690,7 @@ class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
         self.turn.analyze_end_of_turn.return_value = (self.states.INCOMPLETE, None)
         await self.speak(b"\x01\x00" * 8)
         self.turn.append_audio.return_value = self.states.COMPLETE  # past SmartTurnParams.stop_secs of silence
-        await self.stt.process_audio_frame(InputAudioRawFrame(b"\x00\x00" * 8, 16000, 1), FrameDirection.DOWNSTREAM)
+        await self.stt.process_frame(InputAudioRawFrame(b"\x00\x00" * 8, 16000, 1), FrameDirection.DOWNSTREAM)
         self.flush.assert_awaited_once()
         self.turn.analyze_end_of_turn.assert_awaited_once()  # not asked again: it has no audio left to judge
 
@@ -638,6 +701,7 @@ class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
         self.stt._audio_buffer = bytearray(16000 * 2 * MAX_HELD_SECS)  # a TV that never sounds done
         await self.speak(b"\x01\x00" * 8)
         self.flush.assert_awaited_once()
+        self.turn.clear.assert_called_once()
 
     async def test_without_smart_turn_every_pause_ends_the_sentence(self) -> None:
         from jarvis.voice_gates import SpeakerVerifiedWhisperSTT

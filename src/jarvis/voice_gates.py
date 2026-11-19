@@ -164,12 +164,15 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         if self._turn is not None:
             done, _ = await self._turn.analyze_end_of_turn()
             # A TV or a meeting that never sounds done would grow the buffer for minutes, then stall Whisper on it.
-            if done == EndOfTurnState.INCOMPLETE and len(self._audio_buffer) < self.sample_rate * 2 * MAX_HELD_SECS:
-                # Pipecat trims its buffer to the last second only while nobody speaks, so the sentence counts as
-                # still spoken until it goes on below.
-                self._holding = True
-                logger.debug("[Turn] pause mid-sentence; waiting for the rest")
-                return
+            if done == EndOfTurnState.INCOMPLETE:
+                if len(self._audio_buffer) < self.sample_rate * 2 * MAX_HELD_SECS:
+                    # STTService._handle_vad_user_stopped_speaking already set _user_speaking = False, which makes
+                    # SegmentedSTTService trim _audio_buffer to 1 s during the pause; keep it True while held.
+                    self._user_speaking = True
+                    self._holding = True
+                    logger.debug("[Turn] pause mid-sentence; waiting for the rest")
+                    return
+                self._turn.clear()
         self._holding = False
         await super()._handle_user_stopped_speaking(frame)
 
@@ -376,13 +379,13 @@ class JarvisIntentGate(FrameProcessor):
         # Mute / unmute / introduction act at once and never join a held sentence.
         if fast is None:
             held = self._held
-            if held is not None:
+            if held is not None and held.user_id == frame.user_id:
                 self._cancel_hold_timer()
                 frame = replace(frame, text=f"{held.text.strip()} {transcript}")
                 self._held = None
             # Hold once: a joined sentence that trails off again goes on now instead of waiting another HOLD_SECS.
             # Smart Turn already held the audio across the pause, so with it on a second wait only adds delay.
-            if held is None and not settings.smart_turn and frame.text.strip().endswith(TRAILING_OFF):
+            elif held is None and not settings.smart_turn and frame.text.strip().endswith(TRAILING_OFF):
                 logger.info(f"[User Transcript] holding for the rest: {frame.text.strip()!r}")
                 self._held = frame
                 self._start_hold_timer(direction)
@@ -523,9 +526,12 @@ class JarvisIntentGate(FrameProcessor):
             self._stop_enrollment()
 
         fast = classify_fast_command(transcript)
+        enrolling_this = (
+            profile is not None and self._enrollment is not None and self._enrollment.profile_id in (None, profile.id)
+        )
         # A voice that is neither the master's, enrolled, nor being enrolled never reaches the model. The STT lets
-        # it through only while enrolling; this catches the sentence that arrives after the window closed.
-        if not is_owner and frame.user_id != "room" and (profile is None or not profile.enrolled) and self._enrollment is None:
+        # it through only while enrolling; this catches late frames and any second unknown voice mid-enrollment.
+        if not is_owner and frame.user_id != "room" and (profile is None or not profile.enrolled) and not enrolling_this:
             if fast in (UserIntent.MUTE, UserIntent.UNMUTE):
                 is_owner = True  # mute and unmute pass from any voice
             else:
@@ -545,17 +551,20 @@ class JarvisIntentGate(FrameProcessor):
             await self.state.on_interrupt()
 
         # A name counts only while enrolling this voice: "It's Friday" from a known guest must not rename them.
-        enrolling_this = (
-            profile is not None and self._enrollment is not None and self._enrollment.profile_id in (None, profile.id)
-        )
-        if enrolling_this and fast != UserIntent.IGNORE_BACKGROUND and not is_not_for_jarvis(transcript):
-            assert profile is not None and self._enrollment is not None
+        if (
+            enrolling_this
+            and profile is not None
+            and not profile.enrolled
+            and fast != UserIntent.IGNORE_BACKGROUND
+            and not is_not_for_jarvis(transcript)
+        ):
+            assert self._enrollment is not None
             stated_name = extract_speaker_name(transcript, allow_bare=self._enrollment.asked_name)
             if stated_name:
                 profile = self.registry.link_name(profile.id, stated_name, enroll=False) or profile
 
         if (
-            self._enrollment is not None
+            enrolling_this
             and profile is not None
             and fast not in (UserIntent.MUTE, UserIntent.UNMUTE, UserIntent.IGNORE_BACKGROUND)
             and not is_not_for_jarvis(transcript)
