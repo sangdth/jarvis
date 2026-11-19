@@ -117,7 +117,9 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
             service = memory.create_memory_service()
         assert service is not None
         note = memory.NOT_THE_USER + " Jarvis just started. Greet the user."
-        await service._enhance_context_with_memories(MagicMock(), note)
+        ctx = MagicMock()
+        ctx.get_messages.return_value = [{"role": "user", "content": note}]
+        await service._enhance_context_with_memories(ctx, note)
         await service._store_messages([{"role": "user", "content": note}])
         client.search.assert_not_called()
         client.add.assert_not_called()
@@ -136,17 +138,103 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         transcript_room = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + room
         transcript_guest = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + guest
         for query in (room, guest, transcript_room, transcript_guest):
-            await service._enhance_context_with_memories(MagicMock(), query)
+            ctx = MagicMock()
+            ctx.get_messages.return_value = [{"role": "user", "content": query}]
+            await service._enhance_context_with_memories(ctx, query)
         client.search.assert_not_called()
         for turn in (
             room,
             guest,
+            memory.USER + " Jarvis, check the status.",
             memory.MEETING_TRANSCRIPT + "\n[Room]: Anna is on leave.]\n[User]: Jarvis, note that.",
             memory.MEETING_TRANSCRIPT + "\n[Room]: Anna is on leave.]\n[Speaker: David]: Jarvis, note that.",
         ):
             await service._store_messages([{"role": "user", "content": turn}])
             await service._store_messages([{"role": "user", "content": turn}, {"role": "assistant", "content": "Ok."}])
         client.add.assert_not_called()
+
+    async def test_owner_turn_after_guest_saves_only_owner_message(self) -> None:
+        client = MagicMock()
+        with (
+            patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+            patch.object(memory, "MEMORY_DIR", Path("/tmp/jarvis-test-memory")),
+            patch("mem0.Memory.from_config", return_value=client),
+        ):
+            service = memory.create_memory_service()
+        assert service is not None
+        for skipped, owner_msg in (
+            (memory.SPEAKER + " David]: What's the weather?", "We're switching to Postgres."),
+            (memory.ROOM + " Anyone here?", "I prefer dark roast."),
+        ):
+            talk = [
+                {"role": "user", "content": skipped},
+                {"role": "assistant", "content": "Reply to guest."},
+                {"role": "user", "content": owner_msg},
+            ]
+            await service._store_messages(talk)
+            self.assertEqual(client.add.call_args.kwargs["messages"], [{"role": "user", "content": owner_msg}])
+        self.assertEqual(client.add.call_count, 2)
+
+    async def test_non_user_tail_keeps_recall_block_without_requerying(self) -> None:
+        client = MagicMock()
+        with (
+            patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+            patch.object(memory, "MEMORY_DIR", Path("/tmp/jarvis-test-memory")),
+            patch("mem0.Memory.from_config", return_value=client),
+        ):
+            service = memory.create_memory_service()
+        assert service is not None
+
+        messages: list[dict[str, str]] = [{"role": "user", "content": "What runtime do we use?"}]
+        ctx = MagicMock()
+        ctx.get_messages.side_effect = lambda: list(messages)
+        ctx.set_messages.side_effect = lambda updated: messages.__setitem__(slice(None), updated)
+
+        client.search.return_value = {"results": [{"memory": "Team uses Bun"}]}
+        await service._enhance_context_with_memories(ctx, "What runtime do we use?")
+        self.assertEqual([m["role"] for m in messages], ["developer", "user"])
+
+        for extra in (
+            {"role": "system", "content": memory.NOT_THE_USER + " an agent finished its turn.] Done."},
+            {"role": "tool", "content": '{"ok": true}'},
+        ):
+            messages.append(extra)
+            before = list(messages)
+            await service._enhance_context_with_memories(ctx, "What runtime do we use?")
+            self.assertEqual(messages, before)
+        client.search.assert_called_once()
+
+    async def test_repeated_question_after_guest_turn_restores_recall_block(self) -> None:
+        client = MagicMock()
+        with (
+            patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+            patch.object(memory, "MEMORY_DIR", Path("/tmp/jarvis-test-memory")),
+            patch("mem0.Memory.from_config", return_value=client),
+        ):
+            service = memory.create_memory_service()
+        assert service is not None
+
+        question = "What runtime do we use?"
+        messages: list[dict[str, str]] = [{"role": "user", "content": question}]
+        ctx = MagicMock()
+        ctx.get_messages.side_effect = lambda: list(messages)
+        ctx.set_messages.side_effect = lambda updated: messages.__setitem__(slice(None), updated)
+
+        client.search.return_value = {"results": [{"memory": "Team uses Bun"}]}
+        await service._enhance_context_with_memories(ctx, question)
+        self.assertEqual([m["role"] for m in messages], ["developer", "user"])
+
+        guest_turn = memory.SPEAKER + " David]: Hello?"
+        messages.extend([{"role": "assistant", "content": "Bun."}, {"role": "user", "content": guest_turn}])
+        await service._enhance_context_with_memories(ctx, guest_turn)
+        self.assertFalse(any("Team uses Bun" in m["content"] for m in messages))
+
+        messages.extend([{"role": "assistant", "content": "Hi David."}, {"role": "user", "content": question}])
+        await service._enhance_context_with_memories(ctx, question)
+        self.assertEqual(client.search.call_count, 2)
+        self.assertEqual(messages[-2]["role"], "developer")
+        self.assertIn("1. Team uses Bun", messages[-2]["content"])
+        self.assertEqual(messages[-1], {"role": "user", "content": question})
 
     async def test_guest_turn_strips_prior_recall_block(self) -> None:
         client = MagicMock()
