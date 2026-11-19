@@ -14,13 +14,14 @@ from typing import Any
 from loguru import logger
 
 from jarvis.config import JARVIS_HOME, settings
-from jarvis.prompts import MEETING_TRANSCRIPT, NOT_THE_USER, ROOM, SPEAKER
+from jarvis.prompts import MEETING_TRANSCRIPT, NOT_THE_USER, ROOM, SPEAKER, USER
 
 # Mem0 reports usage to PostHog unless this is set before it is imported.
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 MEMORY_DIR = JARVIS_HOME / "memory"
 USER_ID = "sang"  # one user; Mem0 needs an id to file memories under
+_SKIP_STORE = (NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, SPEAKER, USER)
 
 
 def mem0_config(memory_dir: Path | None = None) -> dict[str, Any]:
@@ -88,8 +89,11 @@ def create_memory_service() -> Any | None:
         _last_saved: list[Any] | None = None
 
         async def _enhance_context_with_memories(self, context, query):  # type: ignore[override]
-            # Strip any prior recall block first so a skipped turn (guest, non-user) never keeps the master's memories.
             raw = list(context.get_messages())
+            # Agent reports (system) and tool round-trips (tool) reuse the current turn's recall block without re-querying.
+            if not raw or not isinstance(raw[-1], dict) or raw[-1].get("role") != "user":
+                return
+            # Strip any prior recall block first so a skipped turn (guest, non-user) never keeps the master's memories.
             messages = [
                 m
                 for m in raw
@@ -99,11 +103,7 @@ def create_memory_service() -> Any | None:
                 context.set_messages(messages)
             # Jarvis's own notes (the greeting) are not a memory query; someone else in a meeting or guest gets no memories.
             last_line = next((line for line in reversed(query.splitlines()) if line.strip()), "")
-            if (
-                query.startswith((NOT_THE_USER, ROOM, SPEAKER))
-                or last_line.lstrip().startswith((ROOM, SPEAKER))
-                or self.last_query == query
-            ):
+            if query.startswith((NOT_THE_USER, ROOM, SPEAKER)) or last_line.lstrip().startswith((ROOM, SPEAKER)):
                 return
             self.last_query = query
             memories = await self._retrieve_memories(query)
@@ -130,11 +130,19 @@ def create_memory_service() -> Any | None:
             # process_frame runs before the LLM responds, so a new user turn ends with "user"; agent reports do not.
             if not messages or messages[-1].get("role") != "user":
                 return
-            newest = messages[-2:]
+            if str(messages[-1].get("content", "")).startswith(_SKIP_STORE):
+                return
+            if (
+                len(messages) >= 3
+                and messages[-2].get("role") == "assistant"
+                and messages[-3].get("role") == "user"
+                and str(messages[-3].get("content", "")).startswith(_SKIP_STORE)
+            ):
+                newest = messages[-1:]
+            else:
+                newest = messages[-2:]
             if newest == self._last_saved or any(
-                m.get("role") == "user"
-                and str(m.get("content", "")).startswith((NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, SPEAKER))
-                for m in newest
+                m.get("role") == "user" and str(m.get("content", "")).startswith(_SKIP_STORE) for m in newest
             ):
                 return
             self._last_saved = newest
