@@ -14,6 +14,9 @@ from jarvis.opencode_adapter import OpenCodeSSEAdapter, discover_service
 
 class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        no_service = patch("jarvis.opencode_adapter.discover_service", return_value=None)
+        no_service.start()
+        self.addCleanup(no_service.stop)
         self.adapter = make(OpenCodeSSEAdapter, "opencode_sse")
         self.post = AsyncMock(return_value=MagicMock(is_success=True))
 
@@ -157,9 +160,15 @@ class TestOpenCodeAdapter(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_interrupts_the_session(self) -> None:
         self.adapter._session_id = "ses_1"
+        self.adapter._pending_permission = {"id": "per_1", "sessionID": "ses_1"}
+        self.adapter._pending_form = QUESTION_FORM
         with patch.object(self.adapter._http, "post", new=self.post):
             self.assertTrue(await self.adapter.interrupt())
+            self.assertFalse(await self.adapter.answer("yes"))
         self.post.assert_awaited_once_with("/api/session/ses_1/interrupt")
+        self.assertIsNone(self.adapter._pending_permission)
+        self.assertIsNone(self.adapter._pending_form)
+        self.adapter.state.active_agent_context.pop.assert_called_with("a1", None)
 
     async def test_stop_then_send_keeps_the_new_task_running(self) -> None:
         self.adapter._session_id = "ses_1"
@@ -247,6 +256,9 @@ class TestSharedService(unittest.IsolatedAsyncioTestCase):
     """On the shared service Jarvis keeps to the sessions in its own folder."""
 
     def setUp(self) -> None:
+        no_service = patch("jarvis.opencode_adapter.discover_service", return_value=None)
+        no_service.start()
+        self.addCleanup(no_service.stop)
         with patch("jarvis.opencode_adapter.settings") as settings:  # not pinned, whatever the local .env says
             settings.opencode_server_password = ""
             self.adapter = make(OpenCodeSSEAdapter, "opencode_sse")
@@ -322,6 +334,50 @@ class TestSharedService(unittest.IsolatedAsyncioTestCase):
             await self.adapter._resync()
         for call in get.await_args_list:
             self.assertEqual(call.kwargs["headers"], {"x-opencode-directory": folder})
+
+    async def test_resync_skips_requests_from_other_folders_when_no_session_is_adopted(self) -> None:
+        self.use_service()
+        folder = str(Path("/tmp").resolve())
+        responses = {
+            "/api/permission/request": {"data": [{"id": "per_other", "sessionID": "ses_other", "action": "bash"}]},
+            "/api/form": {"data": [QUESTION_FORM]},
+            "/api/session/ses_other": {"data": {"location": {"directory": "/Users/someone/other-project"}}},
+            "/api/session/ses_1": {"data": {"location": {"directory": folder}}},
+        }
+        get = AsyncMock(
+            side_effect=lambda path, **_: MagicMock(raise_for_status=MagicMock(), json=MagicMock(return_value=responses[path]))
+        )
+        with patch.object(self.adapter._http, "get", new=get):
+            await self.adapter._resync()
+        self.assertIsNone(self.adapter._pending_permission)
+        self.assertEqual(self.adapter._pending_form["id"], "frm_1")
+        self.assertEqual(self.adapter._session_id, "ses_1")
+        self.adapter._surface.assert_awaited_once()
+
+    async def test_new_session_and_send_task_discover_service(self) -> None:
+        folder = str(Path("/tmp").resolve())
+        found = patch("jarvis.opencode_adapter.discover_service", return_value=("http://127.0.0.1:49374", "pw"))
+
+        created = MagicMock(is_success=True, json=MagicMock(return_value={"data": {"id": "ses_new"}}))
+        post = AsyncMock(return_value=created)
+        with found, patch.object(self.adapter._http, "post", new=post):
+            self.assertTrue(await self.adapter.new_session("/p/b"))
+        self.assertEqual(self.adapter.base_url, "http://127.0.0.1:49374")
+        self.assertEqual(self.adapter._directory, "/p/b")
+        post.assert_awaited_once_with("/api/session", json={"title": "Jarvis", "location": {"directory": "/p/b"}})
+
+        with patch("jarvis.opencode_adapter.settings") as settings:
+            settings.opencode_server_password = ""
+            fresh = make(OpenCodeSSEAdapter, "opencode_sse")
+        try:
+            post_task = AsyncMock(side_effect=[created, MagicMock(is_success=True)])
+            with found, patch.object(fresh._http, "post", new=post_task):
+                self.assertTrue(await fresh.send_task("build a navbar"))
+            self.assertEqual(fresh.base_url, "http://127.0.0.1:49374")
+            self.assertEqual(post_task.await_args_list[0].kwargs["json"]["location"], {"directory": folder})
+            post_task.assert_awaited_with("/api/session/ses_new/prompt", json={"text": "build a navbar"})
+        finally:
+            await fresh._http.aclose()
 
 
 if __name__ == "__main__":

@@ -122,6 +122,53 @@ class TestPiAdapter(unittest.IsolatedAsyncioTestCase):
             "closed its window. Run jarvis connect pi again to pick another.", is_report=True
         )
 
+    async def test_stop_clears_dialog_and_replacement_task_stays_busy(self) -> None:
+        await self.pi.say({"type": "busy"})
+        await until(lambda: self.adapter.busy)
+        await self.pi.say({"type": "prompt_start", "kind": "confirm", "title": "Allow rm?"})
+        await until(lambda: self.adapter._dialog)
+        self.adapter._surface.reset_mock()
+
+        self.assertTrue(await self.adapter.interrupt())
+        self.assertEqual(await self.pi.received.get(), {"type": "abort"})
+        self.assertFalse(self.adapter.busy)
+        self.assertFalse(self.adapter._dialog)
+        self.assertFalse(await self.adapter.answer("yes"))
+        self.adapter.state.active_agent_context.pop.assert_called_with("a1", None)
+
+        self.assertTrue(await self.adapter.send_task("corrected task"))
+        self.assertEqual(await self.pi.received.get(), {"type": "prompt", "text": "corrected task"})
+        self.assertTrue(self.adapter.busy)
+
+        await self.pi.say({"type": "settled", "aborted": True, "text": "old half"})
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.adapter.busy)  # aborted turn's settled does not mark the replacement idle
+        self.adapter._surface.assert_not_awaited()
+
+        await self.pi.say({"type": "settled", "aborted": False, "text": "Fixed."})
+        await until(lambda: not self.adapter.busy)
+        self.adapter._surface.assert_awaited_once_with("Fixed.", is_report=True)
+
+    async def test_session_id_and_cwd_follow_hello_and_pick_session(self) -> None:
+        from jarvis.sessions import AgentSession
+
+        await until(lambda: self.adapter.session_id == "s1")
+        self.assertEqual(self.adapter.cwd, "/p/jarvis")
+
+        await self.pi.say({"type": "hello", "session": "s2", "cwd": "/p/other", "busy": False})
+        await until(lambda: self.adapter.session_id == "s2")
+        self.assertEqual(self.adapter.cwd, "/p/other")
+
+        picked = AgentSession("s3", "Third", "/p/third", 1.0)
+        window = [{"session": "s3", "cwd": "/p/third", "socket": str(self.path)}]
+        with (
+            patch.object(pi_adapter, "list_windows", new=AsyncMock(return_value=window)),
+            patch.object(self.adapter, "_restart", new=AsyncMock()),
+        ):
+            self.assertTrue(await self.adapter.pick_session(picked))
+        self.assertEqual(self.adapter.session_id, "s3")
+        self.assertEqual(self.adapter.cwd, "/p/third")
+
 
 class TestPiWindows(unittest.IsolatedAsyncioTestCase):
     async def test_lists_open_windows_and_deletes_dead_sockets(self) -> None:

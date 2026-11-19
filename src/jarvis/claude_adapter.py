@@ -195,21 +195,21 @@ class ClaudeCodeAdapter(CodingSessionAdapter):
         ]
 
     async def pick_session(self, session: AgentSession, connected: bool = False) -> bool:
-        if self.busy:  # restarting the process would drop the running turn without a word
+        if self.busy or (not connected and self._unavailable):  # restarting the process would drop the running turn
             return False
         self._session_id, self.cwd, self.connected = session.id, session.cwd, connected
         if self._task is not None:
             await self._restart()
         elif not connected:
             await self._ensure_started()
-        return True
+        return connected or self._client is not None
 
     async def new_session(self, cwd: str | None = None) -> bool:
-        if self.busy:
+        if self.busy or self._unavailable:
             return False
         self._session_id, self.cwd = None, cwd or self.cwd
         if self._task is not None:
             await self._restart()
         else:
             await self._ensure_started()
-        return True
+        return self._client is not None

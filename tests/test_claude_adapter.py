@@ -2,7 +2,14 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage, SDKSessionInfo, SystemMessage
+from claude_agent_sdk import (
+    CLINotFoundError,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
+    SDKSessionInfo,
+    SystemMessage,
+)
 
 from fakes import make
 from jarvis.claude_adapter import ClaudeCodeAdapter
@@ -193,6 +200,35 @@ class TestClaudeCodeAdapter(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(starts, 1)
             self.assertTrue(await self.adapter.send_task("run the tests"))
             self.adapter._client.query.assert_awaited_once_with("run the tests")
+            await self.adapter.stop()
+
+    async def test_pick_and_new_return_false_when_cli_is_missing_or_not_ready(self) -> None:
+        session = AgentSession("u1", "fix login", "/p/web", 1.0)
+        self.adapter._client = None
+
+        with patch.object(self.adapter, "_ensure_started", new=AsyncMock(return_value=False)):
+            self.assertFalse(await self.adapter.new_session())
+            self.assertFalse(await self.adapter.pick_session(session))
+
+        starts = 0
+
+        class MissingCLI:
+            def __init__(self, options) -> None:
+                nonlocal starts
+                starts += 1
+
+            async def __aenter__(self):
+                raise CLINotFoundError("claude not found")
+
+            async def __aexit__(self, *exc) -> None:
+                return None
+
+        with patch("jarvis.claude_adapter.ClaudeSDKClient", MissingCLI):
+            self.assertFalse(await self.adapter.new_session())
+            self.assertTrue(self.adapter._unavailable)
+            self.assertFalse(await self.adapter.new_session())
+            self.assertFalse(await self.adapter.pick_session(session))
+            self.assertEqual(starts, 1)  # once missing, no further spawn attempts
             await self.adapter.stop()
 
 

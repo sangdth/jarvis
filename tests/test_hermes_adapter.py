@@ -59,12 +59,16 @@ class TestHermesAdapter(unittest.IsolatedAsyncioTestCase):
 
     async def test_stop_also_cancels_queued_runs(self) -> None:
         self.adapter._run_id = "run_1"
+        await self.adapter._handle_event({"event": "approval.request", "run_id": "run_1", "command": "rm x"})
         await self.adapter._runs.put("run_2")
         post = AsyncMock(return_value=MagicMock(is_success=True))
         with patch.object(self.adapter._http, "post", new=post):
             self.assertTrue(await self.adapter.interrupt())
+            self.assertFalse(await self.adapter.answer("yes"))
         self.assertEqual([c.args[0] for c in post.await_args_list], ["/v1/runs/run_1/stop", "/v1/runs/run_2/stop"])
         self.assertTrue(self.adapter._runs.empty())  # the queued run will not be watched or retold
+        self.assertIsNone(self.adapter._pending_approval)
+        self.adapter.state.active_agent_context.pop.assert_called_with("a1", None)
 
     async def test_failed_approval_reply_keeps_the_request(self) -> None:
         await self.adapter._handle_event({"event": "approval.request", "run_id": "run_1", "command": "rm x"})

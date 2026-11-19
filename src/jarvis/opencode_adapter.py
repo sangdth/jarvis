@@ -172,7 +172,10 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
             resp.raise_for_status()
             active: set[str] = set()
             for request in resp.json().get("data", []):
-                if self._session_id and request.get("sessionID") != self._session_id:
+                sid = request.get("sessionID")
+                if self._session_id and sid != self._session_id:
+                    continue
+                if not self._session_id and sid and not await self._is_ours(sid):
                     continue
                 active.add(request["id"])
                 await on_request(request)
@@ -262,6 +265,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
         self._session_id = resp.json()["data"]["id"]
 
     async def send_task(self, task: str) -> bool:
+        self._use_service()
         try:
             if not self._session_id:  # no session seen yet
                 await self._create_session()
@@ -310,6 +314,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
         try:
             resp = await self._http.post(f"/api/session/{self._session_id}/interrupt")
             if resp.is_success:
+                self._pending_permission = self._pending_form = None
                 self._question_settled()
                 self._stopped, self._running = self._running, False
             return resp.is_success
@@ -361,6 +366,7 @@ class OpenCodeSSEAdapter(CodingSessionAdapter):
     async def new_session(self, cwd: str | None = None) -> bool:
         if self.busy:
             return False
+        self._use_service()
         self._move_to(cwd or self.cwd)
         self._session_id = None  # if making one fails, the next task makes it; it never goes to the old one
         try:
