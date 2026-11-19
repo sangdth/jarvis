@@ -21,8 +21,8 @@ def parse_soul(text: str) -> Soul:
     """`---` front matter of `key: value` lines (settings), then the personality as plain text."""
     settings: dict[str, str] = {}
     body = text
-    if text.startswith("---\n") and "\n---" in text[4:]:
-        head, _, body = text[4:].partition("\n---")
+    if text.startswith("---\n") and "\n---" in text[3:]:
+        head, _, body = text[3:].partition("\n---")
         for line in head.splitlines():
             key, sep, value = line.partition(":")
             if sep:

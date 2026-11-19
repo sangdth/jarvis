@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from jarvis.sessions import CodingSessionAdapter
-from jarvis.t3_adapter import PROJECTS_LABEL, list_projects
+from jarvis.t3_adapter import list_projects, projects_dir
 
 if TYPE_CHECKING:
     from jarvis.orchestrator import AgentOrchestrator
@@ -18,6 +18,7 @@ NOT_THE_USER = "[Not the user speaking:"
 # `jarvis meeting` and enrolled guest turns: what the room or a guest said. Memory skips these, so other people's
 # words never become facts about the user or query the user's private memories.
 MEETING_TRANSCRIPT = "[Meeting transcript:"
+USER = "[User]:"
 ROOM = "[Room]:"
 SPEAKER = "[Speaker:"
 
@@ -216,10 +217,11 @@ def project_list(orchestrator: AgentOrchestrator) -> str:
     if opener is None:
         return ""
     others = [c for c in coders if c != opener]
+    label, _ = projects_dir()
     # shortcut: read once at startup; a repo cloned while Jarvis runs shows up after a restart.
     projects = list_projects()
     return (
-        f"\n\nThe user's projects (folders under {PROJECTS_LABEL}). When the user wants to work on one (\"continue on the"
+        f"\n\nThe user's projects (folders under {label}). When the user wants to work on one (\"continue on the"
         f" Hugger Hustle platform\"), call send_agent_task for `{opener}` with `project` set to the folder exactly"
         " as listed; speech recognition mishears names, so pick the closest one."
         + (f" When the user names {' or '.join(f'`{c}`' for c in others)} for it, send it there, with the same `project`."

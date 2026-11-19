@@ -373,6 +373,18 @@ class TestHelpers(unittest.TestCase):
             with patch("jarvis.t3_adapter._last_touched", side_effect=AssertionError("should not stat")):
                 self.assertEqual(list_projects(root, sort=False), ["Org/app", "solo"])
 
+    def test_projects_dir_reads_soul_live_without_reimport(self) -> None:
+        from jarvis.soul import Soul
+        from jarvis.t3_adapter import resolve_project
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Org/app/.git").mkdir(parents=True)
+            with patch("jarvis.t3_adapter.load_soul", return_value=Soul(projects_dir=tmp)):
+                self.assertEqual(list_projects(), ["Org/app"])
+                self.assertEqual(resolve_project("org/app"), root / "Org/app")
+                self.assertEqual(resolve_project(f"{tmp}/org/app"), root / "Org/app")
+
     def test_recent_threads_are_the_users_own_newest_first(self) -> None:
         snapshot = {
             "projects": [{"id": "p1", "title": "jarvis", "workspaceRoot": "/r/jarvis"}],

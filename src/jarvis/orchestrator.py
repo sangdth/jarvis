@@ -77,6 +77,10 @@ class AgentOrchestrator:
             await adapter.start()
 
     async def stop_all(self) -> None:
+        for task, lines in self._reminders.values():
+            task.cancel()
+            lines.stop()
+        self._reminders.clear()
         for adapter in self.adapters.values():
             await adapter.stop()
         if self._http:
@@ -95,14 +99,21 @@ class AgentOrchestrator:
 
     async def _remind(self, agent: BaseAgentAdapter, lines: WaitingLines) -> None:
         wait, next_wait = 8, 13  # Fibonacci seconds: 8, 13, 21, 34, 55, 89, 144, ...
+
+        def can_speak() -> bool:
+            return agent.config.id not in self.state.active_agent_context and self.state.mode == JarvisMode.VOICE
+
         try:
             while True:
                 await asyncio.sleep(wait)
                 if not agent.busy:
                     return
-                waiting_on_user = agent.config.id in self.state.active_agent_context  # it asked something
-                if not waiting_on_user and self.state.mode == JarvisMode.VOICE and self.state.on_speak:
-                    await self.state.on_speak(await lines.next())
+                if can_speak() and self.state.on_speak:
+                    line = await lines.next()
+                    if not agent.busy:
+                        return
+                    if can_speak():
+                        await self.state.on_speak(line)
                 wait, next_wait = next_wait, wait + next_wait
         finally:
             lines.stop()  # the agent finished: no batch for a task that's over

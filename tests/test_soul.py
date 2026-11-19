@@ -22,6 +22,9 @@ class SoulTest(unittest.TestCase):
     def test_plain_text_without_front_matter_is_all_personality(self):
         self.assertEqual(parse_soul("Be warm.\n"), Soul(personality="Be warm."))
 
+    def test_empty_front_matter_is_stripped(self):
+        self.assertEqual(parse_soul("---\n---\nBe warm.\n"), Soul(personality="Be warm."))
+
 
 if __name__ == "__main__":
     unittest.main()
