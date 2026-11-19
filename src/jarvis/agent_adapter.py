@@ -14,6 +14,9 @@ from jarvis.state import AgentTopic, JarvisState
 # Refusals are checked first, so "not sure" or "don't allow" never count as approval.
 _REJECT_WORDS = re.compile(r"\b(no|not|don'?t|do not|never|reject|deny|denied|cancel|stop|wait)\b", re.IGNORECASE)
 _APPROVE_WORDS = re.compile(r"\b(yes|yep|yeah|approve|approved|allow|go ahead|sure|do it|ok|okay|proceed)\b", re.IGNORECASE)
+_OPTION_NEGATION = re.compile(
+    r"\b(?:not|no|don'?t|do\s+not|never|skip|avoid)\s+(?:(?:use|pick|choose|do|take|select|with|the|option)\s+)*$"
+)
 
 
 def question_fields(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -36,7 +39,7 @@ def _option_matched(label: str, said: str) -> bool:
     for cand in candidates:
         # (?<!\w)/(?!\w), not \b: a label like "C++" or ".env" has no word edge at its punctuation.
         for match in re.finditer(rf"(?<!\w){re.escape(cand.lower())}(?!\w)", said):
-            if not re.search(r"\b(?:not|no|don'?t)\s+$", said[: match.start()]):
+            if not _OPTION_NEGATION.search(said[: match.start()]):
                 return True
     return False
 

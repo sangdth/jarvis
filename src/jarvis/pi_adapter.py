@@ -72,7 +72,9 @@ class PiAdapter(CodingSessionAdapter):
         super().__init__(config, state)
         self.socket_path = socket_path
         self._writer: asyncio.StreamWriter | None = None
+        self._session_id: str | None = None
         self._running = False
+        self._stopped = False  # Jarvis stopped the turn; its aborted settled event is not news
         self._dialog = False  # a dialog is open in the window
 
     async def _run_loop(self) -> None:
@@ -104,11 +106,18 @@ class PiAdapter(CodingSessionAdapter):
     async def _handle(self, record: dict[str, Any]) -> None:
         kind = record.get("type")
         if kind == "hello":
+            self._session_id = record.get("session") or self._session_id
+            if record.get("cwd"):
+                self.cwd = record["cwd"]
             self._running = bool(record.get("busy"))
             logger.info(f"[{self.config.id}] Pi session {record.get('session')} in {record.get('cwd')}")
         elif kind == "busy":
             self._running = True
         elif kind == "settled":
+            if self._stopped and record.get("aborted"):  # stopped turn's settled; a task sent since then is still running
+                self._stopped = False
+                return
+            self._stopped = False
             self._running = False
             if self._dialog:
                 self._dialog = False
@@ -146,12 +155,18 @@ class PiAdapter(CodingSessionAdapter):
     async def interrupt(self) -> bool:
         ok = await self._write({"type": "abort"})
         if ok:
-            self._running = False
+            self._dialog = False
+            self._question_settled()
+            self._stopped, self._running = self._running, False
         return ok
 
     @property
     def busy(self) -> bool:
         return self._running
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
         return [
@@ -170,6 +185,7 @@ class PiAdapter(CodingSessionAdapter):
             self._writer.close()
             self._writer = None
         self.socket_path, self.cwd, self.connected = window["socket"], window["cwd"], connected
+        self._session_id = session.id
         await self._restart()
         return True
 

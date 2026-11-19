@@ -140,6 +140,7 @@ class HermesAdapter(BaseAgentAdapter):
             except httpx.HTTPError as exc:
                 logger.error(f"Failed to stop Hermes run {run_id}: {exc}")
         if stopped:
+            self._pending_approval = None
             self._question_settled()
         return stopped
 

@@ -50,9 +50,17 @@ class TestFormAnswer(unittest.TestCase):
 
     def test_negated_options_are_excluded(self) -> None:
         fields = [{"key": "db", "options": [{"value": "Postgres", "label": "Postgres"}, {"value": "SQLite", "label": "SQLite"}]}]
-        self.assertEqual(form_answer(fields, "not Postgres, use SQLite"), {"db": "SQLite"})
-        self.assertEqual(form_answer(fields, "no Postgres, SQLite please"), {"db": "SQLite"})
-        self.assertEqual(form_answer(fields, "don't Postgres, use SQLite"), {"db": "SQLite"})
+        for text in (
+            "not Postgres, use SQLite",
+            "no Postgres, SQLite please",
+            "don't Postgres, use SQLite",
+            "don't use Postgres, use SQLite",
+            "do not Postgres, use SQLite",
+            "not the Postgres option, use SQLite",
+            "skip Postgres, pick SQLite",
+            "never choose Postgres, go with SQLite",
+        ):
+            self.assertEqual(form_answer(fields, text), {"db": "SQLite"}, text)
         self.assertEqual(form_answer(fields, "dont Postgres"), {"db": "dont Postgres"})
 
     def test_question_fields_unifies_claude_and_t3_shapes(self) -> None:
