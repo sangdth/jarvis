@@ -133,7 +133,7 @@ class BrainDB:
         db_path: Path,
         allowed_repos: set[str],
         default_mode: Mode = "ASSIST",
-        daily_budget_usd: float = 20.0,
+        daily_budget_usd: float = 200.0,
     ) -> None:
         self.db_path = db_path
         self.allowed_repos = {r.strip().strip("/") for r in allowed_repos if r.strip().strip("/")}

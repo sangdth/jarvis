@@ -63,7 +63,7 @@ solves three problems at once:
 | Builder escapes worktree via `bash` or `../`     | `ext/board.ts` checks realpaths + `sandbox-exec` confines writes.|
 | Prompt injection sets malicious `verify_cmd`     | Only human-approved tasks or local `Planner` set `verify_cmd`.  |
 | `pi 1.5.0` `-t` flag hides `ext/board.ts` tools  | Single `-t` list explicitly includes extension tool names.      |
-| Looping `opus:high` worker blows past $20 mid-run| Stream `pi --mode json` stdout; kill process on budget/timeout. |
+| Looping `opus:high` worker blows past $200 mid-run| Stream `pi --mode json` stdout; kill process on budget/timeout. |
 | Weak test passes & corrupts `master` at 3 AM     | Never merge to `master` in v1; push `origin/brain/<id>` only.   |
 | Plaintext port `8643` exposed on public Wi-Fi    | Bind `127.0.0.1:8643`, expose only via Tailscale + Bearer key.  |
 
@@ -82,7 +82,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE system_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     mode TEXT NOT NULL DEFAULT 'ASSIST',          -- 'ASSIST' (day) | 'AUTONOMOUS' (night)
-    daily_budget_usd REAL NOT NULL DEFAULT 20.0,
+    daily_budget_usd REAL NOT NULL DEFAULT 200.0,
     spent_today_usd REAL NOT NULL DEFAULT 0.0,
     spend_date TEXT NOT NULL,                     -- YYYY-MM-DD (local time on Mac mini)
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

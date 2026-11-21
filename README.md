@@ -13,7 +13,7 @@ chmod 700 ~/.config/superbrain
 cat > ~/.config/superbrain/.env << 'EOF'
 SUPERBRAIN_API_KEY="replace-with-random-secret"
 ALLOWED_REPOS="jarvis"
-DAILY_BUDGET_USD=20.0
+DAILY_BUDGET_USD=200.0
 EOF
 chmod 600 ~/.config/superbrain/.env
 

@@ -4,7 +4,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS system_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     mode TEXT NOT NULL DEFAULT 'ASSIST' CHECK (mode IN ('ASSIST', 'AUTONOMOUS')),
-    daily_budget_usd REAL NOT NULL DEFAULT 20.0,
+    daily_budget_usd REAL NOT NULL DEFAULT 200.0,
     spent_today_usd REAL NOT NULL DEFAULT 0.0,
     spend_date TEXT NOT NULL,
     last_good_sha TEXT,

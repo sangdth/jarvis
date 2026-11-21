@@ -11,6 +11,7 @@ from superbrain.db import BrainDB
 def test_allowed_repos_blocks_hamahakki_and_traversal(tmp_path: Path) -> None:
     db = BrainDB(tmp_path / "state.db", allowed_repos={"jarvis"})
     try:
+        assert db.get_state().daily_budget_usd == 200.0
         with pytest.raises(ValueError, match="not in ALLOWED_REPOS"):
             db.upsert_task(
                 kind="problem",

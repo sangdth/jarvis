@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     projects_dir: Path = Path("~/Projects").expanduser()
 
     # Budget & execution limits
-    daily_budget_usd: float = 20.0
+    daily_budget_usd: float = 200.0
     max_run_seconds: int = 900
     verify_timeout_seconds: int = 120
     reconcile_interval_seconds: float = 10.0
