@@ -39,8 +39,10 @@ class Settings(BaseSettings):
     pi_bin: str = "/Users/sang/.local/bin/pi"
     planner_model: str = "sonnet:medium"
     builder_model: str = "sonnet:high"
+    improver_model: str = "sonnet:medium"
     default_mode: Literal["ASSIST", "AUTONOMOUS"] = "ASSIST"
     sandbox_enabled: bool = True
+    max_personal_skills: int = 10
 
     @field_validator("home_dir", "projects_dir", mode="before")
     @classmethod
@@ -66,6 +68,10 @@ class Settings(BaseSettings):
     @property
     def notes_dir(self) -> Path:
         return self.home_dir / "memory" / "progress"
+
+    @property
+    def skills_dir(self) -> Path:
+        return self.home_dir / "skills"
 
 
 settings = Settings()

@@ -10,6 +10,7 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
 - Run daemon: `uv run superbrain serve`
 - Check status / tasks: `uv run superbrain status`
 - Add or update a task: `uv run superbrain add --repo <repo> --kind goal|problem --title "..." --spec "..."`
+- Run self-improving skill reflection: `uv run superbrain improve`
 - Generate Mac mini `launchd` plist: `uv run superbrain launchd`
 - Lint & types: `uv run ruff check src tests` and `uv run mypy`
 - Tests: `uv run pytest`
@@ -18,10 +19,20 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
 
 - **Private repo, `AGPL-3.0-only` license** (`LICENSE`), matching `jarvis`.
 - **State lives in `SUPERBRAIN_HOME`** (`~/.config/superbrain` by default): `.env`, `state.db` (SQLite WAL),
-  `worktrees/<task_id>` (`0700`), `sessions/<task_id>`, and `memory/progress/<task_id>.md`.
-- **3 core SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`), `attempts` (append-only run ledger),
-  and `outbox` (queued reports, blockers, and binary approvals), plus the 1-row `system_state` table (`mode`,
-  `daily_budget_usd`, `spent_today_usd`, `spend_date`).
+  `worktrees/<task_id>` (`0700`), `sessions/<task_id>`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created
+  personal skills), and `memory/progress/<task_id>.md`.
+- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`), `attempts` (append-only run ledger with
+  `skills_used`, `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline `sha256`, usage
+  counters, and previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary approvals), plus
+  the 1-row `system_state` table.
+- **Self-improving skills loop (`skills.py` + `reconciler.py`):**
+  - **Evidence:** `board.ts` records `record_skill_load` when a worker reads `~/.config/superbrain/skills/<slug>/SKILL.md`
+    and exposes `report_diagnostic`.
+  - **Reflection:** Offline `Improver` role reviews unreflected attempt trajectories and proposes at most 1 change via
+    `propose_skill_change`.
+  - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; updating requires $\ge 1$ attempt ID
+    plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any skill with 2
+    failures and 0 successes after an update automatically rolls back or retires.
 - **Strict repo allowlist (`ALLOWED_REPOS`):** `db.py` and `reconciler.py` refuse any `repo` not explicitly listed in
   `ALLOWED_REPOS` (comma-separated relative paths under `PROJECTS_DIR`, e.g. `jarvis,HuggerHustle/platform-v2`).
   Unlisted repos such as `hamahakki` are never touched.

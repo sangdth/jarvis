@@ -26,6 +26,10 @@ _BRIEF_RE = re.compile(
     r"\b(morning\s+brief|what\s+happened\s+overnight|brain\s+status|status\s+report)\b",
     re.IGNORECASE,
 )
+_IMPROVE_RE = re.compile(
+    r"\b(improve\s+skills|learn\s+from\s+recent\s+runs|reflect\s+on\s+recent\s+runs|self[\s-]+improve)\b",
+    re.IGNORECASE,
+)
 _RUN_TASK_RE = re.compile(r"\brun\s+((?:SG|PRB)-\d+(?:\.\d+)?)\b", re.IGNORECASE)
 
 
@@ -256,6 +260,20 @@ class BrainServer:
                 rec.output = summary_text
                 rec.status = "completed"
                 rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
+                return
+
+            if _IMPROVE_RE.search(user_input):
+                imp_res = await self.reconciler.run_skill_improver(run_key=rec.run_id)
+                if imp_res.outcome == "errored":
+                    rec.error = imp_res.summary
+                    rec.status = "failed"
+                    rec.publish({"event": "run.failed", "run_id": rec.run_id, "error": rec.error})
+                else:
+                    rec.output = imp_res.summary
+                    rec.status = "completed"
+                    rec.publish(
+                        {"event": "run.completed", "run_id": rec.run_id, "output": rec.output}
+                    )
                 return
 
             task_match = _RUN_TASK_RE.search(user_input)

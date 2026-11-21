@@ -154,9 +154,87 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "report_diagnostic",
+		label: "Report Workflow Diagnostic",
+		description:
+			"Record a structured diagnostic when a skill or procedure falls short, hits tool friction, or needs a recurring workaround.",
+		promptSnippet: "Record a short diagnostic about skill/tool friction for future self-improvement.",
+		parameters: {
+			type: "object",
+			properties: {
+				summary: {
+					type: "string",
+					description: "Concise description of what went wrong or what recurring procedure was needed",
+				},
+			},
+			required: ["summary"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("report_diagnostic", params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(res) }],
+				details: res,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "propose_skill_change",
+		label: "Propose Self-Improving Skill Change",
+		description:
+			"Propose creating, updating, or retiring a personal skill based on past attempt evidence. Creating a skill requires >= 2 attempt IDs; updating requires >= 1 attempt ID and expected_sha256.",
+		promptSnippet: "Submit a verified skill creation, update, or retirement proposal.",
+		parameters: {
+			type: "object",
+			properties: {
+				action: { type: "string", enum: ["create", "update", "retire"] },
+				slug: { type: "string", description: "Lowercase hyphenated skill slug (e.g. 'pytest-async-fixtures')" },
+				lesson: { type: "string", description: "One-sentence lesson learned from the evidence" },
+				description: { type: "string", description: "When to load this skill (1-2 sentences)" },
+				body_markdown: { type: "string", description: "Concise Markdown instructions (<= 150 lines)" },
+				evidence_attempt_ids: {
+					type: "array",
+					items: { type: "integer" },
+					description: "Attempt IDs supporting this change (>= 2 for create, >= 1 for update)",
+				},
+				expected_sha256: { type: "string", description: "Required for action='update': current skill sha256" },
+				retire_slug: {
+					type: "string",
+					description: "Required when creating a skill at the 10-skill cap: slug of existing skill to retire",
+				},
+				retire_reason: {
+					type: "string",
+					description: "Why the new skill is more valuable than retire_slug",
+				},
+			},
+			required: ["action", "slug", "lesson"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("propose_skill_change", params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(res) }],
+				details: res,
+			};
+		},
+	});
+
 	pi.on("tool_call", async (event: ToolCallEvent): Promise<ToolCallEventResult | undefined> => {
 		const worktreeDir = process.env.SUPERBRAIN_WORKTREE_DIR;
+		const skillsDir = process.env.SUPERBRAIN_SKILLS_DIR;
 		const taskKind = process.env.SUPERBRAIN_TASK_KIND;
+
+		if (event.toolName === "read" && skillsDir) {
+			const rawPath = String((event.input as Record<string, unknown>).path ?? "");
+			const targetPath = resolve(worktreeDir ?? process.cwd(), rawPath);
+			if (isWithinDir(targetPath, skillsDir)) {
+				const rel = _nearest_existing_resolved(targetPath).slice(_nearest_existing_resolved(skillsDir).length + 1);
+				const slug = rel.split(/[\\/]/)[0];
+				if (slug) {
+					await callBoardRpc("record_skill_load", { slug }).catch(() => {});
+				}
+			}
+		}
 
 		if ((event.toolName === "edit" || event.toolName === "write") && worktreeDir) {
 			const rawPath = String((event.input as Record<string, unknown>).path ?? "");

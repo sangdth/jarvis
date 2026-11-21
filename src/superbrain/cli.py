@@ -81,7 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("serve", help="Run the Superbrain HTTP/SSE server and reconciler loop")
-    sub.add_parser("status", help="Show system state and tasks")
+    sub.add_parser("status", help="Show system state, tasks, and active personal skills")
+    sub.add_parser("improve", help="Run the self-improving skill reflection loop on recent attempts")
 
     add_p = sub.add_parser("add", help="Add or update a task on the board")
     add_p.add_argument("--id", dest="task_id", default=None)
@@ -122,15 +123,27 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "status":
             st = db.get_state()
+            active_skills = db.list_skills(status="active")
             print(
                 f"Mode: {st.mode} | Spend today ({st.spend_date}): "
-                f"${st.spent_today_usd:.2f} / ${st.daily_budget_usd:.2f}"
+                f"${st.spent_today_usd:.2f} / ${st.daily_budget_usd:.2f} | "
+                f"Skills: {len(active_skills)} / {settings.max_personal_skills}"
             )
             for t in db.list_tasks():
                 print(
                     f"  {t.id} [{t.kind}/{t.status}] (strikes={t.strike_count}, repo={t.repo}): {t.title}"
                 )
+            for s in active_skills:
+                print(
+                    f"  [skill:{s.slug} v{s.version}] loads={s.loads_since_update} "
+                    f"ok={s.successes_since_update} fail={s.failures_since_update}: {s.description}"
+                )
             return 0
+        if args.cmd == "improve":
+            reconciler = Reconciler(db, settings)
+            res = asyncio.run(reconciler.run_skill_improver())
+            print(f"[{res.outcome}] {res.summary} (modified={res.modified_skills or []})")
+            return 0 if res.outcome != "errored" else 1
         if args.cmd == "add":
             t = db.upsert_task(
                 task_id=args.task_id,

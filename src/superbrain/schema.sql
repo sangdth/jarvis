@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL REFERENCES tasks(id),
-    role TEXT NOT NULL CHECK (role IN ('planner', 'builder')),
+    role TEXT NOT NULL CHECK (role IN ('planner', 'builder', 'improver')),
     pi_session_id TEXT,
     session_jsonl_path TEXT,
     summary TEXT NOT NULL,
@@ -41,7 +41,28 @@ CREATE TABLE IF NOT EXISTS attempts (
         outcome IN ('pushed', 'decomposed', 'failed_verify', 'deferred_approval', 'timed_out', 'errored', 'reaped')
     ),
     verify_output TEXT,
+    skills_used TEXT NOT NULL DEFAULT '[]',
+    diagnostic TEXT,
+    reflected INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+    slug TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    sha256 TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retired')),
+    content TEXT NOT NULL,
+    previous_content TEXT,
+    lesson TEXT NOT NULL DEFAULT '',
+    evidence_attempt_ids TEXT NOT NULL DEFAULT '[]',
+    loads_since_update INTEGER NOT NULL DEFAULT 0,
+    successes_since_update INTEGER NOT NULL DEFAULT 0,
+    failures_since_update INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS outbox (

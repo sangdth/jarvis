@@ -17,11 +17,19 @@ from loguru import logger
 from superbrain.config import Settings, settings
 from superbrain.db import AttemptOutcome, BrainDB, TaskRow, WorkerRole
 from superbrain.sandbox import wrap_with_sandbox
+from superbrain.skills import (
+    SkillProposal,
+    apply_skill_proposal,
+    inspect_attempt_trajectory,
+    record_skill_outcome,
+    sync_skills_on_disk,
+)
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 
-PLANNER_TOOLS = "read,grep,find,ls,upsert_task,defer_for_approval"
-BUILDER_TOOLS = "read,edit,write,bash,grep,find,ls,record_note,defer_for_approval"
+PLANNER_TOOLS = "read,grep,find,ls,upsert_task,report_diagnostic,defer_for_approval"
+BUILDER_TOOLS = "read,edit,write,bash,grep,find,ls,record_note,report_diagnostic,defer_for_approval"
+IMPROVER_TOOLS = "read,grep,find,ls,propose_skill_change"
 
 
 @dataclass
@@ -30,7 +38,11 @@ class PiRunResult:
     summary: str
     cost_usd: float
     session_id: str | None = None
+    session_jsonl_path: str | None = None
     upserted_task_ids: list[str] | None = None
+    skills_used: list[str] | None = None
+    diagnostic: str | None = None
+    modified_skills: list[str] | None = None
 
 
 def extract_event_cost(event: dict[str, Any]) -> float:
@@ -80,6 +92,8 @@ class Reconciler:
         self.cfg.worktrees_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.notes_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.cfg.skills_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        sync_skills_on_disk(self.db, self.cfg.skills_dir)
         self._board_ext_path = self._install_board_extension()
         self._loop_task: asyncio.Task[None] | None = None
         self._active_procs: dict[str, asyncio.subprocess.Process] = {}
@@ -141,6 +155,13 @@ class Reconciler:
 
         task = self.db.claim_next_task(lease_seconds=self.cfg.lease_seconds)
         if task is None:
+            unreflected = self.db.list_unreflected_attempts()
+            should_reflect = len(unreflected) >= 2 or any(
+                a.outcome in ("failed_verify", "errored", "timed_out") or bool(a.diagnostic)
+                for a in unreflected
+            )
+            if should_reflect:
+                await self.run_skill_improver()
             return None
 
         return await self.execute_claimed_task(task)
@@ -185,14 +206,24 @@ class Reconciler:
                 outcome: AttemptOutcome = (
                     "decomposed" if pi_res.outcome == "pushed" else pi_res.outcome
                 )
-                return self.db.finish_attempt(
+                finished_task = self.db.finish_attempt(
                     task_id=task.id,
                     role="planner",
                     summary=pi_res.summary,
                     outcome=outcome,
                     cost_usd=pi_res.cost_usd,
                     pi_session_id=pi_res.session_id,
+                    session_jsonl_path=pi_res.session_jsonl_path,
+                    skills_used=pi_res.skills_used,
+                    diagnostic=pi_res.diagnostic,
                 )
+                record_skill_outcome(
+                    self.db,
+                    self.cfg.skills_dir,
+                    pi_res.skills_used or [],
+                    succeeded=(outcome == "decomposed"),
+                )
+                return finished_task
             except Exception as exc:
                 logger.error(f"[Reconciler] planner task {task.id} failed: {exc!r}")
                 return self.db.finish_attempt(
@@ -220,58 +251,87 @@ class Reconciler:
                 approval_cb=approval_cb,
             )
             if pi_res.outcome != "pushed":
-                return self.db.finish_attempt(
+                finished_task = self.db.finish_attempt(
                     task_id=task.id,
                     role="builder",
                     summary=pi_res.summary,
                     outcome=pi_res.outcome,
                     cost_usd=pi_res.cost_usd,
                     pi_session_id=pi_res.session_id,
+                    session_jsonl_path=pi_res.session_jsonl_path,
                     git_branch=branch_name,
+                    skills_used=pi_res.skills_used,
+                    diagnostic=pi_res.diagnostic,
                 )
+                if pi_res.outcome != "deferred_approval":
+                    record_skill_outcome(
+                        self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
+                    )
+                return finished_task
 
             if task.kind == "problem":
                 deleted_tests = await self._find_deleted_tests(worktree_dir, base_sha)
                 if deleted_tests:
-                    return self.db.finish_attempt(
+                    finished_task = self.db.finish_attempt(
                         task_id=task.id,
                         role="builder",
                         summary=pi_res.summary,
                         outcome="failed_verify",
                         cost_usd=pi_res.cost_usd,
                         pi_session_id=pi_res.session_id,
+                        session_jsonl_path=pi_res.session_jsonl_path,
                         git_branch=branch_name,
                         verify_output=f"Blocked: problem task deleted test files: {', '.join(deleted_tests)}",
+                        skills_used=pi_res.skills_used,
+                        diagnostic=pi_res.diagnostic,
                     )
+                    record_skill_outcome(
+                        self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
+                    )
+                    return finished_task
 
             assert task.verify_cmd is not None
             verified, verify_output = await self._run_verify(
                 worktree_dir, session_dir, task.verify_cmd
             )
             if not verified:
-                return self.db.finish_attempt(
+                finished_task = self.db.finish_attempt(
                     task_id=task.id,
                     role="builder",
                     summary=pi_res.summary,
                     outcome="failed_verify",
                     cost_usd=pi_res.cost_usd,
                     pi_session_id=pi_res.session_id,
+                    session_jsonl_path=pi_res.session_jsonl_path,
                     git_branch=branch_name,
                     verify_output=verify_output,
+                    skills_used=pi_res.skills_used,
+                    diagnostic=pi_res.diagnostic,
                 )
+                record_skill_outcome(
+                    self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
+                )
+                return finished_task
 
             git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
-            return self.db.finish_attempt(
+            finished_task = self.db.finish_attempt(
                 task_id=task.id,
                 role="builder",
                 summary=pi_res.summary,
                 outcome="pushed",
                 cost_usd=pi_res.cost_usd,
                 pi_session_id=pi_res.session_id,
+                session_jsonl_path=pi_res.session_jsonl_path,
                 git_branch=branch_name,
                 git_sha=git_sha,
                 verify_output=verify_output,
+                skills_used=pi_res.skills_used,
+                diagnostic=pi_res.diagnostic,
             )
+            record_skill_outcome(
+                self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=True
+            )
+            return finished_task
         except Exception as exc:
             logger.error(f"[Reconciler] builder task {task.id} failed: {exc!r}")
             return self.db.finish_attempt(
@@ -329,6 +389,69 @@ class Reconciler:
             self.db.add_spend(res.cost_usd)
         return res
 
+    async def run_skill_improver(self, *, run_key: str = "improver") -> PiRunResult:
+        """
+        Runs the Perplexity-style 4-stage self-improvement reflection loop over unreflected attempts:
+        1. Evidence: compact trajectory summaries + skill load / failure stats + diagnostics
+        2. Reflection: offline `improver` agent proposes at most 1 skill create/update/retire
+        3. Verification & 4. Activation: enforced deterministically in `propose_skill_change` RPC
+        """
+        unreflected = self.db.list_unreflected_attempts(limit=20)
+        if not unreflected:
+            return PiRunResult(
+                outcome="pushed",
+                summary="No unreflected attempts available for skill improvement.",
+                cost_usd=0.0,
+                modified_skills=[],
+            )
+
+        session_dir = self.cfg.sessions_dir / "improver"
+        session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        evidence = [inspect_attempt_trajectory(a) for a in unreflected]
+        active_skills = [
+            {
+                "slug": s.slug,
+                "description": s.description,
+                "version": s.version,
+                "sha256": s.sha256,
+                "loads_since_update": s.loads_since_update,
+                "successes_since_update": s.successes_since_update,
+                "failures_since_update": s.failures_since_update,
+                "content": s.content,
+            }
+            for s in self.db.list_skills(status="active")
+        ]
+        prompt = (
+            "You are Superbrain Skill Improver. Review the recent attempt trajectories and the "
+            f"active personal skill library (cap={self.cfg.max_personal_skills} active skills).\n"
+            "Rules:\n"
+            "- Creating a new skill (`action='create'`) requires >= 2 independent attempt IDs showing "
+            "the same recurring procedure or pitfall.\n"
+            "- Updating an existing skill (`action='update'`) requires >= 1 grounded attempt ID and "
+            "the skill's current `expected_sha256`.\n"
+            f"- If active skills == {self.cfg.max_personal_skills}, creating a skill requires "
+            "`retire_slug` and `retire_reason`.\n"
+            "- Propose at most ONE change via `propose_skill_change`, or abstain if the evidence "
+            "does not justify a change.\n\n"
+            f"Active skills ({len(active_skills)}/{self.cfg.max_personal_skills}):\n"
+            f"{json.dumps(active_skills, indent=2)}\n\n"
+            f"Recent unreflected attempt evidence:\n{json.dumps(evidence, indent=2)}"
+        )
+        res = await self._run_pi(
+            role="improver",
+            cwd=self.cfg.skills_dir,
+            worktree_dir=None,
+            session_dir=session_dir,
+            task=None,
+            prompt=prompt,
+            run_key=run_key,
+        )
+        if res.cost_usd > 0:
+            self.db.add_spend(res.cost_usd)
+        if res.outcome != "errored":
+            self.db.mark_attempts_reflected([a.id for a in unreflected])
+        return res
+
     def _build_planner_prompt(self, task: TaskRow) -> str:
         return (
             f"Decompose task {task.id} ({task.title}) in repo {task.repo!r} into 1-3 atomic child tasks "
@@ -371,6 +494,9 @@ class Reconciler:
         sock_path = Path(f"/tmp/sb-{uuid.uuid4().hex[:12]}.sock")
         deferred_flag = False
         upserted_ids: list[str] = []
+        skills_loaded: list[str] = []
+        diagnostics: list[str] = []
+        modified_skills: list[str] = []
 
         async def handle_rpc(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             nonlocal deferred_flag
@@ -407,6 +533,61 @@ class Reconciler:
                         f.write(f"\n{params.get('note_markdown', '').strip()}\n")
                     os.chmod(note_path, 0o600)
                     resp = {"ok": True, "result": {"saved": str(note_path)}}
+                elif method == "record_skill_load":
+                    slug = str(params.get("slug") or "").strip()
+                    if slug and slug not in skills_loaded:
+                        skills_loaded.append(slug)
+                    resp = {"ok": True, "result": {"loaded": slug}}
+                elif method == "report_diagnostic":
+                    diag_text = str(params.get("summary") or "").strip()
+                    if diag_text:
+                        diagnostics.append(diag_text)
+                    resp = {"ok": True, "result": {"recorded": True}}
+                elif method == "propose_skill_change":
+                    if role != "improver":
+                        raise ValueError("propose_skill_change is only permitted for the improver role.")
+                    if modified_skills:
+                        raise ValueError("Updates are scoped to one skill change per reflection run.")
+                    raw_ids = params.get("evidence_attempt_ids") or []
+                    proposal = SkillProposal(
+                        action=params["action"],
+                        slug=str(params["slug"]),
+                        lesson=str(params["lesson"]),
+                        description=str(params.get("description") or ""),
+                        body_markdown=str(params.get("body_markdown") or ""),
+                        evidence_attempt_ids=tuple(int(x) for x in raw_ids),
+                        expected_sha256=(
+                            str(params["expected_sha256"])
+                            if params.get("expected_sha256") is not None
+                            else None
+                        ),
+                        retire_slug=(
+                            str(params["retire_slug"])
+                            if params.get("retire_slug") is not None
+                            else None
+                        ),
+                        retire_reason=(
+                            str(params["retire_reason"])
+                            if params.get("retire_reason") is not None
+                            else None
+                        ),
+                    )
+                    skill_row = apply_skill_proposal(
+                        self.db,
+                        self.cfg.skills_dir,
+                        proposal,
+                        max_personal_skills=self.cfg.max_personal_skills,
+                    )
+                    modified_skills.append(skill_row.slug)
+                    resp = {
+                        "ok": True,
+                        "result": {
+                            "slug": skill_row.slug,
+                            "version": skill_row.version,
+                            "status": skill_row.status,
+                            "sha256": skill_row.sha256,
+                        },
+                    }
                 elif method == "defer_for_approval":
                     summary_spoken = str(params["summary_spoken"])
                     details = str(params.get("details") or "")
@@ -440,8 +621,16 @@ class Reconciler:
         server = await asyncio.start_unix_server(handle_rpc, path=str(sock_path))
         os.chmod(sock_path, 0o600)
 
-        model = self.cfg.builder_model if role == "builder" else self.cfg.planner_model
-        tools = BUILDER_TOOLS if role == "builder" else PLANNER_TOOLS
+        if role == "builder":
+            model = self.cfg.builder_model
+            tools = BUILDER_TOOLS
+        elif role == "improver":
+            model = self.cfg.improver_model
+            tools = IMPROVER_TOOLS
+        else:
+            model = self.cfg.planner_model
+            tools = PLANNER_TOOLS
+
         cmd = [
             self.cfg.pi_bin,
             "-p",
@@ -461,6 +650,10 @@ class Reconciler:
             "-t",
             tools,
         ]
+        if role in ("planner", "builder") and self.db.list_skills(status="active"):
+            cmd.extend(["--skill", str(self.cfg.skills_dir)])
+        if role == "improver":
+            cmd.append("--offline")
         if resume_session_id:
             cmd.extend(["--session", resume_session_id])
         cmd.extend(["--", prompt])
@@ -477,6 +670,7 @@ class Reconciler:
 
         env = self._build_sandbox_env(session_dir)
         env["SUPERBRAIN_RPC_SOCK"] = str(sock_path)
+        env["SUPERBRAIN_SKILLS_DIR"] = str(self.cfg.skills_dir.resolve())
         if worktree_dir is not None:
             env["SUPERBRAIN_WORKTREE_DIR"] = str(worktree_dir.resolve())
         if task is not None:
@@ -565,13 +759,20 @@ class Reconciler:
             await server.wait_closed()
             sock_path.unlink(missing_ok=True)
 
+        session_jsonl_path = self._find_session_jsonl(session_dir, session_id)
+        diag_joined = "; ".join(diagnostics) if diagnostics else None
+
         if deferred_flag:
             return PiRunResult(
                 outcome="deferred_approval",
                 summary=last_text or "Deferred for owner approval.",
                 cost_usd=total_cost,
                 session_id=session_id,
+                session_jsonl_path=session_jsonl_path,
                 upserted_task_ids=upserted_ids,
+                skills_used=skills_loaded,
+                diagnostic=diag_joined,
+                modified_skills=modified_skills,
             )
         if timed_out:
             return PiRunResult(
@@ -579,7 +780,11 @@ class Reconciler:
                 summary=f"Worker exceeded max_run_seconds ({self.cfg.max_run_seconds}s).",
                 cost_usd=total_cost,
                 session_id=session_id,
+                session_jsonl_path=session_jsonl_path,
                 upserted_task_ids=upserted_ids,
+                skills_used=skills_loaded,
+                diagnostic=diag_joined,
+                modified_skills=modified_skills,
             )
         if budget_exceeded:
             return PiRunResult(
@@ -587,7 +792,11 @@ class Reconciler:
                 summary=f"Run stopped: daily budget (${initial_state.daily_budget_usd:.2f}) exceeded.",
                 cost_usd=total_cost,
                 session_id=session_id,
+                session_jsonl_path=session_jsonl_path,
                 upserted_task_ids=upserted_ids,
+                skills_used=skills_loaded,
+                diagnostic=diag_joined,
+                modified_skills=modified_skills,
             )
         if proc.returncode != 0:
             return PiRunResult(
@@ -595,15 +804,36 @@ class Reconciler:
                 summary=stderr_text or last_text or f"pi exited with code {proc.returncode}",
                 cost_usd=total_cost,
                 session_id=session_id,
+                session_jsonl_path=session_jsonl_path,
                 upserted_task_ids=upserted_ids,
+                skills_used=skills_loaded,
+                diagnostic=diag_joined,
+                modified_skills=modified_skills,
             )
         return PiRunResult(
             outcome="pushed",
             summary=last_text or "Completed turn.",
             cost_usd=total_cost,
             session_id=session_id,
+            session_jsonl_path=session_jsonl_path,
             upserted_task_ids=upserted_ids,
+            skills_used=skills_loaded,
+            diagnostic=diag_joined,
+            modified_skills=modified_skills,
         )
+
+    @staticmethod
+    def _find_session_jsonl(session_dir: Path, session_id: str | None) -> str | None:
+        if not session_dir.is_dir():
+            return None
+        candidates = sorted(session_dir.glob("*.jsonl"))
+        if not candidates:
+            return None
+        if session_id:
+            for c in reversed(candidates):
+                if session_id in c.name:
+                    return str(c)
+        return str(candidates[-1])
 
     @staticmethod
     def _build_sandbox_env(session_dir: Path) -> dict[str, str]:

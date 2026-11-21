@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from importlib.resources import files
 from pathlib import Path
@@ -14,7 +15,8 @@ from typing import Any, Literal
 Mode = Literal["ASSIST", "AUTONOMOUS"]
 TaskKind = Literal["goal", "problem"]
 TaskStatus = Literal["draft", "ready", "in_progress", "done", "blocked"]
-WorkerRole = Literal["planner", "builder"]
+WorkerRole = Literal["planner", "builder", "improver"]
+SkillStatus = Literal["active", "retired"]
 AttemptOutcome = Literal[
     "pushed",
     "decomposed",
@@ -84,6 +86,28 @@ class AttemptRow:
     outcome: AttemptOutcome
     verify_output: str | None
     created_at: str
+    skills_used: tuple[str, ...] = field(default_factory=tuple)
+    diagnostic: str | None = None
+    reflected: bool = False
+
+
+@dataclass(frozen=True)
+class SkillRow:
+    slug: str
+    name: str
+    description: str
+    version: int
+    sha256: str
+    status: SkillStatus
+    content: str
+    previous_content: str | None
+    lesson: str
+    evidence_attempt_ids: tuple[int, ...]
+    loads_since_update: int
+    successes_since_update: int
+    failures_since_update: int
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -123,6 +147,7 @@ class BrainDB:
         schema_sql = files("superbrain").joinpath("schema.sql").read_text(encoding="utf-8")
         with self._lock, self._conn:
             self._conn.executescript(schema_sql)
+            self._ensure_attempt_columns_locked()
             self._conn.execute(
                 """
                 INSERT INTO system_state (id, mode, daily_budget_usd, spent_today_usd, spend_date)
@@ -131,6 +156,18 @@ class BrainDB:
                 """,
                 (default_mode, daily_budget_usd, _local_date_str()),
             )
+
+    def _ensure_attempt_columns_locked(self) -> None:
+        cols = {
+            str(r["name"])
+            for r in self._conn.execute("PRAGMA table_info(attempts)").fetchall()
+        }
+        if "skills_used" not in cols:
+            self._conn.execute("ALTER TABLE attempts ADD COLUMN skills_used TEXT NOT NULL DEFAULT '[]'")
+        if "diagnostic" not in cols:
+            self._conn.execute("ALTER TABLE attempts ADD COLUMN diagnostic TEXT")
+        if "reflected" not in cols:
+            self._conn.execute("ALTER TABLE attempts ADD COLUMN reflected INTEGER NOT NULL DEFAULT 0")
 
     def close(self) -> None:
         with self._lock:
@@ -406,6 +443,8 @@ class BrainDB:
         git_branch: str | None = None,
         git_sha: str | None = None,
         verify_output: str | None = None,
+        skills_used: list[str] | None = None,
+        diagnostic: str | None = None,
     ) -> TaskRow:
         now_iso = _iso(_utc_now())
         with self._lock, self._conn:
@@ -422,6 +461,8 @@ class BrainDB:
                 git_branch=git_branch,
                 git_sha=git_sha,
                 verify_output=verify_output,
+                skills_used=skills_used,
+                diagnostic=diagnostic,
                 now_iso=now_iso,
             )
 
@@ -439,14 +480,18 @@ class BrainDB:
         git_branch: str | None = None,
         git_sha: str | None = None,
         verify_output: str | None = None,
+        skills_used: list[str] | None = None,
+        diagnostic: str | None = None,
     ) -> TaskRow:
         task = self.get_task(task_id)
+        dedup_skills = list(dict.fromkeys(s.strip() for s in (skills_used or []) if s.strip()))
         self._conn.execute(
             """
             INSERT INTO attempts (
                 task_id, role, pi_session_id, session_jsonl_path, summary,
-                git_branch, git_sha, cost_usd, outcome, verify_output, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                git_branch, git_sha, cost_usd, outcome, verify_output,
+                skills_used, diagnostic, reflected, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
             (
                 task_id,
@@ -459,6 +504,8 @@ class BrainDB:
                 float(cost_usd),
                 outcome,
                 verify_output,
+                json.dumps(dedup_skills),
+                diagnostic.strip() if diagnostic and diagnostic.strip() else None,
                 now_iso,
             ),
         )
@@ -521,28 +568,176 @@ class BrainDB:
                 )
         return self.get_task(task_id)
 
-    def list_attempts(self, task_id: str) -> list[AttemptRow]:
+    def list_attempts(self, task_id: str | None = None) -> list[AttemptRow]:
+        with self._lock:
+            if task_id is not None:
+                rows = self._conn.execute(
+                    "SELECT * FROM attempts WHERE task_id = ? ORDER BY id ASC", (task_id,)
+                ).fetchall()
+            else:
+                rows = self._conn.execute("SELECT * FROM attempts ORDER BY id ASC").fetchall()
+            return [self._row_to_attempt(r) for r in rows]
+
+    def list_unreflected_attempts(self, limit: int = 20) -> list[AttemptRow]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM attempts WHERE task_id = ? ORDER BY id ASC", (task_id,)
+                """
+                SELECT * FROM attempts
+                WHERE reflected = 0 AND outcome != 'reaped'
+                ORDER BY id ASC LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
-            return [
-                AttemptRow(
-                    id=int(r["id"]),
-                    task_id=str(r["task_id"]),
-                    role=r["role"],
-                    pi_session_id=r["pi_session_id"],
-                    session_jsonl_path=r["session_jsonl_path"],
-                    summary=str(r["summary"]),
-                    git_branch=r["git_branch"],
-                    git_sha=r["git_sha"],
-                    cost_usd=float(r["cost_usd"]),
-                    outcome=r["outcome"],
-                    verify_output=r["verify_output"],
-                    created_at=str(r["created_at"]),
+            return [self._row_to_attempt(r) for r in rows]
+
+    def mark_attempts_reflected(self, attempt_ids: list[int]) -> None:
+        if not attempt_ids:
+            return
+        placeholders = ",".join("?" for _ in attempt_ids)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"UPDATE attempts SET reflected = 1 WHERE id IN ({placeholders})",
+                tuple(int(i) for i in attempt_ids),
+            )
+
+    def get_skill(self, slug: str) -> SkillRow | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM skills WHERE slug = ?", (slug,)).fetchone()
+            return self._row_to_skill(row) if row is not None else None
+
+    def list_skills(self, status: SkillStatus | None = "active") -> list[SkillRow]:
+        with self._lock:
+            if status is not None:
+                rows = self._conn.execute(
+                    "SELECT * FROM skills WHERE status = ? ORDER BY slug ASC", (status,)
+                ).fetchall()
+            else:
+                rows = self._conn.execute("SELECT * FROM skills ORDER BY slug ASC").fetchall()
+            return [self._row_to_skill(r) for r in rows]
+
+    def save_skill(
+        self,
+        *,
+        slug: str,
+        name: str,
+        description: str,
+        content: str,
+        lesson: str,
+        evidence_attempt_ids: list[int],
+    ) -> SkillRow:
+        now = _iso(_utc_now())
+        sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        ev_json = json.dumps(sorted({int(i) for i in evidence_attempt_ids}))
+        with self._lock, self._conn:
+            existing = self.get_skill(slug)
+            if existing is None:
+                self._conn.execute(
+                    """
+                    INSERT INTO skills (
+                        slug, name, description, version, sha256, status, content,
+                        previous_content, lesson, evidence_attempt_ids,
+                        loads_since_update, successes_since_update, failures_since_update,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, 1, ?, 'active', ?, NULL, ?, ?, 0, 0, 0, ?, ?)
+                    """,
+                    (slug, name, description, sha, content, lesson.strip(), ev_json, now, now),
                 )
-                for r in rows
-            ]
+            else:
+                prev_content = existing.content if existing.status == "active" else existing.previous_content
+                next_ver = existing.version + 1
+                self._conn.execute(
+                    """
+                    UPDATE skills
+                    SET name = ?, description = ?, version = ?, sha256 = ?, status = 'active',
+                        content = ?, previous_content = ?, lesson = ?, evidence_attempt_ids = ?,
+                        loads_since_update = 0, successes_since_update = 0, failures_since_update = 0,
+                        updated_at = ?
+                    WHERE slug = ?
+                    """,
+                    (
+                        name,
+                        description,
+                        next_ver,
+                        sha,
+                        content,
+                        prev_content,
+                        lesson.strip(),
+                        ev_json,
+                        now,
+                        slug,
+                    ),
+                )
+            saved = self.get_skill(slug)
+            assert saved is not None
+            return saved
+
+    def retire_skill(self, slug: str) -> SkillRow:
+        now = _iso(_utc_now())
+        with self._lock, self._conn:
+            existing = self.get_skill(slug)
+            if existing is None:
+                raise KeyError(f"Skill {slug!r} not found")
+            self._conn.execute(
+                "UPDATE skills SET status = 'retired', updated_at = ? WHERE slug = ?",
+                (now, slug),
+            )
+            retired = self.get_skill(slug)
+            assert retired is not None
+            return retired
+
+    def record_skill_usage(self, slugs: list[str], *, succeeded: bool) -> list[SkillRow]:
+        """
+        Records skill load outcome for each used skill. If a skill accumulates >= 2 failures
+        with 0 successes since its creation/update, automatically rolls it back to `previous_content`
+        (or retires it if no previous version exists) and returns the rolled-back SkillRows.
+        """
+        rolled_back: list[SkillRow] = []
+        now = _iso(_utc_now())
+        with self._lock, self._conn:
+            for slug in dict.fromkeys(slugs):
+                skill = self.get_skill(slug)
+                if skill is None or skill.status != "active":
+                    continue
+                loads = skill.loads_since_update + 1
+                succ = skill.successes_since_update + (1 if succeeded else 0)
+                fail = skill.failures_since_update + (0 if succeeded else 1)
+                if fail >= 2 and succ == 0:
+                    if skill.previous_content:
+                        prev_sha = hashlib.sha256(skill.previous_content.encode("utf-8")).hexdigest()
+                        self._conn.execute(
+                            """
+                            UPDATE skills
+                            SET content = previous_content, previous_content = NULL, sha256 = ?,
+                                version = version + 1, loads_since_update = 0,
+                                successes_since_update = 0, failures_since_update = 0, updated_at = ?
+                            WHERE slug = ?
+                            """,
+                            (prev_sha, now, slug),
+                        )
+                    else:
+                        self._conn.execute(
+                            """
+                            UPDATE skills
+                            SET status = 'retired', loads_since_update = ?,
+                                successes_since_update = ?, failures_since_update = ?, updated_at = ?
+                            WHERE slug = ?
+                            """,
+                            (loads, succ, fail, now, slug),
+                        )
+                    updated = self.get_skill(slug)
+                    assert updated is not None
+                    rolled_back.append(updated)
+                else:
+                    self._conn.execute(
+                        """
+                        UPDATE skills
+                        SET loads_since_update = ?, successes_since_update = ?,
+                            failures_since_update = ?, updated_at = ?
+                        WHERE slug = ?
+                        """,
+                        (loads, succ, fail, now, slug),
+                    )
+        return rolled_back
 
     def queue_outbox(
         self,
@@ -658,6 +853,55 @@ class BrainDB:
             priority=int(row["priority"]),
             strike_count=int(row["strike_count"]),
             lease_until=row["lease_until"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _row_to_attempt(row: sqlite3.Row) -> AttemptRow:
+        raw_skills = row["skills_used"] if "skills_used" in row.keys() else "[]"
+        try:
+            parsed_skills = tuple(str(x) for x in json.loads(raw_skills or "[]"))
+        except Exception:
+            parsed_skills = ()
+        return AttemptRow(
+            id=int(row["id"]),
+            task_id=str(row["task_id"]),
+            role=row["role"],
+            pi_session_id=row["pi_session_id"],
+            session_jsonl_path=row["session_jsonl_path"],
+            summary=str(row["summary"]),
+            git_branch=row["git_branch"],
+            git_sha=row["git_sha"],
+            cost_usd=float(row["cost_usd"]),
+            outcome=row["outcome"],
+            verify_output=row["verify_output"],
+            created_at=str(row["created_at"]),
+            skills_used=parsed_skills,
+            diagnostic=row["diagnostic"] if "diagnostic" in row.keys() else None,
+            reflected=bool(row["reflected"]) if "reflected" in row.keys() else False,
+        )
+
+    @staticmethod
+    def _row_to_skill(row: sqlite3.Row) -> SkillRow:
+        try:
+            ev_ids = tuple(int(x) for x in json.loads(row["evidence_attempt_ids"] or "[]"))
+        except Exception:
+            ev_ids = ()
+        return SkillRow(
+            slug=str(row["slug"]),
+            name=str(row["name"]),
+            description=str(row["description"]),
+            version=int(row["version"]),
+            sha256=str(row["sha256"]),
+            status=row["status"],
+            content=str(row["content"]),
+            previous_content=row["previous_content"],
+            lesson=str(row["lesson"]),
+            evidence_attempt_ids=ev_ids,
+            loads_since_update=int(row["loads_since_update"]),
+            successes_since_update=int(row["successes_since_update"]),
+            failures_since_update=int(row["failures_since_update"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
