@@ -30,6 +30,10 @@ ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 PLANNER_TOOLS = "read,grep,find,ls,upsert_task,report_diagnostic,defer_for_approval"
 BUILDER_TOOLS = "read,edit,write,bash,grep,find,ls,record_note,report_diagnostic,defer_for_approval"
 IMPROVER_TOOLS = "read,grep,find,ls,propose_skill_change"
+PROTECTED_SELF_PATHS = {
+    "src/superbrain/sandbox.py",
+    "src/superbrain/defaults/pi/board.ts",
+}
 
 
 @dataclass
@@ -86,9 +90,16 @@ def extract_assistant_text(event: dict[str, Any]) -> str | None:
 class Reconciler:
     """Deterministic goal and problem reconciler driving ephemeral `pi 1.5.0` workers."""
 
-    def __init__(self, db: BrainDB, cfg: Settings = settings) -> None:
+    def __init__(
+        self,
+        db: BrainDB,
+        cfg: Settings = settings,
+        on_restart_requested: Callable[[], None] | None = None,
+    ) -> None:
         self.db = db
         self.cfg = cfg
+        self.on_restart_requested = on_restart_requested
+        self.restart_pending: bool = False
         self.cfg.worktrees_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.notes_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -164,7 +175,10 @@ class Reconciler:
                 await self.run_skill_improver()
             return None
 
-        return await self.execute_claimed_task(task)
+        finished = await self.execute_claimed_task(task)
+        if self.restart_pending and self.on_restart_requested is not None:
+            self.on_restart_requested()
+        return finished
 
     async def execute_claimed_task(
         self,
@@ -291,8 +305,13 @@ class Reconciler:
                     return finished_task
 
             assert task.verify_cmd is not None
+            effective_verify_cmd = task.verify_cmd
+            if task.repo == "superbrain" and self.cfg.self_upgrade_verify_cmd.strip():
+                effective_verify_cmd = (
+                    f"({task.verify_cmd}) && ({self.cfg.self_upgrade_verify_cmd})"
+                )
             verified, verify_output = await self._run_verify(
-                worktree_dir, session_dir, task.verify_cmd
+                worktree_dir, session_dir, effective_verify_cmd
             )
             if not verified:
                 finished_task = self.db.finish_attempt(
@@ -313,7 +332,45 @@ class Reconciler:
                 )
                 return finished_task
 
+            if task.repo == "superbrain":
+                touched_protected = await self._find_modified_protected_files(
+                    worktree_dir, base_sha
+                )
+                if touched_protected and not self.db.has_approved_outbox(task.id):
+                    prompt_spoken = (
+                        f"Approve Superbrain self-upgrade modifying protected files "
+                        f"({', '.join(touched_protected)})?"
+                    )
+                    approved: bool | None = None
+                    if approval_cb is not None and self.db.get_state().mode == "ASSIST":
+                        approved = await approval_cb(
+                            prompt_spoken, pi_res.summary, pi_res.session_id
+                        )
+                    if not approved:
+                        if approved is None:
+                            self.db.queue_outbox(
+                                kind="approval_request",
+                                task_id=task.id,
+                                resume_session_id=pi_res.session_id,
+                                summary_spoken=prompt_spoken,
+                                details={"files": touched_protected, "summary": pi_res.summary},
+                            )
+                        return self.db.finish_attempt(
+                            task_id=task.id,
+                            role="builder",
+                            summary=f"Awaiting owner approval for protected files: {', '.join(touched_protected)}",
+                            outcome="deferred_approval",
+                            cost_usd=pi_res.cost_usd,
+                            pi_session_id=pi_res.session_id,
+                            session_jsonl_path=pi_res.session_jsonl_path,
+                            git_branch=branch_name,
+                            skills_used=pi_res.skills_used,
+                            diagnostic=pi_res.diagnostic,
+                        )
+
             git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
+            if task.repo == "superbrain":
+                await self._apply_self_upgrade(repo_dir, git_sha, task.id)
             finished_task = self.db.finish_attempt(
                 task_id=task.id,
                 role="builder",
@@ -371,8 +428,13 @@ class Reconciler:
             f"Allowed repositories: {allowed}\n"
             f"Current tasks on board:\n{tasks_summary or '(none)'}\n\n"
             f"Owner request: {user_input}\n"
-            "Use `upsert_task` to create or update tasks when appropriate, and reply in 1-2 concise "
-            "sentences suitable to be spoken aloud."
+            "Use `upsert_task` to create or update tasks when appropriate. "
+            "If the owner complains about a Superbrain bug/feature or asks to upgrade Superbrain "
+            "itself ('the brain', 'your code', 'superbrain'), call `upsert_task` with "
+            "`repo='superbrain'`, `kind='problem'` (for bugs/complaints) or `kind='goal'` "
+            "(for new tech/upgrades), a deterministic `verify_cmd` (e.g. 'uv run pytest'), and "
+            "`ready=true` so Superbrain immediately builds, verifies, and restarts itself. "
+            "Reply in 1-2 concise sentences suitable to be spoken aloud."
         )
         res = await self._run_pi(
             role="planner",
@@ -889,6 +951,38 @@ class Reconciler:
             check=False,
         )
         return [line.strip() for line in out.splitlines() if line.strip()]
+
+    async def _find_modified_protected_files(
+        self, worktree_dir: Path, base_sha: str
+    ) -> list[str]:
+        await self._git_out(worktree_dir, "add", "-A", check=False)
+        out = await self._git_out(
+            worktree_dir, "diff", "--cached", "--name-only", base_sha, check=False
+        )
+        changed = {line.strip() for line in out.splitlines() if line.strip()}
+        return sorted(changed & PROTECTED_SELF_PATHS)
+
+    async def _apply_self_upgrade(
+        self, repo_dir: Path, verified_sha: str, task_id: str
+    ) -> None:
+        old_head = (await self._git_out(repo_dir, "rev-parse", "HEAD")).strip()
+        self.db.set_last_good_sha(old_head)
+        dirty = (await self._git_out(repo_dir, "status", "--porcelain", check=False)).strip()
+        if dirty:
+            await self._git_out(
+                repo_dir,
+                "stash",
+                "push",
+                "-u",
+                "-m",
+                f"superbrain-pre-upgrade-{task_id}",
+                check=False,
+            )
+        await self._git_out(repo_dir, "reset", "--hard", verified_sha)
+        remotes = await self._git_out(repo_dir, "remote", check=False)
+        if "origin" in remotes.splitlines():
+            await self._git_out(repo_dir, "push", "origin", "HEAD:master", check=False)
+        self.restart_pending = True
 
     async def _git_fetch(self, repo_dir: Path) -> None:
         remotes = await self._git_out(repo_dir, "remote")

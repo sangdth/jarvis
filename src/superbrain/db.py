@@ -48,6 +48,7 @@ class SystemState:
     daily_budget_usd: float
     spent_today_usd: float
     spend_date: str
+    last_good_sha: str | None = None
 
     @property
     def budget_remaining_usd(self) -> float:
@@ -158,6 +159,13 @@ class BrainDB:
             )
 
     def _ensure_attempt_columns_locked(self) -> None:
+        sys_cols = {
+            str(r["name"])
+            for r in self._conn.execute("PRAGMA table_info(system_state)").fetchall()
+        }
+        if "last_good_sha" not in sys_cols:
+            self._conn.execute("ALTER TABLE system_state ADD COLUMN last_good_sha TEXT")
+
         cols = {
             str(r["name"])
             for r in self._conn.execute("PRAGMA table_info(attempts)").fetchall()
@@ -204,7 +212,16 @@ class BrainDB:
                 daily_budget_usd=float(row["daily_budget_usd"]),
                 spent_today_usd=float(row["spent_today_usd"]),
                 spend_date=row["spend_date"],
+                last_good_sha=row["last_good_sha"] if "last_good_sha" in row.keys() else None,
             )
+
+    def set_last_good_sha(self, sha: str) -> SystemState:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE system_state SET last_good_sha = ?, updated_at = ? WHERE id = 1",
+                (sha.strip(), _iso(_utc_now())),
+            )
+        return self.get_state()
 
     def set_mode(self, mode: Mode) -> SystemState:
         if mode not in ("ASSIST", "AUTONOMOUS"):
@@ -837,6 +854,18 @@ class BrainDB:
                 (task_id,),
             ).fetchone()
             return str(row["resume_session_id"]) if row and row["resume_session_id"] else None
+
+    def has_approved_outbox(self, task_id: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM outbox
+                WHERE task_id = ? AND kind = 'approval_request' AND status = 'approved'
+                LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+            return row is not None
 
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> TaskRow:

@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     default_mode: Literal["ASSIST", "AUTONOMOUS"] = "ASSIST"
     sandbox_enabled: bool = True
     max_personal_skills: int = 10
+    self_upgrade_verify_cmd: str = (
+        "uv run ruff check src tests && uv run mypy && uv run pytest && uv run superbrain self-check"
+    )
 
     @field_validator("home_dir", "projects_dir", mode="before")
     @classmethod
@@ -51,7 +54,13 @@ class Settings(BaseSettings):
 
     @property
     def allowed_repo_set(self) -> set[str]:
-        return {item.strip().strip("/") for item in self.allowed_repos.split(",") if item.strip().strip("/")}
+        configured = {
+            item.strip().strip("/")
+            for item in self.allowed_repos.split(",")
+            if item.strip().strip("/")
+        }
+        configured.add("superbrain")
+        return configured
 
     @property
     def db_path(self) -> Path:

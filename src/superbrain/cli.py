@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from aiohttp import web
@@ -47,6 +49,44 @@ def build_launchd_plist() -> str:
 """
 
 
+def run_self_check() -> int:
+    """Smoke canary run inside a candidate Superbrain worktree before applying a self-upgrade."""
+    with tempfile.TemporaryDirectory(prefix="sb-canary-") as tmp:
+        tmp_path = Path(tmp)
+        cfg = settings.model_copy(
+            update={
+                "home_dir": tmp_path / "home",
+                "projects_dir": tmp_path / "Projects",
+                "superbrain_api_key": "canary-key",
+            }
+        )
+        db = BrainDB(
+            db_path=cfg.db_path,
+            allowed_repos=cfg.allowed_repo_set,
+            default_mode=cfg.default_mode,
+            daily_budget_usd=cfg.daily_budget_usd,
+        )
+        try:
+            reconciler = Reconciler(db, cfg)
+            server = BrainServer(db, reconciler, cfg)
+            assert server.app is not None
+        finally:
+            db.close()
+    return 0
+
+
+def _rollback_to_last_good_sha(last_good_sha: str | None) -> None:
+    if not last_good_sha:
+        return
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / ".git").exists():
+        logger.error(f"Startup failed; rolling back {repo_root} to last_good_sha {last_good_sha}")
+        subprocess.run(
+            ["git", "-C", str(repo_root), "reset", "--hard", last_good_sha],
+            check=False,
+        )
+
+
 async def _serve_async() -> None:
     if not settings.superbrain_api_key.strip():
         raise ValueError("SUPERBRAIN_API_KEY must be set before running `superbrain serve`.")
@@ -56,20 +96,28 @@ async def _serve_async() -> None:
         default_mode=settings.default_mode,
         daily_budget_usd=settings.daily_budget_usd,
     )
-    reconciler = Reconciler(db, settings)
-    server = BrainServer(db, reconciler, settings)
-    reconciler.start()
+    stop_event = asyncio.Event()
+    reconciler = Reconciler(db, settings, on_restart_requested=stop_event.set)
+    try:
+        server = BrainServer(db, reconciler, settings)
+        reconciler.start()
 
-    runner = web.AppRunner(server.app)
-    await runner.setup()
-    site = web.TCPSite(runner, host=settings.host, port=settings.port)
-    await site.start()
+        runner = web.AppRunner(server.app)
+        await runner.setup()
+        site = web.TCPSite(runner, host=settings.host, port=settings.port)
+        await site.start()
+    except Exception:
+        _rollback_to_last_good_sha(db.get_state().last_good_sha)
+        db.close()
+        raise
+
     logger.info(
         f"Superbrain listening on http://{settings.host}:{settings.port} "
         f"(mode={db.get_state().mode}, allowed_repos={sorted(settings.allowed_repo_set)})"
     )
     try:
-        await asyncio.Event().wait()
+        await stop_event.wait()
+        logger.info("Restart requested; shutting down cleanly for launchd respawn.")
     finally:
         await reconciler.stop()
         await runner.cleanup()
@@ -83,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="Run the Superbrain HTTP/SSE server and reconciler loop")
     sub.add_parser("status", help="Show system state, tasks, and active personal skills")
     sub.add_parser("improve", help="Run the self-improving skill reflection loop on recent attempts")
+    sub.add_parser("self-check", help="Run smoke canary verification on this checkout")
 
     add_p = sub.add_parser("add", help="Add or update a task on the board")
     add_p.add_argument("--id", dest="task_id", default=None)
@@ -102,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         asyncio.run(_serve_async())
         return 0
+    if args.cmd == "self-check":
+        return run_self_check()
 
     if args.cmd == "launchd":
         plist_text = build_launchd_plist()

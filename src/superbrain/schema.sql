@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS system_state (
     daily_budget_usd REAL NOT NULL DEFAULT 20.0,
     spent_today_usd REAL NOT NULL DEFAULT 0.0,
     spend_date TEXT NOT NULL,
+    last_good_sha TEXT,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

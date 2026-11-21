@@ -294,9 +294,11 @@ class BrainServer:
                     run_key=rec.run_id,
                     approval_cb=(self._make_approval_cb(rec) if allow_live_approval else None),
                 )
-                rec.output = f"Task {finished.id} finished with status {finished.status}."
+                restart_note = " Restarting Superbrain daemon now." if self.reconciler.restart_pending else ""
+                rec.output = f"Task {finished.id} finished with status {finished.status}.{restart_note}"
                 rec.status = "completed"
                 rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
+                self._schedule_restart_if_pending()
                 return
 
             # 2. Interactive Planner turn
@@ -312,10 +314,39 @@ class BrainServer:
                 rec.error = res.summary
                 rec.status = "failed"
                 rec.publish({"event": "run.failed", "run_id": rec.run_id, "error": rec.error})
-            else:
-                rec.output = res.summary
-                rec.status = "completed"
-                rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
+                return
+
+            # 3. If Planner queued a ready self-improvement task for repo='superbrain', run it immediately
+            self_notes: list[str] = []
+            for tid in res.upserted_task_ids or []:
+                t = self.db.get_task(tid)
+                if t.repo == "superbrain" and t.status == "ready" and t.verify_cmd:
+                    claimed_self = self.db.claim_next_task(
+                        lease_seconds=self.cfg.lease_seconds, task_id=t.id
+                    )
+                    if claimed_self is not None:
+                        done_self = await self.reconciler.execute_claimed_task(
+                            claimed_self,
+                            run_key=rec.run_id,
+                            approval_cb=(
+                                self._make_approval_cb(rec) if allow_live_approval else None
+                            ),
+                        )
+                        if done_self.status == "done":
+                            self_notes.append(
+                                f"Self-upgrade {done_self.id} passed verification and was applied."
+                            )
+                        else:
+                            self_notes.append(
+                                f"Self-upgrade {done_self.id} ended with status {done_self.status}."
+                            )
+
+            if self.reconciler.restart_pending:
+                self_notes.append("Restarting Superbrain daemon now.")
+            rec.output = " ".join([res.summary, *self_notes]).strip()
+            rec.status = "completed"
+            rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
+            self._schedule_restart_if_pending()
         except asyncio.CancelledError:
             rec.status = "cancelled"
             rec.publish({"event": "run.cancelled", "run_id": rec.run_id})
@@ -323,6 +354,12 @@ class BrainServer:
             rec.error = str(exc)
             rec.status = "failed"
             rec.publish({"event": "run.failed", "run_id": rec.run_id, "error": rec.error})
+
+    def _schedule_restart_if_pending(self) -> None:
+        if self.reconciler.restart_pending and self.reconciler.on_restart_requested is not None:
+            self.reconciler.restart_pending = False
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.5, self.reconciler.on_restart_requested)
 
     def _make_approval_cb(
         self, rec: RunRecord

@@ -33,6 +33,14 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
   - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; updating requires $\ge 1$ attempt ID
     plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any skill with 2
     failures and 0 successes after an update automatically rolls back or retires.
+- **Self-upgrading codebase (`repo = 'superbrain'`):**
+  - `"superbrain"` is always in `allowed_repo_set`. When the owner asks to upgrade Superbrain or fix a Superbrain bug,
+    Planner queues a `ready=true` task for `repo='superbrain'` and `server.py` executes it immediately.
+  - Every `repo='superbrain'` build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, and
+    `superbrain self-check` canary) in its isolated worktree before `~/Projects/superbrain` is updated.
+  - Edits touching `src/superbrain/sandbox.py` or `src/superbrain/defaults/pi/board.ts` require owner approval before
+    applying. Verified upgrades record `last_good_sha` in `system_state`, update `~/Projects/superbrain`, flush the
+    spoken response, and trigger a clean shutdown so `launchd` (`KeepAlive=true`) respawns the new code.
 - **Strict repo allowlist (`ALLOWED_REPOS`):** `db.py` and `reconciler.py` refuse any `repo` not explicitly listed in
   `ALLOWED_REPOS` (comma-separated relative paths under `PROJECTS_DIR`, e.g. `jarvis,HuggerHustle/platform-v2`).
   Unlisted repos such as `hamahakki` are never touched.
