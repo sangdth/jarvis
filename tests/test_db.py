@@ -136,6 +136,66 @@ def test_stale_lease_reaper(tmp_path: Path) -> None:
         assert reaped == [t.id]
         refreshed = db.get_task(t.id)
         assert refreshed.status == "ready"
-        assert refreshed.strike_count == 1
+        assert refreshed.strike_count == 0
+        assert db.list_attempts(t.id)[0].outcome == "reaped"
+    finally:
+        db.close()
+
+
+def test_in_progress_guard_and_parent_goal_completion(tmp_path: Path) -> None:
+    db = BrainDB(tmp_path / "state.db", allowed_repos={"jarvis"}, default_mode="AUTONOMOUS")
+    try:
+        parent = db.upsert_task(
+            kind="goal",
+            repo="jarvis",
+            title="Parent goal",
+            spec="Decompose me",
+            metric_target="all children pass",
+        )
+        claimed_parent = db.claim_next_task()
+        assert claimed_parent is not None and claimed_parent.id == parent.id
+
+        with pytest.raises(ValueError, match="in_progress"):
+            db.upsert_task(
+                task_id=parent.id,
+                kind="goal",
+                repo="jarvis",
+                title="Parent goal",
+                spec="Decompose me",
+                metric_target="all children pass",
+                ready=False,
+            )
+
+        child = db.upsert_task(
+            task_id="SG-1.1",
+            parent_id=parent.id,
+            kind="goal",
+            repo="jarvis",
+            title="Child goal",
+            spec="Build feature",
+            metric_target="pytest passes",
+            verify_cmd="pytest",
+            ready=True,
+        )
+        after_plan = db.finish_attempt(
+            task_id=parent.id,
+            role="planner",
+            summary="Created SG-1.1",
+            outcome="decomposed",
+        )
+        # Parent stays open until child finishes
+        assert after_plan.status == "draft"
+
+        claimed_child = db.claim_next_task()
+        assert claimed_child is not None and claimed_child.id == child.id
+        db.finish_attempt(
+            task_id=child.id,
+            role="builder",
+            summary="Built child",
+            outcome="pushed",
+            git_branch="brain/SG-1.1",
+            git_sha="abc1234",
+        )
+        assert db.get_task(parent.id).status == "done"
     finally:
         db.close()

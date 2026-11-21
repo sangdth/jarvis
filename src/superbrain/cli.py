@@ -15,7 +15,7 @@ from superbrain.server import BrainServer
 
 
 def build_launchd_plist() -> str:
-    uv_bin = Path(sys.executable).resolve()
+    uv_bin = Path(sys.executable).absolute()
     repo_root = Path(__file__).resolve().parents[2]
     log_dir = settings.home_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -48,6 +48,8 @@ def build_launchd_plist() -> str:
 
 
 async def _serve_async() -> None:
+    if not settings.superbrain_api_key.strip():
+        raise ValueError("SUPERBRAIN_API_KEY must be set before running `superbrain serve`.")
     db = BrainDB(
         db_path=settings.db_path,
         allowed_repos=settings.allowed_repo_set,

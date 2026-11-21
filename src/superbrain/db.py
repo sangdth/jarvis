@@ -16,7 +16,13 @@ TaskKind = Literal["goal", "problem"]
 TaskStatus = Literal["draft", "ready", "in_progress", "done", "blocked"]
 WorkerRole = Literal["planner", "builder"]
 AttemptOutcome = Literal[
-    "pushed", "decomposed", "failed_verify", "deferred_approval", "timed_out", "errored"
+    "pushed",
+    "decomposed",
+    "failed_verify",
+    "deferred_approval",
+    "timed_out",
+    "errored",
+    "reaped",
 ]
 OutboxKind = Literal["approval_request", "morning_brief", "blocker", "report"]
 OutboxStatus = Literal["queued", "spoken", "approved", "rejected"]
@@ -217,7 +223,9 @@ class BrainDB:
         cleaned_repo = self.validate_repo(repo)
         if kind not in ("goal", "problem"):
             raise ValueError(f"Invalid task kind: {kind!r}")
-        if kind == "goal" and not (metric_target and metric_target.strip()):
+        cleaned_metric = metric_target.strip() if metric_target and metric_target.strip() else None
+        cleaned_verify = verify_cmd.strip() if verify_cmd and verify_cmd.strip() else None
+        if kind == "goal" and not cleaned_metric:
             raise ValueError("Goals require a non-empty metric_target.")
 
         with self._lock, self._conn:
@@ -227,8 +235,12 @@ class BrainDB:
                 "SELECT * FROM tasks WHERE id = ?", (resolved_id,)
             ).fetchone()
 
-            if ready is True:
-                status: TaskStatus = "ready"
+            if existing is not None and existing["status"] == "in_progress":
+                if ready is not None:
+                    raise ValueError(f"Cannot change status of in_progress task {resolved_id!r}.")
+                status: TaskStatus = "in_progress"
+            elif ready is True:
+                status = "ready"
             elif ready is False:
                 status = "draft"
             elif existing is not None:
@@ -252,8 +264,8 @@ class BrainDB:
                         cleaned_repo,
                         title.strip(),
                         spec.strip(),
-                        metric_target.strip() if metric_target else None,
-                        verify_cmd.strip() if verify_cmd else None,
+                        cleaned_metric,
+                        cleaned_verify,
                         status,
                         int(priority),
                         now,
@@ -274,8 +286,8 @@ class BrainDB:
                         cleaned_repo,
                         title.strip(),
                         spec.strip(),
-                        metric_target.strip() if metric_target else existing["metric_target"],
-                        verify_cmd.strip() if verify_cmd is not None else existing["verify_cmd"],
+                        cleaned_metric if metric_target is not None else existing["metric_target"],
+                        cleaned_verify if verify_cmd is not None else existing["verify_cmd"],
                         status,
                         int(priority),
                         now,
@@ -324,7 +336,7 @@ class BrainDB:
                     task_id=task_id,
                     role=role,
                     summary="Worker lease expired before completion; reaped by reconciler.",
-                    outcome="errored",
+                    outcome="reaped",
                     cost_usd=0.0,
                     now_iso=now_iso,
                 )
@@ -451,19 +463,29 @@ class BrainDB:
             ),
         )
 
-        if outcome in ("pushed", "decomposed"):
+        if outcome == "pushed":
             new_status: TaskStatus = "done"
             strikes = task.strike_count
-            if outcome == "pushed":
-                self._queue_outbox_locked(
-                    kind="report",
-                    task_id=task_id,
-                    summary_spoken=f"Completed {task_id} ({task.title}) on branch {git_branch or f'brain/{task_id}'}.",
-                    details={"git_branch": git_branch, "git_sha": git_sha, "summary": summary},
-                    now_iso=now_iso,
-                )
+            self._queue_outbox_locked(
+                kind="report",
+                task_id=task_id,
+                summary_spoken=f"Completed {task_id} ({task.title}) on branch {git_branch or f'brain/{task_id}'}.",
+                details={"git_branch": git_branch, "git_sha": git_sha, "summary": summary},
+                now_iso=now_iso,
+            )
+        elif outcome == "decomposed":
+            pending_children = self._conn.execute(
+                "SELECT COUNT(*) AS cnt FROM tasks WHERE parent_id = ? AND status != 'done'",
+                (task_id,),
+            ).fetchone()
+            has_pending = bool(pending_children and int(pending_children["cnt"]) > 0)
+            new_status = "draft" if has_pending else "done"
+            strikes = task.strike_count
         elif outcome == "deferred_approval":
             new_status = "draft"
+            strikes = task.strike_count
+        elif outcome == "reaped":
+            new_status = "ready"
             strikes = task.strike_count
         else:
             strikes = task.strike_count + 1
@@ -487,6 +509,16 @@ class BrainDB:
             """,
             (new_status, strikes, now_iso, task_id),
         )
+        if outcome == "pushed" and task.parent_id:
+            rem = self._conn.execute(
+                "SELECT COUNT(*) AS cnt FROM tasks WHERE parent_id = ? AND status != 'done'",
+                (task.parent_id,),
+            ).fetchone()
+            if rem is not None and int(rem["cnt"]) == 0:
+                self._conn.execute(
+                    "UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ? AND verify_cmd IS NULL",
+                    (now_iso, task.parent_id),
+                )
         return self.get_task(task_id)
 
     def list_attempts(self, task_id: str) -> list[AttemptRow]:
@@ -597,6 +629,19 @@ class BrainDB:
             ).fetchone()
             assert updated is not None
             return self._row_to_outbox(updated)
+
+    def get_approved_resume_session(self, task_id: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT resume_session_id FROM outbox
+                WHERE task_id = ? AND kind = 'approval_request' AND status = 'approved'
+                  AND resume_session_id IS NOT NULL
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+            return str(row["resume_session_id"]) if row and row["resume_session_id"] else None
 
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> TaskRow:

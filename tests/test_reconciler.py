@@ -28,8 +28,10 @@ async def _init_repo_with_origin(tmp_path: Path, name: str = "demo") -> tuple[Pa
         await p.wait()
 
     (repo_dir / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo_dir / "tests").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "tests" / "test_app.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
     for cmd in [
-        ["git", "add", "app.py"],
+        ["git", "add", "app.py", "tests/test_app.py"],
         ["git", "commit", "-m", "initial"],
         ["git", "push", "-u", "origin", "master"],
     ]:
@@ -50,10 +52,12 @@ async def test_builder_worktree_verify_and_push_to_origin(tmp_path: Path) -> Non
     fake_pi = _write_fake_pi(
         tmp_path / "fake_pi.py",
         """
-import json, pathlib
+import json, pathlib, subprocess
 wt = pathlib.Path.cwd()
 (wt / "app.py").write_text("VALUE = 42\\n", encoding="utf-8")
-ev = {"session_id": "sess-1", "role": "assistant", "content": "Set VALUE to 42.", "cost_usd": 0.45}
+subprocess.run(["git", "status"], cwd=str(wt), check=True, stdout=subprocess.DEVNULL)
+print(json.dumps({"type": "session", "id": "sess-1"}), flush=True)
+ev = {"type": "message_end", "message": {"role": "assistant", "content": "Set VALUE to 42."}, "cost_usd": 0.45}
 print(json.dumps(ev), flush=True)
 """,
     )
@@ -64,7 +68,7 @@ print(json.dumps(ev), flush=True)
         allowed_repos="demo",
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",
-        sandbox_enabled=False,
+        sandbox_enabled=True,
     )
     db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
     reconciler = Reconciler(db, cfg)
@@ -193,6 +197,57 @@ except OSError as exc:
         assert secret_file.read_text(encoding="utf-8") == "safe"
         attempts = db.list_attempts(finished.id)
         assert attempts[0].outcome == "errored"
+    finally:
+        await reconciler.stop()
+        db.close()
+
+
+async def test_builder_blocked_from_upsert_rpc_and_deleting_tests(tmp_path: Path) -> None:
+    projects_dir, _ = await _init_repo_with_origin(tmp_path, "demo")
+    fake_pi = _write_fake_pi(
+        tmp_path / "fake_pi_bad_builder.py",
+        """
+import json, os, pathlib, socket
+sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sock_path)
+s.sendall((json.dumps({
+    "method": "upsert_task",
+    "params": {"kind": "problem", "repo": "demo", "title": "Hack", "spec": "x", "verify_cmd": "true"}
+}) + "\\n").encode())
+resp = json.loads(s.recv(4096).decode().splitlines()[0])
+s.close()
+assert resp["ok"] is False and "planner" in resp["error"]
+(pathlib.Path.cwd() / "tests" / "test_app.py").unlink()
+print(json.dumps({"role": "assistant", "content": "Deleted test", "cost_usd": 0.05}), flush=True)
+""",
+    )
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=projects_dir,
+        allowed_repos="demo",
+        pi_bin=str(fake_pi),
+        default_mode="AUTONOMOUS",
+        sandbox_enabled=True,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
+    reconciler = Reconciler(db, cfg)
+    try:
+        task = db.upsert_task(
+            kind="problem",
+            repo="demo",
+            title="Keep tests intact",
+            spec="Fix bug without deleting tests",
+            verify_cmd="true",
+            ready=True,
+        )
+        finished = await reconciler.tick()
+        assert finished is not None
+        assert finished.id == task.id
+        assert finished.strike_count == 1
+        attempts = db.list_attempts(task.id)
+        assert attempts[0].outcome == "failed_verify"
+        assert "deleted test files" in (attempts[0].verify_output or "")
     finally:
         await reconciler.stop()
         db.close()

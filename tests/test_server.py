@@ -16,7 +16,10 @@ def _make_fake_pi(tmp_path: Path) -> Path:
     script = tmp_path / "fake_pi_server.py"
     script.write_text(
         """#!/usr/bin/env python3
-import json, os, socket
+import json, os, socket, sys
+if "--session" in sys.argv:
+    idx = sys.argv.index("--session")
+    assert sys.argv[idx + 1] == "sess-plan-1", f"Unexpected session arg: {sys.argv[idx + 1]}"
 sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)
@@ -35,10 +38,10 @@ req = {
 s.sendall((json.dumps(req) + "\\n").encode())
 resp = json.loads(s.recv(4096).decode().splitlines()[0])
 s.close()
+print(json.dumps({"type": "session", "id": "sess-plan-1"}), flush=True)
 print(json.dumps({
-    "session_id": "sess-plan-1",
-    "role": "assistant",
-    "content": f"Queued task {resp['result']['id']}.",
+    "type": "message_end",
+    "message": {"role": "assistant", "content": f"Queued task {resp['result']['id']}."},
     "cost_usd": 0.02,
 }), flush=True)
 """,
@@ -110,6 +113,23 @@ async def test_hermes_endpoints_auth_mode_brief_and_iphone_ask(tmp_path: Path) -
         status_json = await status_resp.json()
         assert status_json["status"] == "completed"
         assert "SG-1" in status_json["output"]
+
+        # 4b. Second interactive turn in same HermesAdapter session reuses mapped pi session ID
+        run2_resp = await client.post(
+            "/v1/runs",
+            json={"input": "Add another goal in jarvis", "session_id": run_id},
+            headers=headers,
+        )
+        run2_id = (await run2_resp.json())["run_id"]
+        async with client.get(f"/v1/runs/{run2_id}/events", headers=headers) as sse:
+            async for raw_line in sse.content:
+                line = raw_line.decode("utf-8").strip()
+                if line.startswith("data:"):
+                    ev = json.loads(line.removeprefix("data:").strip())
+                    if ev.get("event") in ("run.completed", "run.failed"):
+                        assert ev.get("event") == "run.completed"
+                        break
+        assert abs(db.get_state().spent_today_usd - 0.04) < 1e-6
 
         # 5. Morning brief with queued outbox approval + POST /v1/runs/{id}/approval
         ob = db.queue_outbox(

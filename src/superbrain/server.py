@@ -60,6 +60,7 @@ class BrainServer:
         self.reconciler = reconciler
         self.cfg = cfg
         self.runs: dict[str, RunRecord] = {}
+        self._pi_sessions: dict[str, str] = {}
         self.app = web.Application(middlewares=[self._auth_middleware])
         self.app.add_routes(
             [
@@ -284,9 +285,11 @@ class BrainServer:
             res = await self.reconciler.run_interactive_planner(
                 user_input=user_input,
                 run_key=rec.run_id,
-                resume_session_id=(rec.session_id if rec.session_id != rec.run_id else None),
+                resume_session_id=self._pi_sessions.get(rec.session_id),
                 approval_cb=(self._make_approval_cb(rec) if allow_live_approval else None),
             )
+            if res.session_id:
+                self._pi_sessions[rec.session_id] = res.session_id
             if res.outcome == "errored":
                 rec.error = res.summary
                 rec.status = "failed"

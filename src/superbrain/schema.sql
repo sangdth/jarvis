@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS system_state (
     daily_budget_usd REAL NOT NULL DEFAULT 20.0,
     spent_today_usd REAL NOT NULL DEFAULT 0.0,
     spend_date TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority INTEGER NOT NULL DEFAULT 50,
     strike_count INTEGER NOT NULL DEFAULT 0,
     lease_until TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS attempts (
@@ -38,10 +38,10 @@ CREATE TABLE IF NOT EXISTS attempts (
     git_sha TEXT,
     cost_usd REAL NOT NULL DEFAULT 0.0,
     outcome TEXT NOT NULL CHECK (
-        outcome IN ('pushed', 'decomposed', 'failed_verify', 'deferred_approval', 'timed_out', 'errored')
+        outcome IN ('pushed', 'decomposed', 'failed_verify', 'deferred_approval', 'timed_out', 'errored', 'reaped')
     ),
     verify_output TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS outbox (
@@ -52,5 +52,5 @@ CREATE TABLE IF NOT EXISTS outbox (
     summary_spoken TEXT NOT NULL,
     details_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'spoken', 'approved', 'rejected')),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );

@@ -13,14 +13,23 @@ import { dirname, resolve, sep } from "node:path";
 
 import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 
+function _nearest_existing_resolved(targetPath: string): string {
+	const abs = resolve(targetPath);
+	let cur = abs;
+	const tail: string[] = [];
+	while (!existsSync(cur)) {
+		const parent = dirname(cur);
+		if (parent === cur) break;
+		tail.unshift(cur.slice(parent.length).replace(/^[\\/]+/, ""));
+		cur = parent;
+	}
+	const base = existsSync(cur) ? realpathSync(cur) : cur;
+	return tail.length > 0 ? resolve(base, ...tail) : base;
+}
+
 function isWithinDir(targetPath: string, rootDir: string): boolean {
-	const resolvedRoot = existsSync(rootDir) ? realpathSync(rootDir) : resolve(rootDir);
-	const resolvedTarget = existsSync(targetPath)
-		? realpathSync(targetPath)
-		: resolve(
-				existsSync(dirname(targetPath)) ? realpathSync(dirname(targetPath)) : resolve(dirname(targetPath)),
-				targetPath.split(/[\\/]/).pop() ?? "",
-			);
+	const resolvedRoot = _nearest_existing_resolved(rootDir);
+	const resolvedTarget = _nearest_existing_resolved(targetPath);
 	return resolvedTarget === resolvedRoot || resolvedTarget.startsWith(`${resolvedRoot}${sep}`);
 }
 
@@ -157,6 +166,15 @@ export default function (pi: ExtensionAPI) {
 					block: true,
 					reason: `Write blocked: path ${rawPath} resolves outside the isolated worktree (${worktreeDir}).`,
 				};
+			}
+			if (taskKind === "problem" && existsSync(targetPath)) {
+				const rel = _nearest_existing_resolved(targetPath).slice(_nearest_existing_resolved(worktreeDir).length + 1);
+				if (/^tests?(?:[\\/]|$)/i.test(rel)) {
+					return {
+						block: true,
+						reason: "Modifying existing test files under tests/ while fixing a problem is blocked.",
+					};
+				}
 			}
 		}
 

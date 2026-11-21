@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import time
 import uuid
@@ -152,49 +153,60 @@ class Reconciler:
         resume_session_id: str | None = None,
         approval_cb: ApprovalCallback | None = None,
     ) -> TaskRow:
+        role: WorkerRole = "builder" if task.verify_cmd else "planner"
+        effective_resume_id = resume_session_id or self.db.get_approved_resume_session(task.id)
         repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
         if not (repo_dir / ".git").exists():
             return self.db.finish_attempt(
                 task_id=task.id,
-                role="builder" if task.verify_cmd else "planner",
+                role=role,
                 summary=f"Repository {task.repo!r} not found at {repo_dir}",
                 outcome="errored",
             )
 
-        await self._git_fetch(repo_dir)
-        role: WorkerRole = "builder" if task.verify_cmd else "planner"
         session_dir = self.cfg.sessions_dir / task.id
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
         if role == "planner":
-            prompt = self._build_planner_prompt(task)
-            pi_res = await self._run_pi(
-                role="planner",
-                cwd=repo_dir,
-                worktree_dir=None,
-                session_dir=session_dir,
-                task=task,
-                prompt=prompt,
-                run_key=run_key or task.id,
-                resume_session_id=resume_session_id,
-                approval_cb=approval_cb,
-            )
-            outcome: AttemptOutcome = (
-                "decomposed" if pi_res.outcome == "pushed" else pi_res.outcome
-            )
-            return self.db.finish_attempt(
-                task_id=task.id,
-                role="planner",
-                summary=pi_res.summary,
-                outcome=outcome,
-                cost_usd=pi_res.cost_usd,
-                pi_session_id=pi_res.session_id,
-            )
+            try:
+                await self._git_fetch(repo_dir)
+                prompt = self._build_planner_prompt(task)
+                pi_res = await self._run_pi(
+                    role="planner",
+                    cwd=repo_dir,
+                    worktree_dir=None,
+                    session_dir=session_dir,
+                    task=task,
+                    prompt=prompt,
+                    run_key=run_key or task.id,
+                    resume_session_id=effective_resume_id,
+                    approval_cb=approval_cb,
+                )
+                outcome: AttemptOutcome = (
+                    "decomposed" if pi_res.outcome == "pushed" else pi_res.outcome
+                )
+                return self.db.finish_attempt(
+                    task_id=task.id,
+                    role="planner",
+                    summary=pi_res.summary,
+                    outcome=outcome,
+                    cost_usd=pi_res.cost_usd,
+                    pi_session_id=pi_res.session_id,
+                )
+            except Exception as exc:
+                logger.error(f"[Reconciler] planner task {task.id} failed: {exc!r}")
+                return self.db.finish_attempt(
+                    task_id=task.id,
+                    role="planner",
+                    summary=f"Planner execution error: {exc}",
+                    outcome="errored",
+                )
 
         worktree_dir = self.cfg.worktrees_dir / task.id
         branch_name = f"brain/{task.id}"
         try:
-            await self._prepare_worktree(repo_dir, worktree_dir, branch_name)
+            await self._git_fetch(repo_dir)
+            base_sha = await self._prepare_worktree(repo_dir, worktree_dir, branch_name)
             prompt = self._build_builder_prompt(task, worktree_dir)
             pi_res = await self._run_pi(
                 role="builder",
@@ -204,7 +216,7 @@ class Reconciler:
                 task=task,
                 prompt=prompt,
                 run_key=run_key or task.id,
-                resume_session_id=resume_session_id,
+                resume_session_id=effective_resume_id,
                 approval_cb=approval_cb,
             )
             if pi_res.outcome != "pushed":
@@ -217,6 +229,20 @@ class Reconciler:
                     pi_session_id=pi_res.session_id,
                     git_branch=branch_name,
                 )
+
+            if task.kind == "problem":
+                deleted_tests = await self._find_deleted_tests(worktree_dir, base_sha)
+                if deleted_tests:
+                    return self.db.finish_attempt(
+                        task_id=task.id,
+                        role="builder",
+                        summary=pi_res.summary,
+                        outcome="failed_verify",
+                        cost_usd=pi_res.cost_usd,
+                        pi_session_id=pi_res.session_id,
+                        git_branch=branch_name,
+                        verify_output=f"Blocked: problem task deleted test files: {', '.join(deleted_tests)}",
+                    )
 
             assert task.verify_cmd is not None
             verified, verify_output = await self._run_verify(
@@ -245,6 +271,15 @@ class Reconciler:
                 git_branch=branch_name,
                 git_sha=git_sha,
                 verify_output=verify_output,
+            )
+        except Exception as exc:
+            logger.error(f"[Reconciler] builder task {task.id} failed: {exc!r}")
+            return self.db.finish_attempt(
+                task_id=task.id,
+                role="builder",
+                summary=f"Builder execution error: {exc}",
+                outcome="errored",
+                git_branch=branch_name,
             )
         finally:
             await self._cleanup_worktree(repo_dir, worktree_dir)
@@ -279,7 +314,7 @@ class Reconciler:
             "Use `upsert_task` to create or update tasks when appropriate, and reply in 1-2 concise "
             "sentences suitable to be spoken aloud."
         )
-        return await self._run_pi(
+        res = await self._run_pi(
             role="planner",
             cwd=cwd,
             worktree_dir=None,
@@ -290,6 +325,9 @@ class Reconciler:
             resume_session_id=resume_session_id,
             approval_cb=approval_cb,
         )
+        if res.cost_usd > 0:
+            self.db.add_spend(res.cost_usd)
+        return res
 
     def _build_planner_prompt(self, task: TaskRow) -> str:
         return (
@@ -344,6 +382,8 @@ class Reconciler:
                 method = req.get("method")
                 params = req.get("params") or {}
                 if method == "upsert_task":
+                    if role != "planner":
+                        raise ValueError("upsert_task is only permitted for the planner role.")
                     t = self.db.upsert_task(
                         task_id=params.get("id"),
                         parent_id=params.get("parent_id") or (task.id if task else None),
@@ -360,6 +400,8 @@ class Reconciler:
                     resp: dict[str, Any] = {"ok": True, "result": {"id": t.id, "status": t.status}}
                 elif method == "record_note":
                     target_id = task.id if task else str(params.get("task_id") or "general")
+                    if not re.fullmatch(r"[A-Za-z0-9_.-]+", target_id) or ".." in target_id:
+                        raise ValueError(f"Invalid note task_id: {target_id!r}")
                     note_path = self.cfg.notes_dir / f"{target_id}.md"
                     with note_path.open("a", encoding="utf-8") as f:
                         f.write(f"\n{params.get('note_markdown', '').strip()}\n")
@@ -429,10 +471,11 @@ class Reconciler:
                 worktree_dir=worktree_dir,
                 session_dir=session_dir,
                 notes_dir=self.cfg.notes_dir,
+                home_dir=self.cfg.home_dir,
                 enabled=self.cfg.sandbox_enabled,
             )
 
-        env = os.environ.copy()
+        env = self._build_sandbox_env(session_dir)
         env["SUPERBRAIN_RPC_SOCK"] = str(sock_path)
         if worktree_dir is not None:
             env["SUPERBRAIN_WORKTREE_DIR"] = str(worktree_dir.resolve())
@@ -442,6 +485,8 @@ class Reconciler:
 
         last_text = ""
         session_id = resume_session_id
+        completed_cost = 0.0
+        streaming_cost = 0.0
         total_cost = 0.0
         timed_out = False
         budget_exceeded = False
@@ -484,7 +529,9 @@ class Reconciler:
                     last_text = line_str
                     continue
                 if isinstance(event, dict):
-                    if isinstance(event.get("session_id"), str):
+                    if event.get("type") == "session" and isinstance(event.get("id"), str):
+                        session_id = event["id"]
+                    elif isinstance(event.get("session_id"), str):
                         session_id = event["session_id"]
                     elif isinstance(event.get("sessionId"), str):
                         session_id = event["sessionId"]
@@ -493,7 +540,12 @@ class Reconciler:
                         last_text = text
                     ev_cost = extract_event_cost(event)
                     if ev_cost > 0:
-                        total_cost = max(total_cost, ev_cost)
+                        if event.get("type") == "message_update":
+                            streaming_cost = max(streaming_cost, ev_cost)
+                        else:
+                            completed_cost += ev_cost
+                            streaming_cost = 0.0
+                        total_cost = completed_cost + streaming_cost
                         if initial_state.spent_today_usd + total_cost > initial_state.daily_budget_usd:
                             budget_exceeded = True
                             proc.terminate()
@@ -553,6 +605,18 @@ class Reconciler:
             upserted_task_ids=upserted_ids,
         )
 
+    @staticmethod
+    def _build_sandbox_env(session_dir: Path) -> dict[str, str]:
+        tmp_dir = session_dir / "tmp"
+        cache_dir = session_dir / "cache"
+        tmp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        env = os.environ.copy()
+        env["TMPDIR"] = str(tmp_dir)
+        env["XDG_CACHE_HOME"] = str(cache_dir)
+        env["UV_CACHE_DIR"] = str(cache_dir / "uv")
+        return env
+
     async def _run_verify(
         self, worktree_dir: Path, session_dir: Path, verify_cmd: str
     ) -> tuple[bool, str]:
@@ -561,11 +625,13 @@ class Reconciler:
             worktree_dir=worktree_dir,
             session_dir=session_dir,
             notes_dir=self.cfg.notes_dir,
+            home_dir=self.cfg.home_dir,
             enabled=self.cfg.sandbox_enabled,
         )
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(worktree_dir),
+            env=self._build_sandbox_env(session_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -580,6 +646,20 @@ class Reconciler:
         output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
         return proc.returncode == 0, output
 
+    async def _find_deleted_tests(self, worktree_dir: Path, base_sha: str) -> list[str]:
+        out = await self._git_out(
+            worktree_dir,
+            "diff",
+            "--diff-filter=D",
+            "--name-only",
+            base_sha,
+            "--",
+            "tests",
+            "test",
+            check=False,
+        )
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
     async def _git_fetch(self, repo_dir: Path) -> None:
         remotes = await self._git_out(repo_dir, "remote")
         if "origin" in remotes.splitlines():
@@ -587,7 +667,7 @@ class Reconciler:
 
     async def _prepare_worktree(
         self, repo_dir: Path, worktree_dir: Path, branch_name: str
-    ) -> None:
+    ) -> str:
         if worktree_dir.exists():
             await self._cleanup_worktree(repo_dir, worktree_dir)
         has_origin_master = (
@@ -598,6 +678,7 @@ class Reconciler:
             repo_dir, "worktree", "add", "-B", branch_name, str(worktree_dir), base_ref
         )
         os.chmod(worktree_dir, 0o700)
+        return (await self._git_out(worktree_dir, "rev-parse", "HEAD")).strip()
 
     async def _commit_and_push(
         self, worktree_dir: Path, branch_name: str, task: TaskRow
