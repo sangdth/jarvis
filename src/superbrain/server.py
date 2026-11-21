@@ -235,7 +235,8 @@ class BrainServer:
                 lines = [item.summary_spoken for item in reports]
                 if not lines:
                     lines.append(
-                        f"Mode is {st.mode.lower()}, ${st.spent_today_usd:.2f} of ${st.daily_budget_usd:.2f} spent today, no new overnight reports."
+                        f"Mode is {st.mode.lower()}, ${st.spent_today_usd:.2f} of "
+                        f"${st.daily_budget_usd:.2f} spent today, no new overnight reports."
                     )
                 summary_text = " ".join(lines)
                 if pending_approval and allow_live_approval:

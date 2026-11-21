@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import stat
 from pathlib import Path
 
@@ -51,10 +50,11 @@ async def test_builder_worktree_verify_and_push_to_origin(tmp_path: Path) -> Non
     fake_pi = _write_fake_pi(
         tmp_path / "fake_pi.py",
         """
-import json, pathlib, sys
+import json, pathlib
 wt = pathlib.Path.cwd()
 (wt / "app.py").write_text("VALUE = 42\\n", encoding="utf-8")
-print(json.dumps({"session_id": "sess-1", "role": "assistant", "content": "Set VALUE to 42.", "cost_usd": 0.45}), flush=True)
+ev = {"session_id": "sess-1", "role": "assistant", "content": "Set VALUE to 42.", "cost_usd": 0.45}
+print(json.dumps(ev), flush=True)
 """,
     )
     home_dir = tmp_path / "home"
@@ -110,7 +110,8 @@ async def test_budget_kill_switch_stops_run_mid_stream(tmp_path: Path) -> None:
         tmp_path / "fake_pi_expensive.py",
         """
 import json, time
-print(json.dumps({"session_id": "sess-exp", "cost_usd": 25.0, "role": "assistant", "content": "Expensive step"}), flush=True)
+ev = {"session_id": "sess-exp", "cost_usd": 25.0, "role": "assistant", "content": "Expensive step"}
+print(json.dumps(ev), flush=True)
 time.sleep(30)
 """,
     )

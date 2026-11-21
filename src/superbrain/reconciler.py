@@ -276,7 +276,8 @@ class Reconciler:
             f"Allowed repositories: {allowed}\n"
             f"Current tasks on board:\n{tasks_summary or '(none)'}\n\n"
             f"Owner request: {user_input}\n"
-            "Use `upsert_task` to create or update tasks when appropriate, and reply in 1-2 concise sentences suitable to be spoken aloud."
+            "Use `upsert_task` to create or update tasks when appropriate, and reply in 1-2 concise "
+            "sentences suitable to be spoken aloud."
         )
         return await self._run_pi(
             role="planner",
@@ -312,7 +313,8 @@ class Reconciler:
             f"Verification gate (`verify_cmd`): {task.verify_cmd}\n"
             f"Previous attempts:\n{history or '(none)'}\n"
             f"Progress notes:\n{notes or '(none)'}\n\n"
-            "Implement the minimal complete fix or feature inside this worktree, verify it, and summarize your changes in one sentence."
+            "Implement the minimal complete fix or feature inside this worktree, verify it, and "
+            "summarize your changes in one sentence."
         )
 
     async def _run_pi(

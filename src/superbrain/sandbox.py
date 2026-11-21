@@ -27,11 +27,10 @@ def build_sandbox_profile(worktree_dir: Path, session_dir: Path, notes_dir: Path
         [
             "(version 1)",
             "(allow default)",
-            "(deny file-write*)",
+            '(deny file-write* (subpath "/"))',
             '(allow file-write* (subpath "/dev"))',
             '(allow file-write* (subpath "/tmp"))',
             '(allow file-write* (subpath "/private/tmp"))',
-            '(allow file-write* (subpath "/private/var/folders"))',
             f'(allow file-write* (subpath "{wt}"))',
             f'(allow file-write* (subpath "{sess}"))',
             f'(allow file-write* (subpath "{notes}"))',
