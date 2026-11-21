@@ -1,0 +1,37 @@
+{
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "type": "claude_code",
+      "cwd": ".",
+      "role": "coding, only when the user names Claude Code or Claude",
+      "enabled": true
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "type": "opencode_sse",
+      "url": "http://127.0.0.1:4096",
+      "role": "coding, only when the user names OpenCode",
+      "enabled": true
+    },
+    {
+      "id": "t3-code",
+      "name": "T3 Code",
+      "type": "t3",
+      "cwd": ".",
+      "url": "http://127.0.0.1:3773",
+      "role": "coding: write, fix, test and explain code, in the user's projects",
+      "enabled": true
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes",
+      "type": "hermes",
+      "url": "http://127.0.0.1:8642",
+      "role": "everything that is not coding: research, web lookups, notes, email, calendar, reminders, files",
+      "enabled": true
+    }
+  ]
+}
