@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -239,10 +241,11 @@ def record_skill_outcome(
 def inspect_attempt_trajectory(attempt: AttemptRow, *, diff_stat: str = "") -> dict[str, Any]:
     """
     Decodes a stored session `.jsonl` trajectory into a structured, sanitized evidence record
-    with tool-call arguments, tool errors, and verification output.
+    with tool-call arguments, tool errors, Oracle efficiency signals, and verification output.
     """
     tool_calls: list[dict[str, str]] = []
     tool_errors: list[dict[str, str]] = []
+    assistant_turns = 0
     if attempt.session_jsonl_path:
         path = Path(attempt.session_jsonl_path)
         if path.is_file():
@@ -256,14 +259,16 @@ def inspect_attempt_trajectory(attempt: AttemptRow, *, diff_stat: str = "") -> d
                         continue
                     role = msg.get("role")
                     content = msg.get("content")
-                    if role == "assistant" and isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and item.get("type") == "toolCall":
-                                name = str(item.get("name") or "")
-                                args = item.get("arguments") or item.get("input") or {}
-                                args_str = json.dumps(args)[:200] if args else ""
-                                if name:
-                                    tool_calls.append({"tool": name, "args": args_str})
+                    if role == "assistant":
+                        assistant_turns += 1
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "toolCall":
+                                    name = str(item.get("name") or "")
+                                    args = item.get("arguments") or item.get("input") or {}
+                                    args_str = json.dumps(args)[:200] if args else ""
+                                    if name:
+                                        tool_calls.append({"tool": name, "args": args_str})
                     elif role == "toolResult" and msg.get("isError"):
                         tool_name = str(msg.get("toolName") or "tool")
                         err_text = _extract_tool_result_text(content)[:400]
@@ -271,20 +276,133 @@ def inspect_attempt_trajectory(attempt: AttemptRow, *, diff_stat: str = "") -> d
             except Exception:
                 pass
 
+    adjacent_edit_bash_pairs = sum(
+        1
+        for i in range(len(tool_calls) - 1)
+        if tool_calls[i]["tool"] in ("edit", "write") and tool_calls[i + 1]["tool"] == "bash"
+    )
+    err_counts = Counter(e["tool"] for e in tool_errors)
+    repeated_error_tools = sorted(t for t, cnt in err_counts.items() if cnt >= 2)
+
     return {
         "attempt_id": attempt.id,
         "task_id": attempt.task_id,
         "role": attempt.role,
         "outcome": attempt.outcome,
+        "metric_value": attempt.metric_value,
         "summary": attempt.summary[:1000],
         "diff_stat": diff_stat[:1000],
         "verify_output": (attempt.verify_output or "")[:4000],
         "skills_used": list(attempt.skills_used),
         "diagnostic": (attempt.diagnostic or "")[:800],
         "session_jsonl_path": attempt.session_jsonl_path,
+        "oracle": {
+            "assistant_turns": assistant_turns,
+            "adjacent_edit_bash_pairs": adjacent_edit_bash_pairs,
+            "repeated_error_tools": repeated_error_tools,
+        },
         "tool_calls": tool_calls[:40],
         "tool_errors": tool_errors[:15],
         "created_at": attempt.created_at,
+    }
+
+
+def validate_evidence_receipt(root_dir: Path, raw_output: str) -> dict[str, Any]:
+    """
+    SoL-Pi Evidence-Preserving Reducer / Scout validator:
+    Parses a scout's JSON response (`{"summary": ..., "uncertain": bool, "evidence": [{"file": ..., "quote": ...}]}`)
+    and verifies every quoted snippet byte-for-byte against the resolved file under `root_dir`.
+    Any quote that is missing on disk or escapes `root_dir` is rejected.
+    """
+    text = raw_output.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    parsed: dict[str, Any] = {}
+    if start >= 0 and end > start:
+        try:
+            candidate = json.loads(text[start : end + 1])
+            if isinstance(candidate, dict):
+                parsed = candidate
+        except Exception:
+            parsed = {}
+
+    summary = str(parsed.get("summary") or raw_output.strip())[:600]
+    uncertain = bool(parsed.get("uncertain", not bool(parsed)))
+    raw_items = parsed.get("evidence")
+    items = raw_items if isinstance(raw_items, list) else []
+
+    resolved_root = root_dir.resolve()
+    verified: list[dict[str, Any]] = []
+    rejected_count = 0
+    seen: set[tuple[str, str]] = set()
+
+    for item in items[:12]:
+        if not isinstance(item, dict):
+            rejected_count += 1
+            continue
+        rel_file = str(item.get("file") or "").strip()
+        quote = str(item.get("quote") or "")
+        if not rel_file or not quote or len(quote) > 800:
+            rejected_count += 1
+            continue
+        if (rel_file, quote) in seen:
+            continue
+        try:
+            target = (resolved_root / rel_file).resolve()
+            if target != resolved_root and not str(target).startswith(f"{resolved_root}{os.sep}"):
+                rejected_count += 1
+                continue
+            if not target.is_file():
+                rejected_count += 1
+                continue
+            file_body = target.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            rejected_count += 1
+            continue
+
+        idx = file_body.find(quote)
+        if idx < 0:
+            rejected_count += 1
+            continue
+        line_no = file_body.count("\n", 0, idx) + 1
+        quote_sha = hashlib.sha256(quote.encode("utf-8")).hexdigest()[:16]
+        seen.add((rel_file, quote))
+        verified.append(
+            {
+                "file": str(target.relative_to(resolved_root)),
+                "line": line_no,
+                "quote_sha256": quote_sha,
+                "quote": quote,
+            }
+        )
+
+    receipt_lines = [
+        "sol_pi_evidence_receipt_v1",
+        f"uncertain={str(uncertain).lower()}",
+        f"verified_count={len(verified)}",
+        f"rejected_unverifiable_count={rejected_count}",
+        f"summary={json.dumps(summary)}",
+        "verified_evidence:",
+    ]
+    if verified:
+        for v in verified:
+            receipt_lines.append(
+                f"- file={v['file']}:{v['line']} quote_sha256={v['quote_sha256']} quote={json.dumps(v['quote'])}"
+            )
+    else:
+        receipt_lines.append("- none")
+
+    return {
+        "schema": "sol_pi_evidence_receipt_v1",
+        "summary": summary,
+        "uncertain": uncertain,
+        "verified_evidence": verified,
+        "rejected_count": rejected_count,
+        "receipt_text": "\n".join(receipt_lines),
     }
 
 

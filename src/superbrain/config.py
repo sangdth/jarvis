@@ -40,9 +40,11 @@ class Settings(BaseSettings):
     planner_model: str = "sonnet:medium"
     builder_model: str = "sonnet:high"
     improver_model: str = "sonnet:medium"
+    scout_model: str = "haiku:low"
     default_mode: Literal["ASSIST", "AUTONOMOUS"] = "ASSIST"
     sandbox_enabled: bool = True
     max_personal_skills: int = 10
+    auto_research_after_strikes: int = 0
     self_upgrade_verify_cmd: str = (
         "uv run ruff check src tests && uv run mypy && uv run pytest && uv run superbrain self-check"
     )

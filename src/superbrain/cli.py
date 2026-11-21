@@ -133,6 +133,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("improve", help="Run the self-improving skill reflection loop on recent attempts")
     sub.add_parser("self-check", help="Run smoke canary verification on this checkout")
 
+    res_p = sub.add_parser(
+        "research",
+        help="Run a SoL-Pi Oracle + BFS auto-research hypothesis fan-out on a task",
+    )
+    res_p.add_argument("task_id", help="Task ID (e.g. SG-1 or PRB-1)")
+
     add_p = sub.add_parser("add", help="Add or update a task on the board")
     add_p.add_argument("--id", dest="task_id", default=None)
     add_p.add_argument("--kind", choices=["goal", "problem"], required=True)
@@ -181,8 +187,13 @@ def main(argv: list[str] | None = None) -> int:
                 f"Skills: {len(active_skills)} / {settings.max_personal_skills}"
             )
             for t in db.list_tasks():
+                best_info = (
+                    f", best={t.best_metric}@{t.best_branch}"
+                    if t.best_metric is not None
+                    else ""
+                )
                 print(
-                    f"  {t.id} [{t.kind}/{t.status}] (strikes={t.strike_count}, repo={t.repo}): {t.title}"
+                    f"  {t.id} [{t.kind}/{t.status}] (strikes={t.strike_count}, repo={t.repo}{best_info}): {t.title}"
                 )
             for s in active_skills:
                 print(
@@ -194,6 +205,11 @@ def main(argv: list[str] | None = None) -> int:
             reconciler = Reconciler(db, settings)
             res = asyncio.run(reconciler.run_skill_improver())
             print(f"[{res.outcome}] {res.summary} (modified={res.modified_skills or []})")
+            return 0 if res.outcome != "errored" else 1
+        if args.cmd == "research":
+            reconciler = Reconciler(db, settings)
+            res = asyncio.run(reconciler.run_auto_research(args.task_id))
+            print(f"[{res.outcome}] {res.summary} (hypotheses={res.upserted_task_ids or []})")
             return 0 if res.outcome != "errored" else 1
         if args.cmd == "add":
             t = db.upsert_task(

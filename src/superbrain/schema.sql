@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'ready', 'in_progress', 'done', 'blocked')),
     priority INTEGER NOT NULL DEFAULT 50,
     strike_count INTEGER NOT NULL DEFAULT 0,
+    best_metric REAL,
+    best_branch TEXT,
+    best_sha TEXT,
     lease_until TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -44,6 +47,7 @@ CREATE TABLE IF NOT EXISTS attempts (
         outcome IN ('pushed', 'decomposed', 'failed_verify', 'deferred_approval', 'timed_out', 'errored', 'reaped')
     ),
     verify_output TEXT,
+    metric_value REAL,
     skills_used TEXT NOT NULL DEFAULT '[]',
     diagnostic TEXT,
     reflected INTEGER NOT NULL DEFAULT 0,

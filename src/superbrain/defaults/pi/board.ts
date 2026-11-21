@@ -7,7 +7,9 @@
  * `SUPERBRAIN_WORKTREE_DIR`.
  */
 
-import { existsSync, realpathSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, resolve, sep } from "node:path";
 
@@ -70,6 +72,51 @@ const BLOCKED_BASH_PATTERNS = [
 	/\bstate\.db\b/i,
 	/\bsqlite3\b/i,
 ];
+
+function checkWorktreeWriteGuard(rawPath: string, worktreeDir: string, taskKind?: string): string | null {
+	const targetPath = resolve(worktreeDir, rawPath);
+	if (!isWithinDir(targetPath, worktreeDir)) {
+		return `Write blocked: path ${rawPath} resolves outside the isolated worktree (${worktreeDir}).`;
+	}
+	if (taskKind === "problem" && existsSync(targetPath)) {
+		const rel = _nearest_existing_resolved(targetPath).slice(_nearest_existing_resolved(worktreeDir).length + 1);
+		if (/^tests?(?:[\\/]|$)/i.test(rel)) {
+			return "Modifying existing test files under tests/ while fixing a problem is blocked.";
+		}
+	}
+	return null;
+}
+
+function checkBashCommandGuard(cmd: string, taskKind?: string): string | null {
+	for (const pat of BLOCKED_BASH_PATTERNS) {
+		if (pat.test(cmd)) {
+			return `Bash command blocked by Superbrain guardrail (${pat}).`;
+		}
+	}
+	if (taskKind === "problem" && /\b(?:rm|git\s+rm)\b.*\btests?\//i.test(cmd)) {
+		return "Deleting test files while fixing a problem is blocked.";
+	}
+	return null;
+}
+
+function runShellCommand(command: string, cwd: string, timeoutMs: number): Promise<{ code: number; output: string }> {
+	return new Promise((resolveCmd) => {
+		execFile(
+			"/bin/sh",
+			["-c", command],
+			{ cwd, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 },
+			(error, stdout, stderr) => {
+				const out = [stdout, stderr].filter(Boolean).join("\n").trim();
+				if (error) {
+					const exitCode = typeof error.code === "number" ? error.code : 1;
+					resolveCmd({ code: exitCode, output: out || error.message });
+					return;
+				}
+				resolveCmd({ code: 0, output: out });
+			},
+		);
+	});
+}
 
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
@@ -219,6 +266,134 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerTool({
+		name: "research_scout",
+		label: "Run Evidence-Preserving Research Scout",
+		description:
+			"Delegate read-only codebase or log reconnaissance to an isolated fast scout subagent. Every returned quote is verified byte-for-byte against files on disk before reaching your context.",
+		promptSnippet: "Delegate read-only codebase/log reconnaissance and receive a byte-verified evidence receipt.",
+		parameters: {
+			type: "object",
+			properties: {
+				question: {
+					type: "string",
+					description: "Focused reconnaissance question (e.g. 'Find where verify_cmd output is parsed and list exact lines')",
+				},
+				paths: {
+					type: "array",
+					items: { type: "string" },
+					description: "Optional relative file or directory paths to focus the scout on",
+				},
+			},
+			required: ["question"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("research_scout", params);
+			const text = typeof res.receipt_text === "string" ? res.receipt_text : JSON.stringify(res);
+			return {
+				content: [{ type: "text", text }],
+				details: res,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "edit_and_run",
+		label: "Action Fusion: Edit File and Run Command",
+		description:
+			"SoL-Pi Action Fusion: apply an exact text edit (or create a file when old_text is empty) inside the worktree and immediately run its follow-up test/check command in one turn.",
+		promptSnippet: "Edit a file and run its follow-up verification command in one fused turn.",
+		parameters: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: "File path inside the worktree" },
+				old_text: {
+					type: "string",
+					description: "Exact text to replace (empty string only when creating a new file)",
+				},
+				new_text: { type: "string", description: "Replacement text" },
+				command: { type: "string", description: "Follow-up shell command to run if the edit succeeds" },
+				timeout_seconds: { type: "integer", description: "Command timeout in seconds (default 60)" },
+			},
+			required: ["path", "old_text", "new_text", "command"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const worktreeDir = process.env.SUPERBRAIN_WORKTREE_DIR ?? process.cwd();
+			const taskKind = process.env.SUPERBRAIN_TASK_KIND;
+			const rawPath = String(params.path ?? "");
+			const oldText = String(params.old_text ?? "");
+			const newText = String(params.new_text ?? "");
+			const command = String(params.command ?? "");
+			const timeoutMs = Math.max(1, Number(params.timeout_seconds ?? 60)) * 1000;
+
+			const writeErr = checkWorktreeWriteGuard(rawPath, worktreeDir, taskKind);
+			if (writeErr) {
+				return {
+					content: [{ type: "text", text: `${writeErr}\n\n[then_run:skipped] The file mutation did not complete successfully; the command was not run.` }],
+					details: { status: "skipped" },
+					isError: true,
+				} as never;
+			}
+			const bashErr = checkBashCommandGuard(command, taskKind);
+			if (bashErr) {
+				return {
+					content: [{ type: "text", text: `${bashErr}\n\n[then_run:skipped] Command blocked by guardrail.` }],
+					details: { status: "skipped" },
+					isError: true,
+				} as never;
+			}
+
+			const targetPath = resolve(worktreeDir, rawPath);
+			try {
+				if (!existsSync(targetPath)) {
+					if (oldText !== "") {
+						throw new Error(`File not found: ${rawPath}`);
+					}
+					mkdirSync(dirname(targetPath), { recursive: true });
+					writeFileSync(targetPath, newText, "utf8");
+				} else {
+					const current = readFileSync(targetPath, "utf8");
+					if (oldText === "" || !current.includes(oldText)) {
+						throw new Error(`old_text not found in ${rawPath}`);
+					}
+					const firstIdx = current.indexOf(oldText);
+					if (current.indexOf(oldText, firstIdx + Math.max(1, oldText.length)) !== -1) {
+						throw new Error(`old_text matched multiple locations in ${rawPath}; provide more context.`);
+					}
+					const updated = current.slice(0, firstIdx) + newText + current.slice(firstIdx + oldText.length);
+					writeFileSync(targetPath, updated, "utf8");
+				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text", text: `${msg}\n\n[then_run:skipped] The file mutation did not complete successfully; the command was not run.` }],
+					details: { status: "skipped" },
+					isError: true,
+				} as never;
+			}
+
+			const hashBefore = createHash("sha256").update(readFileSync(targetPath)).digest("hex");
+			await new Promise<void>((r) => setImmediate(r));
+			const hashAfter = createHash("sha256").update(readFileSync(targetPath)).digest("hex");
+			if (hashBefore !== hashAfter) {
+				return {
+					content: [{ type: "text", text: `[then_run:skipped] target content changed after the fused mutation; the command was not run.` }],
+					details: { status: "skipped" },
+					isError: true,
+				} as never;
+			}
+
+			const { code, output } = await runShellCommand(command, worktreeDir, timeoutMs);
+			const tag = code === 0 ? "[then_run:succeeded]" : "[then_run:failed]";
+			const combined = [`Updated ${rawPath}.`, output ? `${tag}\n${output}` : tag].join("\n\n");
+			return {
+				content: [{ type: "text", text: combined }],
+				details: { status: code === 0 ? "succeeded" : "failed", exitCode: code },
+				...(code !== 0 ? { isError: true } : {}),
+			} as never;
+		},
+	});
+
 	pi.on("tool_call", async (event: ToolCallEvent): Promise<ToolCallEventResult | undefined> => {
 		const worktreeDir = process.env.SUPERBRAIN_WORKTREE_DIR;
 		const skillsDir = process.env.SUPERBRAIN_SKILLS_DIR;
@@ -238,39 +413,17 @@ export default function (pi: ExtensionAPI) {
 
 		if ((event.toolName === "edit" || event.toolName === "write") && worktreeDir) {
 			const rawPath = String((event.input as Record<string, unknown>).path ?? "");
-			const targetPath = resolve(worktreeDir, rawPath);
-			if (!isWithinDir(targetPath, worktreeDir)) {
-				return {
-					block: true,
-					reason: `Write blocked: path ${rawPath} resolves outside the isolated worktree (${worktreeDir}).`,
-				};
-			}
-			if (taskKind === "problem" && existsSync(targetPath)) {
-				const rel = _nearest_existing_resolved(targetPath).slice(_nearest_existing_resolved(worktreeDir).length + 1);
-				if (/^tests?(?:[\\/]|$)/i.test(rel)) {
-					return {
-						block: true,
-						reason: "Modifying existing test files under tests/ while fixing a problem is blocked.",
-					};
-				}
+			const writeErr = checkWorktreeWriteGuard(rawPath, worktreeDir, taskKind);
+			if (writeErr) {
+				return { block: true, reason: writeErr };
 			}
 		}
 
 		if (event.toolName === "bash") {
 			const cmd = String((event.input as Record<string, unknown>).command ?? "");
-			for (const pat of BLOCKED_BASH_PATTERNS) {
-				if (pat.test(cmd)) {
-					return {
-						block: true,
-						reason: `Bash command blocked by Superbrain guardrail (${pat}).`,
-					};
-				}
-			}
-			if (taskKind === "problem" && /\b(?:rm|git\s+rm)\b.*\btests?\//i.test(cmd)) {
-				return {
-					block: true,
-					reason: "Deleting test files while fixing a problem is blocked.",
-				};
+			const bashErr = checkBashCommandGuard(cmd, taskKind);
+			if (bashErr) {
+				return { block: true, reason: bashErr };
 			}
 		}
 		return undefined;

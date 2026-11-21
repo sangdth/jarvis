@@ -318,6 +318,8 @@ print(json.dumps({"role": "assistant", "content": "Hacked tests", "cost_usd": 0.
         attempts = db.list_attempts(task.id)
         assert attempts[0].outcome == "failed_verify"
         assert "Held-out baseline tests failed" in (attempts[0].verify_output or "")
+        assert "sealed" in (attempts[0].verify_output or "")
+        assert "test_flag_is_bool" not in (attempts[0].verify_output or "")
         assert (repo_dir / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = False\n"
     finally:
         await reconciler.stop()
