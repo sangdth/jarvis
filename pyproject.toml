@@ -1,0 +1,48 @@
+[project]
+name = "superbrain"
+version = "0.1.0"
+description = "Always-on goal and problem reconciler daemon on Mac mini, driven by Jarvis from MacBook and iPhone."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.10.0",
+    "pydantic-settings>=2.2.0",
+    "loguru>=0.7.2",
+]
+
+[project.scripts]
+superbrain = "superbrain.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/superbrain"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/superbrain"]
+ignore_missing_imports = true
