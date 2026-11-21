@@ -82,5 +82,9 @@ class Settings(BaseSettings):
     def skills_dir(self) -> Path:
         return self.home_dir / "skills"
 
+    @property
+    def traces_dir(self) -> Path:
+        return self.home_dir / "traces"
+
 
 settings = Settings()

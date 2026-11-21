@@ -19,28 +19,33 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
 
 - **Private repo, `AGPL-3.0-only` license** (`LICENSE`), matching `jarvis`.
 - **State lives in `SUPERBRAIN_HOME`** (`~/.config/superbrain` by default): `.env`, `state.db` (SQLite WAL),
-  `worktrees/<task_id>` (`0700`), `sessions/<task_id>`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created
-  personal skills), and `memory/progress/<task_id>.md`.
+  `worktrees/<task_id>` (`0700`), `sessions/<task_id>`, `traces/attempt-<id>.json` (per-attempt trajectory digests),
+  `skills/<slug>/SKILL.md` (capped at 10 active auto-created personal skills), and `memory/progress/<task_id>.md`
+  (handoff + deterministic negative-result ledger).
 - **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`), `attempts` (append-only run ledger with
   `skills_used`, `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline `sha256`, usage
   counters, and previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary approvals), plus
-  the 1-row `system_state` table.
+  the 1-row `system_state` table (`mode`, budget, `last_good_sha`, `upgrade_runs`, `upgrade_failures`).
 - **Self-improving skills loop (`skills.py` + `reconciler.py`):**
   - **Evidence:** `board.ts` records `record_skill_load` when a worker reads `~/.config/superbrain/skills/<slug>/SKILL.md`
-    and exposes `report_diagnostic`.
-  - **Reflection:** Offline `Improver` role reviews unreflected attempt trajectories and proposes at most 1 change via
+    and exposes `report_diagnostic`; `reconciler.py` writes `traces/attempt-<id>.json` after every attempt.
+  - **Reflection:** Offline `Improver` role receives a 1-line-per-item index of skills and trace files, inspects them on
+    demand via `read`/`grep`, and proposes at most 1 change (`create`, incremental `append`, `update`, or `retire`) via
     `propose_skill_change`.
-  - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; updating requires $\ge 1$ attempt ID
-    plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any skill with 2
-    failures and 0 successes after an update automatically rolls back or retires.
+  - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; `append`/`update` requires $\ge 1$
+    attempt ID plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any
+    skill with 2 failures and 0 successes after an update automatically rolls back or retires.
 - **Self-upgrading codebase (`repo = 'superbrain'`):**
   - `"superbrain"` is always in `allowed_repo_set`. When the owner asks to upgrade Superbrain or fix a Superbrain bug,
     Planner queues a `ready=true` task for `repo='superbrain'` and `server.py` executes it immediately.
   - Every `repo='superbrain'` build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, and
-    `superbrain self-check` canary) in its isolated worktree before `~/Projects/superbrain` is updated.
-  - Edits touching `src/superbrain/sandbox.py` or `src/superbrain/defaults/pi/board.ts` require owner approval before
-    applying. Verified upgrades record `last_good_sha` in `system_state`, update `~/Projects/superbrain`, flush the
-    spoken response, and trigger a clean shutdown so `launchd` (`KeepAlive=true`) respawns the new code.
+    `superbrain self-check` canary) **plus** the pre-edit baseline `~/Projects/superbrain/tests` held-out suite against
+    the candidate worktree before `~/Projects/superbrain` is updated.
+  - Edits touching `pyproject.toml`, `src/superbrain/config.py`, `src/superbrain/sandbox.py`,
+    `src/superbrain/defaults/pi/board.ts`, or modifying/deleting existing files under `tests/` require owner approval.
+    Verified upgrades record `last_good_sha` in `system_state`, update `~/Projects/superbrain`, flush the spoken
+    response, and trigger a clean shutdown for `launchd` respawn; if the first 2 post-upgrade task attempts fail with 0
+    successes, Superbrain automatically rolls `~/Projects/superbrain` back to `last_good_sha` and restarts.
 - **Strict repo allowlist (`ALLOWED_REPOS`):** `db.py` and `reconciler.py` refuse any `repo` not explicitly listed in
   `ALLOWED_REPOS` (comma-separated relative paths under `PROJECTS_DIR`, e.g. `jarvis,HuggerHustle/platform-v2`).
   Unlisted repos such as `hamahakki` are never touched.

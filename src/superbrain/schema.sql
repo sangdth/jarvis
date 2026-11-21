@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS system_state (
     spent_today_usd REAL NOT NULL DEFAULT 0.0,
     spend_date TEXT NOT NULL,
     last_good_sha TEXT,
+    upgrade_runs INTEGER NOT NULL DEFAULT 0,
+    upgrade_failures INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

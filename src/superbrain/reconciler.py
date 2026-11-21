@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -20,9 +21,9 @@ from superbrain.sandbox import wrap_with_sandbox
 from superbrain.skills import (
     SkillProposal,
     apply_skill_proposal,
-    inspect_attempt_trajectory,
     record_skill_outcome,
     sync_skills_on_disk,
+    write_attempt_trace,
 )
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
@@ -31,6 +32,8 @@ PLANNER_TOOLS = "read,grep,find,ls,upsert_task,report_diagnostic,defer_for_appro
 BUILDER_TOOLS = "read,edit,write,bash,grep,find,ls,record_note,report_diagnostic,defer_for_approval"
 IMPROVER_TOOLS = "read,grep,find,ls,propose_skill_change"
 PROTECTED_SELF_PATHS = {
+    "pyproject.toml",
+    "src/superbrain/config.py",
     "src/superbrain/sandbox.py",
     "src/superbrain/defaults/pi/board.ts",
 }
@@ -104,6 +107,7 @@ class Reconciler:
         self.cfg.sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.notes_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.skills_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.cfg.traces_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         sync_skills_on_disk(self.db, self.cfg.skills_dir)
         self._board_ext_path = self._install_board_extension()
         self._loop_task: asyncio.Task[None] | None = None
@@ -231,21 +235,28 @@ class Reconciler:
                     skills_used=pi_res.skills_used,
                     diagnostic=pi_res.diagnostic,
                 )
+                self._finalize_attempt_artifacts(task.id)
+                succeeded = outcome == "decomposed"
                 record_skill_outcome(
                     self.db,
                     self.cfg.skills_dir,
                     pi_res.skills_used or [],
-                    succeeded=(outcome == "decomposed"),
+                    succeeded=succeeded,
                 )
+                if outcome != "deferred_approval":
+                    await self._check_post_upgrade_health(succeeded=succeeded)
                 return finished_task
             except Exception as exc:
                 logger.error(f"[Reconciler] planner task {task.id} failed: {exc!r}")
-                return self.db.finish_attempt(
+                finished_task = self.db.finish_attempt(
                     task_id=task.id,
                     role="planner",
                     summary=f"Planner execution error: {exc}",
                     outcome="errored",
                 )
+                self._finalize_attempt_artifacts(task.id)
+                await self._check_post_upgrade_health(succeeded=False)
+                return finished_task
 
         worktree_dir = self.cfg.worktrees_dir / task.id
         branch_name = f"brain/{task.id}"
@@ -264,6 +275,7 @@ class Reconciler:
                 resume_session_id=effective_resume_id,
                 approval_cb=approval_cb,
             )
+            diff_stat = await self._worktree_diff_stat(worktree_dir, base_sha)
             if pi_res.outcome != "pushed":
                 finished_task = self.db.finish_attempt(
                     task_id=task.id,
@@ -277,10 +289,12 @@ class Reconciler:
                     skills_used=pi_res.skills_used,
                     diagnostic=pi_res.diagnostic,
                 )
+                self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
                 if pi_res.outcome != "deferred_approval":
                     record_skill_outcome(
                         self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
                     )
+                    await self._check_post_upgrade_health(succeeded=False)
                 return finished_task
 
             if task.kind == "problem":
@@ -299,9 +313,11 @@ class Reconciler:
                         skills_used=pi_res.skills_used,
                         diagnostic=pi_res.diagnostic,
                     )
+                    self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
                     record_skill_outcome(
                         self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
                     )
+                    await self._check_post_upgrade_health(succeeded=False)
                     return finished_task
 
             assert task.verify_cmd is not None
@@ -313,6 +329,12 @@ class Reconciler:
             verified, verify_output = await self._run_verify(
                 worktree_dir, session_dir, effective_verify_cmd
             )
+            if verified and task.repo == "superbrain" and not self.db.has_approved_outbox(task.id):
+                verified, baseline_out = await self._run_held_out_baseline_tests(
+                    repo_dir, worktree_dir, session_dir
+                )
+                if not verified:
+                    verify_output = f"Held-out baseline tests failed:\n{baseline_out}"
             if not verified:
                 finished_task = self.db.finish_attempt(
                     task_id=task.id,
@@ -327,9 +349,11 @@ class Reconciler:
                     skills_used=pi_res.skills_used,
                     diagnostic=pi_res.diagnostic,
                 )
+                self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
                 record_skill_outcome(
                     self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
                 )
+                await self._check_post_upgrade_health(succeeded=False)
                 return finished_task
 
             if task.repo == "superbrain":
@@ -355,7 +379,7 @@ class Reconciler:
                                 summary_spoken=prompt_spoken,
                                 details={"files": touched_protected, "summary": pi_res.summary},
                             )
-                        return self.db.finish_attempt(
+                        finished_task = self.db.finish_attempt(
                             task_id=task.id,
                             role="builder",
                             summary=f"Awaiting owner approval for protected files: {', '.join(touched_protected)}",
@@ -367,10 +391,14 @@ class Reconciler:
                             skills_used=pi_res.skills_used,
                             diagnostic=pi_res.diagnostic,
                         )
+                        self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
+                        return finished_task
 
             git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
+            just_upgraded_self = False
             if task.repo == "superbrain":
                 await self._apply_self_upgrade(repo_dir, git_sha, task.id)
+                just_upgraded_self = True
             finished_task = self.db.finish_attempt(
                 task_id=task.id,
                 role="builder",
@@ -385,19 +413,25 @@ class Reconciler:
                 skills_used=pi_res.skills_used,
                 diagnostic=pi_res.diagnostic,
             )
+            self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
             record_skill_outcome(
                 self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=True
             )
+            if not just_upgraded_self:
+                await self._check_post_upgrade_health(succeeded=True)
             return finished_task
         except Exception as exc:
             logger.error(f"[Reconciler] builder task {task.id} failed: {exc!r}")
-            return self.db.finish_attempt(
+            finished_task = self.db.finish_attempt(
                 task_id=task.id,
                 role="builder",
                 summary=f"Builder execution error: {exc}",
                 outcome="errored",
                 git_branch=branch_name,
             )
+            self._finalize_attempt_artifacts(task.id)
+            await self._check_post_upgrade_health(succeeded=False)
+            return finished_task
         finally:
             await self._cleanup_worktree(repo_dir, worktree_dir)
 
@@ -469,39 +503,45 @@ class Reconciler:
 
         session_dir = self.cfg.sessions_dir / "improver"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        evidence = [inspect_attempt_trajectory(a) for a in unreflected]
-        active_skills = [
-            {
-                "slug": s.slug,
-                "description": s.description,
-                "version": s.version,
-                "sha256": s.sha256,
-                "loads_since_update": s.loads_since_update,
-                "successes_since_update": s.successes_since_update,
-                "failures_since_update": s.failures_since_update,
-                "content": s.content,
-            }
-            for s in self.db.list_skills(status="active")
+        attempt_index_lines: list[str] = []
+        for a in unreflected:
+            trace_file = self.cfg.traces_dir / f"attempt-{a.id}.json"
+            if not trace_file.is_file():
+                write_attempt_trace(self.cfg.traces_dir, a)
+            attempt_index_lines.append(
+                f"- Attempt #{a.id} [{a.role}/{a.outcome}] task={a.task_id} "
+                f"skills={list(a.skills_used)} diag={a.diagnostic!r} "
+                f"trace={trace_file}"
+            )
+
+        active_skills = self.db.list_skills(status="active")
+        skill_index_lines = [
+            f"- {s.slug} (v{s.version}, sha256={s.sha256}, loads={s.loads_since_update}, "
+            f"ok={s.successes_since_update}, fail={s.failures_since_update}): "
+            f"{s.description} | path={self.cfg.skills_dir / s.slug / 'SKILL.md'}"
+            for s in active_skills
         ]
         prompt = (
-            "You are Superbrain Skill Improver. Review the recent attempt trajectories and the "
-            f"active personal skill library (cap={self.cfg.max_personal_skills} active skills).\n"
+            "You are Superbrain Skill Improver. Use `read` and `grep` to inspect the trace files "
+            "and skill files indexed below before deciding whether to propose an improvement.\n"
             "Rules:\n"
             "- Creating a new skill (`action='create'`) requires >= 2 independent attempt IDs showing "
             "the same recurring procedure or pitfall.\n"
-            "- Updating an existing skill (`action='update'`) requires >= 1 grounded attempt ID and "
-            "the skill's current `expected_sha256`.\n"
+            "- Prefer `action='append'` (with `expected_sha256`) to add an itemized rule bullet to an "
+            "existing skill without rewriting or dropping its existing instructions; use `action='update'` "
+            "only when refactoring conflicting lines.\n"
             f"- If active skills == {self.cfg.max_personal_skills}, creating a skill requires "
             "`retire_slug` and `retire_reason`.\n"
             "- Propose at most ONE change via `propose_skill_change`, or abstain if the evidence "
             "does not justify a change.\n\n"
             f"Active skills ({len(active_skills)}/{self.cfg.max_personal_skills}):\n"
-            f"{json.dumps(active_skills, indent=2)}\n\n"
-            f"Recent unreflected attempt evidence:\n{json.dumps(evidence, indent=2)}"
+            f"{chr(10).join(skill_index_lines) or '(none)'}\n\n"
+            f"Unreflected attempt traces ({len(unreflected)}):\n"
+            f"{chr(10).join(attempt_index_lines)}"
         )
         res = await self._run_pi(
             role="improver",
-            cwd=self.cfg.skills_dir,
+            cwd=self.cfg.home_dir,
             worktree_dir=None,
             session_dir=session_dir,
             task=None,
@@ -529,13 +569,20 @@ class Reconciler:
         )
         note_file = self.cfg.notes_dir / f"{task.id}.md"
         notes = note_file.read_text(encoding="utf-8") if note_file.exists() else ""
+        anti_repeat = (
+            "Do NOT repeat a previously failed approach recorded above; diagnose the causal "
+            "difference and take a distinct implementation path.\n"
+            if attempts
+            else ""
+        )
         return (
             f"Task {task.id} ({task.kind}): {task.title}\n"
             f"Worktree: {worktree_dir}\n"
             f"Spec: {task.spec}\n"
             f"Verification gate (`verify_cmd`): {task.verify_cmd}\n"
             f"Previous attempts:\n{history or '(none)'}\n"
-            f"Progress notes:\n{notes or '(none)'}\n\n"
+            f"Progress & negative-result notes:\n{notes or '(none)'}\n\n"
+            f"{anti_repeat}"
             "Implement the minimal complete fix or feature inside this worktree, verify it, and "
             "summarize your changes in one sentence."
         )
@@ -938,6 +985,107 @@ class Reconciler:
         output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
         return proc.returncode == 0, output
 
+    async def _run_held_out_baseline_tests(
+        self, repo_dir: Path, worktree_dir: Path, session_dir: Path
+    ) -> tuple[bool, str]:
+        """
+        Runs the pre-edit baseline test suite from `repo_dir/tests` ($D_out$) against the candidate
+        worktree's `src/` so a self-upgrade cannot pass verification by weakening existing tests.
+        """
+        baseline_tests = repo_dir / "tests"
+        if not baseline_tests.is_dir() or not any(baseline_tests.glob("test_*.py")):
+            return True, ""
+
+        cmd = wrap_with_sandbox(
+            [sys.executable, "-m", "pytest", "-q", str(baseline_tests)],
+            worktree_dir=worktree_dir,
+            session_dir=session_dir,
+            notes_dir=self.cfg.notes_dir,
+            home_dir=self.cfg.home_dir,
+            enabled=self.cfg.sandbox_enabled,
+        )
+        env = self._build_sandbox_env(session_dir)
+        py_parts = [str(worktree_dir / "src"), str(worktree_dir)]
+        if env.get("PYTHONPATH"):
+            py_parts.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(py_parts)
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(worktree_dir),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            out_bytes, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=self.cfg.verify_timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False, f"Held-out baseline tests timed out after {self.cfg.verify_timeout_seconds}s"
+        output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
+        return proc.returncode == 0, output
+
+    async def _worktree_diff_stat(self, worktree_dir: Path, base_sha: str) -> str:
+        if not worktree_dir.exists():
+            return ""
+        await self._git_out(worktree_dir, "add", "-A", check=False)
+        return (
+            await self._git_out(
+                worktree_dir, "diff", "--cached", "--stat", base_sha, check=False
+            )
+        ).strip()
+
+    def _finalize_attempt_artifacts(self, task_id: str, *, diff_stat: str = "") -> None:
+        attempts = self.db.list_attempts(task_id)
+        if not attempts:
+            return
+        latest = attempts[-1]
+        write_attempt_trace(self.cfg.traces_dir, latest, diff_stat=diff_stat)
+        if latest.outcome in ("failed_verify", "timed_out", "errored"):
+            excerpt = (latest.verify_output or latest.summary or "").strip()[-500:]
+            touched = diff_stat or "(no file changes)"
+            entry = (
+                f"\n### Negative Result — Attempt #{latest.id} ({latest.outcome})\n"
+                f"- Summary: {latest.summary}\n"
+                f"- Touched: {touched}\n"
+                f"- Failure: {excerpt}\n"
+            )
+            note_path = self.cfg.notes_dir / f"{task_id}.md"
+            with note_path.open("a", encoding="utf-8") as f:
+                f.write(entry)
+            os.chmod(note_path, 0o600)
+
+    async def _check_post_upgrade_health(self, *, succeeded: bool) -> None:
+        rollback_sha = self.db.record_post_upgrade_outcome(succeeded=succeeded)
+        if not rollback_sha:
+            return
+        repo_dir = (self.cfg.projects_dir / "superbrain").resolve()
+        if (repo_dir / ".git").exists():
+            dirty = (await self._git_out(repo_dir, "status", "--porcelain", check=False)).strip()
+            if dirty:
+                await self._git_out(
+                    repo_dir,
+                    "stash",
+                    "push",
+                    "-u",
+                    "-m",
+                    "superbrain-pre-runtime-rollback",
+                    check=False,
+                )
+            await self._git_out(repo_dir, "reset", "--hard", rollback_sha, check=False)
+        self.db.queue_outbox(
+            kind="report",
+            summary_spoken=(
+                f"Automatically rolled back Superbrain to {rollback_sha[:7]} after "
+                "2 consecutive post-upgrade task failures."
+            ),
+            details={"rollback_sha": rollback_sha},
+        )
+        self.restart_pending = True
+
     async def _find_deleted_tests(self, worktree_dir: Path, base_sha: str) -> list[str]:
         out = await self._git_out(
             worktree_dir,
@@ -960,7 +1108,23 @@ class Reconciler:
             worktree_dir, "diff", "--cached", "--name-only", base_sha, check=False
         )
         changed = {line.strip() for line in out.splitlines() if line.strip()}
-        return sorted(changed & PROTECTED_SELF_PATHS)
+        protected = set(changed & PROTECTED_SELF_PATHS)
+        existing_test_mods = await self._git_out(
+            worktree_dir,
+            "diff",
+            "--cached",
+            "--diff-filter=DMR",
+            "--name-only",
+            base_sha,
+            "--",
+            "tests",
+            "test",
+            check=False,
+        )
+        for line in existing_test_mods.splitlines():
+            if line.strip():
+                protected.add(line.strip())
+        return sorted(protected)
 
     async def _apply_self_upgrade(
         self, repo_dir: Path, verified_sha: str, task_id: str

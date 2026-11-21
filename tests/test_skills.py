@@ -336,3 +336,98 @@ else:
     finally:
         await reconciler.stop()
         db.close()
+
+
+async def test_skill_append_and_negative_result_trace_artifacts(tmp_path: Path) -> None:
+    projects_dir = await _init_demo_repo(tmp_path)
+    fake_pi = tmp_path / "fake_pi_fail_once.py"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json, pathlib
+wt = pathlib.Path.cwd()
+(wt / "app.py").write_text("VALUE = 99\\n", encoding="utf-8")
+print(json.dumps({"role": "assistant", "content": "Tried 99", "cost_usd": 0.01}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(fake_pi.stat().st_mode | stat.S_IEXEC)
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=projects_dir,
+        allowed_repos="demo",
+        pi_bin=str(fake_pi),
+        default_mode="AUTONOMOUS",
+        sandbox_enabled=True,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
+    reconciler = Reconciler(db, cfg)
+    try:
+        t1 = db.upsert_task(
+            kind="problem",
+            repo="demo",
+            title="Wrong value attempt",
+            spec="VALUE must be 42",
+            verify_cmd="python3 -c 'import app; assert app.VALUE == 42'",
+            ready=True,
+        )
+        await reconciler.tick()
+        attempts = db.list_attempts(t1.id)
+        assert len(attempts) == 1 and attempts[0].outcome == "failed_verify"
+
+        # Trace file and deterministic negative-result ledger were written to disk
+        trace_path = cfg.traces_dir / f"attempt-{attempts[0].id}.json"
+        assert trace_path.is_file()
+        assert "app.py" in trace_path.read_text(encoding="utf-8")
+        note_text = (cfg.notes_dir / f"{t1.id}.md").read_text(encoding="utf-8")
+        assert "Negative Result" in note_text
+        assert "app.py" in note_text
+
+        # Seed a second attempt and test incremental `action='append'` skill evolution
+        await reconciler.tick()
+        all_ids = [a.id for a in db.list_attempts(t1.id)]
+        v1 = apply_skill_proposal(
+            db,
+            cfg.skills_dir,
+            SkillProposal(
+                action="create",
+                slug="demo-rules",
+                lesson="Initial rule",
+                description="Rules for demo repo.",
+                body_markdown="- [rule-1] Never set VALUE = 99.",
+                evidence_attempt_ids=tuple(all_ids),
+            ),
+        )
+        v2 = apply_skill_proposal(
+            db,
+            cfg.skills_dir,
+            SkillProposal(
+                action="append",
+                slug="demo-rules",
+                lesson="Add second rule incrementally",
+                body_markdown="- [rule-2] Always verify `app.VALUE == 42` before finishing.",
+                evidence_attempt_ids=(all_ids[-1],),
+                expected_sha256=v1.sha256,
+            ),
+        )
+        assert v2.version == 2
+        skill_body = (cfg.skills_dir / "demo-rules" / "SKILL.md").read_text(encoding="utf-8")
+        assert "- [rule-1] Never set VALUE = 99." in skill_body
+        assert "- [rule-2] Always verify `app.VALUE == 42` before finishing." in skill_body
+
+        with pytest.raises(ValueError, match="already present"):
+            apply_skill_proposal(
+                db,
+                cfg.skills_dir,
+                SkillProposal(
+                    action="append",
+                    slug="demo-rules",
+                    lesson="Duplicate bullet",
+                    body_markdown="- [rule-2] Always verify `app.VALUE == 42` before finishing.",
+                    evidence_attempt_ids=(all_ids[-1],),
+                    expected_sha256=v2.sha256,
+                ),
+            )
+    finally:
+        await reconciler.stop()
+        db.close()

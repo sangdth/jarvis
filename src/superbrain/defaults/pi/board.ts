@@ -183,22 +183,22 @@ export default function (pi: ExtensionAPI) {
 		name: "propose_skill_change",
 		label: "Propose Self-Improving Skill Change",
 		description:
-			"Propose creating, updating, or retiring a personal skill based on past attempt evidence. Creating a skill requires >= 2 attempt IDs; updating requires >= 1 attempt ID and expected_sha256.",
-		promptSnippet: "Submit a verified skill creation, update, or retirement proposal.",
+			"Propose creating, appending to, updating, or retiring a personal skill based on past attempt evidence. Prefer action='append' to add a single rule bullet without rewriting existing rules. Creating requires >= 2 attempt IDs; append/update requires >= 1 attempt ID and expected_sha256.",
+		promptSnippet: "Submit a verified skill creation, incremental append, update, or retirement proposal.",
 		parameters: {
 			type: "object",
 			properties: {
-				action: { type: "string", enum: ["create", "update", "retire"] },
+				action: { type: "string", enum: ["create", "append", "update", "retire"] },
 				slug: { type: "string", description: "Lowercase hyphenated skill slug (e.g. 'pytest-async-fixtures')" },
 				lesson: { type: "string", description: "One-sentence lesson learned from the evidence" },
-				description: { type: "string", description: "When to load this skill (1-2 sentences)" },
-				body_markdown: { type: "string", description: "Concise Markdown instructions (<= 150 lines)" },
+				description: { type: "string", description: "When to load this skill (1-2 sentences; optional for 'append')" },
+				body_markdown: { type: "string", description: "Markdown rule bullet (for 'append') or full body (<= 150 lines)" },
 				evidence_attempt_ids: {
 					type: "array",
 					items: { type: "integer" },
-					description: "Attempt IDs supporting this change (>= 2 for create, >= 1 for update)",
+					description: "Attempt IDs supporting this change (>= 2 for create, >= 1 for append/update)",
 				},
-				expected_sha256: { type: "string", description: "Required for action='update': current skill sha256" },
+				expected_sha256: { type: "string", description: "Required for action='append' or 'update': current skill sha256" },
 				retire_slug: {
 					type: "string",
 					description: "Required when creating a skill at the 10-skill cap: slug of existing skill to retire",

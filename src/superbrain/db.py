@@ -49,6 +49,8 @@ class SystemState:
     spent_today_usd: float
     spend_date: str
     last_good_sha: str | None = None
+    upgrade_runs: int = 0
+    upgrade_failures: int = 0
 
     @property
     def budget_remaining_usd(self) -> float:
@@ -165,6 +167,14 @@ class BrainDB:
         }
         if "last_good_sha" not in sys_cols:
             self._conn.execute("ALTER TABLE system_state ADD COLUMN last_good_sha TEXT")
+        if "upgrade_runs" not in sys_cols:
+            self._conn.execute(
+                "ALTER TABLE system_state ADD COLUMN upgrade_runs INTEGER NOT NULL DEFAULT 0"
+            )
+        if "upgrade_failures" not in sys_cols:
+            self._conn.execute(
+                "ALTER TABLE system_state ADD COLUMN upgrade_failures INTEGER NOT NULL DEFAULT 0"
+            )
 
         cols = {
             str(r["name"])
@@ -213,15 +223,57 @@ class BrainDB:
                 spent_today_usd=float(row["spent_today_usd"]),
                 spend_date=row["spend_date"],
                 last_good_sha=row["last_good_sha"] if "last_good_sha" in row.keys() else None,
+                upgrade_runs=int(row["upgrade_runs"]) if "upgrade_runs" in row.keys() else 0,
+                upgrade_failures=(
+                    int(row["upgrade_failures"]) if "upgrade_failures" in row.keys() else 0
+                ),
             )
 
     def set_last_good_sha(self, sha: str) -> SystemState:
         with self._lock, self._conn:
             self._conn.execute(
-                "UPDATE system_state SET last_good_sha = ?, updated_at = ? WHERE id = 1",
+                """
+                UPDATE system_state
+                SET last_good_sha = ?, upgrade_runs = 0, upgrade_failures = 0, updated_at = ?
+                WHERE id = 1
+                """,
                 (sha.strip(), _iso(_utc_now())),
             )
         return self.get_state()
+
+    def record_post_upgrade_outcome(self, *, succeeded: bool) -> str | None:
+        """
+        Tracks runtime health of the active Superbrain self-upgrade. If the first 2 task attempts
+        after a self-upgrade fail with 0 successes, clears probation and returns `last_good_sha`
+        for automatic git rollback + daemon restart.
+        """
+        with self._lock, self._conn:
+            st = self.get_state()
+            if not st.last_good_sha:
+                return None
+            runs = st.upgrade_runs + 1
+            fails = st.upgrade_failures + (0 if succeeded else 1)
+            now = _iso(_utc_now())
+            if fails >= 2 and runs == fails:
+                rollback_sha = st.last_good_sha
+                self._conn.execute(
+                    """
+                    UPDATE system_state
+                    SET last_good_sha = NULL, upgrade_runs = 0, upgrade_failures = 0, updated_at = ?
+                    WHERE id = 1
+                    """,
+                    (now,),
+                )
+                return rollback_sha
+            self._conn.execute(
+                """
+                UPDATE system_state
+                SET upgrade_runs = ?, upgrade_failures = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (runs, fails, now),
+            )
+            return None
 
     def set_mode(self, mode: Mode) -> SystemState:
         if mode not in ("ASSIST", "AUTONOMOUS"):

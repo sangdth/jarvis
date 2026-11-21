@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from superbrain.db import AttemptRow, BrainDB, SkillRow
 
-ProposalAction = Literal["create", "update", "retire"]
+ProposalAction = Literal["create", "update", "append", "retire"]
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FORBIDDEN_SKILL_PATTERNS = (
@@ -42,22 +42,30 @@ def render_skill_markdown(slug: str, description: str, body_markdown: str) -> st
     return f'---\nname: {slug}\ndescription: "{clean_desc}"\n---\n\n{clean_body}\n'
 
 
+def _extract_skill_body(content: str) -> str:
+    if content.startswith("---\n"):
+        end_idx = content.find("\n---\n", 4)
+        if end_idx >= 0:
+            return content[end_idx + 5 :].strip()
+    return content.strip()
+
+
 def validate_skill_proposal(
     db: BrainDB,
     proposal: SkillProposal,
     *,
     max_personal_skills: int = 10,
-) -> tuple[list[int], str]:
+) -> tuple[list[int], str, str]:
     """
     Deterministic verification gate for self-improving skill proposals.
-    Returns `(validated_attempt_ids, rendered_markdown)`.
+    Returns `(validated_attempt_ids, resolved_description, rendered_markdown)`.
     """
     slug = proposal.slug.strip()
     if not slug or len(slug) > 64 or not _SLUG_RE.fullmatch(slug):
         raise ValueError(
             f"Invalid skill slug {slug!r}: must be lowercase alphanumeric words separated by hyphens."
         )
-    if proposal.action not in ("create", "update", "retire"):
+    if proposal.action not in ("create", "update", "append", "retire"):
         raise ValueError(f"Unsupported proposal action: {proposal.action!r}")
     if not proposal.lesson.strip():
         raise ValueError("Skill proposal requires a non-empty lesson.")
@@ -66,10 +74,33 @@ def validate_skill_proposal(
     if proposal.action == "retire":
         if existing is None or existing.status != "active":
             raise ValueError(f"Cannot retire non-active skill {slug!r}.")
-        return [], ""
+        return [], "", ""
 
-    desc = proposal.description.strip()
-    body = proposal.body_markdown.strip()
+    known_attempt_ids = {a.id for a in db.list_attempts()}
+    cited_ids = sorted({int(i) for i in proposal.evidence_attempt_ids if int(i) in known_attempt_ids})
+
+    if proposal.action == "append":
+        if existing is None or existing.status != "active":
+            raise ValueError(f"Cannot append to non-existent or retired skill {slug!r}.")
+        if len(cited_ids) < 1:
+            raise ValueError("Appending to a skill requires >= 1 grounded attempt ID.")
+        if not proposal.expected_sha256 or proposal.expected_sha256.strip() != existing.sha256:
+            raise ValueError(
+                f"Baseline sha256 mismatch for {slug!r}: expected {proposal.expected_sha256!r}, "
+                f"current is {existing.sha256!r}."
+            )
+        addition = proposal.body_markdown.strip()
+        if not addition:
+            raise ValueError("Skill body_markdown must not be empty.")
+        existing_body = _extract_skill_body(existing.content)
+        if addition in existing_body:
+            raise ValueError("Proposed rule is already present in skill body.")
+        desc = proposal.description.strip() or existing.description
+        body = f"{existing_body}\n{addition}" if existing_body else addition
+    else:
+        desc = proposal.description.strip()
+        body = proposal.body_markdown.strip()
+
     if not desc or len(desc) > 1024:
         raise ValueError("Skill description must be 1..1024 characters.")
     if not body:
@@ -82,12 +113,9 @@ def validate_skill_proposal(
         if pat.search(rendered):
             raise ValueError(f"Skill content rejected by safety guardrail ({pat.pattern}).")
 
-    known_attempt_ids = {a.id for a in db.list_attempts()}
-    cited_ids = sorted({int(i) for i in proposal.evidence_attempt_ids if int(i) in known_attempt_ids})
-
     if proposal.action == "create":
         if existing is not None and existing.status == "active":
-            raise ValueError(f"Skill {slug!r} already exists; use action='update'.")
+            raise ValueError(f"Skill {slug!r} already exists; use action='update' or 'append'.")
         if len(cited_ids) < 2:
             raise ValueError(
                 f"Creating a new skill requires >= 2 grounded attempt IDs (got {cited_ids})."
@@ -115,7 +143,7 @@ def validate_skill_proposal(
                 f"current is {existing.sha256!r}."
             )
 
-    return cited_ids, rendered
+    return cited_ids, desc, rendered
 
 
 def apply_skill_proposal(
@@ -126,7 +154,7 @@ def apply_skill_proposal(
     max_personal_skills: int = 10,
 ) -> SkillRow:
     """Verifies and activates a skill proposal on disk and in SQLite."""
-    cited_ids, rendered = validate_skill_proposal(
+    cited_ids, resolved_desc, rendered = validate_skill_proposal(
         db, proposal, max_personal_skills=max_personal_skills
     )
     skills_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -150,7 +178,7 @@ def apply_skill_proposal(
     saved = db.save_skill(
         slug=proposal.slug.strip(),
         name=proposal.slug.strip(),
-        description=proposal.description.strip(),
+        description=resolved_desc,
         content=rendered,
         lesson=proposal.lesson.strip(),
         evidence_attempt_ids=cited_ids,
@@ -208,13 +236,13 @@ def record_skill_outcome(
     return rolled_back
 
 
-def inspect_attempt_trajectory(attempt: AttemptRow) -> dict[str, Any]:
+def inspect_attempt_trajectory(attempt: AttemptRow, *, diff_stat: str = "") -> dict[str, Any]:
     """
-    Decodes a stored session `.jsonl` trajectory into a compact, sanitized evidence record
-    for the reflection/improvement agent.
+    Decodes a stored session `.jsonl` trajectory into a structured, sanitized evidence record
+    with tool-call arguments, tool errors, and verification output.
     """
-    tool_calls: list[str] = []
-    tool_errors: list[str] = []
+    tool_calls: list[dict[str, str]] = []
+    tool_errors: list[dict[str, str]] = []
     if attempt.session_jsonl_path:
         path = Path(attempt.session_jsonl_path)
         if path.is_file():
@@ -232,11 +260,14 @@ def inspect_attempt_trajectory(attempt: AttemptRow) -> dict[str, Any]:
                         for item in content:
                             if isinstance(item, dict) and item.get("type") == "toolCall":
                                 name = str(item.get("name") or "")
+                                args = item.get("arguments") or item.get("input") or {}
+                                args_str = json.dumps(args)[:200] if args else ""
                                 if name:
-                                    tool_calls.append(name)
+                                    tool_calls.append({"tool": name, "args": args_str})
                     elif role == "toolResult" and msg.get("isError"):
                         tool_name = str(msg.get("toolName") or "tool")
-                        tool_errors.append(tool_name)
+                        err_text = _extract_tool_result_text(content)[:400]
+                        tool_errors.append({"tool": tool_name, "error": err_text})
             except Exception:
                 pass
 
@@ -245,13 +276,41 @@ def inspect_attempt_trajectory(attempt: AttemptRow) -> dict[str, Any]:
         "task_id": attempt.task_id,
         "role": attempt.role,
         "outcome": attempt.outcome,
-        "summary": attempt.summary[:400],
-        "verify_output": (attempt.verify_output or "")[:500],
+        "summary": attempt.summary[:1000],
+        "diff_stat": diff_stat[:1000],
+        "verify_output": (attempt.verify_output or "")[:4000],
         "skills_used": list(attempt.skills_used),
-        "diagnostic": (attempt.diagnostic or "")[:400],
-        "tool_calls": tool_calls[:30],
-        "tool_errors": tool_errors[:10],
+        "diagnostic": (attempt.diagnostic or "")[:800],
+        "session_jsonl_path": attempt.session_jsonl_path,
+        "tool_calls": tool_calls[:40],
+        "tool_errors": tool_errors[:15],
+        "created_at": attempt.created_at,
     }
+
+
+def write_attempt_trace(
+    traces_dir: Path, attempt: AttemptRow, *, diff_stat: str = ""
+) -> Path:
+    """Persists a layered file-system trace artifact (`traces/attempt-<id>.json`) for on-demand inspection."""
+    traces_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    trace_path = traces_dir / f"attempt-{attempt.id}.json"
+    record = inspect_attempt_trajectory(attempt, diff_stat=diff_stat)
+    trace_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    os.chmod(trace_path, 0o600)
+    return trace_path
+
+
+def _extract_tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [
+            str(item.get("text") or "").strip()
+            for item in content
+            if isinstance(item, dict) and item.get("text")
+        ]
+        return "\n".join(p for p in parts if p)
+    return ""
 
 
 def _write_skill_file(skills_dir: Path, slug: str, content: str) -> Path:

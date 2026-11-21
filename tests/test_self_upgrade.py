@@ -261,3 +261,153 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
     finally:
         await reconciler.stop()
         db.close()
+
+
+async def test_held_out_baseline_tests_block_reward_hacking_goal_upgrade(
+    tmp_path: Path,
+) -> None:
+    projects_dir, repo_dir, _ = await _init_superbrain_repo(tmp_path)
+    (repo_dir / "tests").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "tests" / "test_invariant.py").write_text(
+        "import brain_mod\ndef test_flag_is_bool():\n    assert isinstance(brain_mod.FAST_ENGINE, bool)\n",
+        encoding="utf-8",
+    )
+    for cmd in [["git", "add", "."], ["git", "commit", "-m", "add baseline test"], ["git", "push"]]:
+        p = await asyncio.create_subprocess_exec(*cmd, cwd=str(repo_dir))
+        await p.wait()
+
+    # Builder tries to reward-hack a `goal` upgrade by breaking FAST_ENGINE type AND
+    # gutting tests/test_invariant.py inside its own worktree so worktree pytest passes.
+    fake_pi = tmp_path / "fake_pi_reward_hack.py"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json, pathlib
+wt = pathlib.Path.cwd()
+(wt / "brain_mod.py").write_text("FAST_ENGINE = 'not-a-bool'\\n", encoding="utf-8")
+(wt / "tests" / "test_invariant.py").write_text("def test_flag_is_bool(): assert True\\n", encoding="utf-8")
+print(json.dumps({"role": "assistant", "content": "Hacked tests", "cost_usd": 0.02}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(fake_pi.stat().st_mode | stat.S_IEXEC)
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=projects_dir,
+        pi_bin=str(fake_pi),
+        default_mode="AUTONOMOUS",
+        self_upgrade_verify_cmd="pytest -q",
+        sandbox_enabled=True,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
+    reconciler = Reconciler(db, cfg)
+    try:
+        task = db.upsert_task(
+            kind="goal",
+            repo="superbrain",
+            title="Upgrade engine",
+            spec="Improve engine",
+            metric_target="passes",
+            verify_cmd="pytest -q",
+            ready=True,
+        )
+        finished = await reconciler.tick()
+        assert finished is not None
+        assert finished.status == "ready"
+        assert finished.strike_count == 1
+        attempts = db.list_attempts(task.id)
+        assert attempts[0].outcome == "failed_verify"
+        assert "Held-out baseline tests failed" in (attempts[0].verify_output or "")
+        assert (repo_dir / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = False\n"
+    finally:
+        await reconciler.stop()
+        db.close()
+
+
+async def test_post_upgrade_runtime_circuit_breaker_rolls_back_after_two_failures(
+    tmp_path: Path,
+) -> None:
+    projects_dir, repo_dir, initial_sha = await _init_superbrain_repo(tmp_path)
+    demo_dir = projects_dir / "demo"
+    demo_dir.mkdir(parents=True, exist_ok=True)
+    for cmd in [
+        ["git", "init", "-b", "master"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ]:
+        p = await asyncio.create_subprocess_exec(*cmd, cwd=str(demo_dir))
+        await p.wait()
+    (demo_dir / "x.py").write_text("X = 1\n", encoding="utf-8")
+    for cmd in [["git", "add", "."], ["git", "commit", "-m", "init demo"]]:
+        p = await asyncio.create_subprocess_exec(*cmd, cwd=str(demo_dir))
+        await p.wait()
+
+    fake_pi = tmp_path / "fake_pi_upgrade_then_regress.py"
+    fake_pi.write_text(
+        """#!/usr/bin/env python3
+import json, pathlib
+wt = pathlib.Path.cwd()
+if (wt / "brain_mod.py").exists():
+    (wt / "brain_mod.py").write_text("FAST_ENGINE = True\\n", encoding="utf-8")
+print(json.dumps({"role": "assistant", "content": "Done", "cost_usd": 0.01}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(fake_pi.stat().st_mode | stat.S_IEXEC)
+
+    restart_count = 0
+
+    def _on_restart() -> None:
+        nonlocal restart_count
+        restart_count += 1
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=projects_dir,
+        allowed_repos="demo",
+        pi_bin=str(fake_pi),
+        default_mode="AUTONOMOUS",
+        self_upgrade_verify_cmd="true",
+        sandbox_enabled=True,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
+    reconciler = Reconciler(db, cfg, on_restart_requested=_on_restart)
+    try:
+        # 1. Apply valid self-upgrade
+        db.upsert_task(
+            kind="goal",
+            repo="superbrain",
+            title="Enable FAST_ENGINE",
+            spec="Turn on FAST_ENGINE",
+            metric_target="FAST_ENGINE True",
+            verify_cmd="true",
+            ready=True,
+        )
+        await reconciler.tick()
+        assert (repo_dir / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = True\n"
+        assert db.get_state().last_good_sha == initial_sha
+        assert restart_count == 1
+        reconciler.restart_pending = False
+
+        # 2. Next 2 downstream task attempts fail -> automatic git rollback to initial_sha + restart
+        db.upsert_task(
+            kind="problem",
+            repo="demo",
+            title="Failing task",
+            spec="Fails verify",
+            verify_cmd="false",
+            ready=True,
+        )
+        await reconciler.tick()
+        assert (repo_dir / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = True\n"
+        assert restart_count == 1
+
+        await reconciler.tick()
+        assert (repo_dir / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = False\n"
+        assert db.get_state().last_good_sha is None
+        assert restart_count == 2
+        reports, _ = db.drain_digest()
+        assert any("Automatically rolled back Superbrain" in r.summary_spoken for r in reports)
+    finally:
+        await reconciler.stop()
+        db.close()
