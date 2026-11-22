@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
+    # `jarvis remote`: the mic and speaker are on another Mac, which runs `defaults/remote/client.py`; the models,
+    # agents and memory stay here. The port is on the LAN, so every connection needs the shared token: this one, or
+    # the one kept in JARVIS_HOME/remote_token (made on first use).
+    remote_port: int = 47210
+    remote_token: str = ""
+
     # Agent Watchers
     # Exact agents.json id that gets coding tasks when no agent is named; empty = first enabled agent
     default_coding_agent: str = ""

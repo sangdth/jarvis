@@ -109,7 +109,7 @@ def choose(heading: str, labels: list[str], question: str) -> int:
     return int(choice) - 1
 
 
-async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = False) -> None:
+async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = False, remote: bool = False) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
     from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -127,7 +127,7 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         LLMUserAggregatorParams,
     )
     from pipecat.transcriptions.language import Language
-    from pipecat.transports.base_transport import TransportParams
+    from pipecat.transports.base_transport import BaseTransport, TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
     from jarvis.cleanup import TranscriptCleaner
@@ -152,6 +152,13 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     if meeting:
         guests = settings.meeting_guests if settings.master_check else "allow (everyone counts as the master)"
         check += f"; meeting guests: {guests}"
+    if remote:
+        check += "; mic and speaker on another Mac"
+        if settings.master_check:
+            logger.warning(
+                "MASTER_CHECK is on and the mic is another Mac's: the voiceprint was recorded with this one, so your "
+                "sentences may score low. Watch the [Speaker] score= lines; lower SPEAKER_THRESHOLD if they are dropped."
+            )
     # The log is where misses get investigated; it has to say which setup heard them.
     logger.info(f"Hearing {settings.language} with Whisper {settings.whisper_model}, {check}")
 
@@ -204,9 +211,18 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     orchestrator.load_from_file(settings.watch_config_path)
     thread = await pick_connection(orchestrator, connect) if connect else None
 
-    # 1. Local mic + speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
-    # voice so the user can talk over it on speakers
-    transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
+    # 1. Mic and speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
+    # voice so the user can talk over it on speakers. With `jarvis remote` they belong to another Mac, and the
+    # canceller runs there instead: it has to sit where the speaker does.
+    relay: Any = None  # RemoteVoiceTransport, with `jarvis remote`; kept typed as Any so its import stays lazy
+    if remote:
+        from jarvis.remote_audio import make_transport
+
+        relay = make_transport(settings.remote_port)
+        await relay.start_server()
+        transport: BaseTransport = relay
+    else:
+        transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
 
     # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice,
     # known enrolled speakers, or a new speaker being enrolled (or tagging room in meetings).
@@ -338,6 +354,17 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
 
     @task.event_handler("on_pipeline_started")
     async def greet(task: PipelineTask, frame) -> None:
+        if remote:
+            # The other Mac may be asleep or still starting: a greeting spoken now would play to an empty room.
+            task.create_task(greet_when_connected())
+            return
+        await greet_now()
+
+    async def greet_when_connected() -> None:
+        await relay.wait_for_client()  # the other Mac may connect well after this Mac is ready
+        await greet_now()
+
+    async def greet_now() -> None:
         if thread:  # back from the keyboard mid-work: say where we are, skip the small talk
             await on_speak(LANGUAGES[settings.language]["connected"].format(title=thread["title"], project=thread["project"]))
             return
@@ -373,3 +400,5 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         await executive_filter.aclose()
         if cleaner is not None:
             await cleaner.aclose()
+        if relay is not None:
+            await relay.stop_server()

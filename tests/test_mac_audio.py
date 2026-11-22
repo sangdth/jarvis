@@ -104,6 +104,22 @@ class TestMacVoiceOutput(unittest.IsolatedAsyncioTestCase):
         audio.meet_voice.send.assert_called_once_with(tts_pcm)
 
 
+class TestVoiceAudio(unittest.TestCase):
+    """The shared engine: a flush drops queued speech, and does nothing before a player exists."""
+
+    def test_flush_drops_queued_audio_and_keeps_playing(self) -> None:
+        audio = _fake_audio()
+        audio.flush()
+        audio.player.stop.assert_called_once()
+        audio.player.play.assert_called_once()
+
+    def test_flush_before_the_player_is_connected_does_nothing(self) -> None:
+        audio = _fake_audio()
+        audio._play_format = None
+        audio.flush()
+        audio.player.stop.assert_not_called()
+
+
 class TestMeetingAudioBridge(unittest.TestCase):
     """Failed system-audio tap setup cleans up CoreAudio handles and is not retried on dual start()."""
 

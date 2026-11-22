@@ -33,6 +33,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Master check (opt-in)             | `SpeakerVerifiedWhisperSTT` (sherpa-onnx)   | `voice_gates.py`      |
 | Background voices never interrupt | `ExternalUserTurnStrategies`                | `voice_gates.py`      |
 | Don't hear its own voice          | `MacVoiceTransport` (voice processing)      | `mac_audio.py`        |
+| Mic and speaker on another Mac    | `RemoteVoiceTransport`, `defaults/remote/`  | `remote_audio.py`     |
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
 | Tidy a sentence before the model  | `TranscriptCleaner` (`CLEANUP_MODEL`)       | `cleanup.py`          |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
@@ -148,6 +149,32 @@ voice again after updating from an older version (`jarvis enroll`): it now recor
 Updated from a version that required enrollment? Your voiceprint stays, but the check is now off until you set
 `MASTER_CHECK=true`; the startup log says so.
 
+### Listen from another Mac (thin client)
+```bash
+jarvis remote        # on the Mac that runs Jarvis and the agents
+```
+Every model, agent, key and memory stays there; the other Mac sends its mic and plays the replies. `jarvis remote`
+prints one command to paste on that Mac, which needs nothing but [uv](https://docs.astral.sh/uv/):
+```bash
+curl -fsSL 'http://<mac-mini>:47210/client.py?token=<token>' -o /tmp/jarvis-remote.py && uv run /tmp/jarvis-remote.py
+```
+The script comes from the Mac running Jarvis, so it always matches it; uv fetches four small packages (numpy, soxr,
+websockets, pyobjc's AVFoundation) into a cache, no Jarvis and no Pipecat. Ctrl+C stops it.
+
+- **Talk over it, and "shut up" still works.** The mic runs through macOS voice processing on the Mac in front of
+  you, so the echo canceller that lets you interrupt Jarvis sits where the speaker is. Its speech plays on that
+  Mac's speakers; an interruption drops what it still had queued.
+- **One listener at a time.** A second Mac is refused while one is connected: they share one ear.
+- **Every connection needs the token.** With `MASTER_CHECK=false` any voice may talk to Jarvis, and the port is on
+  your network. It is made on first use in `~/.config/jarvis/remote_token` (0600); set `REMOTE_TOKEN` in `.env` to
+  pick your own, and `REMOTE_PORT` for the port.
+- **Same Wi-Fi.** Plain HTTP and WebSocket on the LAN. Away from that, put both Macs on Tailscale and paste the
+  command with that address: the token rides in the URL, so keep it to yourself.
+- **The master check** compares your voiceprint, recorded with the other Mac's mic, against this one's. It usually
+  still passes; watch the `[Speaker] score=` lines and lower `SPEAKER_THRESHOLD` if your own sentences are dropped.
+- **The screen is the Mac's.** `look_at_screen` captures the front window of the Mac running Jarvis.
+- **Agents, sessions, threads** work as usual: `jarvis remote connect` continues a T3 Code thread, picked there.
+
 ### Continue a T3 Code thread away from the keyboard
 ```bash
 jarvis connect
@@ -217,6 +244,10 @@ says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there t
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `~/.config/jarvis/.env` is missing or has no
   key: run `jarvis init` again; it asks only for the keys still empty. A key that lives only in your shell is
   missing when Jarvis starts from an app that doesn't load your shell profile: put it in `.env` instead.
+- **`jarvis remote`: the other Mac hears or plays nothing.** Jarvis logs `Relay client connected`; if it logs
+  `allow Microphone` three seconds later, the terminal there has no Microphone permission. `refused ... (bad token)`
+  means the URL is from an older run: paste the command `jarvis remote` prints now. `Client refused (1013)` on the
+  other Mac means a client is already connected there.
 
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.

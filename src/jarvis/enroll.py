@@ -28,13 +28,13 @@ def suggest_threshold(scores: list[float]) -> float:
 
 
 def main() -> None:
-    from jarvis.mac_audio import MacVoiceAudio, MicConverter  # imported here: loads AVFoundation
+    from jarvis.voice_engine import MicConverter, VoiceAudio  # imported here: loads AVFoundation
 
     text = LANGUAGES[settings.language]
     embedder = SpeakerEmbedder()
     # Record through the same voice processing Jarvis listens through, so the voiceprint sounds like what it hears.
     # One engine for all clips: a second voice-processing engine in one process records nothing.
-    audio, mic, clip = MacVoiceAudio(), MicConverter(SAMPLE_RATE), []
+    audio, mic, clip = VoiceAudio(), MicConverter(SAMPLE_RATE), []
     audio.on_mic(lambda samples, rate: clip.append(mic.convert(samples, rate)))
     audio.start()
     try:
