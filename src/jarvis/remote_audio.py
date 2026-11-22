@@ -259,7 +259,9 @@ class RemoteVoiceTransport(BaseTransport):
             return connection.respond(401, "Jarvis relay: the token does not match this Mac's.\n")
         if path == "/client.py":
             return self._script_response()
-        return None
+        if path == "/ws":
+            return None  # the WebSocket the client speaks on
+        return connection.respond(404, "Jarvis relay: /client.py and /ws, nothing else.\n")
 
     def _script_response(self) -> Response:
         """The client script as a plain HTTP file (the laptop curls it), not a WebSocket."""

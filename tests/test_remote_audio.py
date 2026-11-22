@@ -195,6 +195,12 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(refused.exception.response.status_code, 401)
         self.assertIsNone(self.transport.hub.client)
 
+    async def test_only_the_two_paths_are_served(self) -> None:
+        with self.assertRaises(InvalidStatus) as refused:
+            async with connect(self.url(f"/?token={self.TOKEN}")):
+                pass
+        self.assertEqual(refused.exception.response.status_code, 404)
+
 
 class TestClientScript(unittest.IsolatedAsyncioTestCase):
     """The script the other Mac runs: no Jarvis, no Pipecat, and it must agree with the server's wire format."""
@@ -246,9 +252,9 @@ class TestClientScript(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audio.played, [spoken])
         self.assertEqual(audio.flushes, 1)
 
-    def test_it_sends_the_mic_as_binary_and_never_imports_the_harness(self) -> None:
+    def test_it_runs_alone_at_the_servers_rate(self) -> None:
         client = self._load()
-        self.assertEqual(client.SAMPLE_RATE, SAMPLE_RATE)  # the server's rate, or the audio is played too fast
+        self.assertEqual(client.SAMPLE_RATE, SAMPLE_RATE)  # the server's rate, or audio plays at the wrong speed
         source = self.SCRIPT.read_text()
         self.assertIn("uv run --script", source.splitlines()[0])
         self.assertNotIn("jarvis", "".join(

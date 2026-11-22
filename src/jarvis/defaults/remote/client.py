@@ -35,7 +35,6 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 DEFAULT_URL = ""
 
 SAMPLE_RATE = 16000  # what Jarvis's pipeline runs at, both ways; this Mac's mic is resampled to it
-BLOCK_SECS = 0.02  # audio handed between this Mac and the socket
 BLOCKS = 50  # 1 s of mic audio waiting for the socket; past that the oldest goes, so talking never lags
 RETRY_SECS = 2.0
 
