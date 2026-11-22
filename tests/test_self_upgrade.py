@@ -6,7 +6,7 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from superbrain.cli import run_self_check
+from superbrain.cli import build_launchd_plist, run_self_check
 from superbrain.config import Settings
 from superbrain.db import BrainDB
 from superbrain.reconciler import Reconciler
@@ -53,6 +53,15 @@ async def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, str]:
 
 def test_cli_self_check_canary_passes() -> None:
     assert run_self_check() == 0
+
+
+def test_launchd_plist_includes_user_path_and_portable_pi_bin(tmp_path: Path) -> None:
+    plist = build_launchd_plist()
+    assert "<key>EnvironmentVariables</key>" in plist
+    assert str(Path.home() / ".local" / "bin") in plist
+    assert "/opt/homebrew/bin" in plist
+    cfg = Settings(_env_file=None, home_dir=tmp_path / "home")
+    assert cfg.pi_bin == str(Path("~/.local/bin/pi").expanduser())
 
 
 async def test_voice_self_upgrade_builds_verifies_updates_repo_and_restarts(

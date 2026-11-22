@@ -21,6 +21,18 @@ def build_launchd_plist() -> str:
     repo_root = Path(__file__).resolve().parents[2]
     log_dir = settings.home_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    home = Path.home()
+    launch_path = ":".join(
+        [
+            str(home / ".local" / "bin"),
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -36,6 +48,13 @@ def build_launchd_plist() -> str:
     </array>
     <key>WorkingDirectory</key>
     <string>{repo_root}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>{home}</string>
+        <key>PATH</key>
+        <string>{launch_path}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

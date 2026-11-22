@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     lease_seconds: int = 1200
 
     # Pi binary and optional per-role model overrides (empty = inherit ~/.pi/agent/settings.json)
-    pi_bin: str = "/Users/sang/.local/bin/pi"
+    pi_bin: str = str(Path("~/.local/bin/pi").expanduser())
     planner_model: str = ""
     builder_model: str = ""
     improver_model: str = ""
