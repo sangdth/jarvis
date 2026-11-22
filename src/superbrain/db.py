@@ -307,11 +307,25 @@ class BrainDB:
             )
         return self.get_state()
 
+    def clear_last_good_sha(self) -> SystemState:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE system_state
+                SET last_good_sha = NULL, upgrade_runs = 0, upgrade_failures = 0, updated_at = ?
+                WHERE id = 1
+                """,
+                (_iso(_utc_now()),),
+            )
+        return self.get_state()
+
     def record_post_upgrade_outcome(self, *, succeeded: bool) -> str | None:
         """
         Tracks runtime health of the active Superbrain self-upgrade. If the first 2 task attempts
         after a self-upgrade fail with 0 successes, clears probation and returns `last_good_sha`
-        for automatic git rollback + daemon restart.
+        for automatic git rollback + daemon restart. Once a post-upgrade attempt succeeds (or the
+        2-attempt window passes without 2/2 failures), clears `last_good_sha` so unrelated future
+        restarts never roll back to an old commit.
         """
         with self._lock, self._conn:
             st = self.get_state()
@@ -331,6 +345,16 @@ class BrainDB:
                     (now,),
                 )
                 return rollback_sha
+            if succeeded or runs >= 2:
+                self._conn.execute(
+                    """
+                    UPDATE system_state
+                    SET last_good_sha = NULL, upgrade_runs = 0, upgrade_failures = 0, updated_at = ?
+                    WHERE id = 1
+                    """,
+                    (now,),
+                )
+                return None
             self._conn.execute(
                 """
                 UPDATE system_state
@@ -1070,30 +1094,41 @@ class BrainDB:
             assert updated is not None
             return self._row_to_outbox(updated)
 
-    def get_approved_resume_session(self, task_id: str) -> str | None:
+    def get_unconsumed_approved_outbox(self, task_id: str) -> OutboxRow | None:
         with self._lock:
-            row = self._conn.execute(
+            rows = self._conn.execute(
                 """
-                SELECT resume_session_id FROM outbox
+                SELECT * FROM outbox
                 WHERE task_id = ? AND kind = 'approval_request' AND status = 'approved'
-                  AND resume_session_id IS NOT NULL
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY created_at DESC
                 """,
                 (task_id,),
-            ).fetchone()
-            return str(row["resume_session_id"]) if row and row["resume_session_id"] else None
+            ).fetchall()
+            for row in rows:
+                try:
+                    details = json.loads(row["details_json"] or "{}")
+                except Exception:
+                    details = {}
+                if not details.get("consumed"):
+                    return self._row_to_outbox(row)
+            return None
 
-    def has_approved_outbox(self, task_id: str) -> bool:
-        with self._lock:
+    def mark_outbox_consumed(self, outbox_id: str) -> None:
+        with self._lock, self._conn:
             row = self._conn.execute(
-                """
-                SELECT 1 FROM outbox
-                WHERE task_id = ? AND kind = 'approval_request' AND status = 'approved'
-                LIMIT 1
-                """,
-                (task_id,),
+                "SELECT details_json FROM outbox WHERE id = ?", (outbox_id,)
             ).fetchone()
-            return row is not None
+            if row is None:
+                return
+            try:
+                details = json.loads(row["details_json"] or "{}")
+            except Exception:
+                details = {}
+            details["consumed"] = True
+            self._conn.execute(
+                "UPDATE outbox SET details_json = ? WHERE id = ?",
+                (json.dumps(details), outbox_id),
+            )
 
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> TaskRow:

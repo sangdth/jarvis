@@ -71,7 +71,7 @@ function callBoardRpc(method: string, params: Record<string, unknown>): Promise<
 }
 
 const BLOCKED_BASH_PATTERNS = [
-	/\bgit\s+push\s+.*--force\b/i,
+	/\bgit\s+push\b/i,
 	/\bgit\s+checkout\s+(master|main)\b/i,
 	/\brm\s+-[a-z]*r[a-z]*f\s+\/(?:\s|$)/i,
 	/\bstate\.db\b/i,

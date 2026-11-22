@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import time
 import uuid
@@ -62,6 +63,30 @@ def extract_metric_value(output: str | None) -> float | None:
         return None
     matches = _METRIC_LINE_RE.findall(output)
     return float(matches[-1]) if matches else None
+
+
+def _terminate_proc_group(
+    proc: asyncio.subprocess.Process, sig: signal.Signals = signal.SIGTERM
+) -> None:
+    """Signals the entire subprocess group (`start_new_session=True`) so child runners cannot linger."""
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        return
+    except OSError:
+        if sig == signal.SIGKILL:
+            proc.kill()
+        else:
+            proc.terminate()
+
+
+def _clean_untracked_tool_caches(worktree_dir: Path) -> None:
+    for cache_name in (".pytest_cache", ".mypy_cache", ".ruff_cache"):
+        cache_path = worktree_dir / cache_name
+        if cache_path.is_dir() and not cache_path.is_symlink():
+            shutil.rmtree(cache_path, ignore_errors=True)
 
 
 @dataclass
@@ -202,14 +227,13 @@ class Reconciler:
             except asyncio.CancelledError:
                 pass
         for proc in list(self._active_procs.values()):
-            if proc.returncode is None:
-                proc.terminate()
+            _terminate_proc_group(proc, signal.SIGTERM)
 
     def abort_run(self, run_key: str) -> bool:
         aborted = False
         for key, proc in list(self._active_procs.items()):
             if (key == run_key or key.startswith(f"{run_key}:scout:")) and proc.returncode is None:
-                proc.terminate()
+                _terminate_proc_group(proc, signal.SIGTERM)
                 aborted = True
         return aborted
 
@@ -258,7 +282,6 @@ class Reconciler:
         approval_cb: ApprovalCallback | None = None,
     ) -> TaskRow:
         role: WorkerRole = "builder" if task.verify_cmd else "planner"
-        effective_resume_id = resume_session_id or self.db.get_approved_resume_session(task.id)
         repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
         if not (repo_dir / ".git").exists():
             return self.db.finish_attempt(
@@ -267,6 +290,37 @@ class Reconciler:
                 summary=f"Repository {task.repo!r} not found at {repo_dir}",
                 outcome="errored",
             )
+
+        approved_ob = self.db.get_unconsumed_approved_outbox(task.id)
+        approved_details: dict[str, Any] = {}
+        if approved_ob is not None:
+            try:
+                approved_details = json.loads(approved_ob.details_json or "{}")
+            except Exception:
+                approved_details = {}
+            self.db.mark_outbox_consumed(approved_ob.id)
+
+        effective_resume_id = resume_session_id or (
+            approved_ob.resume_session_id if approved_ob is not None else None
+        )
+
+        # Fast-path for owner-approved protected self-upgrades: apply the exact pinned `approved_sha`
+        # verified on the prior attempt instead of re-running Builder with guardrails disabled.
+        pinned_sha = str(approved_details.get("approved_sha") or "").strip()
+        if role == "builder" and task.repo == "superbrain" and pinned_sha:
+            await self._git_fetch(repo_dir)
+            if await self._git_rc(repo_dir, "cat-file", "-e", f"{pinned_sha}^{{commit}}") == 0:
+                await self._apply_self_upgrade(repo_dir, pinned_sha, task.id)
+                finished_task = self.db.finish_attempt(
+                    task_id=task.id,
+                    role="builder",
+                    summary="Applied owner-approved protected self-upgrade.",
+                    outcome="pushed",
+                    git_branch=f"brain/{task.id}",
+                    git_sha=pinned_sha,
+                )
+                self._finalize_attempt_artifacts(task.id)
+                return finished_task
 
         session_dir = self.cfg.sessions_dir / task.id
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -327,7 +381,12 @@ class Reconciler:
         branch_name = f"brain/{task.id}"
         try:
             await self._git_fetch(repo_dir)
-            base_sha = await self._prepare_worktree(repo_dir, worktree_dir, branch_name)
+            base_sha = await self._prepare_worktree(
+                repo_dir,
+                worktree_dir,
+                branch_name,
+                prefer_local_head=(task.repo == "superbrain"),
+            )
             prompt = self._build_builder_prompt(task, worktree_dir)
             pi_res = await self._run_pi(
                 role="builder",
@@ -417,7 +476,7 @@ class Reconciler:
                     f"{verify_output}\n"
                     f"Metric {metric_val} did not satisfy metric_target {task.metric_target!r}"
                 ).strip()
-            if verified and task.repo == "superbrain" and not self.db.has_approved_outbox(task.id):
+            if verified and task.repo == "superbrain":
                 verified, baseline_out = await self._run_held_out_baseline_tests(
                     repo_dir, worktree_dir, session_dir
                 )
@@ -461,11 +520,12 @@ class Reconciler:
                     finished_task = self.db.get_task(finished_task.id)
                 return finished_task
 
+            git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
             if task.repo == "superbrain":
                 touched_protected = await self._find_modified_protected_files(
                     worktree_dir, base_sha
                 )
-                if touched_protected and not self.db.has_approved_outbox(task.id):
+                if touched_protected:
                     prompt_spoken = (
                         f"Approve Superbrain self-upgrade modifying protected files "
                         f"({', '.join(touched_protected)})?"
@@ -482,7 +542,11 @@ class Reconciler:
                                 task_id=task.id,
                                 resume_session_id=pi_res.session_id,
                                 summary_spoken=prompt_spoken,
-                                details={"files": touched_protected, "summary": pi_res.summary},
+                                details={
+                                    "files": touched_protected,
+                                    "approved_sha": git_sha,
+                                    "summary": pi_res.summary,
+                                },
                             )
                         finished_task = self.db.finish_attempt(
                             task_id=task.id,
@@ -493,13 +557,13 @@ class Reconciler:
                             pi_session_id=pi_res.session_id,
                             session_jsonl_path=pi_res.session_jsonl_path,
                             git_branch=branch_name,
+                            git_sha=git_sha,
                             skills_used=pi_res.skills_used,
                             diagnostic=pi_res.diagnostic,
                         )
                         self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
                         return finished_task
 
-            git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
             just_upgraded_self = False
             if task.repo == "superbrain":
                 await self._apply_self_upgrade(repo_dir, git_sha, task.id)
@@ -886,8 +950,8 @@ class Reconciler:
                     ):
                         budget_exceeded = True
                         proc_ref = self._active_procs.get(run_key)
-                        if proc_ref and proc_ref.returncode is None:
-                            proc_ref.terminate()
+                        if proc_ref is not None:
+                            _terminate_proc_group(proc_ref, signal.SIGTERM)
                     receipt = validate_evidence_receipt(scout_root, scout_text)
                     resp = {"ok": True, "result": receipt}
                 elif method == "propose_skill_change":
@@ -992,11 +1056,11 @@ class Reconciler:
             str(self._board_ext_path),
             "--session-dir",
             str(session_dir),
-            "--model",
-            model,
             "-t",
             tools,
         ]
+        if model.strip():
+            cmd.extend(["--model", model.strip()])
         if role in ("planner", "builder") and self.db.list_skills(status="active"):
             cmd.extend(["--skill", str(self.cfg.skills_dir)])
         if role == "improver":
@@ -1005,15 +1069,16 @@ class Reconciler:
             cmd.extend(["--session", resume_session_id])
         cmd.extend(["--", prompt])
 
-        if role == "builder" and worktree_dir is not None:
-            cmd = wrap_with_sandbox(
-                cmd,
-                worktree_dir=worktree_dir,
-                session_dir=session_dir,
-                notes_dir=self.cfg.notes_dir,
-                home_dir=self.cfg.home_dir,
-                enabled=self.cfg.sandbox_enabled,
-            )
+        sandbox_target = worktree_dir if (role == "builder" and worktree_dir is not None) else session_dir
+        cmd = wrap_with_sandbox(
+            cmd,
+            worktree_dir=sandbox_target,
+            session_dir=session_dir,
+            notes_dir=self.cfg.notes_dir,
+            home_dir=self.cfg.home_dir,
+            allow_read_traces=(role == "improver"),
+            enabled=self.cfg.sandbox_enabled,
+        )
 
         env = self._build_sandbox_env(session_dir)
         env["SUPERBRAIN_RPC_SOCK"] = str(sock_path)
@@ -1024,55 +1089,21 @@ class Reconciler:
             env["SUPERBRAIN_TASK_ID"] = task.id
             env["SUPERBRAIN_TASK_KIND"] = task.kind
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(cwd),
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            self._active_procs[run_key] = proc
-            assert proc.stdout is not None
-
-            while True:
-                remaining = self.cfg.max_run_seconds - (time.monotonic() - start_monotonic)
-                if remaining <= 0:
-                    timed_out = True
-                    proc.terminate()
-                    break
-                try:
-                    raw_line = await asyncio.wait_for(
-                        proc.stdout.readline(), timeout=min(5.0, max(0.1, remaining))
-                    )
-                except asyncio.TimeoutError:
-                    if proc.returncode is not None:
-                        break
-                    continue
-                if not raw_line:
-                    break
-                stream_state.feed_line(raw_line.decode("utf-8", errors="replace").strip())
-                if (
-                    initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
-                    > initial_state.daily_budget_usd
-                ):
-                    budget_exceeded = True
-                    proc.terminate()
-                    break
-
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-
-            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-        finally:
-            self._active_procs.pop(run_key, None)
-            server.close()
-            await server.wait_closed()
-            sock_path.unlink(missing_ok=True)
+        returncode, stderr_text, timed_out, stream_over_budget = await self._stream_pi_proc(
+            cmd=cmd,
+            cwd=cwd,
+            env=env,
+            run_key=run_key,
+            stream_state=stream_state,
+            timeout_seconds=float(self.cfg.max_run_seconds),
+            start_monotonic=start_monotonic,
+            over_budget_fn=lambda: (
+                initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
+                > initial_state.daily_budget_usd
+            ),
+            cleanup_cb=self._make_rpc_cleanup(server, sock_path),
+        )
+        budget_exceeded = budget_exceeded or stream_over_budget
 
         total_cost = stream_state.total_cost + extra_scout_cost
         last_text = stream_state.last_text
@@ -1116,10 +1147,10 @@ class Reconciler:
                 diagnostic=diag_joined,
                 modified_skills=modified_skills,
             )
-        if proc.returncode != 0:
+        if returncode != 0:
             return PiRunResult(
                 outcome="errored",
-                summary=stderr_text or last_text or f"pi exited with code {proc.returncode}",
+                summary=stderr_text or last_text or f"pi exited with code {returncode}",
                 cost_usd=total_cost,
                 session_id=session_id,
                 session_jsonl_path=session_jsonl_path,
@@ -1139,6 +1170,80 @@ class Reconciler:
             diagnostic=diag_joined,
             modified_skills=modified_skills,
         )
+
+    @staticmethod
+    def _make_rpc_cleanup(
+        server: asyncio.AbstractServer, sock_path: Path
+    ) -> Callable[[], Awaitable[None]]:
+        async def _cleanup() -> None:
+            server.close()
+            await server.wait_closed()
+            sock_path.unlink(missing_ok=True)
+
+        return _cleanup
+
+    async def _stream_pi_proc(
+        self,
+        *,
+        cmd: list[str],
+        cwd: Path,
+        env: dict[str, str],
+        run_key: str,
+        stream_state: _PiStreamState,
+        timeout_seconds: float,
+        start_monotonic: float,
+        over_budget_fn: Callable[[], bool],
+        cleanup_cb: Callable[[], Awaitable[None]] | None = None,
+    ) -> tuple[int, str, bool, bool]:
+        """Spawns a `pi` process in its own process group and streams JSON lines with live timeout/budget kill."""
+        timed_out = False
+        over_budget = False
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(cwd),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        self._active_procs[run_key] = proc
+        assert proc.stdout is not None
+        try:
+            while True:
+                remaining = timeout_seconds - (time.monotonic() - start_monotonic)
+                if remaining <= 0:
+                    timed_out = True
+                    _terminate_proc_group(proc, signal.SIGTERM)
+                    break
+                try:
+                    raw_line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=min(5.0, max(0.1, remaining))
+                    )
+                except asyncio.TimeoutError:
+                    if proc.returncode is not None:
+                        break
+                    continue
+                if not raw_line:
+                    break
+                stream_state.feed_line(raw_line.decode("utf-8", errors="replace").strip())
+                if over_budget_fn():
+                    over_budget = True
+                    _terminate_proc_group(proc, signal.SIGTERM)
+                    break
+
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                _terminate_proc_group(proc, signal.SIGKILL)
+                await proc.wait()
+
+            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            return proc.returncode or 0, stderr_text, timed_out, over_budget
+        finally:
+            self._active_procs.pop(run_key, None)
+            if cleanup_cb is not None:
+                await cleanup_cb()
 
     async def _run_research_scout(
         self,
@@ -1168,25 +1273,25 @@ class Reconciler:
         )
         scout_session_dir = session_dir / "scout"
         scout_session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        raw_cmd = [
+            self.cfg.pi_bin,
+            "-p",
+            "--mode",
+            "json",
+            "--no-approve",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-session",
+            "-t",
+            SCOUT_TOOLS,
+        ]
+        if self.cfg.scout_model.strip():
+            raw_cmd.extend(["--model", self.cfg.scout_model.strip()])
+        raw_cmd.extend(["--", scout_prompt])
         cmd = wrap_with_sandbox(
-            [
-                self.cfg.pi_bin,
-                "-p",
-                "--mode",
-                "json",
-                "--no-approve",
-                "--no-skills",
-                "--no-prompt-templates",
-                "--no-mcp",
-                "--no-extensions",
-                "--no-session",
-                "--model",
-                self.cfg.scout_model,
-                "-t",
-                SCOUT_TOOLS,
-                "--",
-                scout_prompt,
-            ],
+            raw_cmd,
             worktree_dir=root_dir,
             session_dir=scout_session_dir,
             notes_dir=self.cfg.notes_dir,
@@ -1196,49 +1301,16 @@ class Reconciler:
         env = self._build_sandbox_env(scout_session_dir)
         env["SUPERBRAIN_RESEARCH_SCOUT"] = "1"
         scout_state = _PiStreamState()
-        over_budget = False
-        timed_out = False
-        started = time.monotonic()
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(root_dir),
+        _, _, timed_out, over_budget = await self._stream_pi_proc(
+            cmd=cmd,
+            cwd=root_dir,
             env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            run_key=run_key,
+            stream_state=scout_state,
+            timeout_seconds=timeout_seconds,
+            start_monotonic=time.monotonic(),
+            over_budget_fn=lambda: scout_state.total_cost > budget_limit_usd,
         )
-        self._active_procs[run_key] = proc
-        assert proc.stdout is not None
-        try:
-            while True:
-                rem = timeout_seconds - (time.monotonic() - started)
-                if rem <= 0:
-                    timed_out = True
-                    proc.terminate()
-                    break
-                try:
-                    raw_line = await asyncio.wait_for(
-                        proc.stdout.readline(), timeout=min(5.0, max(0.1, rem))
-                    )
-                except asyncio.TimeoutError:
-                    if proc.returncode is not None:
-                        break
-                    continue
-                if not raw_line:
-                    break
-                scout_state.feed_line(raw_line.decode("utf-8", errors="replace").strip())
-                if scout_state.total_cost > budget_limit_usd:
-                    over_budget = True
-                    proc.terminate()
-                    break
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-        finally:
-            self._active_procs.pop(run_key, None)
-
         if timed_out:
             return (
                 '{"summary": "Scout timed out", "uncertain": true, "evidence": []}',
@@ -1272,34 +1344,58 @@ class Reconciler:
         env["UV_CACHE_DIR"] = str(cache_dir / "uv")
         return env
 
-    async def _run_verify(
-        self, worktree_dir: Path, session_dir: Path, verify_cmd: str
+    async def _run_sandboxed_cmd(
+        self,
+        raw_cmd: list[str],
+        *,
+        worktree_dir: Path,
+        session_dir: Path,
+        label: str,
+        extra_pythonpath: list[str] | None = None,
     ) -> tuple[bool, str]:
         cmd = wrap_with_sandbox(
-            ["/bin/sh", "-c", verify_cmd],
+            raw_cmd,
             worktree_dir=worktree_dir,
             session_dir=session_dir,
             notes_dir=self.cfg.notes_dir,
             home_dir=self.cfg.home_dir,
             enabled=self.cfg.sandbox_enabled,
         )
+        env = self._build_sandbox_env(session_dir)
+        if extra_pythonpath:
+            py_parts = list(extra_pythonpath)
+            if env.get("PYTHONPATH"):
+                py_parts.append(env["PYTHONPATH"])
+            env["PYTHONPATH"] = os.pathsep.join(py_parts)
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(worktree_dir),
-            env=self._build_sandbox_env(session_dir),
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
         try:
             out_bytes, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=self.cfg.verify_timeout_seconds
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            _terminate_proc_group(proc, signal.SIGKILL)
             await proc.wait()
-            return False, f"verify_cmd timed out after {self.cfg.verify_timeout_seconds}s"
+            return False, f"{label} timed out after {self.cfg.verify_timeout_seconds}s"
         output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
         return proc.returncode == 0, output
+
+    async def _run_verify(
+        self, worktree_dir: Path, session_dir: Path, verify_cmd: str
+    ) -> tuple[bool, str]:
+        return await self._run_sandboxed_cmd(
+            ["/bin/sh", "-c", verify_cmd],
+            worktree_dir=worktree_dir,
+            session_dir=session_dir,
+            label="verify_cmd",
+        )
 
     async def _run_held_out_baseline_tests(
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path
@@ -1311,42 +1407,18 @@ class Reconciler:
         baseline_tests = repo_dir / "tests"
         if not baseline_tests.is_dir() or not any(baseline_tests.glob("test_*.py")):
             return True, ""
-
-        cmd = wrap_with_sandbox(
+        return await self._run_sandboxed_cmd(
             [sys.executable, "-m", "pytest", "-q", str(baseline_tests)],
             worktree_dir=worktree_dir,
             session_dir=session_dir,
-            notes_dir=self.cfg.notes_dir,
-            home_dir=self.cfg.home_dir,
-            enabled=self.cfg.sandbox_enabled,
+            label="Held-out baseline tests",
+            extra_pythonpath=[str(worktree_dir / "src"), str(worktree_dir)],
         )
-        env = self._build_sandbox_env(session_dir)
-        py_parts = [str(worktree_dir / "src"), str(worktree_dir)]
-        if env.get("PYTHONPATH"):
-            py_parts.append(env["PYTHONPATH"])
-        env["PYTHONPATH"] = os.pathsep.join(py_parts)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(worktree_dir),
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            out_bytes, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=self.cfg.verify_timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return False, f"Held-out baseline tests timed out after {self.cfg.verify_timeout_seconds}s"
-        output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
-        return proc.returncode == 0, output
 
     async def _worktree_diff_stat(self, worktree_dir: Path, base_sha: str) -> str:
         if not worktree_dir.exists():
             return ""
+        _clean_untracked_tool_caches(worktree_dir)
         await self._git_out(worktree_dir, "add", "-A", check=False)
         return (
             await self._git_out(
@@ -1392,6 +1464,11 @@ class Reconciler:
                     check=False,
                 )
             await self._git_out(repo_dir, "reset", "--hard", rollback_sha, check=False)
+            remotes = await self._git_out(repo_dir, "remote", check=False)
+            if "origin" in remotes.splitlines():
+                await self._git_out(
+                    repo_dir, "push", "origin", "HEAD:master", "--force-with-lease", check=False
+                )
         self.db.queue_outbox(
             kind="report",
             summary_spoken=(
@@ -1459,6 +1536,29 @@ class Reconciler:
                 check=False,
             )
         await self._git_out(repo_dir, "reset", "--hard", verified_sha)
+        dep_diff = (
+            await self._git_out(
+                repo_dir,
+                "diff",
+                "--name-only",
+                old_head,
+                verified_sha,
+                "--",
+                "pyproject.toml",
+                "uv.lock",
+                check=False,
+            )
+        ).strip()
+        uv_exe = shutil.which("uv")
+        if dep_diff and uv_exe:
+            sync_proc = await asyncio.create_subprocess_exec(
+                uv_exe,
+                "sync",
+                cwd=str(repo_dir),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await sync_proc.wait()
         remotes = await self._git_out(repo_dir, "remote", check=False)
         if "origin" in remotes.splitlines():
             await self._git_out(repo_dir, "push", "origin", "HEAD:master", check=False)
@@ -1470,12 +1570,18 @@ class Reconciler:
             await self._git_out(repo_dir, "fetch", "origin", "--prune", check=False)
 
     async def _prepare_worktree(
-        self, repo_dir: Path, worktree_dir: Path, branch_name: str
+        self,
+        repo_dir: Path,
+        worktree_dir: Path,
+        branch_name: str,
+        *,
+        prefer_local_head: bool = False,
     ) -> str:
         if worktree_dir.exists():
             await self._cleanup_worktree(repo_dir, worktree_dir)
         has_origin_master = (
-            await self._git_rc(repo_dir, "rev-parse", "--verify", "origin/master") == 0
+            not prefer_local_head
+            and await self._git_rc(repo_dir, "rev-parse", "--verify", "origin/master") == 0
         )
         base_ref = "origin/master" if has_origin_master else "HEAD"
         await self._git_out(
@@ -1487,6 +1593,7 @@ class Reconciler:
     async def _commit_and_push(
         self, worktree_dir: Path, branch_name: str, task: TaskRow
     ) -> str:
+        _clean_untracked_tool_caches(worktree_dir)
         await self._git_out(worktree_dir, "add", "-A")
         if await self._git_rc(worktree_dir, "diff", "--cached", "--quiet") != 0:
             await self._git_out(

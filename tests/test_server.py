@@ -172,5 +172,192 @@ async def test_hermes_endpoints_auth_mode_brief_and_iphone_ask(tmp_path: Path) -
             assert any(e.get("event") == "approval.responded" for e in remaining)
             assert any(e.get("event") == "run.completed" for e in remaining)
 
+        # 6. Malformed JSON returns 400 (never 500), and `/stop` on completed run preserves status
+        bad_json = await client.post(
+            "/v1/runs",
+            data="{not-json",
+            headers={**headers, "Content-Type": "application/json"},
+        )
+        assert bad_json.status == 400
+
+        non_dict = await client.post("/v1/ask", json=["not", "a", "dict"], headers=headers)
+        assert non_dict.status == 400
+
+        stop_completed = await client.post(f"/v1/runs/{run_id}/stop", headers=headers)
+        assert stop_completed.status == 200
+        after_stop = await (await client.get(f"/v1/runs/{run_id}", headers=headers)).json()
+        assert after_stop["status"] == "completed"
+
     await reconciler.stop()
     db.close()
+
+
+async def test_empty_api_key_fails_closed_and_live_approval_stop_and_deferred_planner_resume(
+    tmp_path: Path,
+) -> None:
+    fake_pi = tmp_path / "fake_pi_live.py"
+    fake_pi.write_text(
+        r"""#!/usr/bin/env python3
+import json, os, pathlib, socket, sys, time
+
+# Verify Planner is also inside Seatbelt sandbox (cannot read state.db-wal or .env)
+wal_file = os.environ.get("TEST_WAL_PATH")
+if wal_file:
+    try:
+        pathlib.Path(wal_file).read_text(encoding="utf-8")
+        raise SystemExit("SANDBOX_FAILED_TO_BLOCK_WAL")
+    except OSError:
+        pass
+
+prompt = sys.argv[-1]
+sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
+
+if "SLOW_CANCEL_TEST" in prompt:
+    time.sleep(30)
+    sys.exit(0)
+
+if "--session" in sys.argv:
+    print(json.dumps({"type": "session", "id": "sess-deferred-1"}), flush=True)
+    print(json.dumps({
+        "type": "message_end",
+        "message": {"role": "assistant", "content": "Resumed deferred planner action."},
+        "cost_usd": 0.01,
+    }), flush=True)
+    sys.exit(0)
+
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sock_path)
+s.sendall((json.dumps({
+    "method": "defer_for_approval",
+    "params": {"summary_spoken": "Approve external action?", "session_id": "sess-deferred-1"},
+}) + "\n").encode())
+resp = json.loads(s.recv(4096).decode().splitlines()[0])
+s.close()
+approved = resp["result"].get("approved")
+deferred = resp["result"].get("deferred")
+print(json.dumps({"type": "session", "id": "sess-deferred-1"}), flush=True)
+print(json.dumps({
+    "type": "message_end",
+    "message": {"role": "assistant", "content": f"LiveResult approved={approved} deferred={deferred}"},
+    "cost_usd": 0.01,
+}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(fake_pi.stat().st_mode | stat.S_IEXEC)
+
+    # 1. Empty superbrain_api_key fails closed with 401
+    empty_cfg = Settings(
+        home_dir=tmp_path / "empty_home",
+        projects_dir=tmp_path / "Projects",
+        superbrain_api_key="",
+        pi_bin=str(fake_pi),
+    )
+    empty_db = BrainDB(empty_cfg.db_path, empty_cfg.allowed_repo_set)
+    empty_rec = Reconciler(empty_db, empty_cfg)
+    empty_srv = BrainServer(empty_db, empty_rec, empty_cfg)
+    async with TestClient(TestServer(empty_srv.app)) as unauth_client:
+        r = await unauth_client.post("/v1/ask", json={"input": "morning brief"})
+        assert r.status == 401
+    await empty_rec.stop()
+    empty_db.close()
+
+    # 2. Live mid-run approval (`_make_approval_cb`), `/stop`, and iPhone `task_id=None` deferred resume
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        superbrain_api_key="secret",
+        pi_bin=str(fake_pi),
+        sandbox_enabled=True,
+    )
+    (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="ASSIST")
+    wal_path = cfg.home_dir / "state.db-wal"
+    wal_path.write_text("SEALED_WAL_CONTENT", encoding="utf-8")
+    import os
+
+    os.environ["TEST_WAL_PATH"] = str(wal_path)
+    reconciler = Reconciler(db, cfg)
+    srv = BrainServer(db, reconciler, cfg)
+    headers = {"Authorization": "Bearer secret"}
+
+    try:
+        async with TestClient(TestServer(srv.app)) as client:
+            # 2a. Live SSE approval during an active `/v1/runs` Planner turn
+            live_resp = await client.post(
+                "/v1/runs", json={"input": "Need live approval"}, headers=headers
+            )
+            live_id = (await live_resp.json())["run_id"]
+            async with client.get(f"/v1/runs/{live_id}/events", headers=headers) as sse:
+                ev1 = None
+                async for raw in sse.content:
+                    line = raw.decode().strip()
+                    if line.startswith("data:"):
+                        ev1 = json.loads(line.removeprefix("data:").strip())
+                        break
+                assert ev1 is not None and ev1["event"] == "approval.request"
+                ans = await client.post(
+                    f"/v1/runs/{live_id}/approval",
+                    json={"choice": "once", "request_id": ev1["request_id"]},
+                    headers=headers,
+                )
+                assert ans.status == 200
+                final_ev = None
+                async for raw in sse.content:
+                    line = raw.decode().strip()
+                    if line.startswith("data:"):
+                        ev = json.loads(line.removeprefix("data:").strip())
+                        if ev.get("event") in ("run.completed", "run.failed"):
+                            final_ev = ev
+                            break
+                assert final_ev is not None and final_ev["event"] == "run.completed"
+                assert "approved=True" in final_ev["output"]
+
+            # 2b. iPhone `/v1/ask` (`allow_live_approval=False`) defers with `task_id=None`,
+            # and approving in `morning brief` resumes `sess-deferred-1`!
+            ask_def = await client.post(
+                "/v1/ask", json={"input": "Defer from iPhone"}, headers=headers
+            )
+            assert ask_def.status == 200
+            brief = await client.post(
+                "/v1/runs", json={"input": "morning brief"}, headers=headers
+            )
+            brief_id = (await brief.json())["run_id"]
+            async with client.get(f"/v1/runs/{brief_id}/events", headers=headers) as sse:
+                req_ev = None
+                async for raw in sse.content:
+                    line = raw.decode().strip()
+                    if line.startswith("data:"):
+                        req_ev = json.loads(line.removeprefix("data:").strip())
+                        break
+                assert req_ev is not None and req_ev["event"] == "approval.request"
+                await client.post(
+                    f"/v1/runs/{brief_id}/approval",
+                    json={"choice": "once", "request_id": req_ev["request_id"]},
+                    headers=headers,
+                )
+                done_ev = None
+                async for raw in sse.content:
+                    line = raw.decode().strip()
+                    if line.startswith("data:"):
+                        ev = json.loads(line.removeprefix("data:").strip())
+                        if ev.get("event") == "run.completed":
+                            done_ev = ev
+                            break
+                assert done_ev is not None
+                assert "Resumed deferred planner action." in done_ev["output"]
+
+            # 2c. Active `/v1/runs/{id}/stop` cancels a slow run
+            slow_resp = await client.post(
+                "/v1/runs", json={"input": "SLOW_CANCEL_TEST"}, headers=headers
+            )
+            slow_id = (await slow_resp.json())["run_id"]
+            stop_resp = await client.post(f"/v1/runs/{slow_id}/stop", headers=headers)
+            assert stop_resp.status == 200
+            st = await (await client.get(f"/v1/runs/{slow_id}", headers=headers)).json()
+            assert st["status"] == "cancelled"
+    finally:
+        os.environ.pop("TEST_WAL_PATH", None)
+        await reconciler.stop()
+        db.close()

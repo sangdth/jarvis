@@ -83,20 +83,49 @@ class BrainServer:
         request: web.Request,
         handler: Any,
     ) -> web.StreamResponse:
-        expected = self.cfg.superbrain_api_key
-        if expected:
-            auth = request.headers.get("Authorization", "")
-            token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-            if not hmac.compare_digest(token, expected):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        expected = self.cfg.superbrain_api_key.strip()
+        auth = request.headers.get("Authorization", "")
+        token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+        if not expected or not hmac.compare_digest(token, expected):
+            return web.json_response({"error": "Unauthorized"}, status=401)
         return await handler(request)
 
+    @staticmethod
+    async def _read_json_dict(request: web.Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise web.HTTPBadRequest(
+                text=json.dumps({"error": "Invalid JSON body"}),
+                content_type="application/json",
+            ) from exc
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(
+                text=json.dumps({"error": "Expected JSON object"}),
+                content_type="application/json",
+            )
+        return body
+
+    def _prune_history(self, max_entries: int = 200) -> None:
+        if len(self.runs) > max_entries:
+            finished = [
+                rid
+                for rid, r in self.runs.items()
+                if r.status in ("completed", "failed", "cancelled")
+            ]
+            for rid in finished[: max(0, len(self.runs) - max_entries)]:
+                self.runs.pop(rid, None)
+        while len(self._pi_sessions) > max_entries:
+            oldest_key = next(iter(self._pi_sessions))
+            self._pi_sessions.pop(oldest_key, None)
+
     async def handle_create_run(self, request: web.Request) -> web.Response:
-        body = await request.json()
+        body = await self._read_json_dict(request)
         user_input = str(body.get("input") or "").strip()
         if not user_input:
             return web.json_response({"error": "input is required"}, status=400)
 
+        self._prune_history()
         run_id = f"run-{uuid.uuid4().hex[:12]}"
         session_id = str(body.get("session_id") or run_id)
         rec = RunRecord(run_id=run_id, session_id=session_id)
@@ -160,19 +189,8 @@ class BrainServer:
         if rec is None:
             return web.json_response({"error": "Run not found"}, status=404)
 
-        body = await request.json()
+        body = await self._read_json_dict(request)
         approved = str(body.get("choice") or "").lower() == "once"
-
-        if rec.pending_outbox_id:
-            outbox_row = self.db.resolve_approval(rec.pending_outbox_id, approved)
-            rec.pending_outbox_id = None
-            rec.publish({"event": "approval.responded", "run_id": run_id, "approved": approved})
-            state_word = "Approved" if approved else "Rejected"
-            task_note = f" task {outbox_row.task_id}" if outbox_row and outbox_row.task_id else ""
-            rec.output = f"{state_word}{task_note}."
-            rec.status = "completed"
-            rec.publish({"event": "run.completed", "run_id": run_id, "output": rec.output})
-            return web.json_response({"ok": True})
 
         if rec.pending_approval_future and not rec.pending_approval_future.done():
             rec.pending_approval_future.set_result(approved)
@@ -186,6 +204,8 @@ class BrainServer:
         rec = self.runs.get(run_id)
         if rec is None:
             return web.json_response({"error": "Run not found"}, status=404)
+        if rec.status in ("completed", "failed", "cancelled"):
+            return web.json_response({"ok": True, "status": rec.status})
 
         self.reconciler.abort_run(run_id)
         if rec.pending_approval_future and not rec.pending_approval_future.done():
@@ -198,11 +218,12 @@ class BrainServer:
 
     async def handle_ask(self, request: web.Request) -> web.Response:
         """Synchronous iPhone Shortcut / Siri endpoint (`POST /v1/ask` -> `{"spoken": "..."}`)."""
-        body = await request.json()
+        body = await self._read_json_dict(request)
         user_input = str(body.get("input") or "").strip()
         if not user_input:
             return web.json_response({"error": "input is required"}, status=400)
 
+        self._prune_history()
         run_id = f"ask-{uuid.uuid4().hex[:12]}"
         rec = RunRecord(run_id=run_id, session_id=run_id)
         self.runs[run_id] = rec
@@ -245,7 +266,10 @@ class BrainServer:
                     )
                 summary_text = " ".join(lines)
                 if pending_approval and allow_live_approval:
+                    loop = asyncio.get_running_loop()
+                    fut: asyncio.Future[bool] = loop.create_future()
                     rec.pending_outbox_id = pending_approval.id
+                    rec.pending_approval_future = fut
                     rec.publish(
                         {
                             "event": "approval.request",
@@ -253,6 +277,46 @@ class BrainServer:
                             "request_id": pending_approval.id,
                             "description": f"{summary_text} Next approval needed: {pending_approval.summary_spoken}",
                         }
+                    )
+                    try:
+                        approved = await asyncio.wait_for(fut, timeout=120.0)
+                    except asyncio.TimeoutError:
+                        rec.output = f"{summary_text} Approval timed out; kept in queue."
+                        rec.status = "completed"
+                        rec.publish(
+                            {"event": "run.completed", "run_id": rec.run_id, "output": rec.output}
+                        )
+                        return
+                    finally:
+                        rec.pending_outbox_id = None
+                        rec.pending_approval_future = None
+
+                    outbox_row = self.db.resolve_approval(pending_approval.id, approved)
+                    if (
+                        approved
+                        and outbox_row is not None
+                        and outbox_row.task_id is None
+                        and outbox_row.resume_session_id
+                    ):
+                        self.db.mark_outbox_consumed(outbox_row.id)
+                        resumed = await self.reconciler.run_interactive_planner(
+                            user_input="The owner approved your deferred request. Proceed.",
+                            run_key=rec.run_id,
+                            resume_session_id=outbox_row.resume_session_id,
+                            approval_cb=self._make_approval_cb(rec),
+                        )
+                        rec.output = f"Approved. {resumed.summary}".strip()
+                    else:
+                        state_word = "Approved" if approved else "Rejected"
+                        task_note = (
+                            f" task {outbox_row.task_id}"
+                            if outbox_row and outbox_row.task_id
+                            else ""
+                        )
+                        rec.output = f"{state_word}{task_note}."
+                    rec.status = "completed"
+                    rec.publish(
+                        {"event": "run.completed", "run_id": rec.run_id, "output": rec.output}
                     )
                     return
                 if pending_approval:

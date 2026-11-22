@@ -58,23 +58,26 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
     `superbrain self-check` canary) **plus** the pre-edit baseline `~/Projects/superbrain/tests` held-out suite against
     the candidate worktree before `~/Projects/superbrain` is updated.
   - Edits touching `pyproject.toml`, `src/superbrain/config.py`, `src/superbrain/sandbox.py`,
-    `src/superbrain/defaults/pi/board.ts`, or modifying/deleting existing files under `tests/` require owner approval.
-    Verified upgrades record `last_good_sha` in `system_state`, update `~/Projects/superbrain`, flush the spoken
-    response, and trigger a clean shutdown for `launchd` respawn; if the first 2 post-upgrade task attempts fail with 0
-    successes, Superbrain automatically rolls `~/Projects/superbrain` back to `last_good_sha` and restarts.
+    `src/superbrain/defaults/pi/board.ts`, or modifying/deleting existing files under `tests/` pin the verified
+    `approved_sha` on `origin/brain/<task_id>` and require owner approval before that exact commit is applied.
+    Verified upgrades record `last_good_sha` in `system_state`, update `~/Projects/superbrain` (running `uv sync` if
+    dependencies changed), flush the spoken response, and trigger a clean shutdown for `launchd` respawn; probation
+    clears `last_good_sha` once post-upgrade runs succeed, or rolls `~/Projects/superbrain` and `origin/master` back to
+    `last_good_sha` after 2 consecutive failures.
 - **Strict repo allowlist (`ALLOWED_REPOS`):** `db.py` and `reconciler.py` refuse any `repo` not explicitly listed in
   `ALLOWED_REPOS` (comma-separated relative paths under `PROJECTS_DIR`, e.g. `jarvis,HuggerHustle/platform-v2`).
   Unlisted repos such as `hamahakki` are never touched.
 - **GitHub (`origin`) is the handoff boundary between MacBook and Mac mini:**
   - Before every `Planner` or `Builder` run, `reconciler.py` runs `git -C <repo> fetch origin --prune` and creates a
-    worktree from `origin/master`.
+    worktree from `origin/master` (or local `HEAD` for `repo='superbrain'`).
   - When a `Builder` passes `verify_cmd`, `reconciler.py` pushes `origin/brain/<task_id>` and never auto-merges into
     `master`.
 - **Worktree & OS sandbox confinement (`sandbox.py` + `defaults/pi/board.ts`):**
-  - `board.ts` resolves every `edit` / `write` target via `realpathSync` and blocks writes outside
-    `SUPERBRAIN_WORKTREE_DIR`; on `problem` tasks, deleting test files under `tests/` is blocked.
-  - On macOS, `reconciler.py` wraps `Builder` runs in `sandbox-exec -f <profile.sb>` so `bash` commands cannot write
-    outside the task's worktree, session directory, or `/tmp`.
+  - `board.ts` resolves every `edit` / `write` / `edit_and_run` target via `realpathSync`, blocks writes outside
+    `SUPERBRAIN_WORKTREE_DIR`, blocks `git push` from workers, and blocks modifying/deleting tests on `problem` tasks.
+  - On macOS, `reconciler.py` wraps `Planner`, `Builder`, `Improver`, and `Scout` runs in `sandbox-exec` so workers
+    cannot write outside their allowed directories or read `~/.ssh`, `.env`, `state.db*`, or sealed `traces/` (except
+    `Improver`, which reads `traces/`).
 - **`pi 1.5.0` tool flag rule:** Passing `-t` sets `allowedToolNames` for both built-in and extension tools, so each
   role passes a single `-t` allowlist that explicitly includes its `board.ts` tool names (`upsert_task`,
   `record_note`, `defer_for_approval`).

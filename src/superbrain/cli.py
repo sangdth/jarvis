@@ -81,6 +81,26 @@ def _rollback_to_last_good_sha(last_good_sha: str | None) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     if (repo_root / ".git").exists():
         logger.error(f"Startup failed; rolling back {repo_root} to last_good_sha {last_good_sha}")
+        dirty = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if dirty:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_root),
+                    "stash",
+                    "push",
+                    "-u",
+                    "-m",
+                    "superbrain-pre-startup-rollback",
+                ],
+                check=False,
+            )
         subprocess.run(
             ["git", "-C", str(repo_root), "reset", "--hard", last_good_sha],
             check=False,
@@ -107,7 +127,10 @@ async def _serve_async() -> None:
         site = web.TCPSite(runner, host=settings.host, port=settings.port)
         await site.start()
     except Exception:
-        _rollback_to_last_good_sha(db.get_state().last_good_sha)
+        last_sha = db.get_state().last_good_sha
+        if last_sha:
+            _rollback_to_last_good_sha(last_sha)
+            db.clear_last_good_sha()
         db.close()
         raise
 

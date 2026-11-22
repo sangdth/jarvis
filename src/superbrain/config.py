@@ -35,12 +35,12 @@ class Settings(BaseSettings):
     reconcile_interval_seconds: float = 10.0
     lease_seconds: int = 1200
 
-    # Pi binary and models
+    # Pi binary and optional per-role model overrides (empty = inherit ~/.pi/agent/settings.json)
     pi_bin: str = "/Users/sang/.local/bin/pi"
-    planner_model: str = "sonnet:medium"
-    builder_model: str = "sonnet:high"
-    improver_model: str = "sonnet:medium"
-    scout_model: str = "haiku:low"
+    planner_model: str = ""
+    builder_model: str = ""
+    improver_model: str = ""
+    scout_model: str = ""
     default_mode: Literal["ASSIST", "AUTONOMOUS"] = "ASSIST"
     sandbox_enabled: bool = True
     max_personal_skills: int = 10

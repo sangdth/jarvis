@@ -30,15 +30,17 @@ def build_sandbox_profile(
     notes_dir: Path,
     *,
     home_dir: Path | None = None,
+    allow_read_traces: bool = False,
 ) -> str:
     """
-    macOS Seatbelt (`sandbox-exec`) profile for Builder workers.
+    macOS Seatbelt (`sandbox-exec`) profile for Superbrain workers.
     Allows reading the system and executing tools, but restricts file-write* operations strictly to:
     - the isolated task worktree (`worktree_dir`) and its `.git/worktrees/<id>` metadata dir
     - the worker's session/socket/tmp directory (`session_dir`)
     - the progress notes directory (`notes_dir`)
     - `/tmp`, `/private/tmp`, and `/dev`
-    Also blocks reading sensitive secrets (`~/.ssh`, `<home_dir>/.env`, `<home_dir>/state.db`).
+    Also blocks reading sensitive secrets (`~/.ssh`, `<home_dir>/.env`, `<home_dir>/state.db*`,
+    and `<home_dir>/traces` unless `allow_read_traces=True` for the offline Improver role).
     Sibling repositories under ~/Projects (such as `hamahakki`) and `state.db` cannot be modified.
     """
     wt = _escape_sb_path(worktree_dir)
@@ -63,9 +65,12 @@ def build_sandbox_profile(
         lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(ssh_dir)}"))')
     if home_dir is not None:
         env_file = home_dir / ".env"
-        db_file = home_dir / "state.db"
         lines.append(f'(deny file-read-data (literal "{_escape_sb_path(env_file)}"))')
-        lines.append(f'(deny file-read-data (literal "{_escape_sb_path(db_file)}"))')
+        for db_name in ("state.db", "state.db-wal", "state.db-shm", "state.db-journal"):
+            lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / db_name)}"))')
+        if not allow_read_traces:
+            traces_dir = home_dir / "traces"
+            lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(traces_dir)}"))')
     lines.append("")
     return "\n".join(lines)
 
@@ -77,6 +82,7 @@ def wrap_with_sandbox(
     session_dir: Path,
     notes_dir: Path,
     home_dir: Path | None = None,
+    allow_read_traces: bool = False,
     enabled: bool = True,
 ) -> list[str]:
     """Wraps `cmd` in `sandbox-exec -f <profile.sb>` on macOS when enabled."""
@@ -85,7 +91,13 @@ def wrap_with_sandbox(
     session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile_path = session_dir / "sandbox.sb"
     profile_path.write_text(
-        build_sandbox_profile(worktree_dir, session_dir, notes_dir, home_dir=home_dir),
+        build_sandbox_profile(
+            worktree_dir,
+            session_dir,
+            notes_dir,
+            home_dir=home_dir,
+            allow_read_traces=allow_read_traces,
+        ),
         encoding="utf-8",
     )
     return ["sandbox-exec", "-f", str(profile_path), *cmd]
