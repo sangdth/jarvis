@@ -13,3 +13,7 @@ state.db*
 worktrees/
 sessions/
 memory/
+traces/
+skills/
+ext/
+logs/
