@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-import socket
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -28,7 +27,9 @@ from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
+from jarvis_core.devices import DeviceStore
 from jarvis_core.home import brain_token
+from jarvis_core.net import advertised_hosts
 from jarvis_voice.config import settings
 from jarvis_voice.voice_engine import PLAY_AHEAD_SECS
 
@@ -41,8 +42,9 @@ MIC_QUEUE_BLOCKS = 50
 SEND_TIMEOUT_SECS = 2.0
 # A client that connects and sends nothing for this long has a silent mic (no Microphone permission, most likely).
 SILENT_CLIENT_SECS = 3.0
-# Where the client script reads its server from; the served copy has this replaced with this server's own URL.
+# Where the client script reads its server from; the served copy has these replaced with this server's addresses.
 CLIENT_URL_PLACEHOLDER = 'DEFAULT_URL = ""'
+CLIENT_SERVER_PLACEHOLDER = 'DEFAULT_SERVER = ""'
 
 
 class RelaySocket(Protocol):
@@ -60,25 +62,12 @@ def relay_token() -> str:
     return settings.brain_api_key or brain_token()
 
 
-def advertised_hosts() -> list[str]:
-    """Names another Mac can reach this one by: its Bonjour name and its LAN address, best effort."""
-    hosts = []
-    name = socket.gethostname().split(".")[0]
-    if name:
-        hosts.append(f"{name}.local")
-    try:
-        hosts.append(socket.gethostbyname(name))
-    except OSError:
-        pass
-    return list(dict.fromkeys(hosts))
-
-
-def remote_command(hosts: list[str], token: str, port: int) -> str:
-    """What to paste on the other Mac: fetch the client from here and run it. Only uv is needed there."""
+def remote_command(hosts: list[str], port: int) -> str:
+    """What to paste on the other Mac: fetch the client from here, then pair it once. Only uv is needed there."""
     host = hosts[0] if hosts else "127.0.0.1"
     return (
-        f"curl -fsSL 'http://{host}:{port}/client.py?token={token}' -o /tmp/jarvis-remote.py"
-        f" && uv run /tmp/jarvis-remote.py"
+        f"curl -fsSL 'http://{host}:{port}/client.py' -o ~/.local/bin/jarvis-remote.py"
+        f" && uv run ~/.local/bin/jarvis-remote.py --pair <code from `jarvis pair`>"
     )
 
 
@@ -253,14 +242,16 @@ class RemoteVoiceTransport(BaseTransport):
         hub: RelayHub | None = None,
         host: str | None = None,
         port: int | None = None,
+        devices: DeviceStore | None = None,
     ) -> None:
         super().__init__()
         self._params = params
         self.token = relay_token() if token is None else token
         self.host = host or settings.brain_host
         self.port = settings.brain_port if port is None else port
+        self.devices = devices  # paired devices' secrets work here too
         self.hub = hub or RelayHub()
-        self.hub._hint = remote_command(advertised_hosts(), self.token, self.port)
+        self.hub._hint = remote_command(advertised_hosts(), self.port)
         self._runner: web.AppRunner | None = None
         self._input: RemoteVoiceInputTransport | None = None
         self._output: RemoteVoiceOutputTransport | None = None
@@ -283,7 +274,7 @@ class RemoteVoiceTransport(BaseTransport):
         sockets = getattr(site._server, "sockets", None)
         if sockets:
             self.port = sockets[0].getsockname()[1]
-        self.hub._hint = remote_command(advertised_hosts(), self.token, self.port)
+        self.hub._hint = remote_command(advertised_hosts(), self.port)
         logger.info(f"Relay listening on {self.host}:{self.port}: the mic and speaker of another Mac reach this Jarvis.")
         logger.info(f"On that Mac (needs only uv, https://docs.astral.sh/uv/):\n  {self.hub.reconnect_hint()}")
 
@@ -321,13 +312,21 @@ class RemoteVoiceTransport(BaseTransport):
         return (request.query.get("token") or request.headers.get("X-Jarvis-Token") or "").strip()
 
     def _authorized(self, request: web.Request) -> bool:
-        return secrets.compare_digest(self._token_from(request), self.token)
+        token = self._token_from(request)
+        if not token:
+            return False
+        if secrets.compare_digest(token, self.token):
+            return True
+        # A paired device: its own secret, revocable without touching anyone else's.
+        return self.devices is not None and self.devices.verify(token) is not None
 
     async def handle_client_script(self, request: web.Request) -> web.Response:
-        """The thin client, as a plain HTTP file (the laptop curls it), never as a WebSocket."""
-        if not self._authorized(request):
-            logger.warning(f"Relay: refused {request.remote or '?'} for the client script (bad token).")
-            return web.Response(status=401, text="Jarvis relay: the token does not match this Mac's.\n")
+        """
+        The thin client, as a plain HTTP file (the laptop curls it), never as a WebSocket.
+
+        Open on purpose: it is the bootstrap, so it has to arrive before the laptop has a secret, and it carries no
+        secret of its own — only this server's address. The socket it then opens still needs a pairing secret.
+        """
         body = self.client_script(request.url.host)
         return web.Response(
             text=body,
@@ -374,14 +373,16 @@ class RemoteVoiceTransport(BaseTransport):
 
     def client_script(self, fetched_from: str | None = None) -> str:
         """
-        The thin client, with this Mac's address and token filled in so the laptop needs no arguments.
+        The thin client, with this Mac's address filled in so the laptop needs no arguments.
 
         `fetched_from` is the host the laptop used to download it, so a fetch over a LAN IP or a Tailscale name bakes
-        in exactly that address; the advertised Bonjour name is only the fallback for the logged command.
+        in exactly that address; the advertised Bonjour name is only the fallback for the logged command. No token is
+        baked in: the laptop pairs once and keeps its own secret.
         """
         host = self.public_host(fetched_from)
-        url = f"ws://{host}:{self.port}/ws?token={self.token}"
-        return CLIENT_SCRIPT.read_text(encoding="utf-8").replace(CLIENT_URL_PLACEHOLDER, f'DEFAULT_URL = "{url}"')
+        text = CLIENT_SCRIPT.read_text(encoding="utf-8")
+        text = text.replace(CLIENT_URL_PLACEHOLDER, f'DEFAULT_URL = "ws://{host}:{self.port}/ws"')
+        return text.replace(CLIENT_SERVER_PLACEHOLDER, f'DEFAULT_SERVER = "http://{host}:{self.port}"')
 
     def public_host(self, override: str | None = None) -> str:
         if override and override not in ("0.0.0.0", "::", "[::]"):
@@ -389,8 +390,9 @@ class RemoteVoiceTransport(BaseTransport):
         hosts = advertised_hosts()
         return hosts[0] if hosts else "127.0.0.1"
 
-
-def make_transport(*, port: int | None = None, token: str | None = None) -> RemoteVoiceTransport:
+def make_transport(
+    *, port: int | None = None, token: str | None = None, devices: DeviceStore | None = None
+) -> RemoteVoiceTransport:
     """The transport `jarvis remote` puts in place of the local mic and speaker."""
     params = TransportParams(
         audio_in_enabled=True,
@@ -398,4 +400,4 @@ def make_transport(*, port: int | None = None, token: str | None = None) -> Remo
         audio_in_sample_rate=SAMPLE_RATE,
         audio_out_sample_rate=SAMPLE_RATE,
     )
-    return RemoteVoiceTransport(params, port=port, token=token)
+    return RemoteVoiceTransport(params, port=port, token=token, devices=devices)

@@ -5,12 +5,15 @@ import hmac
 import json
 import os
 import re
+import secrets
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from aiohttp import web
+from loguru import logger
 
 from brain.config import Settings, settings
 from brain.db import BrainDB
@@ -24,7 +27,14 @@ from brain.telemetry import (
     TelemetryHub,
     preview,
 )
+from jarvis_core.devices import DeviceStore
 from jarvis_core.home import JARVIS_HOME, REPO_ROOT, git_version
+from jarvis_core.net import advertised_hosts
+
+# A pairing code is short, single-use and short-lived; five wrong guesses in a minute stops the guessing.
+PAIR_TTL_SECS = 300
+PAIR_MAX_FAILURES = 5
+PAIR_FAILURE_WINDOW_SECS = 60.0
 
 _AUTONOMOUS_RE = re.compile(
     r"\b(switch\s+to\s+autonomous|start\s+(?:the\s+)?night\s+(?:mode|run)|autonomous\s+mode)\b",
@@ -78,6 +88,7 @@ class BrainServer:
         cfg: Settings = settings,
         hub: TelemetryHub | None = None,
         *,
+        devices: DeviceStore | None = None,
         voice_snapshot: Callable[[], dict[str, Any]] | None = None,
         extra_routes: list[web.RouteDef] | None = None,
         started_at: float | None = None,
@@ -88,12 +99,20 @@ class BrainServer:
         self.hub = hub if hub is not None else reconciler.hub
         self.runs: dict[str, RunRecord] = {}
         self._pi_sessions: dict[str, str] = {}
+        self.devices = devices if devices is not None else DeviceStore.load()
+        # One pairing code at a time, in memory: a restart clears it, which is what we want.
+        self._pair_codes: dict[str, float] = {}
+        self._pair_failures: deque[float] = deque(maxlen=PAIR_MAX_FAILURES * 2)
         self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
         self._started_at = started_at if started_at is not None else time.time()
         self.app = web.Application(middlewares=[self._auth_middleware])
         self.app.add_routes(
             [
                 web.get("/health", self.handle_health),
+                web.post("/v1/pair/start", self.handle_pair_start),
+                web.post("/v1/pair", self.handle_pair),
+                web.get("/v1/devices", self.handle_devices),
+                web.post("/v1/devices/{device_id}/revoke", self.handle_revoke),
                 web.get("/v1/status", self.handle_status),
                 web.get("/v1/board", self.handle_board),
                 web.get("/v1/tasks", self.handle_list_tasks),
@@ -131,10 +150,25 @@ class BrainServer:
     ) -> web.StreamResponse:
         if request.path == "/health":
             return await handler(request)  # the liveness probe: no secret, and no state
+        if request.method == "POST" and request.path == "/v1/pair":
+            return await handler(request)  # the bootstrap: the pairing code is the credential
+        if request.path == "/client.py":
+            return await handler(request)  # the script that pairs: it carries no secret, only this server's address
+        if request.path == "/ws":
+            return await handler(request)  # the relay checks its own credential, shared token or device secret
+        token = self.request_token(request)
+        if self._is_owner(token):
+            return await handler(request)
+        if request.path.startswith(("/v1/pair/", "/v1/devices")):
+            # Minting and revoking devices is the owner's business; a paired device cannot do it.
+            return web.json_response({"error": "owner token required"}, status=401)
+        if self.devices.verify(token) is not None:
+            return await handler(request)
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    def _is_owner(self, token: str) -> bool:
         expected = self.cfg.brain_api_key.strip()
-        if not expected or not hmac.compare_digest(self.request_token(request), expected):
-            return web.json_response({"error": "Unauthorized"}, status=401)
-        return await handler(request)
+        return bool(expected) and hmac.compare_digest(token, expected)
 
     @staticmethod
     async def _read_json_dict(request: web.Request) -> dict[str, Any]:
@@ -286,6 +320,54 @@ class BrainServer:
 
     async def handle_status(self, request: web.Request) -> web.Response:
         return web.json_response(self.status_payload())
+
+    def authenticate(self, token: str) -> bool:
+        """The shared token, or a paired device's secret. Used by the relay for `/ws` and `/client.py`."""
+        return self._is_owner(token) or self.devices.verify(token) is not None
+
+    async def handle_pair_start(self, request: web.Request) -> web.Response:
+        """`jarvis pair`: mint a short code. One at a time, single use, five minutes."""
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        self._pair_codes = {code: time.time() + PAIR_TTL_SECS}
+        self._pair_failures.clear()
+        logger.info("[Pair] a pairing code was issued (single use, 5 minutes).")
+        hosts = advertised_hosts()
+        server = f"http://{hosts[0]}:{self.cfg.brain_port}" if hosts else self.cfg.endpoint_url
+        return web.json_response({"code": code, "expires_in": PAIR_TTL_SECS, "server": server})
+
+    async def handle_pair(self, request: web.Request) -> web.Response:
+        """A device trades the code for its own secret; the code is consumed by the attempt."""
+        body = await self._read_json_dict(request)
+        code = "".join(str(body.get("code") or "").split())
+        now = time.time()
+        recent = [t for t in self._pair_failures if now - t < PAIR_FAILURE_WINDOW_SECS]
+        self._pair_failures.clear()
+        self._pair_failures.extend(recent)
+        if len(recent) >= PAIR_MAX_FAILURES:
+            self._pair_codes.clear()  # stop the guessing: a new code has to be minted
+            logger.warning("[Pair] too many wrong codes; pending codes cleared.")
+            return web.json_response({"error": "too many attempts; start pairing again"}, status=429)
+        self._pair_codes = {c: expires for c, expires in self._pair_codes.items() if expires > now}
+        match = next((known for known in self._pair_codes if hmac.compare_digest(known, code)), None)
+        if match is None:
+            self._pair_failures.append(now)
+            logger.warning("[Pair] a wrong or expired code was tried.")
+            return web.json_response({"error": "wrong or expired code"}, status=403)
+        self._pair_codes.pop(match, None)  # single use
+        device, secret = self.devices.add(str(body.get("name") or ""))
+        logger.info(f"[Pair] paired {device.name!r} ({device.id}); its secret is shown once and kept by that device.")
+        self.hub.emit(EVENT_HTTP_INBOUND, source="pair", route="/v1/pair", device_id=device.id, name=device.name)
+        return web.json_response({"device": device.public(), "secret": secret})
+
+    async def handle_devices(self, request: web.Request) -> web.Response:
+        return web.json_response({"devices": [d.public() for d in self.devices.devices()]})
+
+    async def handle_revoke(self, request: web.Request) -> web.Response:
+        device = self.devices.revoke(request.match_info["device_id"])
+        if device is None:
+            return web.json_response({"error": "unknown device"}, status=404)
+        logger.info(f"[Pair] revoked {device.name!r} ({device.id}).")
+        return web.json_response({"device": device.public()})
 
     async def handle_board(self, request: web.Request) -> web.Response:
         """The full board snapshot in one body: what a remote cockpit draws, with no direct SQLite access."""

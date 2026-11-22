@@ -40,7 +40,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 | `apps/voice/src/jarvis_voice/` | the voice layer (`jarvis-voice`): ear, speech check, executive model, agent watchers |
 | `apps/brain/src/brain/` | the brain (`brain`): board, reconciler, `pi` workers, HTTP/SSE server |
 | `apps/tui/` | the cockpit (`jarvis-top`, Rust + Ratatui) |
-| `packages/jarvis-core/` | what all three share: `REPO_ROOT`/`JARVIS_HOME`, the `.env` settings base, the tokens, `SOUL.md` |
+| `packages/jarvis-core/` | what all three share: `REPO_ROOT`/`JARVIS_HOME`, the `.env` settings base, the tokens, paired devices, `SOUL.md` |
 | `src/jarvis/` | the `jarvis` command: dispatch, `init`, `top`, the launchd service, and the supervisor that runs the stack |
 | `schemas/` | cross-language contracts (the gateway's HTTP/SSE/WS API, see `schemas/README.md`) |
 
@@ -102,6 +102,14 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   Sang's OK. New misses found in real use become new cases in that script.
 - **Routing changes need the routing benchmark.** An edit to an agent `role`, `agent_roster` or the system
   prompt runs `scripts/bench_routing.py` before and after; it exits 1 below 95%.
+- **One gateway, two kinds of credential.** Every route but `/health` and `GET /client.py` needs either the shared
+  token (`brain_token`, for the CLI and scripts) or a **paired device's secret**. `jarvis pair` mints a single-use
+  6-digit code (5 minutes, one code at a time, five wrong guesses in a minute and the code is dropped); the device
+  trades it for its own secret via `POST /v1/pair` and keeps it at `~/.config/jarvis-remote/credentials.json`
+  (0600, sent as `Authorization: Bearer`, never in a URL). `JARVIS_HOME/devices.json` (0600, one `DeviceStore` shared
+  by the server and the relay) holds a SHA-256 per device, never the secret; `GET /v1/devices` and
+  `POST /v1/devices/{id}/revoke` are the owner's alone, so a leaked laptop is cut off without disturbing anyone else
+  or rotating the shared token (`jarvis_core/devices.py`, `server.py`, `remote_audio.py`).
 - **Thin layer.** Jarvis never does an agent's job: no email, calendar or coding logic here. A new kind of
   work is a new `role` (or a new agent in `agents.json`), not new code in Jarvis.
 - **The checkout is the runtime; one gateway is the surface.** `src/jarvis/supervisor.py` runs the brain and the

@@ -209,26 +209,29 @@ decides where the brain may work), the board, and the token in `JARVIS_HOME/brai
 ### Listen from another Mac (thin client, no install)
 ```bash
 jarvis remote          # on the Mac mini: serve the mic and speaker of another machine
+jarvis pair            # show a one-time code for a laptop to pair with
 ```
-That prints one command to paste on the other Mac, which needs nothing but [uv](https://docs.astral.sh/uv/):
+`jarvis pair` prints exactly what to paste on the other Mac, which needs nothing but
+[uv](https://docs.astral.sh/uv/):
 ```bash
-curl -fsSL 'http://<mac-mini>:8643/client.py?token=<token>' -o /tmp/jarvis-remote.py && uv run /tmp/jarvis-remote.py
+curl -fsSL 'http://<mac-mini>:8640/client.py' -o ~/.local/bin/jarvis-remote.py
+uv run ~/.local/bin/jarvis-remote.py --pair 123456
 ```
-Every model, agent, key and memory stays on the Mac mini. The script comes from the server itself, so it always
-matches it, and it speaks the same port and token as every other route: one host, one port, one secret. uv
-fetches four small packages (numpy, soxr, websockets, pyobjc's AVFoundation) into a cache; no Jarvis and no
-Pipecat. Ctrl+C stops it.
+The code is single-use and good for five minutes; the laptop trades it for **its own secret**, kept in
+`~/.config/jarvis-remote/credentials.json` (0600). From then on `uv run ~/.local/bin/jarvis-remote.py` needs no
+arguments, and no token appears in a URL, a shell history or a log. Every model, agent, key and memory stays on the
+Mac mini; uv fetches four small packages (numpy, soxr, websockets, pyobjc's AVFoundation) into a cache. Ctrl+C
+stops it.
 
 - **Talk over it, and "shut up" still works.** The mic runs through macOS voice processing on the Mac in front of
   you, so the echo canceller that lets you interrupt Jarvis sits where the speaker is. Its speech plays on that
   Mac's speakers; an interruption drops what it still had queued.
 - **One listener at a time.** A second Mac is refused while one is connected: they share one ear.
-- **Every connection needs the token.** The port is on your network, and a connection is a voice that can start work,
-  so the relay still requires the shared token even with the master check on. It is `brain_token` in
-  `JARVIS_HOME` (0600), made on first use; set `BRAIN_API_KEY` in `.env` to pick your own, and `BRAIN_PORT` for the
-  port. `GET /health` is the one route without it.
-- **Same Wi-Fi.** Plain HTTP and WebSocket on the LAN. Away from that, put both Macs on Tailscale and paste the
-  command with that address: the token rides in the URL, so keep it to yourself.
+- **Each device has its own key.** `jarvis devices` lists them; `jarvis devices revoke <id>` cuts one off
+  (a lost laptop) without touching the others or the CLI. Only the machine running Jarvis — the shared token — can
+  pair or revoke.
+- **Same Wi-Fi.** Plain HTTP and WebSocket on the LAN. Away from that, put both Macs on Tailscale and run `curl`
+  against that address instead; the pairing secret never travels in the URL.
 - **The master check** compares your voiceprint, recorded with the other Mac's mic, against this one's. It usually
   still passes; watch the `[Speaker] score=` lines and lower `SPEAKER_THRESHOLD` if your own sentences are dropped.
 - **The screen is the Mac's.** `look_at_screen` captures the front window of the Mac running Jarvis.

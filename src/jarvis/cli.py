@@ -48,8 +48,10 @@ as a service (launchd keeps it up, 24/7):
   logs            tail the daemon's log
 
 over the network (one HTTP/SSE/WebSocket server, one token):
-  health          is a Jarvis answering here? (`--url http://<mac-mini>:8643` for another machine)
+  health          is a Jarvis answering here? (`--url http://<mac-mini>:8640` for another machine)
   status          version, uptime, mode, spend, tasks, voice
+  pair            show a one-time code so another Mac connects with its own secret (`--name`)
+  devices         the paired devices (`devices revoke <id>` revokes one)
   ask "text"      one-shot request, answer printed
   board           the full board as JSON
   tasks           list the tasks
@@ -286,6 +288,55 @@ def run_cockpit(args: list[str]) -> int:
 # --------------------------------------------------------------------------------------------------------------
 # Talking to the running Jarvis
 # --------------------------------------------------------------------------------------------------------------
+def pair_device(args: list[str]) -> None:
+    """`jarvis pair`: mint a one-time code and print exactly what to paste on the other Mac."""
+    name = _take(args, "--name")
+    body = call("POST", "/v1/pair/start", json={})
+    code = str(body.get("code") or "")
+    if not code:
+        sys.exit("The running Jarvis did not return a pairing code.")
+    minutes = max(1, int(float(body.get("expires_in") or 300) // 60))
+    host = str(body.get("server") or "").split("://", 1)[-1] or endpoint().split("://", 1)[-1]
+    named = f' --name "{name}"' if name else ""
+    print(f"Pairing code: {code[:3]} {code[3:]}   (single use, {minutes} minutes)")
+    print("\nOn the other Mac (needs only uv, https://docs.astral.sh/uv/):")
+    print(f"  curl -fsSL 'http://{host}/client.py' -o ~/.local/bin/jarvis-remote.py")
+    print(f"  uv run ~/.local/bin/jarvis-remote.py --pair {code}{named}")
+    print("\nThat Mac keeps its own secret; `jarvis devices revoke <id>` ends it without touching the others.")
+
+
+def list_devices(args: list[str]) -> None:
+    """`jarvis devices` and `jarvis devices revoke <id>`: who may talk to this Jarvis, and cutting one off."""
+    if args and args[0] == "revoke":
+        if len(args) < 2:
+            sys.exit("usage: jarvis devices revoke <device-id>")
+        body = call("POST", f"/v1/devices/{args[1]}/revoke", json={})
+        device = body.get("device") or {}
+        return print(f"Revoked {device.get('name')} ({device.get('id')}).")
+    rows = call("GET", "/v1/devices").get("devices") or []
+    if not rows:
+        return print("No paired devices. `jarvis pair` adds one.")
+    print(f"{'id':<14} {'status':<9} {'paired':<13} {'last seen':<13} name")
+    for d in rows:
+        print(
+            f"{d.get('id', ''):<14} {'revoked' if d.get('revoked') else 'active':<9} "
+            f"{_short_day(d.get('created_at')):<13} {_short_day(d.get('last_seen')) or 'never':<13} {d.get('name', '')}"
+        )
+
+
+def _short_day(stamp: Any) -> str:
+    """`2026-11-22T16:42:00Z` as `Nov 22 16:42`, local time; empty stays empty."""
+    if not isinstance(stamp, str) or not stamp:
+        return ""
+    from datetime import datetime, timezone
+
+    try:
+        moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return stamp
+    return moment.astimezone().strftime("%b %d %H:%M")
+
+
 def print_status(url: str = "") -> None:
     s = call("GET", "/v1/status", url=url)
     voice = s.get("voice") or {}
@@ -325,6 +376,10 @@ def dispatch(argv: list[str]) -> None:
         return print(f"ok  Jarvis {body.get('version')}  (pid {body.get('pid')}, up {body.get('uptime_s')}s)")
     if cmd == "status":
         return print_status(_take(rest, "--url"))
+    if cmd == "pair":
+        return pair_device(rest)
+    if cmd == "devices":
+        return list_devices(rest)
     if cmd == "board":
         return print(json.dumps(call("GET", "/v1/board"), indent=2))
     if cmd == "tasks":

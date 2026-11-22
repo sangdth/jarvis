@@ -426,3 +426,123 @@ async def test_the_gateway_probe_status_board_tasks_and_restart(tmp_path: Path) 
 
     await reconciler.stop()
     db.close()
+
+
+async def test_pairing_hands_each_device_its_own_revocable_secret(tmp_path: Path) -> None:
+    """`jarvis pair`: a one-time code becomes a per-device secret; revoking it leaves everyone else alone."""
+    from jarvis_core.devices import DeviceStore
+
+    store = DeviceStore(tmp_path / "devices.json")
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        sandbox_enabled=False,
+    )
+    (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    server = BrainServer(db, reconciler, cfg, devices=store)
+    owner = {"Authorization": "Bearer secret-token"}
+
+    async with TestClient(TestServer(server.app)) as client:
+        # 1. Minting a code is the owner's alone; a device secret cannot do it.
+        assert (await client.post("/v1/pair/start")).status == 401
+        started = await client.post("/v1/pair/start", headers=owner)
+        assert started.status == 200
+        code = (await started.json())["code"]
+        assert len(code) == 6 and code.isdigit()
+
+        # 2. A wrong code is refused and counted.
+        assert (await client.post("/v1/pair", json={"code": "000000", "name": "x"})).status == 403
+
+        # 3. The right code pairs once and yields a secret.
+        paired = await client.post("/v1/pair", json={"code": code, "name": "Sang's MacBook"})
+        assert paired.status == 200
+        payload = await paired.json()
+        secret, device_id = payload["secret"], payload["device"]["id"]
+        assert payload["device"]["name"] == "Sang's MacBook"
+        assert "secret_sha256" not in payload["device"]
+
+        # 4. The code is spent: a replay cannot mint a second device.
+        assert (await client.post("/v1/pair", json={"code": code, "name": "x"})).status == 403
+
+        # 5. The device secret works on the API but not on device administration.
+        device_auth = {"Authorization": f"Bearer {secret}"}
+        assert (await client.get("/v1/status", headers=device_auth)).status == 200
+        assert (await client.get("/v1/devices", headers=device_auth)).status == 401
+        assert (await client.post("/v1/pair/start", headers=device_auth)).status == 401
+
+        # 6. The owner sees it, revokes it, and only that secret dies.
+        listed = await (await client.get("/v1/devices", headers=owner)).json()
+        assert [d["id"] for d in listed["devices"]] == [device_id]
+        assert (await client.post(f"/v1/devices/{device_id}/revoke", headers=owner)).status == 200
+        assert (await client.get("/v1/status", headers=device_auth)).status == 401
+        assert (await client.get("/v1/status", headers=owner)).status == 200
+        assert (await client.post("/v1/devices/dev-nope/revoke", headers=owner)).status == 404
+
+    await reconciler.stop()
+    db.close()
+
+
+async def test_pairing_stops_the_guessing(tmp_path: Path) -> None:
+    """Six wrong codes in a row: the pending code is dropped and the attempt is rate limited."""
+    from jarvis_core.devices import DeviceStore
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        sandbox_enabled=False,
+    )
+    (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    server = BrainServer(db, reconciler, cfg, devices=DeviceStore(tmp_path / "d.json"))
+    owner = {"Authorization": "Bearer secret-token"}
+
+    async with TestClient(TestServer(server.app)) as client:
+        code = (await (await client.post("/v1/pair/start", headers=owner)).json())["code"]
+        for _ in range(5):
+            assert (await client.post("/v1/pair", json={"code": "000000"})).status == 403
+        assert (await client.post("/v1/pair", json={"code": "000000"})).status == 429
+        # The real code no longer works either: a fresh one has to be minted.
+        assert (await client.post("/v1/pair", json={"code": code})).status == 429
+
+    await reconciler.stop()
+    db.close()
+
+
+async def test_the_bootstrap_routes_bypass_the_shared_token(tmp_path: Path) -> None:
+    """`/client.py` (the pairing script) and `/ws` (the relay) answer before any credential: they check their own."""
+    from aiohttp import web
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        sandbox_enabled=False,
+    )
+    (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+
+    async def ok(_: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    server = BrainServer(
+        db,
+        reconciler,
+        cfg,
+        extra_routes=[web.get("/client.py", ok), web.get("/ws", ok)],
+    )
+    async with TestClient(TestServer(server.app)) as client:
+        assert (await client.get("/client.py")).status == 200  # no token: the laptop has not paired yet
+        assert (await client.get("/ws")).status == 200  # the relay's own handler rejects a bad credential
+        assert (await client.get("/v1/status")).status == 401  # everything else still needs one
+
+    await reconciler.stop()
+    db.close()

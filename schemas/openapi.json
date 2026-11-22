@@ -3,88 +3,210 @@
   "info": {
     "title": "Jarvis gateway: HTTP, SSE and WebSocket",
     "version": "2.0.0",
-    "description": "The one network surface of a Jarvis instance: the brain's run protocol, the cockpit's telemetry, the small operator API, and the thin client's mic and speaker. Every route except `/health` needs the shared token, sent as `Authorization: Bearer <token>`, `?token=<token>`, or `X-Jarvis-Token` (browsers, `curl`, and iOS Shortcuts all work). The token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`, made on first use. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`); `GET /client.py` serves the zero-install thin client with this server's URL and token baked in."
+    "description": "The one network surface of a Jarvis instance: the brain's run protocol, the cockpit's telemetry, the small operator API, device pairing, and the thin client's mic and speaker. Every route except `/health`, `GET /client.py` and `POST /v1/pair` needs a credential: the shared token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`), or a paired device's secret from `POST /v1/pair`. The shared token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; paired devices live in `JARVIS_HOME/devices.json` as hashes, and only the shared token can mint or revoke them. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`); `GET /client.py` serves the zero-install thin client with this server's address filled in."
   },
-  "servers": [{ "url": "http://127.0.0.1:8643", "description": "A wildcard `BRAIN_HOST` means clients on this Mac use loopback; elsewhere use the machine's name." }],
-  "security": [{ "bearer": [] }],
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8643",
+      "description": "A wildcard `BRAIN_HOST` means clients on this Mac use loopback; elsewhere use the machine's name."
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
   "components": {
     "securitySchemes": {
-      "bearer": { "type": "http", "scheme": "bearer" }
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
     },
     "schemas": {
-      "RunStatus": { "type": "string", "enum": ["running", "completed", "failed", "cancelled"] },
+      "RunStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
       "CreateRun": {
         "type": "object",
-        "required": ["input"],
+        "required": [
+          "input"
+        ],
         "properties": {
-          "input": { "type": "string", "description": "The user's request, already in English." },
-          "session_id": { "type": "string", "description": "Continue an earlier run's Pi session." }
+          "input": {
+            "type": "string",
+            "description": "The user's request, already in English."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Continue an earlier run's Pi session."
+          }
         }
       },
       "Run": {
         "type": "object",
         "properties": {
-          "run_id": { "type": "string" },
-          "session_id": { "type": "string" },
-          "status": { "$ref": "#/components/schemas/RunStatus" },
-          "output": { "type": "string" },
-          "error": { "type": "string" }
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "output": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
         }
       },
       "Approval": {
         "type": "object",
-        "required": ["choice"],
+        "required": [
+          "choice"
+        ],
         "properties": {
-          "choice": { "type": "string", "enum": ["once", "deny"] },
-          "request_id": { "type": "string" }
+          "choice": {
+            "type": "string",
+            "enum": [
+              "once",
+              "deny"
+            ]
+          },
+          "request_id": {
+            "type": "string"
+          }
         }
       },
       "Ask": {
         "type": "object",
-        "required": ["input"],
-        "properties": { "input": { "type": "string" } }
+        "required": [
+          "input"
+        ],
+        "properties": {
+          "input": {
+            "type": "string"
+          }
+        }
       },
       "Spoken": {
         "type": "object",
-        "properties": { "spoken": { "type": "string" } }
+        "properties": {
+          "spoken": {
+            "type": "string"
+          }
+        }
       },
       "Health": {
         "type": "object",
         "properties": {
-          "ok": { "type": "boolean" },
-          "service": { "type": "string", "const": "jarvis" },
-          "version": { "type": "string", "description": "The running checkout: branch and commit, `+dirty` if edited." },
-          "pid": { "type": "integer" },
-          "uptime_s": { "type": "number" }
+          "ok": {
+            "type": "boolean"
+          },
+          "service": {
+            "type": "string",
+            "const": "jarvis"
+          },
+          "version": {
+            "type": "string",
+            "description": "The running checkout: branch and commit, `+dirty` if edited."
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "uptime_s": {
+            "type": "number"
+          }
         }
       },
       "Status": {
         "type": "object",
         "properties": {
-          "ok": { "type": "boolean" },
-          "version": { "type": "string" },
-          "repo": { "type": "string" },
-          "home": { "type": "string" },
-          "pid": { "type": "integer" },
-          "uptime_s": { "type": "number" },
-          "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] },
-          "spent_today_usd": { "type": "number" },
-          "daily_budget_usd": { "type": "number" },
-          "budget_remaining_usd": { "type": "number" },
-          "tasks": { "type": "integer" },
-          "tasks_ready": { "type": "integer" },
-          "tasks_running": { "type": "integer" },
-          "skills_active": { "type": "integer" },
-          "approvals_waiting": { "type": "integer" },
-          "telemetry_seq": { "type": "integer" },
+          "ok": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "home": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "uptime_s": {
+            "type": "number"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ASSIST",
+              "AUTONOMOUS"
+            ]
+          },
+          "spent_today_usd": {
+            "type": "number"
+          },
+          "daily_budget_usd": {
+            "type": "number"
+          },
+          "budget_remaining_usd": {
+            "type": "number"
+          },
+          "tasks": {
+            "type": "integer"
+          },
+          "tasks_ready": {
+            "type": "integer"
+          },
+          "tasks_running": {
+            "type": "integer"
+          },
+          "skills_active": {
+            "type": "integer"
+          },
+          "approvals_waiting": {
+            "type": "integer"
+          },
+          "telemetry_seq": {
+            "type": "integer"
+          },
           "voice": {
             "type": "object",
             "properties": {
-              "state": { "type": "string", "enum": ["starting", "listening", "stopped"] },
-              "meeting": { "type": "boolean" },
-              "remote": { "type": "boolean" },
-              "client": { "type": "boolean", "description": "A thin client is connected as the mic." },
-              "port": { "type": "integer" }
+              "state": {
+                "type": "string",
+                "enum": [
+                  "starting",
+                  "listening",
+                  "stopped"
+                ]
+              },
+              "meeting": {
+                "type": "boolean"
+              },
+              "remote": {
+                "type": "boolean"
+              },
+              "client": {
+                "type": "boolean",
+                "description": "A thin client is connected as the mic."
+              },
+              "port": {
+                "type": "integer"
+              }
             }
           }
         }
@@ -93,35 +215,107 @@
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "id": { "type": "string" },
-          "kind": { "type": "string", "enum": ["goal", "problem"] },
-          "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] },
-          "repo": { "type": "string" },
-          "title": { "type": "string" },
-          "spec": { "type": "string" },
-          "status": { "type": "string", "enum": ["draft", "ready", "in_progress", "done", "blocked"] }
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "goal",
+              "problem"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ASSIST",
+              "AUTONOMOUS"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "ready",
+              "in_progress",
+              "done",
+              "blocked"
+            ]
+          }
         }
       },
       "AddTask": {
         "type": "object",
-        "required": ["kind", "repo", "title", "spec"],
+        "required": [
+          "kind",
+          "repo",
+          "title",
+          "spec"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "kind": { "type": "string", "enum": ["goal", "problem"] },
-          "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] },
-          "repo": { "type": "string" },
-          "title": { "type": "string" },
-          "spec": { "type": "string" },
-          "metric": { "type": "string" },
-          "verify": { "type": "string" },
-          "priority": { "type": "integer" },
-          "ready": { "type": "boolean" }
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "goal",
+              "problem"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ASSIST",
+              "AUTONOMOUS"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "spec": {
+            "type": "string"
+          },
+          "metric": {
+            "type": "string"
+          },
+          "verify": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "ready": {
+            "type": "boolean"
+          }
         }
       },
       "Mode": {
         "type": "object",
-        "required": ["mode"],
-        "properties": { "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] } }
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ASSIST",
+              "AUTONOMOUS"
+            ]
+          }
+        }
       },
       "Event": {
         "type": "object",
@@ -131,147 +325,628 @@
       "Resolve": {
         "type": "object",
         "properties": {
-          "approved": { "type": "boolean", "description": "What the cockpit sends." },
-          "action": { "type": "string", "enum": ["approve", "reject"], "description": "The same thing, spelled out." }
+          "approved": {
+            "type": "boolean",
+            "description": "What the cockpit sends."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "description": "The same thing, spelled out."
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PairStart": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Six digits, single use, five minutes."
+          },
+          "expires_in": {
+            "type": "integer"
+          }
+        }
+      },
+      "PairRequest": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "What this device is called in `jarvis devices`."
+          }
+        }
+      },
+      "PairResponse": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/Device"
+          },
+          "secret": {
+            "type": "string",
+            "description": "Shown once; the device keeps it."
+          }
         }
       }
     }
   },
   "paths": {
+    "/v1/pair/start": {
+      "post": {
+        "summary": "Mint a one-time pairing code (owner only)",
+        "responses": {
+          "200": {
+            "description": "The code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairStart"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not the owner's shared token"
+          }
+        }
+      }
+    },
+    "/v1/pair": {
+      "post": {
+        "summary": "Trade a pairing code for this device's own secret (no credential needed)",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Paired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong or expired code"
+          },
+          "429": {
+            "description": "Too many attempts: mint a new code"
+          }
+        }
+      }
+    },
+    "/v1/devices": {
+      "get": {
+        "summary": "List paired devices (owner only)",
+        "responses": {
+          "200": {
+            "description": "Devices, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "devices": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Device"
+                      }
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Owner token required"
+          }
+        }
+      }
+    },
+    "/v1/devices/{device_id}/revoke": {
+      "post": {
+        "summary": "Revoke one device (owner only)",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked"
+          },
+          "404": {
+            "description": "Unknown device"
+          },
+          "401": {
+            "description": "Owner token required"
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Liveness probe; the only route without a token",
         "security": [],
-        "responses": { "200": { "description": "A Jarvis is here", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } } }
+        "responses": {
+          "200": {
+            "description": "A Jarvis is here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/status": {
       "get": {
         "summary": "Version, uptime, mode, spend, task counts, voice state",
-        "responses": { "200": { "description": "Everything a probe or `jarvis status` needs", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Status" } } } } }
+        "responses": {
+          "200": {
+            "description": "Everything a probe or `jarvis status` needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/board": {
       "get": {
         "summary": "The full board in one body: state, tasks, attempts, skills, outbox",
         "description": "What a remote cockpit draws, with no direct SQLite access.",
-        "responses": { "200": { "description": "Board snapshot", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } } }
+        "responses": {
+          "200": {
+            "description": "Board snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/tasks": {
       "get": {
         "summary": "List tasks, optionally filtered by `?status=`",
-        "responses": { "200": { "description": "Tasks", "content": { "application/json": { "schema": { "type": "object", "properties": { "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" } } }, "additionalProperties": true } } } } }
+        "responses": {
+          "200": {
+            "description": "Tasks",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Task"
+                      }
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
       },
       "post": {
         "summary": "Queue a goal or a problem (what `jarvis add` calls)",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AddTask" } } } },
-        "responses": { "200": { "description": "The stored task" }, "400": { "description": "Refused (repo not allowed, missing field)" } }
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The stored task"
+          },
+          "400": {
+            "description": "Refused (repo not allowed, missing field)"
+          }
+        }
       }
     },
     "/v1/tasks/{task_id}/research": {
       "post": {
         "summary": "Run the SoL-Pi hypothesis fan-out on a task",
-        "parameters": [{ "name": "task_id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Outcome, summary and produced hypothesis ids" } }
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outcome, summary and produced hypothesis ids"
+          }
+        }
       }
     },
     "/v1/mode": {
       "post": {
         "summary": "Switch between ASSIST and AUTONOMOUS",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Mode" } } } },
-        "responses": { "200": { "description": "The new mode and the budget left" }, "400": { "description": "Unknown mode" } }
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Mode"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The new mode and the budget left"
+          },
+          "400": {
+            "description": "Unknown mode"
+          }
+        }
       }
     },
     "/v1/skills/improve": {
       "post": {
         "summary": "Run the skill reflection loop on recent attempts",
-        "responses": { "200": { "description": "Outcome, summary and the skills changed" } }
+        "responses": {
+          "200": {
+            "description": "Outcome, summary and the skills changed"
+          }
+        }
       }
     },
     "/v1/restart": {
       "post": {
         "summary": "Restart this Jarvis on the current checkout (voice included)",
         "description": "Used after an edit: the supervisor stops this process cleanly and launchd starts the new code.",
-        "responses": { "200": { "description": "Restart scheduled" }, "409": { "description": "Not supervised: nothing to restart it" } }
+        "responses": {
+          "200": {
+            "description": "Restart scheduled"
+          },
+          "409": {
+            "description": "Not supervised: nothing to restart it"
+          }
+        }
       }
     },
     "/v1/runs": {
       "post": {
         "summary": "Start a Planner run from a spoken request",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateRun" } } } },
-        "responses": { "200": { "description": "Accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } } } }
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRun"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/runs/{run_id}": {
       "get": {
         "summary": "A run's status (the fallback when the event stream drops)",
-        "parameters": [{ "name": "run_id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Run" } } } }, "404": { "description": "Unknown run" } }
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown run"
+          }
+        }
       }
     },
     "/v1/runs/{run_id}/events": {
       "get": {
         "summary": "Server-sent events for one run",
-        "parameters": [{ "name": "run_id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "text/event-stream of Event objects", "content": { "text/event-stream": { "schema": { "$ref": "#/components/schemas/Event" } } } } }
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream of Event objects",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/runs/{run_id}/approval": {
       "post": {
         "summary": "Answer a pending approval",
-        "parameters": [{ "name": "run_id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Approval" } } } },
-        "responses": { "200": { "description": "Resolved" } }
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Approval"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved"
+          }
+        }
       }
     },
     "/v1/runs/{run_id}/stop": {
       "post": {
         "summary": "Stop a run",
-        "parameters": [{ "name": "run_id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Stopped" } }
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stopped"
+          }
+        }
       }
     },
     "/v1/ask": {
       "post": {
         "summary": "One-shot request, answer spoken back (iOS Shortcut / Action Button over Tailscale)",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Ask" } } } },
-        "responses": { "200": { "description": "Answer", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Spoken" } } } } }
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Ask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Spoken"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/telemetry/events": {
       "get": {
         "summary": "Live telemetry for the cockpit (ring buffer, then live)",
-        "responses": { "200": { "description": "text/event-stream of Event objects", "content": { "text/event-stream": { "schema": { "$ref": "#/components/schemas/Event" } } } } }
+        "responses": {
+          "200": {
+            "description": "text/event-stream of Event objects",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/telemetry/snapshot": {
       "get": {
         "summary": "Current state in one JSON body: what a client draws on first paint",
-        "responses": { "200": { "description": "System state, tasks, attempts, skills and outbox", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } } }
+        "responses": {
+          "200": {
+            "description": "System state, tasks, attempts, skills and outbox",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/outbox/{outbox_id}/resolve": {
       "post": {
         "summary": "Approve or reject a queued outbox item (an approval, a report)",
-        "parameters": [{ "name": "outbox_id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Resolve" } } } },
-        "responses": { "200": { "description": "Resolved" } }
+        "parameters": [
+          {
+            "name": "outbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Resolve"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved"
+          }
+        }
       }
     },
     "/client.py": {
       "get": {
         "summary": "The zero-install thin client, with this server's URL and token already filled in",
-        "description": "A plain HTTP download (`curl -fsSL 'http://<host>:8643/client.py?token=<token>' -o /tmp/jarvis-remote.py`), then `uv run /tmp/jarvis-remote.py` on the other Mac.",
-        "responses": { "200": { "description": "text/x-python", "content": { "text/x-python": { "schema": { "type": "string" } } } }, "401": { "description": "Wrong token" } }
+        "description": "Open on purpose: the bootstrap has to arrive before the laptop has a secret, and it carries none — only this server's address. `curl -fsSL 'http://<host>:8640/client.py' -o ~/.local/bin/jarvis-remote.py`, then `uv run ~/.local/bin/jarvis-remote.py --pair <code>`.",
+        "responses": {
+          "200": {
+            "description": "text/x-python",
+            "content": {
+              "text/x-python": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/ws": {
       "get": {
         "summary": "The thin client's mic and speaker (WebSocket upgrade)",
         "description": "Binary frames are 16-bit mono PCM at 16 kHz both ways. JSON control: `{\"type\":\"hello\",\"rate\":16000}` down on connect, `{\"type\":\"flush\"}` down on an interruption. One client at a time: they share one ear.",
-        "parameters": [{ "name": "token", "in": "query", "required": true, "schema": { "type": "string" } }],
-        "responses": { "101": { "description": "Switched protocols" }, "401": { "description": "Wrong token" }, "404": { "description": "Not a relay path" } }
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switched protocols"
+          },
+          "401": {
+            "description": "Wrong token"
+          },
+          "404": {
+            "description": "Not a relay path"
+          }
+        }
       }
     }
   }

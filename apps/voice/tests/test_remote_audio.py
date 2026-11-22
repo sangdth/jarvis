@@ -142,13 +142,16 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
     def url(self, path: str) -> str:
         return f"ws://127.0.0.1:{self.port}{path}"
 
-    async def test_the_client_script_comes_with_this_servers_url_and_token(self) -> None:
+    async def test_the_client_script_comes_with_this_servers_url(self) -> None:
         # The laptop fetches it with curl, so this is a plain HTTP GET, not a WebSocket.
-        script = await asyncio.to_thread(self._fetch, f"/client.py?token={self.TOKEN}")
+        script = await asyncio.to_thread(self._fetch, "/client.py")
         # The address is the one the laptop used, so a LAN IP or a Tailscale name works without mDNS.
-        url = f"ws://127.0.0.1:{self.port}/ws?token={self.TOKEN}"
-        self.assertIn(f'DEFAULT_URL = "{url}"', script)
+        self.assertIn(f'DEFAULT_URL = "ws://127.0.0.1:{self.port}/ws"', script)
+        self.assertIn(f'DEFAULT_SERVER = "http://127.0.0.1:{self.port}"', script)
+        # No secret is baked into the script: the laptop pairs once and keeps its own.
+        self.assertNotIn("token=", script)
         self.assertNotIn(remote_audio.CLIENT_URL_PLACEHOLDER, script)
+        self.assertNotIn(remote_audio.CLIENT_SERVER_PLACEHOLDER, script)
         for dependency in ("numpy", "soxr", "websockets", "pyobjc-framework-AVFoundation"):
             self.assertIn(dependency, script)
         # The laptop gets no Jarvis and no Pipecat: the script stands alone.
@@ -196,19 +199,70 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
                     await second.recv()
             self.assertIn("1013", str(refused.exception))
 
-    async def test_a_wrong_or_missing_token_is_refused(self) -> None:
-        for path in ("/ws", "/ws?token=nope", "/client.py", "/client.py?token=nope"):
+    async def test_a_wrong_or_missing_token_is_refused_on_the_socket(self) -> None:
+        for path in ("/ws", "/ws?token=nope"):
             with self.assertRaises(InvalidStatus) as refused:
                 async with connect(self.url(path)):
                     pass
             self.assertEqual(refused.exception.response.status_code, 401)
         self.assertIsNone(self.transport.hub.client)
 
+    async def test_the_client_script_itself_is_open(self) -> None:
+        # Bootstrap: it must arrive before the laptop has a secret, and it holds no secret.
+        script = await asyncio.to_thread(self._fetch, "/client.py")
+        self.assertIn("DEFAULT_SERVER", script)
+        self.assertNotIn("token=", script)
+
     async def test_only_the_two_paths_are_served(self) -> None:
         with self.assertRaises(InvalidStatus) as refused:
             async with connect(self.url(f"/?token={self.TOKEN}")):
                 pass
         self.assertEqual(refused.exception.response.status_code, 404)
+
+
+class TestPairedDevice(unittest.IsolatedAsyncioTestCase):
+    """A paired laptop connects with its own secret; revoking it stops that laptop and nothing else."""
+
+    TOKEN = "shared-token"
+
+    async def asyncSetUp(self) -> None:
+        import tempfile
+
+        from jarvis_core.devices import DeviceStore
+
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.store = DeviceStore(self.dir / "devices.json")
+        self.transport = RemoteVoiceTransport(
+            TransportParams(audio_in_enabled=True, audio_out_enabled=True),
+            port=0,
+            token=self.TOKEN,
+            devices=self.store,
+        )
+        await self.transport.start_server()
+        self.port = self.transport.port
+
+    async def asyncTearDown(self) -> None:
+        await self.transport.stop_server()
+
+    def url(self, token: str) -> str:
+        return f"ws://127.0.0.1:{self.port}/ws?token={token}"
+
+    async def _hello(self, token: str) -> dict:
+        async with connect(self.url(token)) as ws:
+            return json.loads(await ws.recv())
+
+    async def test_a_paired_secret_is_accepted_and_a_revoked_one_is_refused(self) -> None:
+        device, secret = self.store.add("Test laptop")
+        self.assertEqual((await self._hello(secret))["type"], "hello")
+        await asyncio.sleep(0.05)  # the hub drops the client after the socket closes
+
+        self.store.revoke(device.id)
+        with self.assertRaises(InvalidStatus) as refused:
+            await self._hello(secret)
+        self.assertEqual(refused.exception.response.status_code, 401)
+
+        # The shared token still works: revocation is per device.
+        self.assertEqual((await self._hello(self.TOKEN))["type"], "hello")
 
 
 class TestClientScript(unittest.IsolatedAsyncioTestCase):

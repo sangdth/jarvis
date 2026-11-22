@@ -20,6 +20,7 @@ from brain.reconciler import Reconciler
 from brain.server import BrainServer
 from brain.telemetry import TelemetryHub
 from brain.upgrade import LAUNCHD_LABEL, run_upgrade
+from jarvis_core.devices import DeviceStore
 from jarvis_core.home import JARVIS_HOME
 
 # `jarvis top` opens the cockpit; it lives in the root CLI so one command finds it for every app.
@@ -147,6 +148,7 @@ async def running(
     on_restart: Callable[[], None] | None = None,
     extra_routes: list[web.RouteDef] | None = None,
     voice_snapshot: Callable[[], dict] | None = None,
+    devices: DeviceStore | None = None,
 ) -> AsyncIterator[BrainServer]:
     """
     The daemon as a context manager: board, reconciler and the one HTTP/SSE/WS server in this process and loop.
@@ -169,6 +171,7 @@ async def running(
         reconciler,
         settings,
         hub=hub,
+        devices=devices,
         voice_snapshot=voice_snapshot,
         extra_routes=extra_routes,
     )

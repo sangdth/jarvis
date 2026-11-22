@@ -64,15 +64,17 @@ async def start_all(
     `remote` puts the mic and speaker on another machine and serves the thin client from this same server.
     """
     from brain.cli import running
+    from jarvis_core.devices import DeviceStore
 
     restart = asyncio.Event()
     voice_state: dict[str, Any] = {"state": "starting", "meeting": meeting, "remote": remote, "client": None}
+    devices = DeviceStore.load()
 
     relay: Any = None
     if remote:
         from jarvis_voice.remote_audio import make_transport
 
-        relay = make_transport()
+        relay = make_transport(devices=devices)
 
     def voice_snapshot() -> dict[str, Any]:
         snapshot = dict(voice_state)
@@ -86,6 +88,7 @@ async def start_all(
         on_restart=restart.set,
         extra_routes=extra_routes,
         voice_snapshot=voice_snapshot,
+        devices=devices,
     ) as server:
         if relay is not None:
             relay.port = server.cfg.brain_port
@@ -121,4 +124,4 @@ async def start_all(
 def _relay_hint(relay: Any) -> str:
     from jarvis_voice.remote_audio import advertised_hosts, remote_command
 
-    return remote_command(advertised_hosts(), relay.token, relay.port)
+    return remote_command(advertised_hosts(), relay.port)
