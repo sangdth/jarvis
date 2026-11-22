@@ -40,7 +40,8 @@ class BrainClientAdapter(CodingSessionAdapter):
         )
         self._session_id: str | None = None  # the voice-side conversation id the brain keeps
         self._pinned: dict[str, str] | None = None  # `jarvis connect`: one runner session for this run
-        self._new_session = False  # "new session" for the next task
+        self.runner = "t3"  # the client whose sessions this picker lists: t3, claude or opencode
+        self._fresh = False  # "new session" for the next task
         self._thread_id: str | None = None  # the thread the brain last sent work to, for saying it back
         self._title: str | None = None
         self._explicit_cwd: str | None = None  # a folder picked by voice; not the launch folder by default
@@ -199,11 +200,11 @@ class BrainClientAdapter(CodingSessionAdapter):
         if self._pinned:
             body["pinned"] = self._pinned
             body["session"] = "continuing"
-        elif self._new_session:
+        elif self._fresh:
             body["session"] = "new"
         if self._explicit_cwd:
             body["cwd"] = self._explicit_cwd
-        self._new_session = False
+        self._fresh = False
         try:
             resp = await self._http.post("/v1/runs", json=body)
             resp.raise_for_status()
@@ -282,7 +283,7 @@ class BrainClientAdapter(CodingSessionAdapter):
         return (self._pinned or {}).get("session_id") or self._thread_id
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
-        params: dict[str, str] = {"runner": "t3"}
+        params: dict[str, str] = {"runner": self.runner}
         if cwd:
             params["project"] = self._project_name(cwd)
         resp = await self._http.get("/v1/sessions", params=params)
@@ -291,7 +292,7 @@ class BrainClientAdapter(CodingSessionAdapter):
             AgentSession(
                 id=str(s["id"]), title=str(s.get("title") or "(untitled)"),
                 cwd=str(s.get("cwd") or ""), branch=str(s.get("branch") or ""),
-                running=bool(s.get("running")), updated_at=0.0,
+                running=bool(s.get("running")), updated_at=float(s.get("updated_at") or 0.0),
             )
             for s in resp.json().get("sessions", [])
         ][:limit]
@@ -299,7 +300,8 @@ class BrainClientAdapter(CodingSessionAdapter):
     async def pick_session(self, session: AgentSession, connected: bool = False) -> bool:
         if self.busy and not connected:
             return False
-        self._pinned = {"runner": "t3", "session_id": session.id}
+        self._pinned = {"runner": self.runner, "session_id": session.id}
+        self._fresh = False
         self.connected = connected
         self.cwd = session.cwd or self.cwd
         self._explicit_cwd = session.cwd or None
@@ -310,7 +312,7 @@ class BrainClientAdapter(CodingSessionAdapter):
         if self.busy:
             return False
         self._pinned = None
-        self._new_session = True
+        self._fresh = True
         if cwd:
             self.cwd = cwd
             self._explicit_cwd = cwd

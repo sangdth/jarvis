@@ -41,7 +41,7 @@ DEFAULT_MEMORY = """# Brain memory index
 Standing facts, verified commands, and pointers to `repos/<slug>.md`. Keep this under 150 lines.
 """
 
-_FORBIDDEN = (
+FORBIDDEN_PATTERNS = (
     re.compile(r"BRAIN_RPC_SOCK", re.IGNORECASE),
     re.compile(r"\bstate\.db\b", re.IGNORECASE),
     re.compile(r"\b(?:curl|wget|nc|netcat)\s+https?://", re.IGNORECASE),
@@ -207,7 +207,7 @@ def validate_memory_text(name: str, content: str) -> str:
     clean = content.strip()
     if not clean:
         raise ValueError("a memory update cannot be empty")
-    for pattern in _FORBIDDEN:
+    for pattern in FORBIDDEN_PATTERNS:
         if pattern.search(clean):
             raise ValueError(f"memory update rejected: forbidden pattern {pattern.pattern!r}")
     limit = memory_line_limit(name)

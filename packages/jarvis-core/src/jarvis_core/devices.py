@@ -16,6 +16,7 @@ import hmac
 import json
 import secrets
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,11 @@ class DeviceStore:
         self.path = path
         self._lock = threading.RLock()
         self._devices: dict[str, Device] = self._read()
+        self._revoke_hooks: list[Callable[[str], None]] = []
+
+    def on_revoke(self, hook: Callable[[str], None]) -> None:
+        """Called with a device id when it is revoked, so a live connection can be dropped at once."""
+        self._revoke_hooks.append(hook)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "DeviceStore":
@@ -136,7 +142,12 @@ class DeviceStore:
             revoked = replace(device, revoked=True)
             self._devices[revoked.id] = revoked
             self._save()
-            return revoked
+        for hook in list(self._revoke_hooks):
+            try:
+                hook(revoked.id)
+            except Exception:
+                pass  # a listener must never fail the revocation itself
+        return revoked
 
 
 def _parse(stamp: str) -> datetime:

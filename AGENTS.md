@@ -73,7 +73,7 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | A reminder or scheduled check never fires | `schedule.py`, `db.py` `fire_due_timers`, `reconciler.py` `_fire_timers` |
 | Work finished but Jarvis said nothing | `server.py` `_deliver_outbox`, `brain_client.py` `_events_loop` |
 | A worker repeats itself or forgets a verified fact | `memory.py`, `reconciler.py` `_finalize_attempt_artifacts`, `run_skill_improver` |
-| `jarvis` starts a second brain       | `src/jarvis/supervisor.py` (`listening`, `BRAIN_URL`)      |
+| `jarvis` starts a second brain       | `src/jarvis/cli.py` (`hold_lock`: one mic, one brain)      |
 | Answer or stop hits the wrong agent  | `brain_server.py` `pending_approval_future`, each runner `interrupt` |
 | A correction runs as a second task   | `agent_tools.py` `send` (`replace`), `server.py` `handle_create_run` |
 | "Still waiting" timing or wording    | `remind_while_busy`, `waiting_lines.py`, `WAITING_PROMPT`       |

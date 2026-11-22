@@ -58,7 +58,7 @@ impl Config {
             traces_dir: home.join("traces"),
             skills_dir: home.join("skills"),
             notes_dir: home.join("memory").join("progress"),
-            logs_dir: home.join("logs"),
+            logs_dir: jarvis_home.join("logs"),
             home,
             host,
             port,

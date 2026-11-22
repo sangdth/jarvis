@@ -548,7 +548,7 @@ impl App {
 
     fn move_selection(&mut self, delta: isize) {
         match self.focus {
-            Pane::Topology => self.sel_topology = step(self.sel_topology, delta, 13),
+            Pane::Topology => self.sel_topology = step(self.sel_topology, delta, crate::ui::topology::NODES.len()),
             Pane::Tasks => {
                 let len = self.flat_task_rows().len();
                 self.sel_tasks = step(self.sel_tasks, delta, len);
@@ -577,7 +577,7 @@ impl App {
     fn select_edge(&mut self, last: bool) {
         let pick = |len: usize| if last { len.saturating_sub(1) } else { 0 };
         match self.focus {
-            Pane::Topology => self.sel_topology = pick(14),
+            Pane::Topology => self.sel_topology = pick(crate::ui::topology::NODES.len()),
             Pane::Tasks => self.sel_tasks = pick(self.flat_task_rows().len()),
             Pane::Prompts => {
                 self.sel_prompts = pick(self.turns.len());
@@ -775,7 +775,7 @@ impl App {
 
     /// Reads (and caches by mtime) the tail of the daemon error log.
     pub fn daemon_log(&mut self) -> String {
-        let path = self.cfg.logs_dir.join("brain.err.log");
+        let path = self.cfg.logs_dir.join("jarvis.err.log");
         let mtime = std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);

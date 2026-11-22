@@ -5,8 +5,6 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
-from pipecat.frames.frames import OutputAudioRawFrame
-from pipecat.transports.base_transport import TransportParams
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
@@ -14,7 +12,6 @@ from jarvis_voice import remote_audio
 from jarvis_voice.remote_audio import (
     SAMPLE_RATE,
     RelayHub,
-    RemoteVoiceOutputTransport,
     RemoteVoiceTransport,
     relay_token,
 )
@@ -283,39 +280,12 @@ class TestRelayHandoff(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(hub._resampler)  # the tail it held belonged to the sentence that was cut off
 
 
-class TestOutputTransport(unittest.IsolatedAsyncioTestCase):
-    def _transport(self) -> tuple[RemoteVoiceOutputTransport, FakeConnection]:
-        hub = RelayHub()
-        client = FakeConnection()
-        hub.attach(client)
-        params = TransportParams(audio_out_enabled=True, audio_out_sample_rate=SAMPLE_RATE)
-        return RemoteVoiceOutputTransport(hub, params), client
-
-    async def test_speech_goes_over_whole_and_paced(self) -> None:
-        transport, client = self._transport()
-        pcm = bytes(SAMPLE_RATE * 2 // 10)  # 0.1 s
-        with mock.patch.object(remote_audio.asyncio, "sleep", new=mock.AsyncMock()) as sleep:
-            self.assertTrue(await transport.write_audio_frame(OutputAudioRawFrame(audio=pcm, sample_rate=SAMPLE_RATE,
-                                                                                  num_channels=1)))
-        self.assertEqual(client.sent, [pcm])
-        sleep.assert_awaited_once()  # paced, like a blocking speaker write
-
-    async def test_an_interruption_flushes_what_the_other_mac_queued(self) -> None:
-        transport, client = self._transport()
-        transport._until = 99.0  # as if a long reply were playing
-        await transport._interrupt()
-        self.assertEqual(client.sent, [json.dumps({"type": "flush"})])
-        self.assertEqual(transport._until, 0.0)  # the next frame is not held back by the old timing
-
-
 class TestRelayServer(unittest.IsolatedAsyncioTestCase):
     TOKEN = "test-token"
 
     async def asyncSetUp(self) -> None:
         # Port 0: the OS hands out a free one, so the suite can run beside a real Jarvis.
-        self.transport = RemoteVoiceTransport(
-            TransportParams(audio_in_enabled=True, audio_out_enabled=True), port=0, token=self.TOKEN
-        )
+        self.transport = RemoteVoiceTransport(port=0, token=self.TOKEN)
         await self.transport.start_server()
         self.port = self.transport.port
 
@@ -417,7 +387,6 @@ class TestPairedDevice(unittest.IsolatedAsyncioTestCase):
         self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.store = DeviceStore(self.dir / "devices.json")
         self.transport = RemoteVoiceTransport(
-            TransportParams(audio_in_enabled=True, audio_out_enabled=True),
             port=0,
             token=self.TOKEN,
             devices=self.store,

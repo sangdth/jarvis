@@ -14,8 +14,3 @@ ratatui = "0.30"
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde_json = "1"
 similar = "2"
-
-[profile.release]
-opt-level = 2
-lto = "thin"
-strip = true

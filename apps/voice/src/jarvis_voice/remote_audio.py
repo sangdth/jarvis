@@ -29,17 +29,11 @@ import numpy as np
 import soxr
 from aiohttp import WSMsgType, web
 from loguru import logger
-from pipecat.frames.frames import InputAudioRawFrame, InterruptionFrame, OutputAudioRawFrame, StartFrame
-from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.transports.base_input import BaseInputTransport
-from pipecat.transports.base_output import BaseOutputTransport
-from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from jarvis_core.devices import DeviceStore
 from jarvis_core.home import brain_token
 from jarvis_core.net import advertised_hosts
 from jarvis_voice.config import settings
-from jarvis_voice.voice_engine import PLAY_AHEAD_SECS
 
 SAMPLE_RATE = 16000  # 16-bit mono both ways, the rate the pipeline runs at; the client resamples to it
 CLIENT_SCRIPT = Path(__file__).parent / "defaults" / "remote" / "client.py"
@@ -74,6 +68,8 @@ class RelaySocket(Protocol):
     async def send_bytes(self, data: bytes) -> None: ...
 
     async def send_text(self, data: str) -> None: ...
+
+    async def close(self, code: int = 1000, reason: str = "") -> None: ...
 
 
 def relay_token() -> str:
@@ -182,6 +178,7 @@ class _HttpRelaySocket:
     def __init__(self, ws: web.WebSocketResponse) -> None:
         self.ws = ws
         self.remote = "?"
+        self.device_id: str | None = None  # set when a paired device's own secret opened it
 
     async def send_bytes(self, data: bytes) -> None:
         await self.ws.send_bytes(data)
@@ -314,74 +311,17 @@ class RelayHub:
     _hint = ""
 
 
-class RemoteVoiceInputTransport(BaseInputTransport):
-    """The client's mic, as the pipeline's input."""
-
-    def __init__(self, hub: RelayHub, params: TransportParams) -> None:
-        super().__init__(params)
-        self._hub = hub
-        self._pump_task: asyncio.Task[None] | None = None
-
-    async def start(self, frame: StartFrame) -> None:
-        await super().start(frame)
-        # Its own queue opens in set_transport_ready, so the pumping starts after it, never before.
-        await self.set_transport_ready(frame)
-        self._pump_task = self.create_task(self._pump())
-
-    async def cleanup(self) -> None:
-        await super().cleanup()
-        if self._pump_task is not None:
-            await self.cancel_task(self._pump_task)
-            self._pump_task = None
-
-    async def _pump(self) -> None:
-        while True:
-            pcm = await self._hub.mic_queue.get()
-            await self.push_audio_frame(InputAudioRawFrame(audio=pcm, sample_rate=self.sample_rate, num_channels=1))
-
-
-class RemoteVoiceOutputTransport(BaseOutputTransport):
-    """The pipeline's speech, sent to the client to play."""
-
-    def __init__(self, hub: RelayHub, params: TransportParams) -> None:
-        super().__init__(params)
-        self._hub = hub
-        self._until = 0.0  # loop time when everything sent so far has been played
-
-    async def start(self, frame: StartFrame) -> None:
-        await super().start(frame)
-        await self.set_transport_ready(frame)
-
-    async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
-        # Pace like a blocking speaker write, so an interruption drops the audio still in the pipeline instead of
-        # everything already queued playing out on the other Mac.
-        now = asyncio.get_running_loop().time()
-        self._until = max(self._until, now) + await self._hub.send_audio(frame.audio)
-        await asyncio.sleep(max(0.0, self._until - now - PLAY_AHEAD_SECS))
-        return True
-
-    async def process_frame(self, frame: Any, direction: Any) -> None:
-        if isinstance(frame, InterruptionFrame):
-            await self._interrupt()
-        await super().process_frame(frame, direction)
-
-    async def _interrupt(self) -> None:
-        """The user talked over Jarvis: what the other Mac still has queued is no longer wanted."""
-        self._until = 0.0
-        await self._hub.flush()
-
-
-class RemoteVoiceTransport(BaseTransport):
+class RemoteVoiceTransport:
     """
-    The pipeline's audio, on another Mac: this side keeps every model and every agent.
+    The thin client's routes: this side keeps every model and every agent.
 
     The two routes (`/ws` and `/client.py`) are registered on the one Jarvis HTTP app; `web_app()` builds a
-    standalone app for the voice-only case and the tests.
+    standalone app for the voice-only case and the tests. The mic and speaker themselves belong to
+    `MacVoiceTransport`, which shares this transport's `ear` and `hub`.
     """
 
     def __init__(
         self,
-        params: TransportParams,
         *,
         token: str | None = None,
         hub: RelayHub | None = None,
@@ -389,18 +329,16 @@ class RemoteVoiceTransport(BaseTransport):
         port: int | None = None,
         devices: DeviceStore | None = None,
     ) -> None:
-        super().__init__()
-        self._params = params
         self.token = relay_token() if token is None else token
         self.host = host or settings.brain_host
         self.port = settings.brain_port if port is None else port
         self.devices = devices  # paired devices' secrets work here too
+        if devices is not None:
+            devices.on_revoke(self._device_revoked)  # a revoked Mac loses its live mic at once
         self.ear = Ear(local=False)
         self.hub = hub or RelayHub()
         self.hub._hint = remote_command(advertised_hosts(), self.port)
         self._runner: web.AppRunner | None = None
-        self._input: RemoteVoiceInputTransport | None = None
-        self._output: RemoteVoiceOutputTransport | None = None
 
     def routes(self) -> list[web.RouteDef]:
         """The relay's two routes, to register on the shared Jarvis app."""
@@ -442,16 +380,6 @@ class RemoteVoiceTransport(BaseTransport):
     async def wait_for_client(self) -> None:
         await self.hub.wait_for_client()
 
-    def input(self) -> FrameProcessor:
-        if not self._input:
-            self._input = RemoteVoiceInputTransport(self.hub, self._params)
-        return self._input
-
-    def output(self) -> FrameProcessor:
-        if not self._output:
-            self._output = RemoteVoiceOutputTransport(self.hub, self._params)
-        return self._output
-
     @staticmethod
     def _token_from(request: web.Request) -> str:
         """The token, from `Authorization: Bearer` or `?token=`, so a browser and an iOS Shortcut both work."""
@@ -468,6 +396,25 @@ class RemoteVoiceTransport(BaseTransport):
             return True
         # A paired device: its own secret, revocable without touching anyone else's.
         return self.devices is not None and self.devices.verify(token) is not None
+
+    def _device_for(self, request: web.Request) -> str | None:
+        """The paired device this request's secret belongs to, so a revocation can find its socket."""
+        if self.devices is None:
+            return None
+        device = self.devices.verify(self._token_from(request))
+        return device.id if device is not None else None
+
+    def _device_revoked(self, device_id: str) -> None:
+        """`jarvis devices revoke`: drop that Mac's live socket now instead of when its network goes."""
+        client = self.hub.client
+        if client is None or getattr(client, "device_id", None) != device_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no socket can be live without a running loop
+        loop.create_task(client.close(1008, "this device was revoked"))
+        logger.info(f"Relay: cut off the revoked device {device_id}.")
 
     async def handle_client_script(self, request: web.Request) -> web.Response:
         """
@@ -493,6 +440,7 @@ class RemoteVoiceTransport(BaseTransport):
         await ws.prepare(request)
         sock = _HttpRelaySocket(ws)
         sock.remote = request.remote or "?"
+        sock.device_id = self._device_for(request)
         if not self.hub.attach(sock):
             await ws.close(code=1013, message=b"another Mac is already this Jarvis's mic")
             return ws
@@ -548,10 +496,4 @@ def make_transport(
     *, port: int | None = None, token: str | None = None, devices: DeviceStore | None = None
 ) -> RemoteVoiceTransport:
     """The relay that a paired Mac's mic and speaker connect to (always mounted on the Jarvis server)."""
-    params = TransportParams(
-        audio_in_enabled=True,
-        audio_out_enabled=True,
-        audio_in_sample_rate=SAMPLE_RATE,
-        audio_out_sample_rate=SAMPLE_RATE,
-    )
-    return RemoteVoiceTransport(params, port=port, token=token, devices=devices)
+    return RemoteVoiceTransport(port=port, token=token, devices=devices)

@@ -497,5 +497,7 @@ class MacVoiceTransport(BaseTransport):
             return
         if audio.bridge is not None:
             audio.bridge.stop()
+            audio.bridge = None  # stopping is not enough: "meeting mode on" again must restart a fresh tap
         if audio.meet_voice is not None:
             await audio.meet_voice.stop()
+            audio.meet_voice = None

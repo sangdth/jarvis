@@ -39,11 +39,13 @@ USAGE
   jarvis-top
 
 READS
-  $BRAIN_HOME / $JARVIS_BRAIN_HOME (default ~/.config/jarvis/brain)
+  $JARVIS_HOME (default ~/.config/jarvis)
     .env         BRAIN_API_KEY, HOST, PORT
+    logs/        jarvis.err.log, the daemon log tail
+  $BRAIN_HOME / $JARVIS_BRAIN_HOME (default ~/.config/jarvis/brain)
     state.db     opened read-only (SQLite WAL)
     sessions/    live `pi --mode json` transcripts
-    memory/progress/, logs/  notes and daemon log tail
+    memory/progress/  handoff notes
 
 LIVE
   GET /v1/telemetry/events   SSE (auto-reconnecting, Bearer auth)

@@ -16,8 +16,3 @@ def advertised_hosts() -> list[str]:
     except OSError:
         pass
     return list(dict.fromkeys(hosts))
-
-
-def public_host(fallback: str = "127.0.0.1") -> str:
-    hosts = advertised_hosts()
-    return hosts[0] if hosts else fallback

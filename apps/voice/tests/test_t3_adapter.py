@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from jarvis_core.projects import projects_dir
 from jarvis_voice.agent_adapter import WatchedAgentConfig, question_fields
 from jarvis_voice.sessions import AgentSession
 from jarvis_voice.t3_adapter import (
-    PROJECTS,
     T3Adapter,
     current_thread,
     find_project,
@@ -160,7 +160,7 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         a._ws.send = AsyncMock()
         a._find_project = AsyncMock(return_value=None)
         a._call = AsyncMock(side_effect=[{}, {"threadId": "t9"}])  # project.create, then launchThread
-        root = str(PROJECTS / "huggerhustle/platform-v2")
+        root = str(projects_dir()[1] / "huggerhustle/platform-v2")
         defaults = {"defaultModelSelection": {"instanceId": "c", "model": "g"}}
         with patch("jarvis_voice.t3_adapter.t3_defaults", return_value=defaults):
             self.assertTrue(await a.new_session(root))
@@ -191,7 +191,7 @@ class TestT3Adapter(unittest.IsolatedAsyncioTestCase):
         a._ws = MagicMock()
         a._call = AsyncMock()
         self.assertTrue(await a.send_task("ok go ahead"))
-        self.assertFalse(await a.new_session(str(PROJECTS / "jarvis")))
+        self.assertFalse(await a.new_session(str(projects_dir()[1] / "jarvis")))
         self.assertFalse(await a._launch("/tmp", "x"))
         a._call.assert_not_awaited()  # no project.create, no launchThread
         self.assertEqual(a._command.await_args.args[0]["text"], "ok go ahead")
@@ -371,7 +371,7 @@ class TestHelpers(unittest.TestCase):
             self.assertEqual(list_projects(root), ["Org/app", "solo"])
             (root / "solo/.git/index").touch()  # git wrote the index just now: solo is the newest
             self.assertEqual(list_projects(root), ["solo", "Org/app"])
-            with patch("jarvis_voice.t3_adapter._last_touched", side_effect=AssertionError("should not stat")):
+            with patch("jarvis_core.projects._last_touched", side_effect=AssertionError("should not stat")):
                 self.assertEqual(list_projects(root, sort=False), ["Org/app", "solo"])
 
     def test_projects_dir_reads_soul_live_without_reimport(self) -> None:
@@ -381,7 +381,7 @@ class TestHelpers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "Org/app/.git").mkdir(parents=True)
-            with patch("jarvis_voice.t3_adapter.load_soul", return_value=Soul(projects_dir=tmp)):
+            with patch("jarvis_core.projects.load_soul", return_value=Soul(projects_dir=tmp)):
                 self.assertEqual(list_projects(), ["Org/app"])
                 self.assertEqual(resolve_project("org/app"), root / "Org/app")
                 self.assertEqual(resolve_project(f"{tmp}/org/app"), root / "Org/app")

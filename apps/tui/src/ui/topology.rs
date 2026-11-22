@@ -44,8 +44,8 @@ pub const NODES: [NodeSpec; 13] = [
     NodeSpec {
         id: "db",
         title: "state.db",
-        summary: "SQLite WAL · 6 tables",
-        detail: "Single source of truth: system_state, tasks, attempts, threads, skills, outbox. `threads` remembers the T3 thread bound to each repo; WAL lets this dashboard read while the daemon writes.",
+        summary: "SQLite WAL · 7 tables",
+        detail: "Single source of truth: system_state, tasks, attempts, threads, skills, outbox, timers. `threads` remembers the T3 thread bound to each repo; WAL lets this dashboard read while the daemon writes.",
     },
     NodeSpec {
         id: "reconciler",
@@ -81,7 +81,7 @@ pub const NODES: [NodeSpec; 13] = [
         id: "worktree",
         title: "Worktree",
         summary: "0700 · origin/master",
-        detail: "sessions/worktrees/<task_id>: created fresh from origin/master before each build, removed after verification. Writes outside it are denied by sandbox-exec.",
+        detail: "brain/worktrees/<task_id>: created fresh from origin/master before each build, removed after verification. Writes outside it are denied by sandbox-exec.",
     },
     NodeSpec {
         id: "verify",
@@ -402,7 +402,7 @@ pub fn node_modal_lines(app: &App, index: usize) -> Vec<ratatui::text::Line<'sta
                 "planner" => "read,grep,find,ls,research_scout,upsert_task,report_diagnostic,defer_for_approval",
                 "builder" => "read,edit,write,edit_and_run,bash,grep,find,ls,research_scout,record_note,report_diagnostic,defer_for_approval",
                 "scout" => "read,grep,find,ls",
-                _ => "read,grep,find,ls,research_scout,propose_skill_change",
+                _ => "read,grep,find,ls,research_scout,propose_skill_change,propose_memory_update",
             };
             fact(&mut lines, "tools (-t)", String::new(), theme::fg(theme::TEXT));
             for chunk in crate::ui::grid::wrap_text(tools, 54) {

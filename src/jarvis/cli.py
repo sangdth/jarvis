@@ -27,7 +27,7 @@ from typing import IO, Any
 import httpx
 from loguru import logger
 
-from jarvis_core.home import IPC_HOME, JARVIS_HOME, REPO_ROOT, brain_token, git_version, workspace_root
+from jarvis_core.home import IPC_HOME, JARVIS_HOME, REPO_ROOT, brain_home, brain_token, git_version, workspace_root
 
 LAUNCHD_LABEL = "com.sangdth.jarvis"
 PLIST_PATH = Path(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist").expanduser()
@@ -299,8 +299,13 @@ def run_cockpit(args: list[str]) -> int:
         print("`jarvis top` needs the cockpit built first:", file=sys.stderr)
         print("  cargo build --release --workspace", file=sys.stderr)
         return 1
+    # The cockpit defaults to an installed home; hand it the one this process runs on, token included.
+    env = dict(os.environ)
+    env["JARVIS_HOME"] = str(JARVIS_HOME)
+    env.setdefault("BRAIN_HOME", str(brain_home()))
+    env.setdefault("BRAIN_API_KEY", brain_token())
     try:
-        return subprocess.call([str(binary), *args])
+        return subprocess.call([str(binary), *args], env=env)
     except KeyboardInterrupt:
         return 130
 

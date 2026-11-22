@@ -354,13 +354,18 @@ class BrainServer:
                 return web.json_response({"error": f"Unknown project {project!r}"}, status=404)
             cwd = str(folder)
         try:
-            sessions = await runner.list_sessions(cwd, limit=20)
+            limit = max(1, min(int(request.query.get("limit", "20")), 50))
+        except ValueError:
+            limit = 20
+        try:
+            sessions = await runner.list_sessions(cwd, limit=limit)
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=503)
         return web.json_response({
             "runner": runner_id,
             "sessions": [
-                {"id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch, "running": s.running}
+                {"id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch,
+                 "running": s.running, "updated_at": s.updated_at}
                 for s in sessions
             ],
         })
@@ -1211,6 +1216,9 @@ class BrainServer:
 
             if _BRIEF_RE.search(user_input):
                 reports, pending_approval = self.db.drain_digest()
+                for item in reports:
+                    # The same line every other path writes, so a reconnecting voice does not hear it again.
+                    memory.append_reported(self.cfg.home_dir, f"[{item.kind}] {item.summary_spoken}")
                 st = self.db.get_state()
                 lines = [item.summary_spoken for item in reports]
                 if not lines:
@@ -1244,7 +1252,15 @@ class BrainServer:
                     finally:
                         rec.pending_outbox_id = None
                         rec.pending_approval_future = None
-                    approved = answer is not None and is_approval(answer)
+                    if answer is None:
+                        # Stopped with no answer: the approval is still the owner's to decide, so it stays queued.
+                        rec.output = f"{summary_text} No answer; the approval stays queued."
+                        rec.status = "completed"
+                        rec.publish(
+                            {"event": "run.completed", "run_id": rec.run_id, "output": rec.output}
+                        )
+                        return
+                    approved = is_approval(answer)
 
                     outbox_row = self.db.resolve_approval(pending_approval.id, approved)
                     if (
@@ -1345,6 +1361,8 @@ class BrainServer:
             )
             if result.project:
                 self._last_project_by_session[rec.session_id] = result.project
+                while len(self._last_project_by_session) > 200:
+                    self._last_project_by_session.pop(next(iter(self._last_project_by_session)))
             if result.outcome == "deferred_approval" and result.question:
                 # Nobody can answer live (an iPhone one-shot): leave it on the board for the owner.
                 outbox = self.db.queue_outbox(

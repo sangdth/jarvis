@@ -21,7 +21,7 @@ from brain.config import Settings
 from brain.db import BrainDB, TaskRow
 from brain.reconciler import Reconciler
 from brain.runners.base import ApprovalCallback, RunRequest, RunResult
-from jarvis_core.projects import list_projects, resolve_project
+from jarvis_core.projects import list_projects, projects_dir, resolve_project
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -199,7 +199,7 @@ class BrainOrchestrator:
         )
         choice = await self._choose(prompt, user_input)
         if choice is None:
-            choice = self._heuristic(user_input, projects, pinned)
+            choice = self._heuristic(user_input, projects, session_id)
         logger.info(f"[Brain] route {choice['name']} for {user_input[:80]!r}")
 
         if pinned and choice["name"] in ("delegate_project", "ask_ephemeral_pi"):
@@ -243,7 +243,7 @@ class BrainOrchestrator:
             return None
 
     def _heuristic(
-        self, text: str, projects: list[str], pinned: dict[str, str] | None
+        self, text: str, projects: list[str], session_id: str
     ) -> dict[str, Any]:
         lowered = text.lower()
         for project in projects:
@@ -258,7 +258,7 @@ class BrainOrchestrator:
         question = text.strip().endswith("?") or _QUESTION_START.search(text.strip()) is not None
         if question and not _PROJECT_WORK.search(text):
             return {"name": "ask_ephemeral_pi", "arguments": {"question": text}}
-        recent = self._last_project("")
+        recent = self._last_project(session_id)
         return {"name": "delegate_project",
                 "arguments": {"project": recent or "", "task": text, "runner": "t3"}}
 
@@ -336,8 +336,19 @@ class BrainOrchestrator:
         )
         result = await self._run(runner_id, request, emit)
         if result.outcome not in ("errored", "timed_out"):
-            result.project = project or (cwd_path.name if cwd_path is not None else None)
+            result.project = project or self._listed_folder(cwd_path)
         return result
+
+    @staticmethod
+    def _listed_folder(folder: Path | None) -> str | None:
+        """The folder as the project list writes it (`Org/repo`), so a follow-up turn resolves it again."""
+        if folder is None:
+            return None
+        _, root = projects_dir()
+        try:
+            return str(folder.resolve().relative_to(root.expanduser().resolve()))
+        except ValueError:
+            return folder.name
 
     async def _run(self, runner_id: str, request: RunRequest, emit: EventEmitter) -> RunResult:
         runner = self.runners.get(runner_id)

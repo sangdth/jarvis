@@ -28,7 +28,8 @@ from brain.db import (
     check_metric_target,
     has_metric_comparator,
 )
-from brain.sandbox import wrap_with_sandbox
+from brain.pi_stream import PiStreamState
+from brain.sandbox import strip_secrets, wrap_with_sandbox
 from brain.skills import (
     SkillProposal,
     apply_skill_proposal,
@@ -112,43 +113,9 @@ def _clean_untracked_tool_caches(worktree_dir: Path) -> None:
             shutil.rmtree(cache_path, ignore_errors=True)
 
 
-@dataclass
-class _PiStreamState:
-    session_id: str | None = None
-    last_text: str = ""
-    completed_cost: float = 0.0
-    streaming_cost: float = 0.0
-
-    @property
-    def total_cost(self) -> float:
-        return self.completed_cost + self.streaming_cost
-
-    def feed_line(self, line_str: str) -> None:
-        if not line_str:
-            return
-        try:
-            event = json.loads(line_str)
-        except json.JSONDecodeError:
-            self.last_text = line_str
-            return
-        if not isinstance(event, dict):
-            return
-        if event.get("type") == "session" and isinstance(event.get("id"), str):
-            self.session_id = event["id"]
-        elif isinstance(event.get("session_id"), str):
-            self.session_id = event["session_id"]
-        elif isinstance(event.get("sessionId"), str):
-            self.session_id = event["sessionId"]
-        text = extract_assistant_text(event)
-        if text:
-            self.last_text = text
-        ev_cost = extract_event_cost(event)
-        if ev_cost > 0:
-            if event.get("type") == "message_update":
-                self.streaming_cost = max(self.streaming_cost, ev_cost)
-            else:
-                self.completed_cost += ev_cost
-                self.streaming_cost = 0.0
+def _is_test_path(path: str) -> bool:
+    """True for a file in a `tests`/`test` folder anywhere in the tree: `tests/`, `apps/brain/tests/`."""
+    return any(part in ("test", "tests") for part in Path(path).parts[:-1])
 
 
 @dataclass
@@ -163,44 +130,6 @@ class PiRunResult:
     diagnostic: str | None = None
     modified_skills: list[str] | None = None
     modified_memory: list[str] | None = None
-
-
-def extract_event_cost(event: dict[str, Any]) -> float:
-    """Extracts incremental or total USD cost from a `pi --mode json` event if present."""
-    if isinstance(event.get("cost_usd"), (int, float)):
-        return float(event["cost_usd"])
-    usage = event.get("usage")
-    if isinstance(usage, dict):
-        if isinstance(usage.get("cost_usd"), (int, float)):
-            return float(usage["cost_usd"])
-        cost = usage.get("cost")
-        if isinstance(cost, (int, float)):
-            return float(cost)
-        if isinstance(cost, dict) and isinstance(cost.get("total"), (int, float)):
-            return float(cost["total"])
-    msg = event.get("message")
-    if isinstance(msg, dict):
-        return extract_event_cost(msg)
-    return 0.0
-
-
-def extract_assistant_text(event: dict[str, Any]) -> str | None:
-    """Extracts assistant text from a `pi --mode json` event."""
-    msg = event.get("message") if isinstance(event.get("message"), dict) else event
-    if not isinstance(msg, dict) or msg.get("role") != "assistant":
-        return None
-    content = msg.get("content")
-    if isinstance(content, str) and content.strip():
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            str(item.get("text", "")).strip()
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
-        ]
-        joined = "\n".join(p for p in parts if p)
-        return joined if joined else None
-    return None
 
 
 class Reconciler:
@@ -1172,7 +1101,7 @@ class Reconciler:
         diagnostics: list[str] = []
         modified_skills: list[str] = []
         modified_memory: list[str] = []
-        stream_state = _PiStreamState(session_id=resume_session_id)
+        stream_state = PiStreamState(session_id=resume_session_id)
         extra_scout_cost = 0.0
         timed_out = False
         budget_exceeded = False
@@ -1646,7 +1575,7 @@ class Reconciler:
         cwd: Path,
         env: dict[str, str],
         run_key: str,
-        stream_state: _PiStreamState,
+        stream_state: PiStreamState,
         timeout_seconds: float,
         start_monotonic: float,
         over_budget_fn: Callable[[], bool],
@@ -1773,7 +1702,7 @@ class Reconciler:
         )
         env = self._build_sandbox_env(scout_session_dir)
         env["BRAIN_RESEARCH_SCOUT"] = "1"
-        scout_state = _PiStreamState()
+        scout_state = PiStreamState()
         _, _, timed_out, over_budget = await self._stream_pi_proc(
             cmd=cmd,
             cwd=root_dir,
@@ -1815,7 +1744,7 @@ class Reconciler:
         env["TMPDIR"] = str(tmp_dir)
         env["XDG_CACHE_HOME"] = str(cache_dir)
         env["UV_CACHE_DIR"] = str(cache_dir / "uv")
-        return env
+        return strip_secrets(env)
 
     async def _run_sandboxed_cmd(
         self,
@@ -1833,6 +1762,7 @@ class Reconciler:
             notes_dir=self.cfg.notes_dir,
             home_dir=self.cfg.home_dir,
             enabled=self.cfg.sandbox_enabled,
+            deny_env_file=False,  # pytest imports the settings that read `JARVIS_HOME/.env`
         )
         env = self._build_sandbox_env(session_dir)
         if extra_pythonpath:
@@ -1874,18 +1804,25 @@ class Reconciler:
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path
     ) -> tuple[bool, str]:
         """
-        Runs the pre-edit baseline test suite from `repo_dir/tests` ($D_out$) against the candidate
-        worktree's `src/` so a self-upgrade cannot pass verification by weakening existing tests.
+        Runs the pre-edit baseline suites (root `tests/`, every `apps/*/tests/`) from `repo_dir` against the
+        candidate worktree's sources, so a self-upgrade cannot pass verification by weakening a test.
         """
-        baseline_tests = repo_dir / "tests"
-        if not baseline_tests.is_dir() or not any(baseline_tests.glob("test_*.py")):
+        roots = [
+            path
+            for path in (repo_dir / "tests", *sorted((repo_dir / "apps").glob("*/tests")))
+            if path.is_dir() and any(path.glob("test_*.py"))
+        ]
+        if not roots:
             return True, ""
+        sources = [worktree_dir / "src", worktree_dir]
+        sources += sorted((worktree_dir / "apps").glob("*/src"))
+        sources += sorted((worktree_dir / "packages").glob("*/src"))
         return await self._run_sandboxed_cmd(
-            [sys.executable, "-m", "pytest", "-q", str(baseline_tests)],
+            [sys.executable, "-m", "pytest", "-q", *(str(root) for root in roots)],
             worktree_dir=worktree_dir,
             session_dir=session_dir,
             label="Held-out baseline tests",
-            extra_pythonpath=[str(worktree_dir / "src"), str(worktree_dir)],
+            extra_pythonpath=[str(path) for path in sources if path.is_dir()],
         )
 
     async def _worktree_diff_stat(self, worktree_dir: Path, base_sha: str) -> str:
@@ -1979,17 +1916,13 @@ class Reconciler:
 
     async def _find_deleted_tests(self, worktree_dir: Path, base_sha: str) -> list[str]:
         out = await self._git_out(
-            worktree_dir,
-            "diff",
-            "--diff-filter=D",
-            "--name-only",
-            base_sha,
-            "--",
-            "tests",
-            "test",
-            check=False,
+            worktree_dir, "diff", "--diff-filter=D", "--name-only", base_sha, check=False
         )
-        return [line.strip() for line in out.splitlines() if line.strip()]
+        return [
+            line.strip()
+            for line in out.splitlines()
+            if line.strip() and _is_test_path(line.strip())
+        ]
 
     async def _find_modified_protected_files(
         self, worktree_dir: Path, base_sha: str
@@ -2007,13 +1940,10 @@ class Reconciler:
             "--diff-filter=DMR",
             "--name-only",
             base_sha,
-            "--",
-            "tests",
-            "test",
             check=False,
         )
         for line in existing_test_mods.splitlines():
-            if line.strip():
+            if line.strip() and _is_test_path(line.strip()):
                 protected.add(line.strip())
         return sorted(protected)
 

@@ -175,30 +175,38 @@ def next_occurrence(
     *,
     after: datetime | None = None,
 ) -> datetime:
-    """The first matching minute strictly after `after`, in the timer's zone."""
+    """The first matching minute strictly after `after`, in the timer's zone.
+
+    The search moves in UTC and never steps backwards. On the day daylight saving time repeats an hour, a
+    wall-clock step (`+ 1 hour`, or `+ 1 day`) lands in an hour that has already passed, and the old code
+    returned a run time in the past: the timer then re-fired every reconciler tick.
+    """
     _, zone = resolve_timezone(timezone_name)
     spec = parse_cron(expression)
-    moment = (after or datetime.now(timezone.utc)).astimezone(zone)
-    moment = moment.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    limit = moment + timedelta(days=366 * 4)  # four years covers Feb 29 and leap-year-only schedules
+    start = (after or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    cursor = start.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    limit = start + timedelta(days=366 * 4)  # four years covers Feb 29 and leap-year-only schedules
 
-    while moment < limit:
-        if moment.month not in spec.months:
-            if moment.month == 12:
-                moment = moment.replace(year=moment.year + 1, month=1, day=1, hour=0, minute=0)
-            else:
-                moment = moment.replace(month=moment.month + 1, day=1, hour=0, minute=0)
+    def ahead(candidate: datetime) -> datetime:
+        """A wall-clock jump, in UTC, but never at or behind the minute already being searched."""
+        return max(candidate.astimezone(timezone.utc), cursor + timedelta(minutes=1))
+
+    while cursor < limit:
+        local = cursor.astimezone(zone)
+        if local.month not in spec.months:
+            year, month = (local.year + 1, 1) if local.month == 12 else (local.year, local.month + 1)
+            cursor = ahead(datetime(year, month, 1, tzinfo=zone))
             continue
-        if not spec.day_matches(moment):
-            moment = (moment + timedelta(days=1)).replace(hour=0, minute=0)
+        if not spec.day_matches(local):
+            cursor = ahead(datetime(local.year, local.month, local.day, tzinfo=zone) + timedelta(days=1))
             continue
-        if moment.hour not in spec.hours:
-            moment = (moment + timedelta(hours=1)).replace(minute=0)
+        if local.hour not in spec.hours:
+            cursor = ahead(local.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
             continue
-        if moment.minute not in spec.minutes:
-            moment += timedelta(minutes=1)
+        if local.minute not in spec.minutes:
+            cursor += timedelta(minutes=1)
             continue
-        return moment
+        return cursor.astimezone(zone)
     raise ValueError(f"cron expression {expression!r} has no occurrence in the next year")
 
 
