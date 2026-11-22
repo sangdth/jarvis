@@ -113,6 +113,8 @@ class JarvisState:
         # `jarvis meeting` or an enrolled guest speaker: the turn came from someone other than the master, so agent
         # tools that act on the user's behalf (answer, stop, replace) refuse it. Set by JarvisIntentGate on every turn.
         self.room_turn = False
+        # Who is speaking this turn (`User`, `Room`, `Speaker: David`), so a meeting comment is filed under a name.
+        self.current_speaker = "User"
         # True after the master's INTRODUCTION intent while Jarvis is enrolling a new speaker's voice.
         self.enrolling = False
         self.on_speak = on_speak

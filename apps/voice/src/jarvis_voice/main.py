@@ -290,10 +290,10 @@ async def run_pipecat_harness(
         logger.warning("No OPENROUTER_API_KEY configured; running in offline mode.")
         llm = None
 
-    tools = agent_tools()
+    tools = agent_tools(meeting=meeting)
 
     if llm is not None:
-        for name, handler in agent_tool_handlers(orchestrator).items():
+        for name, handler in agent_tool_handlers(orchestrator, meeting=meeting).items():
             llm.register_function(name, handler)
 
     context = LLMContext(tools=tools)

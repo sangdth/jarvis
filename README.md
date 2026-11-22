@@ -14,9 +14,9 @@ brain). Python and Rust share the workspace and the state home, and the layout l
 React client without moving anything.
 
 What it does:
-- **Can talk only with you.** Turn on the master check (`MASTER_CHECK=true`, set by `jarvis enroll`) and it checks
-  every sentence against your voice. Other people, the TV and its own voice are dropped, and they can't interrupt
-  Jarvis or keep it waiting. Off by default: any voice may talk to it.
+- **Can talk only with you.** The master check is on by default: Jarvis checks every sentence against your voice
+  and drops other people, the TV and its own voice, so they can't interrupt Jarvis or keep it waiting.
+  `jarvis enroll` records the voiceprint; `MASTER_CHECK=false` lets any voice talk to it.
 - **Answers only when you mean it.** A decision model tells talk aimed at Jarvis from talk around it.
 - **Opens your projects by name.** "Continue working on the Hugger Hustle platform" picks up your newest T3 Code
   thread in that repo, or starts one that syncs with master, and tells you which. Questions about the list itself ("how many projects in
@@ -115,14 +115,15 @@ To change how Jarvis tidies what you say, write your own prompt under a `## Clea
 `JARVIS_HOME/SYSTEM.md` (create the file; `init` doesn't). It replaces the shipped one; with no file or no section
 Jarvis uses its own, and new versions keep improving it. Startup logs `SYSTEM.md overrides: Cleanup` while yours is used.
 
-Last, it offers to record your voice for the master check (default no; later: `jarvis enroll`). Without it, Jarvis
-acts on any voice it hears. With it, Jarvis acts only on yours: read eight everyday lines (5 s each, in the language
+Last, it records your voice for the master check (on by default; later: `jarvis enroll`). Jarvis then acts only on
+yours: read eight everyday lines (5 s each, in the language
 `LANGUAGE` sets) with the mic Jarvis will use, then three more that Jarvis scores against your new voiceprint; it
 prints those scores, suggests a `SPEAKER_THRESHOLD` just under the lowest and sets `MASTER_CHECK=true` in `.env`. It
 downloads the speaker model (25 MB) to `JARVIS_HOME/models/` and saves your voiceprint to
 `JARVIS_HOME/owner_voice.npy`. Anyone can still say "shut up" or "you can talk". Enroll close to the mic in a
-quiet moment: background voices in the recording weaken the voiceprint. `MASTER_CHECK=false` turns the check off
-again and keeps the voiceprint.
+quiet moment: background voices in the recording weaken the voiceprint. Declining the recording writes
+`MASTER_CHECK=false`, and any voice may talk to Jarvis until you enroll; `MASTER_CHECK=false` also turns the check
+off again later and keeps the voiceprint.
 
 ### 3. Configure `.env`
 `jarvis init` fills the two API keys unless your shell exports them; set the rest in `JARVIS_HOME/.env`. A variable set in
@@ -222,9 +223,10 @@ Pipecat. Ctrl+C stops it.
   you, so the echo canceller that lets you interrupt Jarvis sits where the speaker is. Its speech plays on that
   Mac's speakers; an interruption drops what it still had queued.
 - **One listener at a time.** A second Mac is refused while one is connected: they share one ear.
-- **Every connection needs the token.** With `MASTER_CHECK=false` any voice may talk to Jarvis, and the port is on
-  your network. It is made on first use in `JARVIS_HOME/brain_token` (0600); set `BRAIN_API_KEY` in `.env` to pick
-  your own, and `BRAIN_PORT` for the port. `GET /health` is the one route without it.
+- **Every connection needs the token.** The port is on your network, and a connection is a voice that can start work,
+  so the relay still requires the shared token even with the master check on. It is `brain_token` in
+  `JARVIS_HOME` (0600), made on first use; set `BRAIN_API_KEY` in `.env` to pick your own, and `BRAIN_PORT` for the
+  port. `GET /health` is the one route without it.
 - **Same Wi-Fi.** Plain HTTP and WebSocket on the LAN. Away from that, put both Macs on Tailscale and paste the
   command with that address: the token rides in the URL, so keep it to yourself.
 - **The master check** compares your voiceprint, recorded with the other Mac's mic, against this one's. It usually
@@ -291,10 +293,17 @@ hears the call through macOS's system audio tap (macOS 14.2 or later), so allow 
 Settings > Privacy & Security > Screen & System Audio Recording. People on the call talk to each other until
 someone says "Jarvis"; Jarvis then gets what was said since. Meeting talk is never saved to memory.
 
-Who may do what depends on the master check. Off: Jarvis can't tell voices apart, so everyone counts as you. On:
-guests may ask questions and ask for work, and Jarvis asks you before it starts that work (`MEETING_GUESTS=ask`,
-the default); `MEETING_GUESTS=allow` starts it at once. Either way only your voice can answer an agent's question,
-approve, stop or replace a task.
+Who may do what depends on the master check. On (the default): guests may ask questions and ask for work, and
+Jarvis asks you before it starts that work (`MEETING_GUESTS=ask`, the default); `MEETING_GUESTS=allow` starts it at
+once. Either way only your voice can answer an agent's question, approve, stop or replace a task. Off: Jarvis can't
+tell voices apart, so everyone counts as you.
+
+**Anyone may add a comment**, and that is the one thing a guest can do freely: "Jarvis, note that we're going with
+Postgres." It goes to today's notes file with who said it and when —
+`JARVIS_HOME/meeting/2026-11-22.md` — Jarvis acknowledges it in a few words, and nothing runs, nothing is approved,
+and it never reaches memory. Ask "what did we note?" and it summarizes the day so far. The file is plain Markdown:
+read it, edit it, or delete it.
+
 With the master check on you can also introduce someone: "Jarvis, this is David." Jarvis chats with the new voice
 for two questions, learns the name, and next time greets them by name and treats them as a guest. Off, it just
 says hello. Profiles live in `JARVIS_HOME/speakers/`; delete a file there to forget a voice.

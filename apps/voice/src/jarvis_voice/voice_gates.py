@@ -643,6 +643,7 @@ class JarvisIntentGate(FrameProcessor):
             frame = replace(frame, text=transcript)
 
         self.state.room_turn = not is_owner
+        self.state.current_speaker = speaker
         if profile is not None and profile.enrolled and profile.name and not profile.greeted:
             # Once per run; the request itself still goes on to the model below.
             profile.greeted = True

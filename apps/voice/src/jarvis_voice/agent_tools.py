@@ -9,6 +9,7 @@ from typing import Any
 
 from loguru import logger
 
+from jarvis_voice import meeting_notes
 from jarvis_voice.config import settings
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.screen import ScreenError, ask_screen, capture_front_window
@@ -16,8 +17,12 @@ from jarvis_voice.sessions import CodingSessionAdapter, match_sessions
 from jarvis_voice.t3_adapter import resolve_project
 
 
-def agent_tools() -> list:
-    """The tools the conversation model can call (also used by scripts/bench_routing.py)."""
+def agent_tools(meeting: bool = False) -> list:
+    """The tools the conversation model can call (also used by scripts/bench_routing.py).
+
+    `meeting=True` (`jarvis meeting`) adds the two comment tools: anyone in the room may leave a note, but a note is
+    only ever written to the day's meeting file, never turned into work.
+    """
     from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
 
     agent_id_property = {
@@ -27,7 +32,7 @@ def agent_tools() -> list:
             " default coding agent, an answer to the agent that asked, a stop to the agent that is working."
         ),
     }
-    return [
+    tools = [
         FunctionSchema(
             name="send_agent_task",
             description=(
@@ -124,9 +129,47 @@ def agent_tools() -> list:
             required=["question"],
         ),
     ]
+    tools += comment_tools() if meeting else []
+    return tools
 
 
-def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[Any], Awaitable[None]]]:
+def comment_tools() -> list:
+    """The meeting-only tools: anyone may leave a note; nothing else happens because of it."""
+    from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
+
+    return [
+        FunctionSchema(
+            name="add_comment",
+            description=(
+                "Save a comment someone in the meeting wants kept ('note that…', 'add a comment:…', a decision or a"
+                " point worth remembering). It is written to today's meeting notes with who said it; it starts no"
+                " work and approves nothing. Then acknowledge in a few words ('Noted.'). Use it for remarks, not for"
+                " requests: work goes to send_agent_task."
+            ),
+            properties={
+                "comment": {
+                    "type": "string",
+                    "description": "The comment as it should read in the notes, in the speaker's language, without"
+                    " 'Jarvis' or 'note that'.",
+                },
+            },
+            required=["comment"],
+        ),
+        FunctionSchema(
+            name="read_comments",
+            description=(
+                "Read today's meeting comments back. Use it when someone asks what was noted, what the decision was,"
+                " or for a summary of the meeting so far. Summarize them; do not read every line."
+            ),
+            properties={},
+            required=[],
+        ),
+    ]
+
+
+def agent_tool_handlers(
+    orchestrator: AgentOrchestrator, meeting: bool = False
+) -> dict[str, Callable[[Any], Awaitable[None]]]:
     """Handlers for agent_tools(). Pipecat 1.x calls each with one FunctionCallParams (arguments, result_callback)."""
 
     def handler(
@@ -275,11 +318,28 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             return
         await params.result_callback({"status": "seen", "answer": answer})
 
+    async def add_comment(params: Any) -> None:
+        """A meeting note: anyone may add one, and it only ever reaches the day's notes file."""
+        try:
+            path, count = meeting_notes.append_comment(
+                str(params.arguments.get("comment") or ""),
+                orchestrator.state.current_speaker,
+            )
+        except ValueError:
+            await params.result_callback({"status": "nothing_to_note"})
+            return
+        logger.info(f"[Meeting] comment saved to {path} ({count} today)")
+        await params.result_callback({"status": "comment_saved", "count": count})
+
+    async def read_comments(params: Any) -> None:
+        notes = meeting_notes.read_comments()
+        await params.result_callback({"status": "read", "comments": notes} if notes else {"status": "no_comments"})
+
     async def stop(agent: Any, args: dict) -> bool | str:
         # Nothing running: say so, instead of a "failed" the model would read out as "I couldn't stop it".
         return await agent.interrupt() if agent.busy else "nothing_running"
 
-    return {
+    handlers: dict[str, Callable[[Any], Awaitable[None]]] = {
         "send_agent_task": handler(send, "sent", "failed", guest_waits=True),
         # No id: an answer goes to the agent that asked, a stop to the one that is working.
         "answer_agent": handler(
@@ -293,3 +353,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         "list_sessions": sessions,
         "look_at_screen": look,
     }
+    if meeting:
+        # Both are open to the whole room: a comment is a note, not a command.
+        handlers |= {"add_comment": add_comment, "read_comments": read_comments}
+    return handlers

@@ -27,8 +27,10 @@ class Settings(EnvSettings):
     whisper_model: str = ""
 
     # Master check: Jarvis acts only on its master's voice (sherpa-onnx ERes2Net against owner_voice.npy, recorded
-    # by `jarvis enroll`). Off: any voice may talk to Jarvis, and in a meeting everyone counts as the master.
-    master_check: bool = False
+    # by `jarvis enroll`). On by default: `jarvis init` offers to record the voiceprint, and without it Jarvis
+    # refuses to start rather than obey any voice. In a meeting, other voices are tagged `[Room]` and may still talk
+    # to Jarvis (they are not dropped); they just cannot answer, approve or stop work.
+    master_check: bool = True
     # With the master check on, sentences scoring below this are dropped. Tune it from the "[Speaker] score=" lines.
     speaker_threshold: float = 0.35
     # Keep the last N sentences Whisper heard as WAVs in JARVIS_HOME/clips, dropped ones too; 0 = off. Your voice

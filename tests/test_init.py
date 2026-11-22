@@ -13,15 +13,20 @@ class InitTest(unittest.TestCase):
     def test_interview_writes_soul_and_skips_enrollment(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "shared"
+            home.mkdir()
             path = home / "SOUL.md"
+            env = home / ".env"
+            env.write_text("OPENROUTER_API_KEY=sk-or-1\n")
             answers = iter(["warm, playful", "Sang", tmp, "", "n"])
-            with patch.object(init, "SOUL_PATH", path), \
+            with patch.object(init, "SOUL_PATH", path), patch.object(init, "ENV_PATH", env), \
                     patch("builtins.input", lambda _: next(answers)), patch("jarvis_voice.enroll.main") as enroll, \
                     patch("builtins.print"), patch.object(init, "copy_config", return_value=[]), \
                     patch.object(init, "setup_brain", return_value=[]), \
                     patch.object(init, "ask_api_keys"):
                 init.main()
             enroll.assert_not_called()
+            # Declining the recording records the choice, so the on-by-default master check can still start.
+            self.assertIn("MASTER_CHECK=false", env.read_text())
             self.assertEqual(load_soul(path).projects_dir, tmp)
             self.assertIn("warm, playful", load_soul(path).personality)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)

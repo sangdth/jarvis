@@ -19,6 +19,7 @@ __pycache__/
 /remote_token
 /brain_token
 /jarvis.lock
+/meeting/
 *.db
 *.db-shm
 *.db-wal
