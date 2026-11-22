@@ -47,9 +47,10 @@ class Settings(EnvSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
-    # `jarvis remote`: the mic and speaker are on another Mac, which runs `defaults/remote/client.py`; the models,
-    # agents and memory stay here. Its two routes live on the one Jarvis HTTP app, so the port is the brain's
-    # (`BRAIN_PORT`) and the token is the brain token, unless `REMOTE_PORT` / `REMOTE_TOKEN` pin something else.
+    # A paired Mac's mic and speaker (the thin client, `defaults/remote/client.py`): the models, agents and memory
+    # stay here. Always served, on the one Jarvis HTTP app, so the port is the brain's (`BRAIN_PORT`) and the token
+    # is the brain token, unless `REMOTE_PORT` / `REMOTE_TOKEN` pin something else. While a client is connected it
+    # owns the mic and speaker; this Mac's hardware takes them back when it goes.
     remote_port: int = 0  # 0 = the same port as the HTTP/SSE/WS gateway (`BRAIN_PORT`)
     remote_token: str = ""
 

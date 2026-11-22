@@ -235,11 +235,16 @@
                 "type": "boolean"
               },
               "remote": {
-                "type": "boolean"
+                "type": "boolean",
+                "description": "A paired Mac is the mic and speaker right now (same as `client`: there is no separate remote mode)."
               },
               "client": {
                 "type": "boolean",
-                "description": "A thin client is connected as the mic."
+                "description": "A thin client is connected as the mic and speaker."
+              },
+              "local_audio": {
+                "type": "boolean",
+                "description": "This Mac has a mic and speaker to fall back on; false on a headless Mac, which waits for a paired device."
               },
               "port": {
                 "type": "integer"
@@ -1206,7 +1211,7 @@
     "/client.py": {
       "get": {
         "summary": "The zero-install thin client, with this server's URL and token already filled in",
-        "description": "Open on purpose: the bootstrap has to arrive before the laptop has a secret, and it carries none \u2014 only this server's address. `curl -fsSL 'http://<host>:8640/client.py' -o ~/.local/bin/jarvis-remote.py`, then `uv run ~/.local/bin/jarvis-remote.py --pair <code>`.",
+        "description": "Open on purpose: the bootstrap has to arrive before the laptop has a secret, and it carries none \u2014 only this server's address. Served whenever Jarvis runs; no remote mode is started. `curl -fsSL 'http://<host>:8643/client.py' -o ~/.local/bin/jarvis-remote.py`, then `uv run ~/.local/bin/jarvis-remote.py --pair <code>`.",
         "responses": {
           "200": {
             "description": "text/x-python",
@@ -1223,8 +1228,8 @@
     },
     "/ws": {
       "get": {
-        "summary": "The thin client's mic and speaker (WebSocket upgrade)",
-        "description": "Binary frames are 16-bit mono PCM at 16 kHz both ways. JSON control: `{\"type\":\"hello\",\"rate\":16000}` down on connect, `{\"type\":\"flush\"}` down on an interruption. One client at a time: they share one ear.",
+        "summary": "The thin client's mic and speaker (WebSocket upgrade, always served)",
+        "description": "Binary frames are 16-bit mono PCM at 16 kHz both ways. JSON control: `{\"type\":\"hello\",\"rate\":16000}` down on connect, `{\"type\":\"flush\"}` down on an interruption. One client at a time: they share one ear. While it is connected it owns the mic and speaker instead of the host Mac's, and it hands them back when it disconnects.",
         "parameters": [
           {
             "name": "token",

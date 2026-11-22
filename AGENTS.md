@@ -13,9 +13,10 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   (`site/install.sh`: uv, clone into `~/Projects/jarvis`, `uv sync`, a thin `~/.local/bin/jarvis` shim into that
   `.venv`, then `jarvis init`). The checkout *is* the runtime: an edit plus `jarvis restart` is live, and so is
   `git pull` plus `jarvis restart`. `jarvis --version` names the running branch and commit (`+dirty` when edited).
-  Commands: `jarvis` (listen here), `jarvis serve [--remote|--meeting|--connect X]` (the same, spelled out),
-  `jarvis start|stop|restart|logs` (the 24/7 launchd service on this checkout), `jarvis remote` (another Mac's mic
-  and speaker), `jarvis meeting` (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
+  Commands: `jarvis` (this Mac's mic and speaker, or a paired Mac's when it connects), `jarvis serve [--meeting|--connect X]`
+  (the same, spelled out), `jarvis start|stop|restart|logs` (the 24/7 launchd service on this checkout), `jarvis pair`
+  (one code, then another Mac's mic and speaker take over while connected: `jarvis remote` is gone), `jarvis meeting`
+  (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
   project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve|timers|remind|schedule`
   (HTTP calls to the running server, `--url` for another machine), `jarvis top`, `jarvis init`, `jarvis enroll`.
   One listens at a time (`hold_lock`, `~/.config/jarvis/jarvis.lock`, which stays machine-wide so two checkouts
@@ -85,7 +86,7 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                            |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
-| Other Mac: no sound, or not heard    | `remote_audio.py` (token, one client), `defaults/remote/client.py` |
+| Other Mac: no sound, or not heard    | `remote_audio.py` (token, one client), `mac_audio.py` (handoff), `defaults/remote/client.py` |
 | Meeting: Jarvis can't hear the call  | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Meeting: the call can't hear Jarvis  | `meet_voice.py` `MeetVoice`, `defaults/meet/jarvis.js`          |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |
@@ -173,7 +174,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
   make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.
 - **All user state lives in `JARVIS_HOME`** (`packages/jarvis-core/src/jarvis_core/home.py`): `.env`, `agents.json`,
-  `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the relay token (`remote_token`, made by `jarvis remote`),
+  `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the relay token (`remote_token`, when `REMOTE_TOKEN` pins one),
   the brain's own state in `brain/` (board, worktrees, sessions, traces, skills, progress notes), and the token the
   three apps share (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env` wins over it). The installed `jarvis` uses
   `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's

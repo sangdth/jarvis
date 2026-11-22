@@ -6,9 +6,13 @@ Mac. Another Mac (or this one) runs one small script (`defaults/remote/client.py
 macOS voice processing and plays what comes back, so barge-in and "shut up" still work: the echo canceller has to
 sit where the speaker is.
 
+The routes are always mounted: while a paired Mac is connected it owns the mic and speaker, and this Mac's own
+hardware takes them back when it goes. There is no `jarvis remote` mode to switch into.
+
 Wire: `GET /client.py` serves that script; `GET /ws?token=...` is one WebSocket per listening Jarvis with 16-bit
-mono PCM at `SAMPLE_RATE` both ways. Audio frames are binary; control is JSON (`hello`, `flush`). The routes are
-registered on the one Jarvis HTTP app (`BrainServer`), so a thin client needs one host, one port and one token.
+mono PCM at `SAMPLE_RATE` both ways (local speech is resampled to it). Audio frames are binary; control is JSON
+(`hello`, `flush`). The routes are registered on the one Jarvis HTTP app (`BrainServer`), so a thin client needs
+one host, one port and one token.
 """
 
 from __future__ import annotations
@@ -16,9 +20,12 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+import numpy as np
+import soxr
 from aiohttp import WSMsgType, web
 from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, InterruptionFrame, OutputAudioRawFrame, StartFrame
@@ -98,6 +105,11 @@ class RelayHub:
         self._send_lock = asyncio.Lock()
         self.dropped_mic = 0
         self.received = 0  # bytes of mic audio from the current client, to notice a silent one
+        # The local mic and speaker hand over while a client is connected, and take over again when it goes.
+        self.on_attach: list[Callable[[], None]] = []
+        self.on_detach: list[Callable[[], None]] = []
+        self._resampler: soxr.ResampleStream | None = None
+        self._resampler_rate = 0
 
     def attach(self, ws: RelaySocket) -> bool:
         """Take the client, unless another Mac is already the mic; False means refuse it."""
@@ -106,6 +118,11 @@ class RelayHub:
         self.client = ws
         self._drain_mic()  # what the previous client left is no longer wanted
         self.connected.set()
+        for callback in self.on_attach:
+            try:
+                callback()
+            except Exception as exc:  # a handoff failure must not cost the client its connection
+                logger.warning(f"Relay: the local audio could not hand over ({exc!r}).")
         logger.info("Relay client connected: hearing its mic and speaking into its speakers.")
         return True
 
@@ -115,6 +132,12 @@ class RelayHub:
         self.client = None
         self._drain_mic()
         self.connected.clear()
+        self._reset_resampler()
+        for callback in self.on_detach:
+            try:
+                callback()
+            except Exception as exc:
+                logger.warning(f"Relay: the local audio could not take over again ({exc!r}).")
         logger.info(
             "Relay client disconnected. "
             f"To listen from another Mac again: {self.reconnect_hint()}"
@@ -136,22 +159,39 @@ class RelayHub:
             self.dropped_mic += 1
         self.mic_queue.put_nowait(pcm)
 
-    async def send_audio(self, pcm: bytes) -> float:
+    async def send_audio(self, pcm: bytes, *, sample_rate: int | None = None) -> float:
         """Send speech to the client to play; returns its length in seconds to pace the pipeline."""
+        rate = sample_rate or SAMPLE_RATE
+        seconds = len(pcm) / 2 / rate
         client = self.client
         if client is not None and pcm:
+            payload = self._at_relay_rate(pcm, rate)
             try:
                 async with self._send_lock:  # one sender at a time: a flush must not land inside a frame
-                    await asyncio.wait_for(client.send_bytes(pcm), SEND_TIMEOUT_SECS)
+                    await asyncio.wait_for(client.send_bytes(payload), SEND_TIMEOUT_SECS)
             except (ConnectionError, RuntimeError):
                 pass  # detach() logs it; the pipeline keeps running and drops frames until a client returns
             except TimeoutError:
                 logger.warning("Relay: the client stopped reading audio; dropping it until it reconnects.")
                 self.detach(client)
-        return len(pcm) / 2 / SAMPLE_RATE
+        return seconds
+
+    def _at_relay_rate(self, pcm: bytes, rate: int) -> bytes:
+        """16-bit PCM at `rate` as the 16 kHz stream the client plays; local speech is 24 kHz, the client is not."""
+        if rate == SAMPLE_RATE:
+            return pcm
+        if self._resampler is None or self._resampler_rate != rate:
+            self._resampler = soxr.ResampleStream(rate, SAMPLE_RATE, 1, dtype="int16")
+            self._resampler_rate = rate
+        return self._resampler.resample_chunk(np.frombuffer(pcm, dtype=np.int16)).tobytes()
+
+    def _reset_resampler(self) -> None:
+        self._resampler = None
+        self._resampler_rate = 0
 
     async def flush(self) -> None:
         """An interruption: the client drops what it has queued but not yet played."""
+        self._reset_resampler()  # the audio it held belongs to the sentence that was cut off
         client = self.client
         if client is None:
             return
@@ -275,8 +315,9 @@ class RemoteVoiceTransport(BaseTransport):
         if sockets:
             self.port = sockets[0].getsockname()[1]
         self.hub._hint = remote_command(advertised_hosts(), self.port)
-        logger.info(f"Relay listening on {self.host}:{self.port}: the mic and speaker of another Mac reach this Jarvis.")
-        logger.info(f"On that Mac (needs only uv, https://docs.astral.sh/uv/):\n  {self.hub.reconnect_hint()}")
+        logger.info(f"Thin client listening on {self.host}:{self.port}: another Mac's mic and speaker reach this Jarvis.")
+        logger.info(f"Pair one (`jarvis pair`); on that Mac (needs only uv, https://docs.astral.sh/uv/):\n"
+                    f"  {self.hub.reconnect_hint()}")
 
     async def stop_server(self) -> None:
         if self._runner is not None:
@@ -284,11 +325,13 @@ class RemoteVoiceTransport(BaseTransport):
             self._runner = None
 
     def announce(self) -> None:
-        """Log the command to paste, once the shared app knows the real port."""
+        """Log how a paired device connects, once the shared app knows the real port."""
         logger.info(
-            f"Relay on {self.public_host()}:{self.port}: the mic and speaker of another Mac reach this Jarvis."
+            f"Thin client on {self.public_host()}:{self.port}: a paired Mac's mic and speaker reach this Jarvis, "
+            "and take over from this Mac's while connected."
         )
-        logger.info(f"On that Mac (needs only uv, https://docs.astral.sh/uv/):\n  {self.hub.reconnect_hint()}")
+        logger.info(f"Pair one with `jarvis pair`; on that Mac (needs only uv, https://docs.astral.sh/uv/):\n"
+                    f"  {self.hub.reconnect_hint()}")
 
     async def wait_for_client(self) -> None:
         await self.hub.wait_for_client()
@@ -393,7 +436,7 @@ class RemoteVoiceTransport(BaseTransport):
 def make_transport(
     *, port: int | None = None, token: str | None = None, devices: DeviceStore | None = None
 ) -> RemoteVoiceTransport:
-    """The transport `jarvis remote` puts in place of the local mic and speaker."""
+    """The relay that a paired Mac's mic and speaker connect to (always mounted on the Jarvis server)."""
     params = TransportParams(
         audio_in_enabled=True,
         audio_out_enabled=True,

@@ -236,7 +236,9 @@ def main(argv: list[str] | None = None) -> int:
 
     launchd_p = sub.add_parser("launchd", help="Print or install the macOS LaunchAgent for this checkout")
     launchd_p.add_argument("--install", action="store_true")
-    launchd_p.add_argument("--remote", action="store_true", help="Serve another Mac's mic and speaker (thin client)")
+    launchd_p.add_argument(
+        "--remote", action="store_true", help="Deprecated and ignored: a paired Mac's mic and speaker are always served"
+    )
 
     upgrade_p = sub.add_parser(
         "upgrade",
@@ -264,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.cmd == "launchd":
-        plist_text = build_launchd_plist(["--remote"] if args.remote else [])
+        plist_text = build_launchd_plist([])  # no mode flag: the thin client is always served
         if args.install:
             target = Path(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist").expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)

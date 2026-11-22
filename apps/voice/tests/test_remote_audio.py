@@ -100,6 +100,55 @@ class TestRelayHub(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.hub.client)  # gone, so the next Mac can take the mic
 
 
+class TestRelayHandoff(unittest.IsolatedAsyncioTestCase):
+    """The local mic and speaker hand over while a paired Mac is connected, and get a clean stream back after."""
+
+    def test_attach_and_detach_run_the_handoff_callbacks(self) -> None:
+        hub = RelayHub()
+        events: list[str] = []
+        hub.on_attach.append(lambda: events.append("attach"))
+        hub.on_detach.append(lambda: events.append("detach"))
+
+        client = FakeConnection()
+        self.assertTrue(hub.attach(client))
+        self.assertFalse(hub.attach(FakeConnection()))  # a refused one is no handoff
+        hub.detach(client)
+        self.assertEqual(events, ["attach", "detach"])
+
+    def test_a_failing_handoff_callback_does_not_refuse_the_client(self) -> None:
+        hub = RelayHub()
+
+        def broken() -> None:
+            raise RuntimeError("the speaker would not stop")
+
+        hub.on_attach.append(broken)
+        client = FakeConnection()
+        with mock.patch.object(remote_audio.logger, "warning") as warning:
+            self.assertTrue(hub.attach(client))
+        self.assertIs(hub.client, client)
+        self.assertTrue(any("hand over" in str(call) for call in warning.call_args_list))
+
+    async def test_local_speech_is_resampled_to_the_clients_rate(self) -> None:
+        # This Mac speaks at 24 kHz; the thin client plays 16 kHz, and scripts already on paired Macs expect that.
+        hub = RelayHub()
+        client = FakeConnection()
+        hub.attach(client)
+        pcm = bytes(24000 * 2 // 10)  # 0.1 s of 16-bit mono at 24 kHz
+
+        self.assertAlmostEqual(await hub.send_audio(pcm, sample_rate=24000), 0.1, places=3)
+        sent = client.sent[0]
+        self.assertIsInstance(sent, bytes)
+        self.assertAlmostEqual(len(sent) / 2 / SAMPLE_RATE, 0.1, delta=0.01)  # the same 0.1 s, at 16 kHz
+
+    async def test_an_interruption_drops_the_resampler_along_with_the_client_queue(self) -> None:
+        hub = RelayHub()
+        hub.attach(FakeConnection())
+        await hub.send_audio(bytes(24000 * 2 // 10), sample_rate=24000)
+        self.assertIsNotNone(hub._resampler)
+        await hub.flush()
+        self.assertIsNone(hub._resampler)  # the tail it held belonged to the sentence that was cut off
+
+
 class TestOutputTransport(unittest.IsolatedAsyncioTestCase):
     def _transport(self) -> tuple[RemoteVoiceOutputTransport, FakeConnection]:
         hub = RelayHub()

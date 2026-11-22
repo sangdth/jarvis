@@ -56,50 +56,51 @@ async def start_all(
     *,
     connect: str | None = None,
     meeting: bool = False,
-    remote: bool = False,
 ) -> None:
     """
     Run the brain and the voice together until the pipeline ends or a restart is requested.
 
-    `remote` puts the mic and speaker on another machine and serves the thin client from this same server.
+    The thin client is always served: a paired Mac's mic and speaker reach this Jarvis on the same host and port,
+    take over from this Mac's while connected, and hand them back when they go.
     """
     from brain.cli import running
     from jarvis_core.devices import DeviceStore
+    from jarvis_voice.remote_audio import make_transport
 
     restart = asyncio.Event()
-    voice_state: dict[str, Any] = {"state": "starting", "meeting": meeting, "remote": remote, "client": None}
+    voice_state: dict[str, Any] = {
+        "state": "starting",
+        "meeting": meeting,
+        "remote": False,
+        "client": False,
+        "local_audio": True,
+    }
     devices = DeviceStore.load()
-
-    relay: Any = None
-    if remote:
-        from jarvis_voice.remote_audio import make_transport
-
-        relay = make_transport(devices=devices)
+    relay = make_transport(devices=devices)
 
     def voice_snapshot() -> dict[str, Any]:
         snapshot = dict(voice_state)
-        if relay is not None:
-            snapshot["client"] = relay.hub.client is not None
-            snapshot["port"] = relay.port
+        # Both say the same thing now that there is no separate remote mode: a paired Mac is connected right now.
+        snapshot["client"] = relay.hub.client is not None
+        snapshot["remote"] = snapshot["client"]
+        snapshot["port"] = relay.port
         return snapshot
 
-    extra_routes = relay.routes() if relay is not None else None
     async with running(
         on_restart=restart.set,
-        extra_routes=extra_routes,
+        extra_routes=relay.routes(),
         voice_snapshot=voice_snapshot,
         devices=devices,
     ) as server:
-        if relay is not None:
-            relay.port = server.cfg.brain_port
-            relay.hub._hint = _relay_hint(relay)
-            relay.announce()
+        relay.port = server.cfg.brain_port
+        relay.hub._hint = _relay_hint(relay)
+        relay.announce()
         logger.info(f"Jarvis {server.status_payload()['version']} on {server.cfg.endpoint_url}")
 
         from jarvis_voice.main import run_pipecat_harness
 
         voice = asyncio.create_task(
-            run_pipecat_harness(connect=connect, meeting=meeting, remote=remote, relay=relay, status=voice_state),
+            run_pipecat_harness(connect=connect, meeting=meeting, relay=relay, status=voice_state),
             name="jarvis-voice",
         )
         stop = asyncio.create_task(restart.wait(), name="jarvis-restart")

@@ -22,19 +22,29 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   answered. A server pinned with `OPENCODE_SERVER_PASSWORD` or a custom `url` is taken as one folder's, unfiltered.
 - **One memory.** The brain runs in the same process as the voice, so what you tell Jarvis and what the board
   learned share one home; there is no second assistant with its own memory any more.
-- **`jarvis remote` cancels echo on the other Mac, not here.** With the mic and speaker over the network, the voice
-  processing has to span the machine that plays the sound and the machine that hears it; it can't, so the client
-  runs it and sends already-cancelled audio. Limits: echo cancellation is only as good as that Mac's speaker/mic
-  pair, and anything that bypasses the client (another app on the Mac mini playing sound) is not cancelled.
+- **One ear, one mouth: a paired Mac takes them over, and there is no `jarvis remote` mode.** The relay routes are
+  mounted on every run, because a mode made the common case (a Mac mini that only ever hears a laptop) a manual
+  step, and left a paired laptop unable to connect to an already-running Jarvis. `MacVoiceTransport` holds the
+  `RelayHub`: on attach it flushes this Mac's speaker, drops its mic frames and sends speech over the socket; on
+  detach it takes both back. Limits: a mid-sentence handoff cuts that sentence, and meeting-mode call audio
+  (`MeetingAudioBridge`) still comes from the host Mac, so guests are heard only while a client is not connected —
+  a remote client is one ear, and the two sources are never mixed onto it.
+- **Echo is cancelled on the Mac that speaks, and the relayed stream is resampled.** With the mic and speaker over
+  the network, voice processing has to span the machine that plays the sound and the machine that hears it; it can't,
+  so the client runs it and sends already-cancelled audio. Limits: echo cancellation is only as good as that Mac's
+  speaker/mic pair, and anything that bypasses the client (another app on the Mac mini playing sound) is not
+  cancelled. The pipeline's local output is 24 kHz and the thin client's wire format is 16 kHz, so `RelayHub`
+  resamples on the way out rather than lowering the local speaker's quality or breaking clients already paired.
 - **The relay port trusts a token, not the network.** It is plain HTTP and WebSocket with one shared secret
   (`REMOTE_TOKEN`, else `~/.config/jarvis/remote_token`). Anyone who reads the token, or the URL it rides in, can
   talk to Jarvis: with `MASTER_CHECK=false` that means run tasks. Keep it to your own network or a VPN, set your own
   token to re-pair, and delete the file to cut every client off.
 - **One relay client at a time.** A second Mac is refused (1013) while one holds the mic; Jarvis has one ear.
   Connecting a new client after a drop does not replay what was said meanwhile.
-- **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so with
-  `jarvis remote` the scores compare that voiceprint with another Mac's mic. Usually close enough; the
-  `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling through the relay is not built.
+- **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so while a
+  paired Mac is the mic the scores compare that voiceprint with that Mac's mic; the relay logs the warning when it
+  connects. Usually close enough; the `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling
+  through the relay is not built.
 
 - **The brain moved into this repository and was renamed.** Superbrain became `apps/brain` (package `brain`) with its
   full history via `git subtree`; the Rust cockpit came out to `apps/tui` and the two histories join at one merge.

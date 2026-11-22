@@ -38,7 +38,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Master check (opt-in)             | `SpeakerVerifiedWhisperSTT` (sherpa-onnx)   | `voice_gates.py`      |
 | Background voices never interrupt | `ExternalUserTurnStrategies`                | `voice_gates.py`      |
 | Don't hear its own voice          | `MacVoiceTransport` (voice processing)      | `mac_audio.py`        |
-| Mic and speaker on another Mac    | `RemoteVoiceTransport`, `defaults/remote/`  | `remote_audio.py`     |
+| Mic and speaker on another Mac    | `MacVoiceTransport` + `RelayHub`, `defaults/remote/` | `mac_audio.py`, `remote_audio.py` |
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
 | Tidy a sentence before the model  | `TranscriptCleaner` (`CLEANUP_MODEL`)       | `cleanup.py`          |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
@@ -214,25 +214,31 @@ Everything above is an HTTP call to the one server, so the same commands work fr
 decides where the brain may work), the board, and the token in `JARVIS_HOME/brain_token`.
 
 ### Listen from another Mac (thin client, no install)
+
+The thin client is always on: a paired Mac's mic and speaker reach Jarvis on the same host and port as everything
+else, and take over from this Mac's the moment it connects (and hand them back when it stops). Nothing has to be
+switched into a "remote" mode first.
 ```bash
-jarvis remote          # on the Mac mini: serve the mic and speaker of another machine
 jarvis pair            # show a one-time code for a laptop to pair with
 ```
 `jarvis pair` prints exactly what to paste on the other Mac, which needs nothing but
 [uv](https://docs.astral.sh/uv/):
 ```bash
-curl -fsSL 'http://<mac-mini>:8640/client.py' -o ~/.local/bin/jarvis-remote.py
+curl -fsSL 'http://<mac-mini>:8643/client.py' -o ~/.local/bin/jarvis-remote.py
 uv run ~/.local/bin/jarvis-remote.py --pair 123456
 ```
 The code is single-use and good for five minutes; the laptop trades it for **its own secret**, kept in
 `~/.config/jarvis-remote/credentials.json` (0600). From then on `uv run ~/.local/bin/jarvis-remote.py` needs no
 arguments, and no token appears in a URL, a shell history or a log. Every model, agent, key and memory stays on the
 Mac mini; uv fetches four small packages (numpy, soxr, websockets, pyobjc's AVFoundation) into a cache. Ctrl+C
-stops it.
+stops it, and Jarvis goes back to its own mic and speaker.
 
 - **Talk over it, and "shut up" still works.** The mic runs through macOS voice processing on the Mac in front of
   you, so the echo canceller that lets you interrupt Jarvis sits where the speaker is. Its speech plays on that
   Mac's speakers; an interruption drops what it still had queued.
+- **A Mac with no mic works too.** On a headless Mac mini, where macOS voice processing cannot open an input, Jarvis
+  starts without one, stays quiet, and greets you when the first paired Mac connects. `jarvis status` says
+  `no local mic; waiting for a paired Mac`.
 - **One listener at a time.** A second Mac is refused while one is connected: they share one ear.
 - **Each device has its own key.** `jarvis devices` lists them; `jarvis devices revoke <id>` cuts one off
   (a lost laptop) without touching the others or the CLI. Only the machine running Jarvis — the shared token — can
@@ -242,7 +248,7 @@ stops it.
 - **The master check** compares your voiceprint, recorded with the other Mac's mic, against this one's. It usually
   still passes; watch the `[Speaker] score=` lines and lower `SPEAKER_THRESHOLD` if your own sentences are dropped.
 - **The screen is the Mac's.** `look_at_screen` captures the front window of the Mac running Jarvis.
-- **Agents, sessions, threads** work as usual: `jarvis remote connect` continues a T3 Code thread, picked there.
+- **Agents, sessions, threads** work as usual: `jarvis connect` on that Mac continues a T3 Code thread, picked there.
 
 ### Any client you want
 
@@ -335,10 +341,10 @@ says hello. Profiles live in `JARVIS_HOME/speakers/`; delete a file there to for
 - **Jarvis runs offline** ("OPENROUTER_API_KEY is not set") when `JARVIS_HOME/.env` is missing or has no
   key: run `jarvis init` again; it asks only for the keys still empty. A key that lives only in your shell is
   missing when Jarvis starts from launchd, which does not load your shell profile: put it in `.env` instead.
-- **`jarvis remote`: the other Mac hears or plays nothing.** Jarvis logs `Relay client connected`; if it logs
+- **A paired Mac hears or plays nothing.** Jarvis logs `Relay client connected`; if it logs
   `allow Microphone` three seconds later, the terminal there has no Microphone permission. `refused ... (bad token)`
-  means the URL is from an older run: paste the command `jarvis remote` prints now. `Client refused (1013)` on the
-  other Mac means a client is already connected there.
+  means the URL is from an older run: re-pair with `jarvis pair`. `Client refused (1013)` on the other Mac means
+  another Mac is already connected.
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.
 - **"Continue working on [project]" / "Open [project]"** — Continues your newest T3 Code thread in that repo.

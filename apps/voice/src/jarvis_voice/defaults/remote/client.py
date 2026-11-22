@@ -6,13 +6,16 @@
 """
 Jarvis's thin client: this Mac's mic and speaker, nothing else.
 
-Every model, agent and key stays on the Mac running `jarvis remote`; what runs here is a mic tap, a resampler and a
+Every model, agent and key stays on the Mac running Jarvis; what runs here is a mic tap, a resampler and a
 player. The mic goes through macOS voice processing (the echo canceller FaceTime uses) so Jarvis hears you over its
 own voice coming out of these speakers, and so talking over it or saying "shut up" reaches it.
 
+There is no mode to start on the other Mac: while this script runs, Jarvis hears and speaks here instead of through
+its own mic and speaker, and it goes back to them when this stops.
+
 Get it from the Mac running Jarvis (`jarvis pair` prints the command), then pair it once:
 
-    curl -fsSL 'http://<mac-mini>:8640/client.py' -o ~/.local/bin/jarvis-remote.py
+    curl -fsSL 'http://<mac-mini>:8643/client.py' -o ~/.local/bin/jarvis-remote.py
     uv run ~/.local/bin/jarvis-remote.py --pair 123456        # once, with the code Jarvis showed
 
 The pairing code becomes a secret kept in ~/.config/jarvis-remote/credentials.json (0600), so later runs need no
@@ -211,7 +214,7 @@ async def main() -> None:
     server = args.server or stored.get("server") or DEFAULT_SERVER
     if args.pair:
         if not server:
-            parser.error("no server to pair with: pass --server http://<mac-mini>:8640")
+            parser.error("no server to pair with: pass --server http://<mac-mini>:8643")
         stored = pair(server, args.pair, args.name or socket.gethostname().split(".")[0])
     token = args.token or stored.get("secret", "")
     url = args.url or stored.get("url") or DEFAULT_URL
@@ -237,7 +240,7 @@ async def main() -> None:
                       flush=True)
                 return
             except (OSError, WebSocketException, TimeoutError) as exc:
-                print(f"Not connected ({exc!r}); retrying in {RETRY_SECS:.0f}s. Is `jarvis remote` running?", flush=True)
+                print(f"Not connected ({exc!r}); retrying in {RETRY_SECS:.0f}s. Is Jarvis running?", flush=True)
             await asyncio.sleep(RETRY_SECS)
     except KeyboardInterrupt:
         pass
