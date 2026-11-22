@@ -8,8 +8,13 @@ __pycache__/
 /owner_voice.npy
 /models/
 /memory/
+# The brain's state in a dev checkout (board, worktrees, sessions, skills)
+/brain/
 /clips/
 /screen/
 /voice_data/
 /feedback/
 /remote_token
+/brain_token
+# Rust build output (the cockpit and any crate added later)
+/target/

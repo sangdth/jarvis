@@ -1,7 +1,13 @@
 """
-The `jarvis` command. Production is installed from GitHub master (`uv tool install git+...`) and updated with
-`jarvis update` and keeps its state in ~/.config/jarvis; a dev checkout runs its own code with `uv run jarvis` and
-keeps its state in the checkout. One mic, so only one may listen at a time.
+The `jarvis` command. One entry point for the three apps in this repository:
+
+- the voice harness (`apps/voice`, package `jarvis_voice`): `jarvis`, `jarvis connect`, `jarvis meeting`,
+  `jarvis remote`, `jarvis enroll`;
+- the brain daemon (`apps/superbrain`, package `superbrain`): `jarvis serve|status|add|research|improve|launchd`;
+- the cockpit (`apps/tui`, Rust binary `jarvis-top`): `jarvis top`.
+
+Production is installed from GitHub master (`uv tool install git+...`) and updated with `jarvis upgrade`;
+a dev checkout runs its own code with `uv run jarvis`. One mic, so only one may listen at a time.
 """
 
 from __future__ import annotations
@@ -17,21 +23,33 @@ from typing import IO
 
 from loguru import logger
 
-from jarvis.config import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, install_info
+from jarvis_core.home import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, install_info, workspace_root
+
+REPO_URL = "https://github.com/sangdth/jarvis"
 
 USAGE = """usage: jarvis [command]
-  (none)     listen and hand work to the agents
+  (none)     listen and hand work to the agents; Superbrain starts with it unless it is already running
   remote     listen for a thin client on the network: another Mac's mic and speaker, every model and agent here
   meeting    sit in a call with you (hears the call, speaks into Google Meet through a Chrome extension); also `--meeting`
              after `connect`
   connect    continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
   connect X  continue a session of agent X (claude, opencode or pi), picked from a list; for pi, a window open
              now (installs Jarvis's Pi extension the first time)
-  init       set up Jarvis's home (~/.config/jarvis; the checkout in dev): .env, agents.json, SOUL.md, voiceprint
+  top        open the cockpit: tasks, attempts, spend and live telemetry (the Rust TUI)
+  status     Superbrain's mode, spend, tasks and active skills
+  serve      run Superbrain on its own, as the 24/7 daemon (what `jarvis launchd --install` starts)
+  add        queue a goal or problem: `jarvis add --repo <repo> --kind goal --title ... --spec ...`
+  research   run the hypothesis fan-out on a task: `jarvis research SG-1`
+  improve    run Superbrain's skill reflection loop on recent attempts
+  launchd    print or install Superbrain's LaunchAgent (`--install`)
+  brain X    any of the Superbrain commands above, spelled out (`jarvis brain status`)
+  init       set up Jarvis's home (~/.config/jarvis; the checkout in dev): .env, agents.json, SOUL.md, brain, voiceprint
   enroll     record your voiceprint again
-  update     update the installed Jarvis to the latest GitHub master
-  uninstall  delete ~/.config/jarvis (keys, voiceprint, memory) and remove the installed jarvis command
+  upgrade    update Jarvis (an installed one from GitHub master; a dev checkout fast-forwarded to origin/master)
+  uninstall  delete the state in ~/.config/jarvis (keys, voiceprint, memory, brain) and the installed jarvis command
   --version  show which Jarvis this is: master @ commit, or dev and its folder"""
+
+BRAIN_COMMANDS = {"serve", "status", "add", "research", "improve", "launchd", "self-check"}
 
 
 def version() -> str:
@@ -43,18 +61,39 @@ def version() -> str:
     return f"dev ({checkout_root(info)})"
 
 
-def update() -> None:
+def update_installed() -> None:
+    """`uv tool upgrade` for the installed Jarvis; a checkout is upgraded by Superbrain's ff-only upgrade."""
     before = version()
     if before.startswith("dev"):
-        sys.exit(f"This is a dev checkout, {before}: update it with git pull. `jarvis update` is for the installed one.")
+        return upgrade_checkout()
     uv = shutil.which("uv")
     if uv is None:
-        sys.exit("`jarvis update` needs uv on the PATH.")
+        sys.exit("`jarvis upgrade` needs uv on the PATH.")
     if subprocess.run([uv, "tool", "upgrade", PACKAGE]).returncode != 0:
         sys.exit("Update failed; the installed Jarvis is unchanged.")
+    update_cockpit()
     # A fresh process: this one still has the old package's metadata loaded.
     after = subprocess.run([sys.executable, "-m", "jarvis.cli", "--version"], capture_output=True, text=True).stdout.strip()
     print(f"Jarvis is up to date: {after}." if after == before else f"Updated Jarvis: {before} -> {after}.")
+
+
+def update_cockpit() -> None:
+    """Rebuild the Rust cockpit in step with the Python side, when it was built and cargo is here."""
+    if shutil.which("jarvis-top") is None or shutil.which("cargo") is None:
+        return
+    print("Rebuilding the cockpit ...")
+    if subprocess.run(
+        ["cargo", "install", "--git", REPO_URL, "--locked", "--bin", "jarvis-top", "--force"],
+        capture_output=True,
+    ).returncode != 0:
+        print("The cockpit did not rebuild; `jarvis top` keeps working on the previous binary.")
+
+
+def upgrade_checkout() -> None:
+    """A dev checkout: fast-forward the whole monorepo (Python and Rust) to origin/master, then restart the daemon."""
+    from superbrain.upgrade import run_upgrade
+
+    sys.exit(run_upgrade())
 
 
 def folder_size(path: Path) -> str:
@@ -72,7 +111,8 @@ def uninstall(home: Path = SHARED_HOME) -> None:
     try:
         if home.exists():
             lock = hold_lock(home)  # a listening Jarvis is still writing memory there
-            print(f"This deletes {home} ({folder_size(home)}): API keys, SOUL.md, your voiceprint, models and memory.")
+            print(f"This deletes {home} ({folder_size(home)}): API keys, SOUL.md, your voiceprint, models, memory,")
+            print("and the brain's board, worktrees and skills.")
         if installed:
             print("It also removes the jarvis command from your PATH.")
         if not home.exists() and not installed:
@@ -90,7 +130,7 @@ def uninstall(home: Path = SHARED_HOME) -> None:
     if installed and uv and subprocess.run([uv, "tool", "uninstall", PACKAGE]).returncode != 0:
         sys.exit(f"Removing the jarvis command failed; run `uv tool uninstall {PACKAGE}` yourself.")
     print("Left in place, shared with other tools: uv, Whisper models in ~/.cache/huggingface, Ollama's bge-m3 "
-          "(`ollama rm bge-m3`).")
+          "(`ollama rm bge-m3`), and a Rust `target/` folder if you built the cockpit.")
 
 
 def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
@@ -111,20 +151,65 @@ def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
     return lock
 
 
+def cockpit_binary() -> Path | None:
+    """The built `jarvis-top`: PATH, or a cargo `target/` in this checkout (`cargo build --release`)."""
+    if found := shutil.which("jarvis-top"):
+        return Path(found)
+    root = workspace_root()
+    if root is None:
+        return None
+    candidates = [root / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
+    candidates += [root / "apps" / "tui" / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def run_cockpit(args: list[str]) -> int:
+    binary = cockpit_binary()
+    if binary is None:
+        print("`jarvis top` needs the cockpit built first:", file=sys.stderr)
+        print("  cargo build --release --manifest-path apps/tui/Cargo.toml", file=sys.stderr)
+        return 1
+    try:
+        return subprocess.call([str(binary), *args])
+    except KeyboardInterrupt:
+        return 130
+
+
+def brain(args: list[str]) -> None:
+    """Superbrain's own commands, reached through the one `jarvis` command."""
+    from superbrain.cli import main as superbrain_main
+
+    prepare_brain()
+    sys.exit(superbrain_main(args))
+
+
+def prepare_brain() -> None:
+    from jarvis.supervisor import prepare_environment
+
+    prepare_environment()
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args == ["--version"]:
         return print(version())
-    if args == ["update"]:
-        return update()
+    if args and args[0] == "brain":
+        args = args[1:] or ["status"]
+    if args and args[0] in BRAIN_COMMANDS:
+        return brain(args)
+    if args == ["upgrade"] or args == ["update"]:
+        return update_installed()
     if args == ["uninstall"]:
         return uninstall()
     if args == ["init"]:
         from jarvis.init import main as init
 
         return init()
+    if args and args[0] == "top":
+        sys.exit(run_cockpit(args[1:]))
     if args == ["enroll"]:
-        from jarvis.enroll import main as enroll  # imported here: loads the speaker model
+        prepare_brain()
+        from jarvis_voice.enroll import main as enroll  # imported here: loads the speaker model
 
         return enroll()
     flags = {"meeting": "meeting", "--meeting": "meeting", "remote": "remote"}
@@ -138,13 +223,20 @@ def main() -> None:
         sys.exit(USAGE)
     if checkout_root() and not (JARVIS_HOME / ".env").exists():
         sys.exit(f"No .env in {JARVIS_HOME}: a dev checkout uses its own. Run the T3 setup script or `uv run jarvis init`.")
+    prepare_brain()
     lock = hold_lock()  # noqa: F841 (held until exit)
     logger.info(f"Jarvis {version()}")
-    from jarvis.main import run_pipecat_harness  # imported here: loads Pipecat
+    from jarvis.supervisor import superbrain_running
+    from jarvis_voice.main import run_pipecat_harness  # imported here: loads Pipecat
 
     connect = None if not rest else rest[1] if len(rest) == 2 else "t3"
+
+    async def listen() -> None:
+        async with superbrain_running():
+            await run_pipecat_harness(connect=connect, meeting=meeting, remote=remote)
+
     try:
-        asyncio.run(run_pipecat_harness(connect=connect, meeting=meeting, remote=remote))
+        asyncio.run(listen())
     except KeyboardInterrupt:
         logger.info("Jarvis stopped.")
         sys.exit(0)

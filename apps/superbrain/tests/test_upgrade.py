@@ -306,6 +306,7 @@ def _settings(tmp_path: Path, projects_dir: Path, fake_pi: Path) -> Settings:
         _env_file=None,
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
+        self_repo_dir=projects_dir / "superbrain",
         allowed_repos="jarvis",
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",

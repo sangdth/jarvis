@@ -26,10 +26,10 @@
       "enabled": true
     },
     {
-      "id": "hermes",
-      "name": "Hermes",
-      "type": "hermes",
-      "url": "http://127.0.0.1:8642",
+      "id": "superbrain",
+      "name": "Superbrain",
+      "type": "superbrain",
+      "url": "http://127.0.0.1:8643",
       "role": "everything that is not coding: research, web lookups, notes, email, calendar, reminders, files",
       "enabled": true
     }

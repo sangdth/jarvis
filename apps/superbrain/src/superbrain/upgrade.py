@@ -14,8 +14,11 @@ from loguru import logger
 from superbrain.config import settings
 from superbrain.db import BrainDB
 
-LAUNCHD_LABEL = "com.sangdth.superbrain"
+LAUNCHD_LABEL = "com.sangdth.jarvis"
+# Python deps: `uv sync`. Rust deps: the cockpit is rebuilt, but its absence never blocks the daemon.
 DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
+RUST_FILES = ("Cargo.toml", "Cargo.lock")
+COCKPIT_MANIFEST = ("apps", "tui", "Cargo.toml")
 
 
 class GitState(enum.Enum):
@@ -122,6 +125,7 @@ def read_snapshot(repo_dir: Path) -> RepoSnapshot:
             origin_sha,
             "--",
             *DEPENDENCY_FILES,
+            *RUST_FILES,
         )
         if diff.returncode == 0:
             deps_changed = tuple(line.strip() for line in diff.stdout.splitlines() if line.strip())
@@ -199,6 +203,24 @@ def run_uv_sync(repo_dir: Path) -> int:
     return proc.returncode
 
 
+def run_cargo_build(repo_dir: Path) -> int:
+    """Rebuilds the cockpit after a Rust dependency change; a missing toolchain only warns."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        print("Rust dependency files changed, but `cargo` is not on PATH; the cockpit keeps its old build.")
+        return 127
+    print("Rust dependency files changed; rebuilding the cockpit ...")
+    proc = subprocess.run(
+        [cargo, "build", "--release", "--manifest-path", str(repo_dir.joinpath(*COCKPIT_MANIFEST))],
+        cwd=str(repo_dir),
+        check=False,
+    )
+    if proc.returncode != 0:
+        logger.error(f"cargo build failed in {repo_dir} (exit {proc.returncode}); the daemon still restarts.")
+        print("The cockpit build failed; `jarvis top` will use the previous binary. Fix it when you can.")
+    return proc.returncode
+
+
 def restart_daemon() -> int:
     """
     Restarts the launchd-managed daemon on macOS. Elsewhere (or when the agent is not
@@ -249,7 +271,7 @@ def run_upgrade(
     and restarts the daemon. Refuses on a dirty tree (unless `stash=True`) and on divergence.
     `check=True` only reports; it never changes HEAD, the index, or the worktree.
     """
-    root = (repo_dir or Path(__file__).resolve().parents[2]).resolve()
+    root = (repo_dir or settings.self_repo_dir).resolve()
     if not (root / ".git").exists():
         logger.error(f"Not a git checkout: {root}")
         print(f"Not a git checkout: {root}")
@@ -341,20 +363,20 @@ def run_upgrade(
             return 1
 
         new_head = _rev_parse(root, "HEAD") or ""
+        wanted = [*DEPENDENCY_FILES, *RUST_FILES]
         if old_head is None:
-            deps = list(DEPENDENCY_FILES)
+            deps = list(wanted)
         else:
-            dep_diff = _run_git(
-                root, "diff", "--name-only", old_head, new_head, "--", *DEPENDENCY_FILES
-            )
+            dep_diff = _run_git(root, "diff", "--name-only", old_head, new_head, "--", *wanted)
             deps = (
                 [line.strip() for line in dep_diff.stdout.splitlines() if line.strip()]
                 if dep_diff.returncode == 0
                 else []
             )
         print(f"Fast-forwarded {_short(old_head)} -> {_short(new_head)}.")
-        if deps:
-            print(f"Dependency files changed: {', '.join(deps)}")
+        python_deps = [name for name in deps if name in DEPENDENCY_FILES]
+        if python_deps:
+            print(f"Python dependency files changed: {', '.join(python_deps)}")
             sync_rc = run_uv_sync(root)
             if sync_rc != 0:
                 logger.error(f"uv sync failed in {root} (exit {sync_rc}); not restarting the daemon.")
@@ -364,7 +386,9 @@ def run_upgrade(
                 )
                 return 1
         else:
-            print("Dependency files unchanged; skipping `uv sync`.")
+            print("Python dependency files unchanged; skipping `uv sync`.")
+        if any(name in RUST_FILES for name in deps):
+            run_cargo_build(root)
 
         if not restart:
             print("Updated checkout without restarting (--no-restart).")

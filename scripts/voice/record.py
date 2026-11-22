@@ -21,8 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from jarvis.config import JARVIS_HOME
-from jarvis.speaker import SAMPLE_RATE
+from jarvis_voice.config import JARVIS_HOME
+from jarvis_voice.speaker import SAMPLE_RATE
 
 DATA_DIR = JARVIS_HOME / "voice_data"
 SENTENCES = Path(__file__).with_name("sentences.txt")
@@ -57,7 +57,7 @@ def write_wav(path: Path, pcm16: bytes) -> None:
 
 
 def main() -> None:
-    from jarvis.mac_audio import MacVoiceAudio, MicConverter  # imported here: loads AVFoundation
+    from jarvis_voice.mac_audio import MacVoiceAudio, MicConverter  # imported here: loads AVFoundation
 
     sentences = read_sentences(Path(sys.argv[1]) if len(sys.argv) > 1 else SENTENCES)
     DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)

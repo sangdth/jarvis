@@ -246,4 +246,5 @@ def test_cli_add_status_and_launchd(
 
     assert cli.main(["launchd"]) == 0
     plist_out = capsys.readouterr().out
-    assert "com.sangdth.superbrain" in plist_out
+    assert "com.sangdth.jarvis" in plist_out
+    assert "jarvis.cli" in plist_out  # the LaunchAgent runs the one command, which starts the brain

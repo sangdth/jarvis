@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
-from superbrain.config import Settings, settings
+from superbrain.config import SELF_REPOS, Settings, settings
 from superbrain.db import (
     AttemptOutcome,
     BrainDB,
@@ -59,10 +59,20 @@ SCOUT_TOOLS = "read,grep,find,ls"
 _METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
 _METRIC_CMD_RE = re.compile(r"\bMETRIC\b", re.IGNORECASE)
 PROTECTED_SELF_PATHS = {
+    # the workspace and its locks: a change here alters everyone's toolchain and dependencies
     "pyproject.toml",
-    "src/superbrain/config.py",
-    "src/superbrain/sandbox.py",
-    "src/superbrain/defaults/pi/board.ts",
+    "uv.lock",
+    "Cargo.toml",
+    "Cargo.lock",
+    # what runs the workers, and what lets them write anywhere
+    "apps/superbrain/src/superbrain/config.py",
+    "apps/superbrain/src/superbrain/sandbox.py",
+    "apps/superbrain/src/superbrain/defaults/pi/board.ts",
+    # the voice harness's own gatekeeping and entry point
+    "apps/voice/src/jarvis_voice/config.py",
+    "apps/voice/src/jarvis_voice/voice_gates.py",
+    "src/jarvis/cli.py",
+    "src/jarvis/supervisor.py",
 }
 
 
@@ -214,6 +224,11 @@ class Reconciler:
         self._loop_task: asyncio.Task[None] | None = None
         self._active_procs: dict[str, asyncio.subprocess.Process] = {}
 
+    def _repo_dir(self, repo: str) -> Path:
+        """The checkout a task works on: this repository for self tasks, else `projects_dir/<repo>`."""
+        allowed = self.db.validate_repo(repo)  # refuses anything outside ALLOWED_REPOS
+        return self.cfg.self_repo_dir if allowed in SELF_REPOS else (self.cfg.projects_dir / allowed).resolve()
+
     def _install_board_extension(self) -> Path:
         ext_dir = self.cfg.home_dir / "ext"
         ext_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -323,7 +338,7 @@ class Reconciler:
     ) -> TaskRow:
         role: WorkerRole = "builder" if task.verify_cmd else "planner"
         self._set_phase("prepare", task_id=task.id, role=role)
-        repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
+        repo_dir = self._repo_dir(task.repo)
         if not (repo_dir / ".git").exists():
             return self.db.finish_attempt(
                 task_id=task.id,
@@ -348,7 +363,7 @@ class Reconciler:
         # Fast-path for owner-approved protected self-upgrades: apply the exact pinned `approved_sha`
         # verified on the prior attempt instead of re-running Builder with guardrails disabled.
         pinned_sha = str(approved_details.get("approved_sha") or "").strip()
-        if role == "builder" and task.repo == "superbrain" and pinned_sha:
+        if role == "builder" and task.repo in SELF_REPOS and pinned_sha:
             await self._git_fetch(repo_dir)
             if await self._git_rc(repo_dir, "cat-file", "-e", f"{pinned_sha}^{{commit}}") == 0:
                 applied = await self._apply_self_upgrade(repo_dir, pinned_sha, task.id)
@@ -430,7 +445,7 @@ class Reconciler:
             # HEAD when it carries unpublished commits that origin/master does not contain; if the
             # two histories diverged, refuse rather than reset the checkout backwards.
             prefer_local_head = False
-            if task.repo == "superbrain":
+            if task.repo in SELF_REPOS:
                 base_state = await self._git_state_vs_origin_master(repo_dir)
                 if base_state is GitState.DIVERGED:
                     await self._report_self_upgrade_divergence(
@@ -513,7 +528,7 @@ class Reconciler:
 
             assert task.verify_cmd is not None
             effective_verify_cmd = task.verify_cmd
-            if task.repo == "superbrain" and self.cfg.self_upgrade_verify_cmd.strip():
+            if task.repo in SELF_REPOS and self.cfg.self_upgrade_verify_cmd.strip():
                 effective_verify_cmd = (
                     f"({task.verify_cmd}) && ({self.cfg.self_upgrade_verify_cmd})"
                 )
@@ -544,7 +559,7 @@ class Reconciler:
                     f"{verify_output}\n"
                     f"Metric {metric_val} did not satisfy metric_target {task.metric_target!r}"
                 ).strip()
-            if verified and task.repo == "superbrain":
+            if verified and task.repo in SELF_REPOS:
                 verified, baseline_out = await self._run_held_out_baseline_tests(
                     repo_dir, worktree_dir, session_dir
                 )
@@ -590,7 +605,7 @@ class Reconciler:
 
             self._set_phase("pushing", task_id=task.id, role="builder")
             git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
-            if task.repo == "superbrain":
+            if task.repo in SELF_REPOS:
                 touched_protected = await self._find_modified_protected_files(
                     worktree_dir, base_sha
                 )
@@ -634,7 +649,7 @@ class Reconciler:
                         return finished_task
 
             just_upgraded_self = False
-            if task.repo == "superbrain":
+            if task.repo in SELF_REPOS:
                 if not await self._apply_self_upgrade(repo_dir, git_sha, task.id):
                     finished_task = self.db.finish_attempt(
                         task_id=task.id,
@@ -725,9 +740,9 @@ class Reconciler:
             f"Current tasks on board:\n{tasks_summary or '(none)'}\n\n"
             f"Owner request: {user_input}\n"
             "Use `upsert_task` to create or update tasks when appropriate. "
-            "If the owner complains about a Superbrain bug/feature or asks to upgrade Superbrain "
-            "itself ('the brain', 'your code', 'superbrain'), call `upsert_task` with "
-            "`repo='superbrain'`, `kind='problem'` (for bugs/complaints) or `kind='goal'` "
+            "If the owner complains about a Superbrain bug/feature or asks to upgrade this repository "
+            "('jarvis', 'the brain', 'your code', 'superbrain'), call `upsert_task` with "
+            "`repo='jarvis'`, `kind='problem'` (for bugs/complaints) or `kind='goal'` "
             "(for new tech/upgrades), a deterministic `verify_cmd` (e.g. 'uv run pytest'), and "
             "`ready=true` so Superbrain immediately builds, verifies, and restarts itself. "
             "Reply in 1-2 concise sentences suitable to be spoken aloud."
@@ -827,7 +842,7 @@ class Reconciler:
         task = self.db.get_task(task_id)
         if task.status == "in_progress":
             raise ValueError(f"Cannot run auto-research while task {task.id!r} is in_progress.")
-        repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
+        repo_dir = self._repo_dir(task.repo)
         cwd = repo_dir if repo_dir.is_dir() else self.cfg.home_dir
         session_dir = self.cfg.sessions_dir / f"{task.id}-research"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1610,7 +1625,7 @@ class Reconciler:
         rollback_sha = self.db.record_post_upgrade_outcome(succeeded=succeeded)
         if not rollback_sha:
             return
-        repo_dir = (self.cfg.projects_dir / "superbrain").resolve()
+        repo_dir = self.cfg.self_repo_dir
         if (repo_dir / ".git").exists():
             dirty = (await self._git_out(repo_dir, "status", "--porcelain", check=False)).strip()
             if dirty:

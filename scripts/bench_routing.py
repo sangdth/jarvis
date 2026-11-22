@@ -15,13 +15,13 @@ import time
 
 import httpx
 
-from jarvis.agent_tools import agent_tools
-from jarvis.config import settings
-from jarvis.orchestrator import AgentOrchestrator
-from jarvis.prompts import system_prompt
-from jarvis.soul import load_soul
-from jarvis.state import JarvisState
-from jarvis.t3_adapter import list_projects, projects_dir
+from jarvis_core.soul import load_soul
+from jarvis_voice.agent_tools import agent_tools
+from jarvis_voice.config import settings
+from jarvis_voice.orchestrator import AgentOrchestrator
+from jarvis_voice.prompts import system_prompt
+from jarvis_voice.state import JarvisState
+from jarvis_voice.t3_adapter import list_projects, projects_dir
 
 MIN_ACCURACY = 0.95  # 91% on 2026-11-05 (DeepSeek V4 Pro, thinking on): below the bar
 
@@ -204,6 +204,9 @@ async def main(rounds: int) -> int:
     if not orchestrator.adapters:  # an empty roster tells the model no agent exists: the score would mean nothing
         print(f"No agents loaded from {settings.watch_config_path}; copy agents.json there (see README) and run again.")
         return 2
+    # The shipped roster names the brain `superbrain`; an older agents.json still calls it `hermes`.
+    non_coding = "superbrain" if "superbrain" in orchestrator.adapters else "hermes"
+    expected = lambda want: want.replace("hermes", non_coding)  # noqa: E731
     personality = load_soul().personality
     prompts = {lang: system_prompt(orchestrator, personality, language=lang) for lang in ("en", "vi")}
     tools = [{"type": "function", "function": t.to_default_dict()} for t in agent_tools()]
@@ -229,10 +232,10 @@ async def main(rounds: int) -> int:
                 resp.raise_for_status()
                 got = outcome(resp.json()["choices"][0]["message"], orchestrator.default_agent_id)
                 calls += 1
-                if got == want:
+                if got == expected(want):
                     hits += 1
                 else:
-                    misses[text if isinstance(text, str) else text[-1]["content"]] = f"{got} (want {want})"
+                    misses[text if isinstance(text, str) else text[-1]["content"]] = f"{got} (want {expected(want)})"
     for adapter in orchestrator.adapters.values():
         await adapter.stop()
 

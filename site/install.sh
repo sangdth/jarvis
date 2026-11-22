@@ -19,6 +19,15 @@ echo "Installing Jarvis. The first install downloads a few GB and takes a few mi
 uv tool install --force --python 3.12 "git+https://github.com/sangdth/jarvis@master"
 uv tool update-shell >/dev/null 2>&1 || true
 
+# The cockpit (`jarvis top`) is Rust. Build it when a toolchain is there; never block the voice setup on it.
+if command -v cargo >/dev/null 2>&1; then
+  echo "Building the cockpit (jarvis top)..."
+  cargo install --git https://github.com/sangdth/jarvis --locked --bin jarvis-top --force >/dev/null 2>&1 ||
+    echo "The cockpit did not build; \`jarvis top\` will print what to run."
+else
+  echo "No Rust toolchain, so the cockpit is skipped: \`jarvis top\` needs \`cargo install --git https://github.com/sangdth/jarvis --bin jarvis-top\`."
+fi
+
 echo
 echo "Jarvis is installed. Setting it up now (open a new terminal later to use the jarvis command)."
 # stdin is this script when piped from curl, so the questions read from the terminal.

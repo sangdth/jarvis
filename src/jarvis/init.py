@@ -1,7 +1,8 @@
 """
-`jarvis init`: set up Jarvis's home (~/.config/jarvis; the checkout in dev). Copies .env and agents.json there,
-asks for the API keys it is missing, writes SOUL.md (personality and a few settings) from a short interview, then
-offers to record the voiceprint for the master check. The name stays "Jarvis"; the speech check and the mute phrases
+`jarvis init`: set up Jarvis's home (~/.config/jarvis; the checkout in dev). Copies .env and agents.json
+there, moves a Superbrain state folder from before the merge, makes the shared brain token, asks for the API
+keys it is missing, writes SOUL.md (personality and a few settings) from a short interview, then offers to
+record the voiceprint for the master check. The name stays "Jarvis"; the speech check and the mute phrases
 depend on it.
 """
 
@@ -13,8 +14,8 @@ import shutil
 from getpass import getpass
 from pathlib import Path
 
-from jarvis.config import JARVIS_HOME, SHARED_HOME
-from jarvis.soul import DEFAULT_PROJECTS_DIR, SOUL_PATH, render_soul
+from jarvis_core.home import JARVIS_HOME, SHARED_HOME, brain_home, brain_token, migrate_legacy_brain_home, shared_dir
+from jarvis_core.soul import DEFAULT_PROJECTS_DIR, SOUL_PATH, render_soul
 
 ENV_PATH = JARVIS_HOME / ".env"
 # Keys `jarvis init` asks for; the others (OpenCode, Hermes) belong to agents the user may not run.
@@ -44,6 +45,22 @@ def copy_config(home: Path = JARVIS_HOME, defaults: Path = DEFAULTS) -> list[Pat
         target.chmod(0o600 if name == ".env" else 0o644)  # .env holds API keys
         copied.append(target)
     return copied
+
+
+def setup_brain(home: Path = JARVIS_HOME) -> list[str]:
+    """Give the brain its folder on the shared home and one bearer token; move a pre-merge Superbrain home."""
+    notes = []
+    moved = migrate_legacy_brain_home()
+    if moved is not None:
+        notes.append(f"Moved the old Superbrain state to {moved} (board, worktrees, skills and sessions are kept).")
+    brain = brain_home()
+    shared_dir(brain)
+    token_file = home / "brain_token"
+    had_token = token_file.is_file() and bool(token_file.read_text(encoding="utf-8").strip())
+    brain_token()  # writes JARVIS_HOME/brain_token (0600) unless .env or the shell already names one
+    if not had_token and token_file.is_file():
+        notes.append(f"Made a brain token in {token_file}: the daemon, Jarvis and the cockpit share it.")
+    return notes
 
 
 def ask_api_keys(env: Path = ENV_PATH) -> None:
@@ -87,6 +104,8 @@ def main() -> None:
     print("\n=== Jarvis setup ===\n")
     for path in copy_config():
         print(f"Created {path}. Check it before you run Jarvis.")
+    for note in setup_brain():
+        print(note)
     ask_api_keys()
     write = not SOUL_PATH.exists() or ask(f"{SOUL_PATH} exists. Replace it? y/N", "n").lower().startswith("y")
     if write:
@@ -105,7 +124,7 @@ def main() -> None:
 
     question = "Record your voice so Jarvis acts only on yours? It turns on MASTER_CHECK (later: `jarvis enroll`). y/N"
     if ask(question, "n").lower().startswith("y"):
-        from jarvis.enroll import main as enroll  # imported here: loads the speaker model
+        from jarvis_voice.enroll import main as enroll  # imported here: loads the speaker model
 
         enroll()
 

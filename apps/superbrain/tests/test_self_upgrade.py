@@ -23,7 +23,7 @@ async def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, str]:
 
     projects_dir = tmp_path / "Projects"
     repo_dir = projects_dir / "superbrain"
-    (repo_dir / "src" / "superbrain").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "apps" / "superbrain" / "src" / "superbrain").mkdir(parents=True, exist_ok=True)
     for cmd in [
         ["git", "init", "-b", "master"],
         ["git", "config", "user.email", "test@example.com"],
@@ -34,7 +34,7 @@ async def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, str]:
         await proc.wait()
 
     (repo_dir / "brain_mod.py").write_text("FAST_ENGINE = False\n", encoding="utf-8")
-    (repo_dir / "src" / "superbrain" / "sandbox.py").write_text("# original\n", encoding="utf-8")
+    (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").write_text("# original\n", encoding="utf-8")
     for cmd in [
         ["git", "add", "."],
         ["git", "commit", "-m", "initial brain"],
@@ -118,6 +118,7 @@ else:
     cfg = Settings(
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
+        self_repo_dir=repo_dir,
         allowed_repos="jarvis",  # superbrain is automatically included in allowed_repo_set
         superbrain_api_key="secret",
         pi_bin=str(fake_pi),
@@ -174,6 +175,7 @@ print(json.dumps({"role": "assistant", "content": "Edited brain_mod", "cost_usd"
     cfg = Settings(
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
+        self_repo_dir=repo_dir,
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",
         self_upgrade_verify_cmd="false",  # Simulate canary failure
@@ -213,7 +215,7 @@ async def test_self_upgrade_touching_protected_guardrail_requires_approval(
         """#!/usr/bin/env python3
 import json, pathlib
 wt = pathlib.Path.cwd()
-(wt / "src" / "superbrain" / "sandbox.py").write_text("# modified guardrail\\n", encoding="utf-8")
+(wt / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").write_text("# modified guardrail\\n", encoding="utf-8")
 print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_usd": 0.03}), flush=True)
 """,
         encoding="utf-8",
@@ -229,6 +231,7 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
     cfg = Settings(
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
+        self_repo_dir=repo_dir,
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",
         self_upgrade_verify_cmd="true",
@@ -251,7 +254,7 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
         assert finished is not None
         assert finished.status == "draft"
         assert restarted is False
-        assert (repo_dir / "src" / "superbrain" / "sandbox.py").read_text(
+        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").read_text(
             encoding="utf-8"
         ) == "# original\n"
 
@@ -264,7 +267,7 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
         finished2 = await reconciler.tick()
         assert finished2 is not None and finished2.status == "done"
         assert restarted is True
-        assert (repo_dir / "src" / "superbrain" / "sandbox.py").read_text(
+        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").read_text(
             encoding="utf-8"
         ) == "# modified guardrail\n"
     finally:
@@ -303,6 +306,7 @@ print(json.dumps({"role": "assistant", "content": "Hacked tests", "cost_usd": 0.
     cfg = Settings(
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
+        self_repo_dir=repo_dir,
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",
         self_upgrade_verify_cmd="pytest -q",
@@ -375,6 +379,7 @@ print(json.dumps({"role": "assistant", "content": "Done", "cost_usd": 0.01}), fl
     cfg = Settings(
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
+        self_repo_dir=repo_dir,
         allowed_repos="demo",
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",
@@ -458,7 +463,7 @@ async def test_approved_self_upgrade_pins_exact_sha_and_does_not_grant_blanket_b
     tmp_path: Path,
 ) -> None:
     projects_dir, repo_dir, _ = await _init_superbrain_repo(tmp_path)
-    (repo_dir / "src" / "superbrain" / "config.py").write_text("# orig config\n", encoding="utf-8")
+    (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "config.py").write_text("# orig config\n", encoding="utf-8")
     for cmd in [["git", "add", "."], ["git", "commit", "-m", "add config"], ["git", "push"]]:
         p = await asyncio.create_subprocess_exec(*cmd, cwd=str(repo_dir))
         await p.wait()
@@ -476,10 +481,10 @@ m.write_text(str(count))
 
 wt = pathlib.Path.cwd()
 if count == 1:
-    (wt / "src" / "superbrain" / "sandbox.py").write_text("# approved sandbox edit\\n", encoding="utf-8")
+    (wt / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").write_text("# approved sandbox edit\\n", encoding="utf-8")
 else:
     # Second unapproved edit to a DIFFERENT protected file (`config.py`)
-    (wt / "src" / "superbrain" / "config.py").write_text("# unapproved config edit\\n", encoding="utf-8")
+    (wt / "apps" / "superbrain" / "src" / "superbrain" / "config.py").write_text("# unapproved config edit\\n", encoding="utf-8")
 print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd": 0.01}}), flush=True)
 """,
         encoding="utf-8",
@@ -489,6 +494,7 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
     cfg = Settings(
         home_dir=home_dir,
         projects_dir=projects_dir,
+        self_repo_dir=repo_dir,
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",
         self_upgrade_verify_cmd="true",
@@ -516,7 +522,7 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
         finished = await reconciler.tick()
         assert finished is not None and finished.status == "done"
         assert int(marker.read_text()) == 1
-        assert (repo_dir / "src" / "superbrain" / "sandbox.py").read_text(
+        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").read_text(
             encoding="utf-8"
         ) == "# approved sandbox edit\n"
 
@@ -534,7 +540,7 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
         reconciler.restart_pending = False
         again = await reconciler.tick()
         assert again is not None and again.status == "draft"
-        assert (repo_dir / "src" / "superbrain" / "config.py").read_text(
+        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "config.py").read_text(
             encoding="utf-8"
         ) == "# orig config\n"
     finally:
