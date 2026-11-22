@@ -1,8 +1,11 @@
+import hashlib
+import io
 import os
 import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -12,6 +15,7 @@ from jarvis.speaker import (
     SAMPLE_RATE,
     SpeakerRegistry,
     cosine,
+    ensure_model,
     extract_introduced_name,
     extract_speaker_name,
     save_voiceprint,
@@ -141,6 +145,43 @@ class TestSpeaker(unittest.TestCase):
             assert david is not None
             self.assertEqual(david.clips, 2)
             self.assertGreater(cosine(np.array([0.7, 0.7], dtype=np.float32), david.voiceprint), 0.99)
+
+    def test_ensure_model_downloads_verifies_checksum_and_reuses_valid_cache(self) -> None:
+        payload = b"fake-onnx-model"
+        digest = hashlib.sha256(payload).hexdigest()
+        legacy_payload = b"legacy-onnx-model"
+        legacy_digest = hashlib.sha256(legacy_payload).hexdigest()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp) / "models" / "model.onnx"
+            with (
+                patch("jarvis.speaker.MODEL_SHA256", digest),
+                patch("jarvis.speaker._VALID_MODEL_SHA256S", {digest, legacy_digest}),
+                patch("urllib.request.urlopen", return_value=io.BytesIO(payload)) as urlopen,
+            ):
+                self.assertEqual(ensure_model(model_path), model_path)
+                self.assertEqual(model_path.read_bytes(), payload)
+                self.assertEqual(urlopen.call_count, 1)
+
+                # Cached copy with current SHA-256 skips the network.
+                self.assertEqual(ensure_model(model_path), model_path)
+                self.assertEqual(urlopen.call_count, 1)
+
+                # Cached copy from upstream's earlier export also skips the network.
+                model_path.write_bytes(legacy_payload)
+                self.assertEqual(ensure_model(model_path), model_path)
+                self.assertEqual(urlopen.call_count, 1)
+
+            bad_path = Path(tmp) / "models" / "bad.onnx"
+            with (
+                patch("jarvis.speaker.MODEL_SHA256", digest),
+                patch("jarvis.speaker._VALID_MODEL_SHA256S", {digest}),
+                patch("urllib.request.urlopen", return_value=io.BytesIO(b"corrupted")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    ensure_model(bad_path)
+                self.assertFalse(bad_path.exists())
+                self.assertFalse(bad_path.with_suffix(".part").exists())
 
 
 if __name__ == "__main__":

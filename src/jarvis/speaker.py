@@ -22,8 +22,16 @@ from jarvis.config import JARVIS_HOME
 
 SAMPLE_RATE = 16000
 MODEL_NAME = "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx"
-MODEL_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/{MODEL_NAME}"
-MODEL_SHA256 = "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5"
+# Pinned to a commit on csukuangfj's Hugging Face mirror: k2-fsa/sherpa-onnx's `speaker-recongition-models`
+# GitHub release is a rolling tag whose assets are overwritten in place when upstream re-exports them.
+MODEL_REV = "a8055d6daef723a6a4ecf4de233708575bf4994f"
+MODEL_URL = f"https://huggingface.co/csukuangfj/speaker-embedding-models/resolve/{MODEL_REV}/{MODEL_NAME}"
+MODEL_SHA256 = "c4947caf150b8502fdd75bbe4089b971ab1ec42e90ee3ba547faca2cde44d9ee"
+# Identical weights from upstream's earlier PyTorch 2.4.1 export, kept so existing installs don't re-download 25 MB.
+_VALID_MODEL_SHA256S = {
+    MODEL_SHA256,
+    "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5",
+}
 MODEL_PATH = JARVIS_HOME / "models" / MODEL_NAME
 VOICEPRINT_PATH = JARVIS_HOME / "owner_voice.npy"
 SPEAKERS_DIR = JARVIS_HOME / "speakers"
@@ -103,16 +111,17 @@ def extract_introduced_name(transcript: str) -> str | None:
 
 def ensure_model(path: Path = MODEL_PATH) -> Path:
     """Download the model once; a file with the wrong checksum is never loaded."""
-    if path.exists() and _sha256(path) == MODEL_SHA256:
+    if path.exists() and _sha256(path) in _VALID_MODEL_SHA256S:
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".part")
     logger.info(f"Downloading speaker model to {path}")
     with urllib.request.urlopen(MODEL_URL, timeout=60) as resp, tmp.open("wb") as out:
         shutil.copyfileobj(resp, out)
-    if _sha256(tmp) != MODEL_SHA256:
+    actual = _sha256(tmp)
+    if actual != MODEL_SHA256:
         tmp.unlink()
-        raise RuntimeError(f"Speaker model download failed its checksum: {MODEL_URL}")
+        raise RuntimeError(f"Speaker model download failed its checksum ({actual} != {MODEL_SHA256}): {MODEL_URL}")
     tmp.replace(path)
     return path
 
