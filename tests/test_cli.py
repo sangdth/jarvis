@@ -118,13 +118,16 @@ class HttpTest(unittest.TestCase):
 class ServiceTest(unittest.TestCase):
     def test_restart_writes_the_plist_and_kicks_launchd(self) -> None:
         with patch.object(cli, "PLIST_PATH", Path("/tmp/com.sangdth.jarvis.plist")), \
-                patch.object(cli, "sync_dependencies") as sync, patch.object(cli, "write_plist") as write, \
-                patch.object(cli, "launchd_loaded", return_value=True), patch.object(cli, "launchd_kick") as kick, \
+                patch.object(cli, "sync_dependencies") as sync, patch.object(cli, "build_cockpit") as build, \
+                patch.object(cli, "write_plist") as write, patch.object(cli, "launchd_loaded", return_value=True), \
+                patch.object(cli, "launchd_kick") as kick, patch.object(cli, "run_cockpit") as top, \
                 patch.object(cli.sys, "platform", "darwin"), patch("builtins.print"):
             cli.service_restart(["--remote"])
         sync.assert_called_once_with()
+        build.assert_called_once_with()
         write.assert_called_once_with(["--remote"])
         kick.assert_called_once_with()
+        top.assert_called_once_with([])
 
     def test_restart_keeps_the_mode_already_installed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

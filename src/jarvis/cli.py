@@ -214,13 +214,15 @@ def service_stop() -> None:
 
 
 def service_restart(serve_args: list[str] | None = None) -> None:
-    """`jarvis restart`: best-effort sync, refresh the LaunchAgent from this checkout, restart the process."""
+    """`jarvis restart`: best-effort sync, build cockpit, refresh the LaunchAgent, restart, and open `top`."""
     sync_dependencies()
+    build_cockpit()
     write_plist(serve_args if serve_args is not None else plist_serve_args())
     if sys.platform != "darwin":
         sys.exit("`jarvis restart` uses launchd; on another system stop and re-run `jarvis serve`.")
     launchd_kick() if launchd_loaded() else launchd_boot()
     print(f"Restarted {LAUNCHD_LABEL} on {version()}.")
+    run_cockpit([])
 
 
 def follow_logs() -> None:
@@ -238,18 +240,35 @@ def follow_logs() -> None:
 # --------------------------------------------------------------------------------------------------------------
 # The cockpit
 # --------------------------------------------------------------------------------------------------------------
-def cockpit_binary() -> Path | None:
-    """The built `jarvis-top`: PATH, or a cargo `target/` in this checkout."""
+def build_cockpit() -> None:
+    """Build `jarvis-top` (`cargo build --release --workspace`) from this checkout."""
     import shutil
 
+    root = workspace_root()
+    if root is None or not (root / "Cargo.toml").is_file():
+        return
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        print("`cargo` is not on PATH; skipping the cockpit build.")
+        return
+    proc = subprocess.run([cargo, "build", "--release", "--workspace"], cwd=str(root))
+    if proc.returncode != 0:
+        sys.exit("`cargo build --release --workspace` failed; the running code was not restarted.")
+
+
+def cockpit_binary() -> Path | None:
+    """The built `jarvis-top`: a cargo `target/` in this checkout, or PATH."""
+    import shutil
+
+    root = workspace_root()
+    if root is not None:
+        candidates = [root / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
+        candidates += [root / "apps" / "tui" / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
+        if built := next((path for path in candidates if path.is_file()), None):
+            return built
     if found := shutil.which("jarvis-top"):
         return Path(found)
-    root = workspace_root()
-    if root is None:
-        return None
-    candidates = [root / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
-    candidates += [root / "apps" / "tui" / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
-    return next((path for path in candidates if path.is_file()), None)
+    return None
 
 
 def run_cockpit(args: list[str]) -> int:
