@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SUPERBRAIN_HOME = Path("~/.config/superbrain").expanduser()
+# `SUPERBRAIN_HOME` selects the state directory (default `~/.config/superbrain`); the Rust
+# dashboard (`tui/`) resolves the same variable so both processes always agree on paths.
+SUPERBRAIN_HOME = Path(
+    os.environ.get("SUPERBRAIN_HOME") or "~/.config/superbrain"
+).expanduser()
 
 
 class Settings(BaseSettings):

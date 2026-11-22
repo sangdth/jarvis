@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -13,6 +14,15 @@ from aiohttp import web
 from superbrain.config import Settings, settings
 from superbrain.db import BrainDB
 from superbrain.reconciler import Reconciler
+from superbrain.telemetry import (
+    EVENT_APPROVAL_REQUEST,
+    EVENT_APPROVAL_RESPONDED,
+    EVENT_HTTP_COMPLETED,
+    EVENT_HTTP_INBOUND,
+    EVENT_RUN_STATUS,
+    TelemetryHub,
+    preview,
+)
 
 _AUTONOMOUS_RE = re.compile(
     r"\b(switch\s+to\s+autonomous|start\s+(?:the\s+)?night\s+(?:mode|run)|autonomous\s+mode)\b",
@@ -58,11 +68,16 @@ class BrainServer:
     """
 
     def __init__(
-        self, db: BrainDB, reconciler: Reconciler, cfg: Settings = settings
+        self,
+        db: BrainDB,
+        reconciler: Reconciler,
+        cfg: Settings = settings,
+        hub: TelemetryHub | None = None,
     ) -> None:
         self.db = db
         self.reconciler = reconciler
         self.cfg = cfg
+        self.hub = hub if hub is not None else reconciler.hub
         self.runs: dict[str, RunRecord] = {}
         self._pi_sessions: dict[str, str] = {}
         self.app = web.Application(middlewares=[self._auth_middleware])
@@ -74,6 +89,9 @@ class BrainServer:
                 web.post("/v1/runs/{run_id}/approval", self.handle_approval),
                 web.post("/v1/runs/{run_id}/stop", self.handle_stop_run),
                 web.post("/v1/ask", self.handle_ask),
+                web.get("/v1/telemetry/events", self.handle_telemetry_events),
+                web.get("/v1/telemetry/snapshot", self.handle_telemetry_snapshot),
+                web.post("/v1/outbox/{outbox_id}/resolve", self.handle_outbox_resolve),
             ]
         )
 
@@ -130,6 +148,14 @@ class BrainServer:
         session_id = str(body.get("session_id") or run_id)
         rec = RunRecord(run_id=run_id, session_id=session_id)
         self.runs[run_id] = rec
+        self.hub.emit(
+            EVENT_HTTP_INBOUND,
+            source="macbook_hermes",
+            route="/v1/runs",
+            run_id=run_id,
+            session_id=session_id,
+            input_preview=preview(user_input),
+        )
         rec.task_handle = asyncio.create_task(self._execute_run(rec, user_input))
         return web.json_response({"run_id": run_id, "session_id": session_id})
 
@@ -183,6 +209,88 @@ class BrainServer:
             rec.subscribers.discard(queue)
         return resp
 
+    async def handle_telemetry_events(self, request: web.Request) -> web.StreamResponse:
+        """SSE stream of transient daemon telemetry for the Ratatui dashboard (`superbrain top`)."""
+        resp = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await resp.prepare(request)
+
+        queue = self.hub.subscribe()
+        try:
+            for past in self.hub.snapshot(100):
+                await resp.write(f"data: {json.dumps(past)}\n\n".encode("utf-8"))
+            await resp.write(b": superbrain telemetry connected\n\n")
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    self.hub.heartbeat(
+                        pid=os.getpid(),
+                        active_runs=sum(1 for r in self.runs.values() if r.status == "running"),
+                    )
+                    continue
+                await resp.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        finally:
+            self.hub.unsubscribe(queue)
+        return resp
+
+    async def handle_telemetry_snapshot(self, request: web.Request) -> web.Response:
+        """One-shot JSON snapshot for `curl` debugging and dashboard cold starts."""
+        try:
+            limit = int(request.query.get("limit", "100"))
+        except ValueError:
+            limit = 100
+        state = self.db.get_state()
+        return web.json_response(
+            {
+                "seq": self.hub.sequence,
+                "uptime_s": round(self.hub.uptime_seconds, 1),
+                "pid": os.getpid(),
+                "mode": state.mode,
+                "spent_today_usd": state.spent_today_usd,
+                "daily_budget_usd": state.daily_budget_usd,
+                "active_runs": [
+                    {"run_id": r.run_id, "status": r.status} for r in self.runs.values()
+                ],
+                "events": self.hub.snapshot(limit),
+            }
+        )
+
+    async def handle_outbox_resolve(self, request: web.Request) -> web.Response:
+        """Approves or rejects a queued outbox item directly from the dashboard."""
+        outbox_id = request.match_info["outbox_id"]
+        body = await self._read_json_dict(request)
+        approved = bool(body.get("approved"))
+        row = self.db.resolve_approval(outbox_id, approved)
+        if row is None:
+            return web.json_response({"error": "Outbox item not found"}, status=404)
+        if row.kind == "approval_request":
+            self.hub.emit(
+                EVENT_APPROVAL_RESPONDED,
+                outbox_id=row.id,
+                task_id=row.task_id,
+                approved=approved,
+                source="dashboard",
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "id": row.id,
+                "status": row.status,
+                "task_id": row.task_id,
+            }
+        )
+
     async def handle_approval(self, request: web.Request) -> web.Response:
         run_id = request.match_info["run_id"]
         rec = self.runs.get(run_id)
@@ -195,6 +303,12 @@ class BrainServer:
         if rec.pending_approval_future and not rec.pending_approval_future.done():
             rec.pending_approval_future.set_result(approved)
             rec.publish({"event": "approval.responded", "run_id": run_id, "approved": approved})
+            self.hub.emit(
+                EVENT_APPROVAL_RESPONDED,
+                run_id=run_id,
+                approved=approved,
+                source="hermes",
+            )
             return web.json_response({"ok": True})
 
         return web.json_response({"error": "No pending approval on this run"}, status=409)
@@ -214,6 +328,7 @@ class BrainServer:
             rec.task_handle.cancel()
         rec.status = "cancelled"
         rec.publish({"event": "run.cancelled", "run_id": run_id})
+        self.hub.emit(EVENT_RUN_STATUS, run_id=run_id, status="cancelled", source="hermes")
         return web.json_response({"ok": True})
 
     async def handle_ask(self, request: web.Request) -> web.Response:
@@ -227,11 +342,49 @@ class BrainServer:
         run_id = f"ask-{uuid.uuid4().hex[:12]}"
         rec = RunRecord(run_id=run_id, session_id=run_id)
         self.runs[run_id] = rec
+        self.hub.emit(
+            EVENT_HTTP_INBOUND,
+            source="iphone_ask",
+            route="/v1/ask",
+            run_id=run_id,
+            session_id=run_id,
+            input_preview=preview(user_input),
+        )
         await self._execute_run(rec, user_input, allow_live_approval=False)
         spoken = rec.output or rec.error or "Done."
         return web.json_response({"run_id": run_id, "status": rec.status, "spoken": spoken})
 
     async def _execute_run(
+        self, rec: RunRecord, user_input: str, *, allow_live_approval: bool = True
+    ) -> None:
+        """Wraps the run body with live telemetry bookkeeping for the dashboard."""
+        self.hub.emit(
+            EVENT_RUN_STATUS,
+            run_id=rec.run_id,
+            session_id=rec.session_id,
+            status="running",
+            input_preview=preview(user_input),
+        )
+        try:
+            await self._execute_run_inner(rec, user_input, allow_live_approval=allow_live_approval)
+        finally:
+            self.hub.emit(
+                EVENT_RUN_STATUS,
+                run_id=rec.run_id,
+                session_id=rec.session_id,
+                status=rec.status,
+                output_preview=preview(rec.output),
+                error=preview(rec.error),
+            )
+            self.hub.emit(
+                EVENT_HTTP_COMPLETED,
+                run_id=rec.run_id,
+                session_id=rec.session_id,
+                status=rec.status,
+                spoken=preview(rec.output or rec.error),
+            )
+
+    async def _execute_run_inner(
         self, rec: RunRecord, user_input: str, *, allow_live_approval: bool = True
     ) -> None:
         try:
@@ -442,6 +595,13 @@ class BrainServer:
                     "request_id": req_id,
                     "description": summary_spoken,
                 }
+            )
+            self.hub.emit(
+                EVENT_APPROVAL_REQUEST,
+                run_id=rec.run_id,
+                request_id=req_id,
+                description=preview(summary_spoken),
+                source="hermes",
             )
             try:
                 return await asyncio.wait_for(fut, timeout=120.0)

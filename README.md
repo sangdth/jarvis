@@ -51,3 +51,19 @@ Create an iOS Shortcut named **Ask Jarvis**:
    - Headers: `Authorization: Bearer <SUPERBRAIN_API_KEY>`, `Content-Type: application/json`
    - Request Body (JSON): `{"input": "<Dictated Text>"}`
 3. **Get Dictionary Value** for `spoken` -> **Speak Text**
+
+## Fullscreen dashboard (`superbrain top`)
+
+`tui/` is a Rust + Ratatui cockpit that shows the whole brain at once: a live architecture schematic,
+the streaming `pi` prompt/tool transcript, the task DAG with metric convergence, and the durable ledger
+(attempts, skills, outbox, notes, DB health + logs).
+
+```bash
+cd tui && cargo build --release && cd ..   # once
+uv run superbrain top                      # fullscreen cockpit
+```
+
+It reads `state.db` **read-only** (so it can never block the daemon's WAL writers) and subscribes to
+`GET /v1/telemetry/events` for live phase/RPC/progress events. Operator keys: `a`/`r` approve or reject a
+queued outbox approval, `m` toggles `ASSIST`/`AUTONOMOUS`, `x` stops the active run, `:` sends a
+natural-language instruction, `?` shows all keybindings. See [`tui/README.md`](tui/README.md).
