@@ -3,7 +3,7 @@ The `jarvis` command. One entry point for the three apps in this repository:
 
 - the voice harness (`apps/voice`, package `jarvis_voice`): `jarvis`, `jarvis connect`, `jarvis meeting`,
   `jarvis remote`, `jarvis enroll`;
-- the brain daemon (`apps/superbrain`, package `superbrain`): `jarvis serve|status|add|research|improve|launchd`;
+- the brain daemon (`apps/brain`, package `brain`): `jarvis serve|status|add|research|improve|launchd`;
 - the cockpit (`apps/tui`, Rust binary `jarvis-top`): `jarvis top`.
 
 Production is installed from GitHub master (`uv tool install git+...`) and updated with `jarvis upgrade`;
@@ -28,7 +28,7 @@ from jarvis_core.home import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, i
 REPO_URL = "https://github.com/sangdth/jarvis"
 
 USAGE = """usage: jarvis [command]
-  (none)     listen and hand work to the agents; Superbrain starts with it unless it is already running
+  (none)     listen and hand work to the agents; Brain starts with it unless it is already running
   remote     listen for a thin client on the network: another Mac's mic and speaker, every model and agent here
   meeting    sit in a call with you (hears the call, speaks into Google Meet through a Chrome extension); also `--meeting`
              after `connect`
@@ -36,13 +36,13 @@ USAGE = """usage: jarvis [command]
   connect X  continue a session of agent X (claude, opencode or pi), picked from a list; for pi, a window open
              now (installs Jarvis's Pi extension the first time)
   top        open the cockpit: tasks, attempts, spend and live telemetry (the Rust TUI)
-  status     Superbrain's mode, spend, tasks and active skills
-  serve      run Superbrain on its own, as the 24/7 daemon (what `jarvis launchd --install` starts)
+  status     the brain's mode, spend, tasks and active skills
+  serve      run Brain on its own, as the 24/7 daemon (what `jarvis launchd --install` starts)
   add        queue a goal or problem: `jarvis add --repo <repo> --kind goal --title ... --spec ...`
   research   run the hypothesis fan-out on a task: `jarvis research SG-1`
-  improve    run Superbrain's skill reflection loop on recent attempts
-  launchd    print or install Superbrain's LaunchAgent (`--install`)
-  brain X    any of the Superbrain commands above, spelled out (`jarvis brain status`)
+  improve    run the brain's skill reflection loop on recent attempts
+  launchd    print or install the brain's LaunchAgent (`--install`)
+  brain X    any of the Brain commands above, spelled out (`jarvis brain status`)
   init       set up Jarvis's home (~/.config/jarvis; the checkout in dev): .env, agents.json, SOUL.md, brain, voiceprint
   enroll     record your voiceprint again
   upgrade    update Jarvis (an installed one from GitHub master; a dev checkout fast-forwarded to origin/master)
@@ -62,7 +62,7 @@ def version() -> str:
 
 
 def upgrade(flags: list[str]) -> None:
-    """`jarvis upgrade`: a checkout fast-forwards (Superbrain's divergence-safe upgrade, flags and all)."""
+    """`jarvis upgrade`: a checkout fast-forwards (the brain's divergence-safe upgrade, flags and all)."""
     if version().startswith("dev"):
         return brain(["upgrade", *flags])
     if flags:
@@ -176,11 +176,11 @@ def run_cockpit(args: list[str]) -> int:
 
 
 def brain(args: list[str]) -> None:
-    """Superbrain's own commands, reached through the one `jarvis` command."""
-    from superbrain.cli import main as superbrain_main
+    """The brain's own commands, reached through the one `jarvis` command."""
+    from brain.cli import main as brain_main
 
     prepare_brain()
-    sys.exit(superbrain_main(args))
+    sys.exit(brain_main(args))
 
 
 def prepare_brain() -> None:
@@ -226,13 +226,13 @@ def main() -> None:
     prepare_brain()
     lock = hold_lock()  # noqa: F841 (held until exit)
     logger.info(f"Jarvis {version()}")
-    from jarvis.supervisor import superbrain_running
+    from jarvis.supervisor import brain_running
     from jarvis_voice.main import run_pipecat_harness  # imported here: loads Pipecat
 
     connect = None if not rest else rest[1] if len(rest) == 2 else "t3"
 
     async def listen() -> None:
-        async with superbrain_running():
+        async with brain_running():
             await run_pipecat_harness(connect=connect, meeting=meeting, remote=remote)
 
     try:

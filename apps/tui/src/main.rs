@@ -1,4 +1,4 @@
-//! `jarvis-top` — a fullscreen Ratatui cockpit for Jarvis's brain (Superbrain) daemon.
+//! `jarvis-top` — a fullscreen Ratatui cockpit for Jarvis's brain (Brain) daemon.
 //!
 //! Data planes:
 //!   * durable — `state.db` opened read-only, polled on a worker thread
@@ -33,14 +33,14 @@ use app::{App, AppEvent, LedgerTab, Modal, Pane};
 use config::Config;
 
 const HELP: &str = "\
-jarvis-top — fullscreen cockpit for Jarvis's brain (Superbrain)
+jarvis-top — fullscreen cockpit for Jarvis's brain (Brain)
 
 USAGE
   jarvis-top
 
 READS
-  $SUPERBRAIN_HOME / $JARVIS_BRAIN_HOME (default ~/.config/jarvis/brain)
-    .env         SUPERBRAIN_API_KEY, HOST, PORT
+  $BRAIN_HOME / $JARVIS_BRAIN_HOME (default ~/.config/jarvis/brain)
+    .env         BRAIN_API_KEY, HOST, PORT
     state.db     opened read-only (SQLite WAL)
     sessions/    live `pi --mode json` transcripts
     memory/progress/, logs/  notes and daemon log tail

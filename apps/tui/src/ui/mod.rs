@@ -105,7 +105,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut row0 = vec![
-        Span::styled(" SUPERBRAIN ", theme::bold(theme::PURPLE)),
+        Span::styled(" BRAIN ", theme::bold(theme::PURPLE)),
         Span::styled(format!("[{}] ", app.snapshot.state.mode), mode_style),
         Span::styled(format!("{}:{} ", app.cfg.host, app.cfg.port), theme::faint()),
         daemon,
@@ -169,7 +169,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     }
     if !app.cfg.has_api_key() {
         row1.push(Span::styled(
-            "   [no SUPERBRAIN_API_KEY — live telemetry disabled]",
+            "   [no BRAIN_API_KEY — live telemetry disabled]",
             theme::bold(theme::DANGER),
         ));
     }

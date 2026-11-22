@@ -6,9 +6,9 @@
 
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sherpa-onnx**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
-It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to the brain it runs alongside itself, **Superbrain** — goal and problem reconciler, research, notes, email, calendar. It reads out their questions and approvals and retells each finished turn in plain words.
+It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **the brain** (`brain`), the daemon it runs alongside itself: goals, research, notes, email, calendar. It reads out their questions and approvals and retells each finished turn in plain words.
 
-Jarvis is one repository of three apps: the **voice layer** (`jarvis-voice`), the **brain** (`superbrain`, an
+Jarvis is one repository of three apps: the **voice layer** (`jarvis-voice`), the **brain** (`brain`, an
 always-on daemon that starts with the voice) and the **cockpit** (`jarvis-top`, a Rust terminal dashboard over the
 brain). Python and Rust share the workspace and the state home, and the layout leaves room for a Go service or a
 React client without moving anything.
@@ -50,19 +50,19 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Seeing what it is doing           | Rust + Ratatui cockpit                      | `apps/tui/`           |
 
 The voice files above are in [`apps/voice/src/jarvis_voice/`](apps/voice/src/jarvis_voice/); the brain's are in
-[`apps/superbrain/src/superbrain/`](apps/superbrain/src/superbrain/); the `jarvis` command itself is
+[`apps/brain/src/brain/`](apps/brain/src/brain/); the `jarvis` command itself is
 [`src/jarvis/cli.py`](src/jarvis/cli.py).
 
 ### Repository layout
 
 ```
-apps/voice/         jarvis-voice: Pipecat ear, speech check, executive model, agent watchers
-apps/superbrain/    superbrain: board (SQLite), reconciler, pi workers, HTTP/SSE server
-apps/tui/           jarvis-top: the Ratatui cockpit (Rust)
+apps/voice/            jarvis-voice: Pipecat ear, speech check, executive model, agent watchers
+apps/brain/            brain: board (SQLite), reconciler, pi workers, HTTP/SSE server
+apps/tui/              jarvis-top: the Ratatui cockpit (Rust)
 packages/jarvis-core/  the shared state home, .env settings base, brain token, SOUL.md
-src/jarvis/         the `jarvis` command: init, upgrade, cockpit launcher, brain-with-voice supervisor
-schemas/            the cross-language contracts (the brain's HTTP/SSE API)
-scripts/            the speech and routing benchmarks
+src/jarvis/            the `jarvis` command: init, upgrade, cockpit launcher, brain-with-voice supervisor
+schemas/               the cross-language contracts (the brain's HTTP/SSE API)
+scripts/               the speech and routing benchmarks
 ```
 
 Each language keeps its own workspace: [uv](pyproject.toml) for Python, [Cargo](Cargo.toml) for Rust, and
@@ -155,7 +155,7 @@ what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path
 - **OpenCode** 2 runs its own service, and Jarvis finds it (`~/.local/state/opencode/service.json`); its sessions
   go in the agent's `cwd`, and requests from other projects are ignored. To use a server of your own instead, start
   it with `OPENCODE_SERVER_PASSWORD=<same value as in .env> opencode serve --port 4096` in the project folder.
-- **Superbrain** (the default for everything that is not coding) needs no setup: `jarvis` starts it on
+- **The brain** (the default for everything that is not coding) needs no setup: `jarvis` starts it on
   `127.0.0.1:8643` when nothing is listening there, and attaches to a `launchd` one otherwise
   (`jarvis launchd --install` keeps it up 24/7, overnight work included). Its board, spend and skills:
   `jarvis status`; watch it live: `jarvis top`.
@@ -188,7 +188,7 @@ Updated from a version that required enrollment? Your voiceprint stays, but the 
 
 ### The brain and the cockpit
 
-Superbrain is the part of Jarvis that keeps working when you stop talking: it holds a board of goals and problems,
+The brain is the part of Jarvis that keeps working when you stop talking: it holds a board of goals and problems,
 picks one when it is allowed to (mode `AUTONOMOUS`, under a daily budget), and runs a `pi` worker in a clean worktree
 on a branch of its own — never merging to master on its own. In `ASSIST` mode it only does what you ask for.
 
@@ -311,7 +311,7 @@ says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there t
 - **"What sessions do I have?" / "Name the threads in [project]"** — Reads out session titles, newest first.
 - **"Start a new session" / "Go back to the thread about [topic]" / "On OpenCode, continue the session about
   [topic]"** — Starts a clean session, or goes back to the earlier one whose title, branch or folder matches.
-- **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Superbrain.
+- **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Brain.
 - **Answering an agent** ("yes", "use Postgres") — Goes to the question or approval the agent is waiting on.
 - **"Stop it"** / **"Stop that"** / **"Cancel that"** / **"Stop Claude"** — Stops the agent's current turn; with
   nothing running, Jarvis says so. "Stop" stops the work, "shut up" mutes Jarvis.

@@ -10,10 +10,10 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "brain",
     "jarvis-core",
     "jarvis-harness",
     "jarvis-voice",
-    "superbrain",
 ]
 
 [[package]]
@@ -347,6 +347,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/d7/5bbeb12c44d7c4f2fb5b56abce497eb5ed9f34d85701de869acedd602619/backoff-2.2.1.tar.gz", hash = "sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba", size = 17001, upload-time = "2022-10-05T19:19:32.061Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/73/b6e24bd22e6720ca8ee9a85a0c4a2971af8497d8f3193fa05390cbd46e09/backoff-2.2.1-py3-none-any.whl", hash = "sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8", size = 15148, upload-time = "2022-10-05T19:19:30.546Z" },
+]
+
+[[package]]
+name = "brain"
+version = "0.1.0"
+source = { editable = "apps/brain" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "jarvis-core" },
+    { name = "loguru" },
+    { name = "pydantic-settings" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.10.0" },
+    { name = "jarvis-core", editable = "packages/jarvis-core" },
+    { name = "loguru", specifier = ">=0.7.2" },
+    { name = "pydantic-settings", specifier = ">=2.2.0" },
 ]
 
 [[package]]
@@ -1130,11 +1149,11 @@ name = "jarvis-harness"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "brain" },
     { name = "httpx" },
     { name = "jarvis-core" },
     { name = "jarvis-voice" },
     { name = "loguru" },
-    { name = "superbrain" },
 ]
 
 [package.dev-dependencies]
@@ -1147,11 +1166,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "brain", editable = "apps/brain" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "jarvis-core", editable = "packages/jarvis-core" },
     { name = "jarvis-voice", editable = "apps/voice" },
     { name = "loguru", specifier = ">=0.7.2" },
-    { name = "superbrain", editable = "apps/superbrain" },
 ]
 
 [package.metadata.requires-dev]
@@ -3684,25 +3703,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/48/bb/3d8757f21e9a53d9035c9eb039a777047139a16bfdbedfc7a58241c3d914/starlette-1.10.0.tar.gz", hash = "sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b", size = 2734356, upload-time = "2026-10-24T15:04:12.342Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/2e/947cfe02def9371c07cd5bf5b6b61c829e9aecb9904db02a66cfafbc1eec/starlette-1.10.0-py3-none-any.whl", hash = "sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4", size = 80571, upload-time = "2026-10-24T15:04:10.371Z" },
-]
-
-[[package]]
-name = "superbrain"
-version = "0.1.0"
-source = { editable = "apps/superbrain" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "jarvis-core" },
-    { name = "loguru" },
-    { name = "pydantic-settings" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiohttp", specifier = ">=3.10.0" },
-    { name = "jarvis-core", editable = "packages/jarvis-core" },
-    { name = "loguru", specifier = ">=0.7.2" },
-    { name = "pydantic-settings", specifier = ">=2.2.0" },
 ]
 
 [[package]]

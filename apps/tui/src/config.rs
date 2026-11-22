@@ -46,7 +46,8 @@ impl Config {
             .or_else(|| lookup("PORT"))
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(8643);
-        let api_key = lookup("SUPERBRAIN_API_KEY")
+        let api_key = lookup("BRAIN_API_KEY")
+            .or_else(|| lookup("SUPERBRAIN_API_KEY")) // the name before the rename
             .or_else(|| read_token(&jarvis_home.join("brain_token")))
             .or_else(|| read_token(&home.join("brain_token")))
             .unwrap_or_default();
@@ -74,10 +75,10 @@ impl Config {
     }
 }
 
-/// The brain's state folder: `SUPERBRAIN_HOME`/`JARVIS_BRAIN_HOME`, else `JARVIS_HOME/brain`, else the
-/// pre-merge `~/.config/superbrain` until `jarvis init` moves it.
+/// The brain's state folder: `BRAIN_HOME` (or the pre-rename `SUPERBRAIN_HOME`), else `JARVIS_HOME/brain`,
+/// else — for an installed Jarvis only — the pre-merge `~/.config/superbrain` until `jarvis init` moves it.
 pub fn brain_home(jarvis_home: &std::path::Path) -> PathBuf {
-    let explicit = std::env::var("JARVIS_BRAIN_HOME")
+    let explicit = std::env::var("BRAIN_HOME")
         .ok()
         .or_else(|| std::env::var("SUPERBRAIN_HOME").ok())
         .filter(|v| !v.trim().is_empty());
@@ -86,7 +87,7 @@ pub fn brain_home(jarvis_home: &std::path::Path) -> PathBuf {
     }
     let fresh = jarvis_home.join("brain");
     let legacy = expand_path("~/.config/superbrain");
-    if !fresh.exists() && legacy.exists() {
+    if !fresh.exists() && jarvis_home == expand_path("~/.config/jarvis") && legacy.exists() {
         legacy
     } else {
         fresh
@@ -153,11 +154,11 @@ mod tests {
         let path = dir.join(".env");
         std::fs::write(
             &path,
-            "# comment\nSUPERBRAIN_API_KEY=\"abc123\"\nBRAIN_PORT=9999\nexport BRAIN_HOST=0.0.0.0\n",
+            "# comment\nBRAIN_API_KEY=\"abc123\"\nBRAIN_PORT=9999\nexport BRAIN_HOST=0.0.0.0\n",
         )
         .unwrap();
         let parsed = parse_env_file(&path);
-        assert_eq!(parsed.get("SUPERBRAIN_API_KEY").unwrap(), "abc123");
+        assert_eq!(parsed.get("BRAIN_API_KEY").unwrap(), "abc123");
         assert_eq!(parsed.get("BRAIN_PORT").unwrap(), "9999");
         assert_eq!(parsed.get("BRAIN_HOST").unwrap(), "0.0.0.0");
         let _ = std::fs::remove_dir_all(&dir);

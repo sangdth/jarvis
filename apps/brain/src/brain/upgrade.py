@@ -11,8 +11,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from superbrain.config import settings
-from superbrain.db import BrainDB
+from brain.config import settings
+from brain.db import BrainDB
 
 LAUNCHD_LABEL = "com.sangdth.jarvis"
 # Python deps: `uv sync`. Rust deps: the cockpit is rebuilt, but its absence never blocks the daemon.
@@ -187,7 +187,7 @@ def _divergence_message(snapshot: RepoSnapshot) -> str:
         "Suggested remedy (saves your local commits to a backup branch first):\n"
         f"  git -C {snapshot.repo_dir} branch backup/{stamp} HEAD\n"
         f"  git -C {snapshot.repo_dir} rebase origin/master\n"
-        "Then re-run: uv run superbrain upgrade\n"
+        "Then re-run: uv run jarvis upgrade\n"
         "(or, if the local commits are disposable: git reset --hard origin/master)"
     )
 
@@ -240,7 +240,7 @@ def restart_daemon() -> int:
     if loaded.returncode != 0:
         print(
             f"LaunchAgent {LAUNCHD_LABEL} is not loaded in {domain}; restart the daemon manually:\n"
-            f"  uv run superbrain launchd --install   # or stop the running process for KeepAlive"
+            f"  uv run jarvis launchd --install   # or stop the running process for KeepAlive"
         )
         return 0
     kick = subprocess.run(
@@ -341,7 +341,7 @@ def run_upgrade(
 
         if snapshot.dirty_entries:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            stash_message = f"superbrain-upgrade-{stamp}"
+            stash_message = f"brain-upgrade-{stamp}"
             stashed = _run_git(root, "stash", "push", "-u", "-m", stash_message)
             if stashed.returncode != 0:
                 detail = (stashed.stderr or stashed.stdout).strip()

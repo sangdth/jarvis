@@ -4,11 +4,11 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from superbrain.config import Settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
-from superbrain.server import BrainServer
-from superbrain.telemetry import (
+from brain.config import Settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
+from brain.server import BrainServer
+from brain.telemetry import (
     EVENT_BOARD_RPC,
     EVENT_HTTP_INBOUND,
     TelemetryHub,
@@ -21,7 +21,7 @@ def _make_brain(tmp_path: Path, hub: TelemetryHub | None = None) -> tuple[BrainS
         home_dir=tmp_path / "home",
         projects_dir=tmp_path / "Projects",
         allowed_repos="jarvis",
-        superbrain_api_key="secret-token",
+        brain_api_key="secret-token",
         sandbox_enabled=False,
     )
     (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)

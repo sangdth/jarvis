@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from superbrain.db import AttemptRow, BrainDB, SkillRow
+from brain.db import AttemptRow, BrainDB, SkillRow
 
 ProposalAction = Literal["create", "update", "append", "retire"]
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FORBIDDEN_SKILL_PATTERNS = (
-    re.compile(r"SUPERBRAIN_RPC_SOCK", re.IGNORECASE),
+    re.compile(r"BRAIN_RPC_SOCK", re.IGNORECASE),
     re.compile(r"\bstate\.db\b", re.IGNORECASE),
     re.compile(r"\b(?:curl|wget|nc|netcat)\s+https?://", re.IGNORECASE),
     re.compile(r"\bbase64\s+(?:-d|--decode)\b", re.IGNORECASE),

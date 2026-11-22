@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from superbrain.db import BrainDB
+from brain.db import BrainDB
 
 
 def test_allowed_repos_blocks_hamahakki_and_traversal(tmp_path: Path) -> None:
@@ -207,7 +207,7 @@ def test_cli_add_status_and_launchd(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from superbrain import cli
+    from brain import cli
 
     test_cfg = cli.settings.model_copy(
         update={

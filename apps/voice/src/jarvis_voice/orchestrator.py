@@ -22,15 +22,15 @@ ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
     "claude_code": ClaudeCodeAdapter,
     "opencode_sse": OpenCodeSSEAdapter,
     "hermes": HermesAdapter,  # a separate Hermes Agent, if one runs
-    "superbrain": HermesAdapter,  # the brain in this repository: same wire protocol, its own token
+    "brain": HermesAdapter,  # the brain in this repository: same wire protocol, its own token
     "t3": T3Adapter,
 }
 
 
 def make_adapter(cfg: WatchedAgentConfig, state: JarvisState, adapter_cls: type[BaseAgentAdapter]) -> BaseAgentAdapter:
     """Builds an adapter; the brain's token is its own, so it never borrows a Hermes key."""
-    if cfg.type == "superbrain":
-        return HermesAdapter(cfg, state, api_key=settings.superbrain_api_key)
+    if cfg.type == "brain":
+        return HermesAdapter(cfg, state, api_key=settings.brain_api_key)
     return adapter_cls(cfg, state)
 
 

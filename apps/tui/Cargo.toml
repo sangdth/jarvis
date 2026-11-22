@@ -2,7 +2,7 @@
 name = "jarvis-top"
 version = "0.1.0"
 edition = "2021"
-description = "Fullscreen Ratatui cockpit for Jarvis's brain (Superbrain)"
+description = "Fullscreen Ratatui cockpit for Jarvis's brain (Brain)"
 license = "AGPL-3.0-only"
 
 [[bin]]

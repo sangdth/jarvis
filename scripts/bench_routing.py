@@ -204,8 +204,8 @@ async def main(rounds: int) -> int:
     if not orchestrator.adapters:  # an empty roster tells the model no agent exists: the score would mean nothing
         print(f"No agents loaded from {settings.watch_config_path}; copy agents.json there (see README) and run again.")
         return 2
-    # The shipped roster names the brain `superbrain`; an older agents.json still calls it `hermes`.
-    non_coding = "superbrain" if "superbrain" in orchestrator.adapters else "hermes"
+    # The shipped roster names the brain `brain`; an older agents.json still calls it `hermes`.
+    non_coding = "brain" if "brain" in orchestrator.adapters else "hermes"
     expected = lambda want: want.replace("hermes", non_coding)  # noqa: E731
     personality = load_soul().personality
     prompts = {lang: system_prompt(orchestrator, personality, language=lang) for lang in ("en", "vi")}

@@ -1,14 +1,14 @@
-# Superbrain (the brain)
+# Brain
 
-An always-on goal and problem reconciler. It lives in this repository as `apps/superbrain` and **always runs with
+An always-on goal and problem reconciler. It lives in this repository as `apps/brain` and **always runs with
 Jarvis**: `jarvis` starts it in-process on `127.0.0.1:8643` when nothing is listening there, and attaches to the
 24/7 `launchd` daemon otherwise (see `src/jarvis/supervisor.py`). It is driven from the voice harness
-(`HermesAdapter`, agent type `superbrain`), the cockpit (`apps/tui`), or an iPhone Shortcut over Tailscale
+(`HermesAdapter`, agent type `brain`), the cockpit (`apps/tui`), or an iPhone Shortcut over Tailscale
 (`POST /v1/ask`). Plan and history: `docs/super-brain-plan.md`, `docs/architecture.md`.
 
 ## Commands
 
-Run from the repository root. `jarvis …` is the documented surface; `uv run superbrain …` is the same code.
+Run from the repository root. `jarvis …` is the documented surface; `uv run python -m brain.cli …` is the same code.
 
 - Install / sync: `uv sync`
 - Run the daemon: `jarvis serve` (what the LaunchAgent starts) — or simply `jarvis`, which starts it with the voice
@@ -20,14 +20,14 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run su
 - Update the checkout and restart the daemon: `jarvis upgrade` (`--check`, `--stash`, `--no-restart`, `--fetch`)
 - Cockpit: `jarvis top` (Rust, `apps/tui`; build once with `cargo build --release --workspace`)
 - Lint & types: `uv run ruff check apps packages tests` and `uv run mypy` (whole repo, one config)
-- Tests: `uv run pytest` (this app's suite is `apps/superbrain/tests`); cockpit: `cargo test --workspace`
+- Tests: `uv run pytest` (this app's suite is `apps/brain/tests`); cockpit: `cargo test --workspace`
   and `cargo clippy --workspace --all-targets -- -D warnings`
 
 ## Architecture & Rules
 
 - **AGPL-3.0-only**, one license for the whole repository (`/LICENSE`).
-- **State lives in the brain home** (`jarvis_core.brain_home()`, `JARVIS_HOME/brain` by default; `SUPERBRAIN_HOME`
-  or `JARVIS_BRAIN_HOME` overrides it, and a pre-merge `~/.config/superbrain` is read until `jarvis init` moves it):
+- **State lives in the brain home** (`jarvis_core.brain_home()`, `JARVIS_HOME/brain` by default; `BRAIN_HOME`
+  overrides it, and a pre-merge `~/.config/superbrain` is read until `jarvis init` moves it):
   `.env` (shared: `JARVIS_HOME/.env` wins), `state.db` (SQLite WAL, the only writer), `worktrees/<task_id>` (`0700`),
   `sessions/<task_id>`, `traces/attempt-<id>.json`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created
   personal skills), and `memory/progress/<task_id>.md` (handoff + deterministic negative-result ledger).
@@ -61,20 +61,20 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run su
   - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; `append`/`update` requires $\ge 1$
     attempt ID plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any
     skill with 2 failures and 0 successes after an update automatically rolls back or retires.
-- **Self-upgrading this repository (`repo = 'jarvis'`, `superbrain` still accepted):**
-  - `"jarvis"` is always in `allowed_repo_set` (`config.SELF_REPO`); the checkout is `config.self_repo_dir`, the running
+- **Self-upgrading this repository (`repo = 'jarvis'`, `brain` still accepted):**
+  - `"jarvis"` and `"brain"` are always in `allowed_repo_set` (`config.SELF_REPOS`); the checkout is `config.self_repo_dir`, the running
     one in dev (`SELF_REPO_DIR` pins another). The owner asking to upgrade "jarvis", "the brain", "your code" or
-    "superbrain" queues a `ready=true` task there and `server.py` executes it immediately.
+    "brain" queues a `ready=true` task there and `server.py` executes it immediately.
   - **Divergence-safe base:** before a self-upgrade worktree is prepared, `reconciler.py` fetches and classifies local
     `HEAD` vs `origin/master` with the pure `upgrade.classify_git_state` helper
     (`UpToDate | FastForward | LocalAhead | Diverged`). The worktree is based on `origin/master` unless local `HEAD`
     has genuinely unpublished commits ahead of it; a diverged checkout is refused with a `blocker` outbox item rather
     than resetting anything backwards.
-  - Every self build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, the `superbrain self-check` canary,
+  - Every self build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, the `brain self-check` canary,
     then `cargo test` for the cockpit when cargo is on PATH) **plus** the pre-edit baseline held-out suite in
-    `apps/superbrain/tests` against the candidate worktree before the checkout is updated.
+    `apps/brain/tests` against the candidate worktree before the checkout is updated.
   - Edits touching `PROTECTED_SELF_PATHS` (`pyproject.toml`, `uv.lock`, `Cargo.toml`, `Cargo.lock`,
-    `apps/superbrain/src/superbrain/{config,sandbox}.py`, `apps/superbrain/src/superbrain/defaults/pi/board.ts`,
+    `apps/brain/src/brain/{config,sandbox}.py`, `apps/brain/src/brain/defaults/pi/board.ts`,
     `apps/voice/src/jarvis_voice/{config,voice_gates}.py`, `src/jarvis/{cli,supervisor}.py`), or modifying/deleting
     existing files under `tests/`, pin the verified `approved_sha` on `origin/brain/<task_id>` and require owner
     approval before that exact commit is applied. Verified upgrades record `last_good_sha` in `system_state`, update the
@@ -96,7 +96,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run su
     `master`.
 - **Worktree & OS sandbox confinement (`sandbox.py` + `defaults/pi/board.ts`):**
   - `board.ts` resolves every `edit` / `write` / `edit_and_run` target via `realpathSync`, blocks writes outside
-    `SUPERBRAIN_WORKTREE_DIR`, blocks `git push` from workers, and blocks modifying/deleting tests on `problem` tasks.
+    `BRAIN_WORKTREE_DIR`, blocks `git push` from workers, and blocks modifying/deleting tests on `problem` tasks.
   - On macOS, `reconciler.py` wraps `Planner`, `Builder`, `Improver`, and `Scout` runs in `sandbox-exec` so workers
     cannot write outside their allowed directories or read `~/.ssh`, `.env`, `state.db*`, or sealed `traces/` (except
     `Improver`, which reads `traces/`).
@@ -105,7 +105,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run su
   `record_note`, `defer_for_approval`).
 - **The voice's protocol, served here (`server.py`):** `POST /v1/runs`, `GET /v1/runs/{id}`,
   `GET /v1/runs/{id}/events`, `POST /v1/runs/{id}/approval` and `POST /v1/runs/{id}/stop` with Bearer auth
-  (`SUPERBRAIN_API_KEY`, else `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` ->
+  (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` ->
   `{"spoken": "..."}`) for the iPhone Shortcut over Tailscale. The contract is `schemas/openapi.json`; keep it in step.
 - **Fullscreen cockpit (`apps/tui` + `telemetry.py`):**
   - `TelemetryHub` is a dependency-free in-memory ring buffer (500 events) that fans out transient events

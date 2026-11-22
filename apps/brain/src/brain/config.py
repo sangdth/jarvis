@@ -1,4 +1,4 @@
-"""Superbrain's settings: one `.env` and one state home shared with the voice harness (`jarvis_core`)."""
+"""The brain's settings: one `.env` and one state home shared with the voice harness (`jarvis_core`)."""
 
 from __future__ import annotations
 
@@ -8,17 +8,16 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import SettingsConfigDict
 
-from jarvis_core.home import JARVIS_HOME, brain_home, workspace_root
+from jarvis_core.home import JARVIS_HOME, brain_home, brain_token, workspace_root
 from jarvis_core.settings import EnvSettings
 from jarvis_core.soul import load_soul
 
-# The checkout this daemon lives in: `repo='jarvis'` is the monorepo (voice, brain, cockpit). `superbrain`
-# still works for tasks queued before the merge, and while an old checkout is around.
+# The checkout this daemon is part of. `repo='jarvis'` is this repository (voice, brain, cockpit);
+# `repo='brain'` names the same checkout, for tasks written by voice before the app was renamed.
 SELF_REPO = "jarvis"
-LEGACY_SELF_REPO = "superbrain"
-SELF_REPOS = frozenset({SELF_REPO, LEGACY_SELF_REPO})
+SELF_REPOS = frozenset({SELF_REPO, "brain"})
 
-# `SUPERBRAIN_HOME` (or `JARVIS_BRAIN_HOME`) selects the state directory; default `JARVIS_HOME/brain`,
+# `BRAIN_HOME` selects the state directory; default `JARVIS_HOME/brain`,
 # falling back to the pre-merge `~/.config/superbrain` until `jarvis init` moves it. The Rust dashboard
 # (`apps/tui`) resolves the same variable so both processes always agree on paths.
 BRAIN_HOME = brain_home()
@@ -39,7 +38,8 @@ class Settings(EnvSettings):
     # exported for a web dev server must not move the daemon.
     brain_host: str = "127.0.0.1"
     brain_port: int = 8643
-    superbrain_api_key: str = ""
+    # Empty unless `.env` or the shell names one: the token `jarvis` makes in the state home, by default_factory
+    brain_api_key: str = Field(default_factory=brain_token)
 
     # Comma-separated relative repo paths under projects_dir (e.g. "HuggerHustle/platform-v2").
     # This repository (`jarvis`) is always allowed; nothing else is until explicitly configured.
@@ -71,7 +71,7 @@ class Settings(EnvSettings):
     auto_research_after_strikes: int = 0
     # The whole monorepo before a self-upgrade lands: Python lint, types, tests and the canary, then Rust.
     self_upgrade_verify_cmd: str = (
-        "uv run ruff check apps packages tests && uv run mypy && uv run pytest && uv run superbrain self-check"
+        "uv run ruff check apps packages tests && uv run mypy && uv run pytest && uv run jarvis self-check"
         " && if command -v cargo >/dev/null 2>&1; then cargo test --quiet --manifest-path apps/tui/Cargo.toml; fi"
     )
 
@@ -83,9 +83,7 @@ class Settings(EnvSettings):
     @property
     def allowed_repo_set(self) -> set[str]:
         configured = {item.strip().strip("/") for item in self.allowed_repos.split(",") if item.strip().strip("/")}
-        configured.add(SELF_REPO)
-        if (self.projects_dir / LEGACY_SELF_REPO).is_dir():  # a pre-merge checkout of the daemon itself
-            configured.add(LEGACY_SELF_REPO)
+        configured |= SELF_REPOS  # this repository is always allowed; nothing else is until listed
         return configured
 
     @property

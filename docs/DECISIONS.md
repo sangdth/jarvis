@@ -35,18 +35,26 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `jarvis remote` the scores compare that voiceprint with another Mac's mic. Usually close enough; the
   `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling through the relay is not built.
 
-- **Superbrain moved into this repository (`apps/superbrain`), and it moved with its history.** `git subtree` at
-  `origin/master` kept every commit, the Rust cockpit came out to `apps/tui`, and the two repositories' histories now
-  join at one merge. Limits: the old `sangdth/superbrain` repo is frozen (leave it read-only, do not push fixes there),
-  and a task already queued as `repo='superbrain'` still resolves through the alias in `config.SELF_REPOS`.
-- **One brain per machine, attach or start.** `src/jarvis/supervisor.py` probes `SUPERBRAIN_URL` with the shared token:
+- **The brain moved into this repository and was renamed.** Superbrain became `apps/brain` (package `brain`) with its
+  full history via `git subtree`; the Rust cockpit came out to `apps/tui` and the two histories join at one merge.
+  Limits: the old `sangdth/superbrain` repository is frozen (leave it read-only, do not push fixes there), and a task
+  queued before the rename as `repo='superbrain'` no longer means "this checkout" — re-point it
+  (`jarvis add --id <task> --repo brain …`) or it is treated as an ordinary folder under `projects_dir`.
+- **`brain` is the name everywhere; the old `SUPERBRAIN_*` keys are still read, never written.** Settings are
+  `BRAIN_HOME`, `BRAIN_HOST`, `BRAIN_PORT`, `BRAIN_API_KEY`, `BRAIN_URL`; the worker env vars are `BRAIN_WORKTREE_DIR`,
+  `BRAIN_RPC_SOCK`, `BRAIN_TASK_ID`, `BRAIN_TASK_KIND`, `BRAIN_ALLOWED_REPOS`, `BRAIN_SKILLS_DIR`. Two reads stay for
+  a running daemon or an old `.env`: `SUPERBRAIN_HOME` and `SUPERBRAIN_API_KEY` (Python and the cockpit, as fallbacks)
+  and the state folder `~/.config/superbrain` until `jarvis init` moves it. The separate `brain` console script is
+  gone: one command, `jarvis` (`jarvis serve|status|…`, or `uv run python -m brain.cli …` when working inside
+  `apps/brain`).
+- **One brain per machine, attach or start.** `src/jarvis/supervisor.py` probes `BRAIN_URL` with the shared token:
   a daemon answering means attach (the 24/7 LaunchAgent keeps overnight work alive across voice restarts), nothing
-  answering means run `superbrain.cli.running()` in this loop and stop it at exit. Limits: a dev checkout on a Mac
+  answering means run `brain.cli.running()` in this loop and stop it at exit. Limits: a dev checkout on a Mac
   with the daemon running attaches to that daemon (with `MASTER_CHECK` off, that means the dev voice can queue work on
-  the live board); set `SUPERBRAIN_URL`/`BRAIN_PORT` on the dev side to keep them apart. A token mismatch stops Jarvis
+  the live board); set `BRAIN_URL`/`BRAIN_PORT` on the dev side to keep them apart. A token mismatch stops Jarvis
   with a named error instead of silently starting a second daemon.
 - **One home, one `.env`, one token.** The brain's state is `JARVIS_HOME/brain` and the bearer token is
-  `JARVIS_HOME/brain_token` (0600), shared by the voice, the daemon and the cockpit; `SUPERBRAIN_API_KEY` in `.env`
+  `JARVIS_HOME/brain_token` (0600), shared by the voice, the daemon and the cockpit; `BRAIN_API_KEY` in `.env`
   wins over it. `jarvis init` moves a pre-merge `~/.config/superbrain` into place. Limits: until it is moved, an
   installed Jarvis keeps using the old folder (`brain_home()` prefers it), so two paths exist for a while; the Rust
   cockpit mirrors the same rule. Keys `HOST`/`PORT` in an old `.env` are no longer read (the defaults are

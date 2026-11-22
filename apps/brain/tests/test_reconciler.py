@@ -4,9 +4,9 @@ import asyncio
 import stat
 from pathlib import Path
 
-from superbrain.config import Settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
+from brain.config import Settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
 
 
 async def _init_repo_with_origin(tmp_path: Path, name: str = "demo") -> tuple[Path, Path]:
@@ -208,7 +208,7 @@ async def test_builder_blocked_from_upsert_rpc_and_deleting_tests(tmp_path: Path
         tmp_path / "fake_pi_bad_builder.py",
         """
 import json, os, pathlib, socket
-sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
+sock_path = os.environ["BRAIN_RPC_SOCK"]
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)
 s.sendall((json.dumps({

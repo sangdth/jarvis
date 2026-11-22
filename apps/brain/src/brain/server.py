@@ -11,10 +11,10 @@ from typing import Any
 
 from aiohttp import web
 
-from superbrain.config import Settings, settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
-from superbrain.telemetry import (
+from brain.config import Settings, settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
+from brain.telemetry import (
     EVENT_APPROVAL_REQUEST,
     EVENT_APPROVAL_RESPONDED,
     EVENT_HTTP_COMPLETED,
@@ -101,7 +101,7 @@ class BrainServer:
         request: web.Request,
         handler: Any,
     ) -> web.StreamResponse:
-        expected = self.cfg.superbrain_api_key.strip()
+        expected = self.cfg.brain_api_key.strip()
         auth = request.headers.get("Authorization", "")
         token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
         if not expected or not hmac.compare_digest(token, expected):
@@ -210,7 +210,7 @@ class BrainServer:
         return resp
 
     async def handle_telemetry_events(self, request: web.Request) -> web.StreamResponse:
-        """SSE stream of transient daemon telemetry for the Ratatui dashboard (`superbrain top`)."""
+        """SSE stream of transient daemon telemetry for the Ratatui dashboard (`brain top`)."""
         resp = web.StreamResponse(
             status=200,
             reason="OK",
@@ -227,7 +227,7 @@ class BrainServer:
         try:
             for past in self.hub.snapshot(100):
                 await resp.write(f"data: {json.dumps(past)}\n\n".encode("utf-8"))
-            await resp.write(b": superbrain telemetry connected\n\n")
+            await resp.write(b": brain telemetry connected\n\n")
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=5.0)
@@ -511,7 +511,7 @@ class BrainServer:
                     run_key=rec.run_id,
                     approval_cb=(self._make_approval_cb(rec) if allow_live_approval else None),
                 )
-                restart_note = " Restarting Superbrain daemon now." if self.reconciler.restart_pending else ""
+                restart_note = " Restarting Brain daemon now." if self.reconciler.restart_pending else ""
                 rec.output = f"Task {finished.id} finished with status {finished.status}.{restart_note}"
                 rec.status = "completed"
                 rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
@@ -533,11 +533,11 @@ class BrainServer:
                 rec.publish({"event": "run.failed", "run_id": rec.run_id, "error": rec.error})
                 return
 
-            # 3. If Planner queued a ready self-improvement task for repo='superbrain', run it immediately
+            # 3. If Planner queued a ready self-improvement task for repo='brain', run it immediately
             self_notes: list[str] = []
             for tid in res.upserted_task_ids or []:
                 t = self.db.get_task(tid)
-                if t.repo == "superbrain" and t.status == "ready" and t.verify_cmd:
+                if t.repo == "brain" and t.status == "ready" and t.verify_cmd:
                     claimed_self = self.db.claim_next_task(
                         lease_seconds=self.cfg.lease_seconds, task_id=t.id
                     )
@@ -559,7 +559,7 @@ class BrainServer:
                             )
 
             if self.reconciler.restart_pending:
-                self_notes.append("Restarting Superbrain daemon now.")
+                self_notes.append("Restarting Brain daemon now.")
             rec.output = " ".join([res.summary, *self_notes]).strip()
             rec.status = "completed"
             rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})

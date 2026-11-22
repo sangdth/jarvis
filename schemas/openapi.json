@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Superbrain HTTP/SSE contract",
+    "title": "Brain HTTP/SSE contract",
     "version": "1.0.0",
-    "description": "The brain's wire protocol: the five endpoints the voice harness drives (the HermesAdapter contract), the iPhone `/v1/ask` shortcut, and the cockpit's telemetry/operator endpoints. Every route needs `Authorization: Bearer <SUPERBRAIN_API_KEY>`; `jarvis` shares that token through JARVIS_HOME/brain_token. Clients in other languages (a React client, a Go service) generate their types from this file."
+    "description": "The brain's wire protocol: the five endpoints the voice harness drives (the HermesAdapter contract), the iPhone `/v1/ask` shortcut, and the cockpit's telemetry/operator endpoints. Every route needs `Authorization: Bearer <BRAIN_API_KEY>`; `jarvis` shares that token through JARVIS_HOME/brain_token. Clients in other languages (a React client, a Go service) generate their types from this file."
   },
   "servers": [{ "url": "http://127.0.0.1:8643" }],
   "security": [{ "bearer": [] }],

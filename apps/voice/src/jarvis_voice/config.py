@@ -51,11 +51,11 @@ class Settings(EnvSettings):
     remote_port: int = 47210
     remote_token: str = ""
 
-    # The brain (Superbrain, this repository's `apps/superbrain`): `jarvis` starts it in-process when nothing
+    # The brain (Brain, this repository's `apps/brain`): `jarvis` starts it in-process when nothing
     # answers on this URL, so goals and long-horizon work always have somewhere to go.
-    superbrain_url: str = "http://127.0.0.1:8643"
+    brain_url: str = "http://127.0.0.1:8643"
     # Its bearer token; empty = the one in JARVIS_HOME/brain_token, made on first use
-    superbrain_api_key: str = ""
+    brain_api_key: str = ""
 
     # Agent Watchers
     # Exact agents.json id that gets coding tasks when no agent is named; empty = first enabled agent

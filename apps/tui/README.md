@@ -1,12 +1,12 @@
 # jarvis-top — the cockpit (Ratatui)
 
-A single-binary, fullscreen terminal dashboard for Jarvis's brain (`apps/superbrain`). Designed to run 24/7 on a
+A single-binary, fullscreen terminal dashboard for Jarvis's brain (`apps/brain`). Designed to run 24/7 on a
 machine inside Ghostty (or any truecolor terminal) and to be readable over Tailscale SSH from a laptop or phone.
 It is one of the three apps in this repository; it never writes state, only reads it and calls the brain's API.
 
 ```
 ┌ header ──────────────────────────────────────────────────────────────────────┐
-│ SUPERBRAIN [AUTONOMOUS] 127.0.0.1:8643 ● live  phase pi_running · SG-4.2       │
+│ BRAIN [AUTONOMOUS] 127.0.0.1:8643 ● live  phase pi_running · SG-4.2       │
 │ budget ████░░░░░░░░░░░░░░░░░░░░░░ $15.76 / $200.00 (8%)  [! 1 APPROVAL]        │
 ├───────────────────────────────┬──────────────────────────────────────────────┤
 │ 1 ARCHITECTURE (live schema)  │ 2 PROMPTS (live pi JSONL stream)              │
@@ -82,7 +82,7 @@ pane and modal can be rendered headlessly.
 | File | Responsibility |
 | :--- | :--- |
 | `src/main.rs` | terminal setup, worker threads, event loop, `--render-check` / `--selftest` |
-| `src/config.rs` | `JARVIS_HOME/brain` (or `$SUPERBRAIN_HOME`) + the shared `.env` / `brain_token` |
+| `src/config.rs` | `JARVIS_HOME/brain` (or `$BRAIN_HOME`) + the shared `.env` / `brain_token` |
 | `src/db.rs` | read-only SQLite snapshot loader |
 | `src/http.rs` | loopback HTTP client + chunked-aware SSE reader |
 | `src/session.rs` | incremental JSONL tailer and `pi` turn parser |

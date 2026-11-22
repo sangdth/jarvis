@@ -126,7 +126,7 @@ fn sse_once(cfg: &Config, tx: &Sender<AppEvent>, stop: &Arc<AtomicBool>) -> Resu
         }
     }
     if !status_ok {
-        return Err("telemetry stream rejected (check SUPERBRAIN_API_KEY)".to_string());
+        return Err("telemetry stream rejected (check BRAIN_API_KEY)".to_string());
     }
     let _ = tx.send(AppEvent::Daemon(true, None));
 

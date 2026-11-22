@@ -1,5 +1,5 @@
 """
-Live telemetry bus for the Superbrain dashboard (`superbrain top`).
+Live telemetry bus for the Brain dashboard (`brain top`).
 
 `TelemetryHub` is a dependency-free, in-memory ring buffer plus fan-out bus. The daemon publishes
 transient events here (HTTP inbound, reconciler phases, `board.ts` RPC calls, `pi` progress) that are

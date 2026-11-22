@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from superbrain.config import Settings
-from superbrain.db import AttemptRow, BrainDB, check_metric_target, is_better_metric
-from superbrain.reconciler import Reconciler, extract_metric_value
-from superbrain.skills import inspect_attempt_trajectory, validate_evidence_receipt
+from brain.config import Settings
+from brain.db import AttemptRow, BrainDB, check_metric_target, is_better_metric
+from brain.reconciler import Reconciler, extract_metric_value
+from brain.skills import inspect_attempt_trajectory, validate_evidence_receipt
 
 
 async def _init_repo_with_origin(tmp_path: Path, name: str = "demo") -> Path:
@@ -277,7 +277,7 @@ async def test_research_scout_rpc_and_bfs_auto_research_hypothesis_tournament(
         r"""#!/usr/bin/env python3
 import json, os, pathlib, socket, sys
 
-if os.environ.get("SUPERBRAIN_RESEARCH_SCOUT") == "1":
+if os.environ.get("BRAIN_RESEARCH_SCOUT") == "1":
     print(json.dumps({
         "role": "assistant",
         "content": json.dumps({
@@ -292,9 +292,9 @@ if os.environ.get("SUPERBRAIN_RESEARCH_SCOUT") == "1":
     }), flush=True)
     sys.exit(0)
 
-sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
-task_id = os.environ.get("SUPERBRAIN_TASK_ID", "")
-worktree = os.environ.get("SUPERBRAIN_WORKTREE_DIR")
+sock_path = os.environ["BRAIN_RPC_SOCK"]
+task_id = os.environ.get("BRAIN_TASK_ID", "")
+worktree = os.environ.get("BRAIN_WORKTREE_DIR")
 
 def rpc(method, params):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -422,14 +422,14 @@ async def test_scout_sandbox_blocks_env_secret_and_in_place_research_preserves_s
     home_dir = tmp_path / "home"
     home_dir.mkdir(parents=True, exist_ok=True)
     secret_env = home_dir / ".env"
-    secret_env.write_text("SUPERBRAIN_API_KEY=super-secret-value\n", encoding="utf-8")
+    secret_env.write_text("BRAIN_API_KEY=super-secret-value\n", encoding="utf-8")
 
     fake_pi = tmp_path / "fake_pi_scout_sandbox.py"
     fake_pi.write_text(
         f"""#!/usr/bin/env python3
 import json, os, pathlib, socket, sys
 
-if os.environ.get("SUPERBRAIN_RESEARCH_SCOUT") == "1":
+if os.environ.get("BRAIN_RESEARCH_SCOUT") == "1":
     env_path = pathlib.Path({str(secret_env)!r})
     try:
         leaked = env_path.read_text(encoding="utf-8")
@@ -446,7 +446,7 @@ if os.environ.get("SUPERBRAIN_RESEARCH_SCOUT") == "1":
     }}), flush=True)
     sys.exit(0)
 
-sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
+sock_path = os.environ["BRAIN_RPC_SOCK"]
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)
 s.sendall((json.dumps({{"method": "research_scout", "params": {{"question": "check"}}}}) + "\\n").encode())
@@ -531,7 +531,7 @@ def test_board_ts_edit_and_run_action_fusion_end_to_end(tmp_path: Path) -> None:
     harness_dir.mkdir(parents=True)
     (harness_dir / "node_modules").symlink_to(pi_nm)
     board_src = (
-        Path(__file__).resolve().parents[1] / "src" / "superbrain" / "defaults" / "pi" / "board.ts"
+        Path(__file__).resolve().parents[1] / "src" / "brain" / "defaults" / "pi" / "board.ts"
     )
     shutil.copy2(board_src, harness_dir / "board.ts")
     driver = harness_dir / "run_test.mjs"
@@ -546,7 +546,7 @@ registerBoard({
 });
 
 const editAndRun = tools.get("edit_and_run");
-const ctx = { cwd: process.env.SUPERBRAIN_WORKTREE_DIR };
+const ctx = { cwd: process.env.BRAIN_WORKTREE_DIR };
 
 // 1. Valid fused edit + command with null timeout_seconds -> succeeds in 1 turn
 const okRes = await editAndRun.execute(
@@ -610,8 +610,8 @@ console.log("BOARD_TS_OK");
             **dict(
                 PATH=f"{Path(node_bin).parent}:/usr/bin:/bin",
                 HOME=str(tmp_path),
-                SUPERBRAIN_WORKTREE_DIR=str(worktree),
-                SUPERBRAIN_TASK_KIND="problem",
+                BRAIN_WORKTREE_DIR=str(worktree),
+                BRAIN_TASK_KIND="problem",
             )
         },
         capture_output=True,

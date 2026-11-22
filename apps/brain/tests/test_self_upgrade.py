@@ -6,15 +6,15 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from superbrain.cli import build_launchd_plist, run_self_check
-from superbrain.config import Settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
-from superbrain.server import BrainServer
+from brain.cli import build_launchd_plist, run_self_check
+from brain.config import Settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
+from brain.server import BrainServer
 
 
-async def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, str]:
-    bare_origin = tmp_path / "remotes" / "superbrain.git"
+async def _init_brain_repo(tmp_path: Path) -> tuple[Path, Path, str]:
+    bare_origin = tmp_path / "remotes" / "brain.git"
     bare_origin.parent.mkdir(parents=True, exist_ok=True)
     p = await asyncio.create_subprocess_exec(
         "git", "init", "--bare", "-b", "master", str(bare_origin)
@@ -22,8 +22,8 @@ async def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, str]:
     await p.wait()
 
     projects_dir = tmp_path / "Projects"
-    repo_dir = projects_dir / "superbrain"
-    (repo_dir / "apps" / "superbrain" / "src" / "superbrain").mkdir(parents=True, exist_ok=True)
+    repo_dir = projects_dir / "brain"
+    (repo_dir / "apps" / "brain" / "src" / "brain").mkdir(parents=True, exist_ok=True)
     for cmd in [
         ["git", "init", "-b", "master"],
         ["git", "config", "user.email", "test@example.com"],
@@ -34,7 +34,7 @@ async def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, str]:
         await proc.wait()
 
     (repo_dir / "brain_mod.py").write_text("FAST_ENGINE = False\n", encoding="utf-8")
-    (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").write_text("# original\n", encoding="utf-8")
+    (repo_dir / "apps" / "brain" / "src" / "brain" / "sandbox.py").write_text("# original\n", encoding="utf-8")
     for cmd in [
         ["git", "add", "."],
         ["git", "commit", "-m", "initial brain"],
@@ -67,24 +67,24 @@ def test_launchd_plist_includes_user_path_and_portable_pi_bin(tmp_path: Path) ->
 async def test_voice_self_upgrade_builds_verifies_updates_repo_and_restarts(
     tmp_path: Path,
 ) -> None:
-    projects_dir, repo_dir, initial_sha = await _init_superbrain_repo(tmp_path)
+    projects_dir, repo_dir, initial_sha = await _init_brain_repo(tmp_path)
     fake_pi = tmp_path / "fake_pi_upgrade.py"
     fake_pi.write_text(
         """#!/usr/bin/env python3
 import json, os, pathlib, socket
 
-sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
-worktree = os.environ.get("SUPERBRAIN_WORKTREE_DIR")
+sock_path = os.environ["BRAIN_RPC_SOCK"]
+worktree = os.environ.get("BRAIN_WORKTREE_DIR")
 
 if not worktree:
-    # Interactive Planner turn: queue ready self-upgrade task for repo='superbrain'
+    # Interactive Planner turn: queue ready self-upgrade task for repo='brain'
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(sock_path)
     req = {
         "method": "upsert_task",
         "params": {
             "kind": "goal",
-            "repo": "superbrain",
+            "repo": "brain",
             "title": "Upgrade brain engine",
             "spec": "Enable FAST_ENGINE in brain_mod.py",
             "metric_target": "FAST_ENGINE is True",
@@ -119,8 +119,8 @@ else:
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
         self_repo_dir=repo_dir,
-        allowed_repos="jarvis",  # superbrain is automatically included in allowed_repo_set
-        superbrain_api_key="secret",
+        allowed_repos="jarvis",  # brain is automatically included in allowed_repo_set
+        brain_api_key="secret",
         pi_bin=str(fake_pi),
         self_upgrade_verify_cmd="python3 -c 'import brain_mod; assert brain_mod.FAST_ENGINE'",
         sandbox_enabled=True,
@@ -138,9 +138,9 @@ else:
         assert resp.status == 200
         data = await resp.json()
         assert "passed verification and was applied" in data["spoken"]
-        assert "Restarting Superbrain daemon now." in data["spoken"]
+        assert "Restarting Brain daemon now." in data["spoken"]
 
-        # Main ~/Projects/superbrain checkout was updated to the verified commit
+        # Main ~/Projects/brain checkout was updated to the verified commit
         assert (repo_dir / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = True\n"
         # last_good_sha was recorded for automatic rollback protection
         assert db.get_state().last_good_sha == initial_sha
@@ -153,7 +153,7 @@ else:
 
 
 async def test_failed_canary_blocks_self_upgrade_and_preserves_checkout(tmp_path: Path) -> None:
-    projects_dir, repo_dir, initial_sha = await _init_superbrain_repo(tmp_path)
+    projects_dir, repo_dir, initial_sha = await _init_brain_repo(tmp_path)
     fake_pi = tmp_path / "fake_pi_bad_upgrade.py"
     fake_pi.write_text(
         """#!/usr/bin/env python3
@@ -186,7 +186,7 @@ print(json.dumps({"role": "assistant", "content": "Edited brain_mod", "cost_usd"
     try:
         t = db.upsert_task(
             kind="problem",
-            repo="superbrain",
+            repo="brain",
             title="Bad self-fix",
             spec="Fix bug",
             verify_cmd="true",
@@ -209,13 +209,13 @@ print(json.dumps({"role": "assistant", "content": "Edited brain_mod", "cost_usd"
 async def test_self_upgrade_touching_protected_guardrail_requires_approval(
     tmp_path: Path,
 ) -> None:
-    projects_dir, repo_dir, _ = await _init_superbrain_repo(tmp_path)
+    projects_dir, repo_dir, _ = await _init_brain_repo(tmp_path)
     fake_pi = tmp_path / "fake_pi_touch_sandbox.py"
     fake_pi.write_text(
         """#!/usr/bin/env python3
 import json, pathlib
 wt = pathlib.Path.cwd()
-(wt / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").write_text("# modified guardrail\\n", encoding="utf-8")
+(wt / "apps" / "brain" / "src" / "brain" / "sandbox.py").write_text("# modified guardrail\\n", encoding="utf-8")
 print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_usd": 0.03}), flush=True)
 """,
         encoding="utf-8",
@@ -242,7 +242,7 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
     try:
         db.upsert_task(
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Modify sandbox",
             spec="Change sandbox profile",
             metric_target="passes",
@@ -254,7 +254,7 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
         assert finished is not None
         assert finished.status == "draft"
         assert restarted is False
-        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").read_text(
+        assert (repo_dir / "apps" / "brain" / "src" / "brain" / "sandbox.py").read_text(
             encoding="utf-8"
         ) == "# original\n"
 
@@ -267,7 +267,7 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
         finished2 = await reconciler.tick()
         assert finished2 is not None and finished2.status == "done"
         assert restarted is True
-        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").read_text(
+        assert (repo_dir / "apps" / "brain" / "src" / "brain" / "sandbox.py").read_text(
             encoding="utf-8"
         ) == "# modified guardrail\n"
     finally:
@@ -278,7 +278,7 @@ print(json.dumps({"role": "assistant", "content": "Updated sandbox.py", "cost_us
 async def test_held_out_baseline_tests_block_reward_hacking_goal_upgrade(
     tmp_path: Path,
 ) -> None:
-    projects_dir, repo_dir, _ = await _init_superbrain_repo(tmp_path)
+    projects_dir, repo_dir, _ = await _init_brain_repo(tmp_path)
     (repo_dir / "tests").mkdir(parents=True, exist_ok=True)
     (repo_dir / "tests" / "test_invariant.py").write_text(
         "import brain_mod\ndef test_flag_is_bool():\n    assert isinstance(brain_mod.FAST_ENGINE, bool)\n",
@@ -317,7 +317,7 @@ print(json.dumps({"role": "assistant", "content": "Hacked tests", "cost_usd": 0.
     try:
         task = db.upsert_task(
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Upgrade engine",
             spec="Improve engine",
             metric_target="passes",
@@ -342,7 +342,7 @@ print(json.dumps({"role": "assistant", "content": "Hacked tests", "cost_usd": 0.
 async def test_post_upgrade_runtime_circuit_breaker_rolls_back_after_two_failures(
     tmp_path: Path,
 ) -> None:
-    projects_dir, repo_dir, initial_sha = await _init_superbrain_repo(tmp_path)
+    projects_dir, repo_dir, initial_sha = await _init_brain_repo(tmp_path)
     demo_dir = projects_dir / "demo"
     demo_dir.mkdir(parents=True, exist_ok=True)
     for cmd in [
@@ -392,7 +392,7 @@ print(json.dumps({"role": "assistant", "content": "Done", "cost_usd": 0.01}), fl
         # 1. Apply valid self-upgrade
         db.upsert_task(
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Enable FAST_ENGINE",
             spec="Turn on FAST_ENGINE",
             metric_target="FAST_ENGINE True",
@@ -423,13 +423,13 @@ print(json.dumps({"role": "assistant", "content": "Done", "cost_usd": 0.01}), fl
         assert db.get_state().last_good_sha is None
         assert restart_count == 2
         reports, _ = db.drain_digest()
-        assert any("Automatically rolled back Superbrain" in r.summary_spoken for r in reports)
+        assert any("Automatically rolled back Brain" in r.summary_spoken for r in reports)
 
-        # Next superbrain worktree branches from rolled-back HEAD, NOT the broken upgrade
+        # Next brain worktree branches from rolled-back HEAD, NOT the broken upgrade
         db.upsert_task(
             task_id="SG-2",
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Check clean base after rollback",
             spec="No-op check",
             metric_target="FAST_ENGINE False",
@@ -448,7 +448,7 @@ print(json.dumps({"role": "assistant", "content": "Done", "cost_usd": 0.01}), fl
 
 
 def test_last_good_sha_clears_once_post_upgrade_probation_succeeds(tmp_path: Path) -> None:
-    db = BrainDB(tmp_path / "state.db", allowed_repos={"superbrain", "demo"})
+    db = BrainDB(tmp_path / "state.db", allowed_repos={"brain", "demo"})
     try:
         db.set_last_good_sha("deadbeef1234")
         assert db.get_state().last_good_sha == "deadbeef1234"
@@ -462,8 +462,8 @@ def test_last_good_sha_clears_once_post_upgrade_probation_succeeds(tmp_path: Pat
 async def test_approved_self_upgrade_pins_exact_sha_and_does_not_grant_blanket_bypass(
     tmp_path: Path,
 ) -> None:
-    projects_dir, repo_dir, _ = await _init_superbrain_repo(tmp_path)
-    (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "config.py").write_text("# orig config\n", encoding="utf-8")
+    projects_dir, repo_dir, _ = await _init_brain_repo(tmp_path)
+    (repo_dir / "apps" / "brain" / "src" / "brain" / "config.py").write_text("# orig config\n", encoding="utf-8")
     for cmd in [["git", "add", "."], ["git", "commit", "-m", "add config"], ["git", "push"]]:
         p = await asyncio.create_subprocess_exec(*cmd, cwd=str(repo_dir))
         await p.wait()
@@ -481,10 +481,10 @@ m.write_text(str(count))
 
 wt = pathlib.Path.cwd()
 if count == 1:
-    (wt / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").write_text("# approved sandbox edit\\n", encoding="utf-8")
+    (wt / "apps" / "brain" / "src" / "brain" / "sandbox.py").write_text("# approved sandbox edit\\n", encoding="utf-8")
 else:
     # Second unapproved edit to a DIFFERENT protected file (`config.py`)
-    (wt / "apps" / "superbrain" / "src" / "superbrain" / "config.py").write_text("# unapproved config edit\\n", encoding="utf-8")
+    (wt / "apps" / "brain" / "src" / "brain" / "config.py").write_text("# unapproved config edit\\n", encoding="utf-8")
 print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd": 0.01}}), flush=True)
 """,
         encoding="utf-8",
@@ -505,7 +505,7 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
     try:
         t = db.upsert_task(
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Touch protected file",
             spec="Edit sandbox",
             metric_target="passes",
@@ -522,7 +522,7 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
         finished = await reconciler.tick()
         assert finished is not None and finished.status == "done"
         assert int(marker.read_text()) == 1
-        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "sandbox.py").read_text(
+        assert (repo_dir / "apps" / "brain" / "src" / "brain" / "sandbox.py").read_text(
             encoding="utf-8"
         ) == "# approved sandbox edit\n"
 
@@ -530,7 +530,7 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
         db.upsert_task(
             task_id=t.id,
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Second edit on same task",
             spec="Edit config",
             metric_target="passes",
@@ -540,7 +540,7 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
         reconciler.restart_pending = False
         again = await reconciler.tick()
         assert again is not None and again.status == "draft"
-        assert (repo_dir / "apps" / "superbrain" / "src" / "superbrain" / "config.py").read_text(
+        assert (repo_dir / "apps" / "brain" / "src" / "brain" / "config.py").read_text(
             encoding="utf-8"
         ) == "# orig config\n"
     finally:

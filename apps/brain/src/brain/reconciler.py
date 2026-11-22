@@ -16,8 +16,8 @@ from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
-from superbrain.config import SELF_REPOS, Settings, settings
-from superbrain.db import (
+from brain.config import SELF_REPOS, Settings, settings
+from brain.db import (
     AttemptOutcome,
     BrainDB,
     TaskRow,
@@ -25,8 +25,8 @@ from superbrain.db import (
     check_metric_target,
     has_metric_comparator,
 )
-from superbrain.sandbox import wrap_with_sandbox
-from superbrain.skills import (
+from brain.sandbox import wrap_with_sandbox
+from brain.skills import (
     SkillProposal,
     apply_skill_proposal,
     inspect_attempt_trajectory,
@@ -35,7 +35,7 @@ from superbrain.skills import (
     validate_evidence_receipt,
     write_attempt_trace,
 )
-from superbrain.telemetry import (
+from brain.telemetry import (
     EVENT_ATTEMPT_FINISHED,
     EVENT_BOARD_RPC,
     EVENT_PI_PROGRESS,
@@ -43,7 +43,7 @@ from superbrain.telemetry import (
     TelemetryHub,
     preview,
 )
-from superbrain.upgrade import GitState, classify_git_state
+from brain.upgrade import GitState, classify_git_state
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 
@@ -65,9 +65,9 @@ PROTECTED_SELF_PATHS = {
     "Cargo.toml",
     "Cargo.lock",
     # what runs the workers, and what lets them write anywhere
-    "apps/superbrain/src/superbrain/config.py",
-    "apps/superbrain/src/superbrain/sandbox.py",
-    "apps/superbrain/src/superbrain/defaults/pi/board.ts",
+    "apps/brain/src/brain/config.py",
+    "apps/brain/src/brain/sandbox.py",
+    "apps/brain/src/brain/defaults/pi/board.ts",
     # the voice harness's own gatekeeping and entry point
     "apps/voice/src/jarvis_voice/config.py",
     "apps/voice/src/jarvis_voice/voice_gates.py",
@@ -234,7 +234,7 @@ class Reconciler:
         ext_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         target = ext_dir / "board.ts"
         source_text = (
-            files("superbrain")
+            files("brain")
             .joinpath("defaults/pi/board.ts")
             .read_text(encoding="utf-8")
         )
@@ -611,7 +611,7 @@ class Reconciler:
                 )
                 if touched_protected:
                     prompt_spoken = (
-                        f"Approve Superbrain self-upgrade modifying protected files "
+                        f"Approve Brain self-upgrade modifying protected files "
                         f"({', '.join(touched_protected)})?"
                     )
                     approved: bool | None = None
@@ -735,16 +735,16 @@ class Reconciler:
             for t in self.db.list_tasks()[:20]
         )
         prompt = (
-            f"You are Superbrain Planner running in {self.db.get_state().mode} mode.\n"
+            f"You are Brain Planner running in {self.db.get_state().mode} mode.\n"
             f"Allowed repositories: {allowed}\n"
             f"Current tasks on board:\n{tasks_summary or '(none)'}\n\n"
             f"Owner request: {user_input}\n"
             "Use `upsert_task` to create or update tasks when appropriate. "
-            "If the owner complains about a Superbrain bug/feature or asks to upgrade this repository "
-            "('jarvis', 'the brain', 'your code', 'superbrain'), call `upsert_task` with "
+            "If the owner complains about a Brain bug/feature or asks to upgrade this repository "
+            "('jarvis', 'the brain', 'your code', 'brain'), call `upsert_task` with "
             "`repo='jarvis'`, `kind='problem'` (for bugs/complaints) or `kind='goal'` "
             "(for new tech/upgrades), a deterministic `verify_cmd` (e.g. 'uv run pytest'), and "
-            "`ready=true` so Superbrain immediately builds, verifies, and restarts itself. "
+            "`ready=true` so Brain immediately builds, verifies, and restarts itself. "
             "Reply in 1-2 concise sentences suitable to be spoken aloud."
         )
         res = await self._run_pi(
@@ -800,7 +800,7 @@ class Reconciler:
             for s in active_skills
         ]
         prompt = (
-            "You are Superbrain Skill Improver. Use `read` and `grep` to inspect the trace files "
+            "You are Brain Skill Improver. Use `read` and `grep` to inspect the trace files "
             "and skill files indexed below before deciding whether to propose an improvement.\n"
             "Rules:\n"
             "- Creating a new skill (`action='create'`) requires >= 2 independent attempt IDs showing "
@@ -864,7 +864,7 @@ class Reconciler:
         notes = note_file.read_text(encoding="utf-8") if note_file.exists() else ""
 
         prompt = (
-            f"You are Superbrain Auto-Research Planner (SoL-Pi Oracle + Breadth-First Hypothesis Search).\n"
+            f"You are Brain Auto-Research Planner (SoL-Pi Oracle + Breadth-First Hypothesis Search).\n"
             f"Target task: {task.id} [{task.kind}] in repo {task.repo!r}: {task.title}\n"
             f"Spec: {task.spec}\n"
             f"Metric target: {task.metric_target or 'pass verify_cmd'}\n"
@@ -1224,13 +1224,13 @@ class Reconciler:
         )
 
         env = self._build_sandbox_env(session_dir)
-        env["SUPERBRAIN_RPC_SOCK"] = str(sock_path)
-        env["SUPERBRAIN_SKILLS_DIR"] = str(self.cfg.skills_dir.resolve())
+        env["BRAIN_RPC_SOCK"] = str(sock_path)
+        env["BRAIN_SKILLS_DIR"] = str(self.cfg.skills_dir.resolve())
         if worktree_dir is not None:
-            env["SUPERBRAIN_WORKTREE_DIR"] = str(worktree_dir.resolve())
+            env["BRAIN_WORKTREE_DIR"] = str(worktree_dir.resolve())
         if task is not None:
-            env["SUPERBRAIN_TASK_ID"] = task.id
-            env["SUPERBRAIN_TASK_KIND"] = task.kind
+            env["BRAIN_TASK_ID"] = task.id
+            env["BRAIN_TASK_KIND"] = task.kind
 
         returncode, stderr_text, timed_out, stream_over_budget = await self._stream_pi_proc(
             cmd=cmd,
@@ -1464,7 +1464,7 @@ class Reconciler:
             enabled=self.cfg.sandbox_enabled,
         )
         env = self._build_sandbox_env(scout_session_dir)
-        env["SUPERBRAIN_RESEARCH_SCOUT"] = "1"
+        env["BRAIN_RESEARCH_SCOUT"] = "1"
         scout_state = _PiStreamState()
         _, _, timed_out, over_budget = await self._stream_pi_proc(
             cmd=cmd,
@@ -1635,7 +1635,7 @@ class Reconciler:
                     "push",
                     "-u",
                     "-m",
-                    "superbrain-pre-runtime-rollback",
+                    "brain-pre-runtime-rollback",
                     check=False,
                 )
             await self._git_out(repo_dir, "reset", "--hard", rollback_sha, check=False)
@@ -1647,7 +1647,7 @@ class Reconciler:
         self.db.queue_outbox(
             kind="report",
             summary_spoken=(
-                f"Automatically rolled back Superbrain to {rollback_sha[:7]} after "
+                f"Automatically rolled back Brain to {rollback_sha[:7]} after "
                 "2 consecutive post-upgrade task failures."
             ),
             details={"rollback_sha": rollback_sha},
@@ -1725,7 +1725,7 @@ class Reconciler:
             kind="blocker",
             task_id=task_id,
             summary_spoken=(
-                f"Superbrain self-upgrade {task_id} refused: local HEAD {local_sha[:7]} and "
+                f"Brain self-upgrade {task_id} refused: local HEAD {local_sha[:7]} and "
                 f"origin/master {origin_sha[:7]} have diverged. Resolve the checkout and retry."
             ),
             details={
@@ -1752,7 +1752,7 @@ class Reconciler:
             kind="blocker",
             task_id=task_id,
             summary_spoken=(
-                f"Superbrain self-upgrade {task_id} refused: origin/master moved to {origin_sha[:7]} "
+                f"Brain self-upgrade {task_id} refused: origin/master moved to {origin_sha[:7]} "
                 f"while the candidate was built. Rebase the task branch on master and retry."
             ),
             details={
@@ -1778,7 +1778,7 @@ class Reconciler:
             kind="report",
             task_id=task_id,
             summary_spoken=(
-                f"Superbrain self-upgrade {task_id} applied locally but could not be pushed to "
+                f"Brain self-upgrade {task_id} applied locally but could not be pushed to "
                 f"origin/master; master moved to {origin_sha[:7]}. Local checkout needs a manual merge."
             ),
             details={
@@ -1832,7 +1832,7 @@ class Reconciler:
                 "push",
                 "-u",
                 "-m",
-                f"superbrain-pre-upgrade-{task_id}",
+                f"brain-pre-upgrade-{task_id}",
                 check=False,
             )
         await self._git_out(repo_dir, "reset", "--hard", verified_sha)

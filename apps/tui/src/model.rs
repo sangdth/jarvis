@@ -1,4 +1,4 @@
-//! Plain data model mirroring `apps/superbrain/src/superbrain/schema.sql` plus dashboard-only view state.
+//! Plain data model mirroring `apps/brain/src/brain/schema.sql` plus dashboard-only view state.
 //!
 //! Not every schema column is rendered by every pane, so dead-code linting is disabled for the
 //! module: keeping the structs complete makes new panes a pure UI change.

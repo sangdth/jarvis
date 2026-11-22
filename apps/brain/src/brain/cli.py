@@ -1,4 +1,4 @@
-"""Superbrain's command line. `jarvis` runs these too (`jarvis serve|status|add|research|improve|launchd`)."""
+"""The brain's command line. `jarvis` runs these too (`jarvis serve|status|add|research|improve|launchd`)."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from typing import AsyncIterator, Callable
 from aiohttp import web
 from loguru import logger
 
-from superbrain.config import settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
-from superbrain.server import BrainServer
-from superbrain.telemetry import TelemetryHub
-from superbrain.upgrade import LAUNCHD_LABEL, run_upgrade
+from brain.config import settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
+from brain.server import BrainServer
+from brain.telemetry import TelemetryHub
+from brain.upgrade import LAUNCHD_LABEL, run_upgrade
 
 # `jarvis top` opens the cockpit; it lives in the root CLI so one command finds it for every app.
 
@@ -84,7 +84,7 @@ def run_self_check() -> int:
             update={
                 "home_dir": tmp_path / "home",
                 "projects_dir": tmp_path / "Projects",
-                "superbrain_api_key": "canary-key",
+                "brain_api_key": "canary-key",
             }
         )
         db = BrainDB(
@@ -145,9 +145,9 @@ async def running(*, on_restart: Callable[[], None] | None = None) -> AsyncItera
     The daemon as a context manager: board, reconciler and HTTP/SSE server in this process and loop.
     `jarvis serve` waits on it for launchd; `jarvis` runs it alongside the voice harness.
     """
-    if not settings.superbrain_api_key.strip():
+    if not settings.brain_api_key.strip():
         raise ValueError(
-            "SUPERBRAIN_API_KEY must be set before running the brain; `jarvis` makes one in the state home."
+            "BRAIN_API_KEY must be set before running the brain; `jarvis` makes one in the state home."
         )
     db = BrainDB(
         db_path=settings.db_path,
@@ -169,7 +169,7 @@ async def running(*, on_restart: Callable[[], None] | None = None) -> AsyncItera
         raise
     reconciler.start()
     logger.info(
-        f"Superbrain listening on {settings.endpoint_url} "
+        f"Brain listening on {settings.endpoint_url} "
         f"(mode={db.get_state().mode}, home={settings.home_dir}, allowed_repos={sorted(settings.allowed_repo_set)})"
     )
     try:
@@ -192,10 +192,10 @@ async def _serve_async() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="superbrain")
+    parser = argparse.ArgumentParser(prog="brain")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("serve", help="Run the Superbrain HTTP/SSE server and reconciler loop")
+    sub.add_parser("serve", help="Run the Brain HTTP/SSE server and reconciler loop")
     sub.add_parser("status", help="Show system state, tasks, and active personal skills")
     sub.add_parser("improve", help="Run the self-improving skill reflection loop on recent attempts")
     sub.add_parser("self-check", help="Run smoke canary verification on this checkout")

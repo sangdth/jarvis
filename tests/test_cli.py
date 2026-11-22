@@ -122,7 +122,7 @@ class CliTest(unittest.TestCase):
             stack.enter_context(patch.object(cli, "checkout_root", return_value=None))
             stack.enter_context(patch.object(cli, "hold_lock"))
             stack.enter_context(patch.object(cli, "prepare_brain"))
-            stack.enter_context(patch("jarvis.supervisor.superbrain_running", new=self._attached()))
+            stack.enter_context(patch("jarvis.supervisor.brain_running", new=self._attached()))
             stack.enter_context(patch("jarvis_voice.main.run_pipecat_harness", new=run))
             cli.main()
         return run

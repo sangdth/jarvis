@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from superbrain import upgrade as upgrade_mod
-from superbrain.cli import main
-from superbrain.config import Settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
-from superbrain.upgrade import (
+from brain import upgrade as upgrade_mod
+from brain.cli import main
+from brain.config import Settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
+from brain.upgrade import (
     GitState,
     classify_git_state,
     read_snapshot,
@@ -54,7 +54,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 
 def _init_scratch_repo(tmp_path: Path) -> tuple[Path, Path]:
-    bare = tmp_path / "remotes" / "superbrain.git"
+    bare = tmp_path / "remotes" / "brain.git"
     bare.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "init", "--bare", "-b", "master", str(bare)],
@@ -100,11 +100,11 @@ def _peer_commit(tmp_path: Path, bare: Path, files: dict[str, str], message: str
 
 
 def _db(tmp_path: Path) -> BrainDB:
-    return BrainDB(tmp_path / "state.db", allowed_repos={"superbrain"})
+    return BrainDB(tmp_path / "state.db", allowed_repos={"brain"})
 
 
 # --------------------------------------------------------------------------------------
-# `superbrain upgrade` CLI
+# `brain upgrade` CLI
 # --------------------------------------------------------------------------------------
 def test_upgrade_check_is_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     repo, _ = _init_scratch_repo(tmp_path)
@@ -218,7 +218,7 @@ def test_upgrade_stashes_dirty_tree_when_asked(
         assert run_upgrade(repo_dir=repo, db=db, stash=True, restart=False) == 0
         assert _git(repo, "rev-parse", "HEAD") == new_head
         stash_list = _git(repo, "stash", "list")
-        assert "superbrain-upgrade-" in stash_list
+        assert "brain-upgrade-" in stash_list
         assert "Stashed local changes" in capsys.readouterr().out
     finally:
         db.close()
@@ -269,8 +269,8 @@ def test_upgrade_without_restart_flag_does_not_kickstart(
 # --------------------------------------------------------------------------------------
 # Self-upgrade reconciliation
 # --------------------------------------------------------------------------------------
-def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, Path, str]:
-    bare = tmp_path / "remotes" / "superbrain.git"
+def _init_brain_repo(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    bare = tmp_path / "remotes" / "brain.git"
     bare.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["git", "init", "--bare", "-b", "master", str(bare)],
@@ -278,8 +278,8 @@ def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         capture_output=True,
     )
     projects_dir = tmp_path / "Projects"
-    repo = projects_dir / "superbrain"
-    (repo / "src" / "superbrain").mkdir(parents=True, exist_ok=True)
+    repo = projects_dir / "brain"
+    (repo / "src" / "brain").mkdir(parents=True, exist_ok=True)
     for cmd in [
         ["init", "-b", "master"],
         ["config", "user.email", "test@example.com"],
@@ -288,7 +288,7 @@ def _init_superbrain_repo(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     ]:
         _git(repo, *cmd)
     (repo / "brain_mod.py").write_text("FAST_ENGINE = False\n", encoding="utf-8")
-    (repo / "src" / "superbrain" / "sandbox.py").write_text("# original\n", encoding="utf-8")
+    (repo / "src" / "brain" / "sandbox.py").write_text("# original\n", encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "initial brain")
     _git(repo, "push", "-u", "origin", "master")
@@ -306,7 +306,7 @@ def _settings(tmp_path: Path, projects_dir: Path, fake_pi: Path) -> Settings:
         _env_file=None,
         home_dir=tmp_path / "home",
         projects_dir=projects_dir,
-        self_repo_dir=projects_dir / "superbrain",
+        self_repo_dir=projects_dir / "brain",
         allowed_repos="jarvis",
         pi_bin=str(fake_pi),
         default_mode="AUTONOMOUS",
@@ -316,7 +316,7 @@ def _settings(tmp_path: Path, projects_dir: Path, fake_pi: Path) -> Settings:
 
 
 async def test_self_upgrade_worktree_follows_origin_master(tmp_path: Path) -> None:
-    projects_dir, repo, bare, initial_sha = _init_superbrain_repo(tmp_path)
+    projects_dir, repo, bare, initial_sha = _init_brain_repo(tmp_path)
     merged_sha = _peer_commit(
         tmp_path, bare, {"origin_only.txt": "merged from master\n"}, message="merged PR"
     )
@@ -336,7 +336,7 @@ print(json.dumps({"role": "assistant", "content": "Enabled FAST_ENGINE", "cost_u
     try:
         task = db.upsert_task(
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Upgrade on top of merged master",
             spec="Enable FAST_ENGINE",
             metric_target="FAST_ENGINE True",
@@ -357,7 +357,7 @@ print(json.dumps({"role": "assistant", "content": "Enabled FAST_ENGINE", "cost_u
 
 
 async def test_self_upgrade_keeps_unpublished_local_commits(tmp_path: Path) -> None:
-    projects_dir, repo, bare, _ = _init_superbrain_repo(tmp_path)
+    projects_dir, repo, bare, _ = _init_brain_repo(tmp_path)
     (repo / "local_only.txt").write_text("unpublished\n", encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "local unpublished")
@@ -379,7 +379,7 @@ print(json.dumps({"role": "assistant", "content": "Enabled FAST_ENGINE", "cost_u
     try:
         task = db.upsert_task(
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Upgrade on top of local commits",
             spec="Enable FAST_ENGINE",
             metric_target="FAST_ENGINE True",
@@ -398,7 +398,7 @@ print(json.dumps({"role": "assistant", "content": "Enabled FAST_ENGINE", "cost_u
 
 
 async def test_self_upgrade_refuses_divergence_and_queues_blocker(tmp_path: Path) -> None:
-    projects_dir, repo, bare, _ = _init_superbrain_repo(tmp_path)
+    projects_dir, repo, bare, _ = _init_brain_repo(tmp_path)
     (repo / "local_only.txt").write_text("unpublished\n", encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "local unpublished")
@@ -419,7 +419,7 @@ print(json.dumps({{"role": "assistant", "content": "should not run", "cost_usd":
     try:
         task = db.upsert_task(
             kind="goal",
-            repo="superbrain",
+            repo="brain",
             title="Must refuse divergence",
             spec="Enable FAST_ENGINE",
             metric_target="FAST_ENGINE True",
@@ -448,7 +448,7 @@ print(json.dumps({{"role": "assistant", "content": "should not run", "cost_usd":
 async def test_self_upgrade_push_rejection_queues_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    projects_dir, repo, _, _ = _init_superbrain_repo(tmp_path)
+    projects_dir, repo, _, _ = _init_brain_repo(tmp_path)
     (repo / "brain_mod.py").write_text("FAST_ENGINE = True\n", encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "candidate upgrade")
@@ -468,7 +468,7 @@ async def test_self_upgrade_push_rejection_queues_report(
     db.upsert_task(
         task_id="SG-1",
         kind="goal",
-        repo="superbrain",
+        repo="brain",
         title="Push rejection",
         spec="Report a rejected push",
         metric_target="passes",
@@ -494,7 +494,7 @@ async def test_self_upgrade_push_rejection_queues_report(
 
 
 async def test_self_upgrade_refuses_stale_candidate_when_master_advanced(tmp_path: Path) -> None:
-    projects_dir, repo, bare, initial_sha = _init_superbrain_repo(tmp_path)
+    projects_dir, repo, bare, initial_sha = _init_brain_repo(tmp_path)
     # Candidate commit based on the old master, kept on a side branch (owner-approved pinned SHA).
     _git(repo, "checkout", "-b", "brain/SG-1")
     (repo / "brain_mod.py").write_text("FAST_ENGINE = True\n", encoding="utf-8")
@@ -509,7 +509,7 @@ async def test_self_upgrade_refuses_stale_candidate_when_master_advanced(tmp_pat
     db.upsert_task(
         task_id="SG-1",
         kind="goal",
-        repo="superbrain",
+        repo="brain",
         title="Stale candidate",
         spec="Refuse a candidate behind master",
         metric_target="passes",

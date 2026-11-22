@@ -5,12 +5,12 @@ owning app, then update the clients in the same commit.
 
 | Contract | Canonical file | Written by | Read by |
 | :--- | :--- | :--- | :--- |
-| The brain's HTTP/SSE API | `schemas/openapi.json` | `apps/superbrain/src/superbrain/server.py` | `apps/voice` (`hermes_adapter.py`), `apps/tui` (`http.rs`), iOS Shortcuts, a future React/Go client |
-| The brain's SQLite board | `apps/superbrain/src/superbrain/schema.sql` | `apps/superbrain/src/superbrain/db.py` (WAL, the only writer) | `apps/tui/src/db.rs` (read-only, its own connection) |
+| The brain's HTTP/SSE API | `schemas/openapi.json` | `apps/brain/src/brain/server.py` | `apps/voice` (`hermes_adapter.py`), `apps/tui` (`http.rs`), iOS Shortcuts, a future React/Go client |
+| The brain's SQLite board | `apps/brain/src/brain/schema.sql` | `apps/brain/src/brain/db.py` (WAL, the only writer) | `apps/tui/src/db.rs` (read-only, its own connection) |
 | Agent roster | `src/jarvis/defaults/agents.json` | the user (`JARVIS_HOME/agents.json`) | `apps/voice` (`orchestrator.py`, `prompts.py`) |
 | Settings | `src/jarvis/defaults/env.example` | the user (`JARVIS_HOME/.env`) | all three apps, through `jarvis_core.settings.EnvSettings` |
 
 `schema.sql` stays inside the Python package because the daemon reads it as package data at startup. The
 cockpit never reads it: it queries the tables it draws, so a column added there is additive and safe.
 
-A contract test in `apps/superbrain/tests` covers the HTTP surface; the cockpit's parser tests cover its side.
+A contract test in `apps/brain/tests` covers the HTTP surface; the cockpit's parser tests cover its side.

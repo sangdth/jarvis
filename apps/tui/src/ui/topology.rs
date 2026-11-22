@@ -1,4 +1,4 @@
-//! Pane 1 — live architecture schematic: how every Superbrain component is wired together,
+//! Pane 1 — live architecture schematic: how every Brain component is wired together,
 //! with activity pulses bound to live telemetry.
 
 use ratatui::layout::Rect;

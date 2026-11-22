@@ -6,10 +6,10 @@ from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
-from superbrain.config import Settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
-from superbrain.server import BrainServer
+from brain.config import Settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
+from brain.server import BrainServer
 
 
 def _make_fake_pi(tmp_path: Path) -> Path:
@@ -20,7 +20,7 @@ import json, os, socket, sys
 if "--session" in sys.argv:
     idx = sys.argv.index("--session")
     assert sys.argv[idx + 1] == "sess-plan-1", f"Unexpected session arg: {sys.argv[idx + 1]}"
-sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
+sock_path = os.environ["BRAIN_RPC_SOCK"]
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock_path)
 req = {
@@ -57,7 +57,7 @@ async def test_hermes_endpoints_auth_mode_brief_and_iphone_ask(tmp_path: Path) -
         home_dir=tmp_path / "home",
         projects_dir=tmp_path / "Projects",
         allowed_repos="jarvis",
-        superbrain_api_key="secret-token",
+        brain_api_key="secret-token",
         pi_bin=str(fake_pi),
         sandbox_enabled=False,
     )
@@ -210,7 +210,7 @@ if wal_file:
         pass
 
 prompt = sys.argv[-1]
-sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
+sock_path = os.environ["BRAIN_RPC_SOCK"]
 
 if "SLOW_CANCEL_TEST" in prompt:
     time.sleep(30)
@@ -246,11 +246,11 @@ print(json.dumps({
     )
     fake_pi.chmod(fake_pi.stat().st_mode | stat.S_IEXEC)
 
-    # 1. Empty superbrain_api_key fails closed with 401
+    # 1. Empty brain_api_key fails closed with 401
     empty_cfg = Settings(
         home_dir=tmp_path / "empty_home",
         projects_dir=tmp_path / "Projects",
-        superbrain_api_key="",
+        brain_api_key="",
         pi_bin=str(fake_pi),
     )
     empty_db = BrainDB(empty_cfg.db_path, empty_cfg.allowed_repo_set)
@@ -267,7 +267,7 @@ print(json.dumps({
         home_dir=tmp_path / "home",
         projects_dir=tmp_path / "Projects",
         allowed_repos="jarvis",
-        superbrain_api_key="secret",
+        brain_api_key="secret",
         pi_bin=str(fake_pi),
         sandbox_enabled=True,
     )

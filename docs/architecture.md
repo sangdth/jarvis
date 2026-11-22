@@ -5,16 +5,16 @@
 | App | Package / binary | Job | Where |
 | :--- | :--- | :--- | :--- |
 | Voice layer | `jarvis-voice` (Python) | hears, checks the sentence, talks, drives agents | `apps/voice/` |
-| Brain | `superbrain` (Python) | board of goals/problems, `pi` workers in worktrees, HTTP/SSE | `apps/superbrain/` |
+| Brain | `brain` (Python) | board of goals/problems, `pi` workers in worktrees, HTTP/SSE | `apps/brain/` |
 | Cockpit | `jarvis-top` (Rust) | fullscreen board, attempts, spend and live telemetry | `apps/tui/` |
 
 `packages/jarvis-core` holds what all three share: `JARVIS_HOME`, the `.env` settings base, `SOUL.md` and the brain
-token. `src/jarvis` is the one command (`jarvis`) that starts the brain with the voice, and superbrain's own commands
+token. `src/jarvis` is the one command (`jarvis`) that starts the brain with the voice, and brain's own commands
 (`status`, `add`, `research`, `improve`, `launchd`, `serve`, `upgrade`) are reached through it.
 
 `jarvis` probes the brain on `127.0.0.1:8643` with the shared token: when a daemon answers (the 24/7 LaunchAgent, or
 another window) it attaches, so overnight work is never restarted by a voice restart; when nothing answers it runs
-`superbrain.cli.running()` in the same event loop and stops it on exit. One machine, one board, one SQLite writer.
+`brain.cli.running()` in the same event loop and stops it on exit. One machine, one board, one SQLite writer.
 
 Each language keeps its native workspace (`uv`, `cargo`; `pnpm`/`go.work` when a client or service in another
 language arrives), so a new app is a folder and a workspace line. Cross-language contracts live in `schemas/`.
@@ -22,7 +22,7 @@ language arrives), so a new app is a folder and a workspace line. Cross-language
 ## 1. Core Requirements
 
 1. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
-2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **T3 Code** (or **Claude Code** or **OpenCode** when named), everything else to **the brain** (`superbrain`), which always runs alongside the voice. Jarvis only routes and relays; the work happens in each app's or agent's own harness.
+2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **T3 Code** (or **Claude Code** or **OpenCode** when named), everything else to **the brain** (`brain`), which always runs alongside the voice. Jarvis only routes and relays; the work happens in each app's or agent's own harness.
 3. **Plain-Words Reporting:** Agent questions and approval requests are read out as they are. A finished turn is long markdown full of file paths and diffs; Jarvis has its conversation model retell it as one short first-person outcome, about ten words; a plan or choice waiting on the user gets one phrase per heading, then its question (`AGENT_REPORT_PROMPT`).
 4. **Dynamic Silence / Notification Mode:**
    - Saying **"Shut up"** or **"Be quiet"** immediately silences Jarvis's voice (`BEEP_ONLY` mode), interrupting any active speech and using short audio chimes ("beep") to notify when new agent decisions arrive.
@@ -54,7 +54,7 @@ flowchart LR
     subgraph CodingAgents ["3. Sub-Agent Watcher (SDK / HTTP)"]
         CC["Claude Code (Agent SDK)"] --> Buffer["Agent Watchers"]
         OC["OpenCode (HTTP SSE)"] --> Buffer
-        HA["Superbrain (HTTP runs)"] --> Buffer
+        HA["The brain (HTTP runs)"] --> Buffer
         T3["T3 Code (WebSocket RPC)"] --> Buffer
         Buffer -->|"Questions, approvals, finished turns"| Notify{"Check Mode"}
     end
@@ -66,7 +66,7 @@ flowchart LR
     LLM --> TTS["TTS Output to Speaker"]
     LLM -->|"send_agent_task / answer_agent / stop_agent"| CodingAgents
 
-    subgraph BrainApp ["4. The Brain (Superbrain)"]
+    subgraph BrainApp ["4. The brain (`apps/brain`)"]
         SB["Board (SQLite WAL)"] --> REC["Reconciler"]
         REC -->|"one `pi` worker per repo"| WT["Worktree `brain/<task_id>`"]
         WT -->|"verify_cmd, then push (never merge)"| SB
@@ -74,7 +74,7 @@ flowchart LR
         TUI["`jarvis top` (Rust cockpit)"] -->|"read-only state.db + /v1/telemetry"| SB
     end
 
-    LLM -->|"type `superbrain`: /v1/runs over HTTP/SSE"| SRV
+    LLM -->|"type `brain`: /v1/runs over HTTP/SSE"| SRV
 ```
 
 ---
@@ -135,9 +135,9 @@ ignores `session` and `project`.
    (`POST /api/session/:id/prompt`); answers go to
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
 
-3. **The brain (`HermesAdapter`, type `superbrain`):** Talks to Superbrain on `127.0.0.1:8643` (Bearer
-   `SUPERBRAIN_API_KEY`, else `JARVIS_HOME/brain_token`) with exactly the protocol below, which Superbrain serves from
-   `apps/superbrain/src/superbrain/server.py`. The same adapter with `type: "hermes"` drives a separate Hermes Agent
+3. **The brain (`HermesAdapter`, type `brain`):** Talks to Brain on `127.0.0.1:8643` (Bearer
+   `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`) with exactly the protocol below, which Brain serves from
+   `apps/brain/src/brain/server.py`. The same adapter with `type: "hermes"` drives a separate Hermes Agent
    (`hermes gateway`, port 8642, Bearer `HERMES_API_KEY`) when one runs, so the two never share a token. A task is `POST /v1/runs` with `input`, and later tasks pass the first run's id as
    `session_id`, so Hermes keeps the conversation. Each run's `GET /v1/runs/:id/events` stream gives
    `approval.request` (read out; answered with `POST /v1/runs/:id/approval`, `once` or `deny`) and
@@ -210,7 +210,7 @@ The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voi
 | `sessions.py`         | `CodingSessionAdapter` (list, pick, new session), `match_sessions`         |
 | `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |
 | `opencode_adapter.py` | `OpenCodeSSEAdapter`: found OpenCode 2 service, SSE events, `cwd` only     |
-| `hermes_adapter.py`   | `HermesAdapter`: the brain's runs (`type: superbrain`), or a Hermes Agent  |
+| `hermes_adapter.py`   | `HermesAdapter`: the brain's runs (`type: brain`), or a Hermes Agent  |
 | `orchestrator.py`     | `AgentOrchestrator`, `ADAPTERS` (agents.json type to adapter), reminders   |
 | `waiting_lines.py`    | `WaitingLines`: the per-task "still working" lines, refilled in batches    |
 | `t3_adapter.py`       | `T3Adapter`, project list, `jarvis connect` thread lookup                  |

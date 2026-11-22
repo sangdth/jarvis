@@ -33,7 +33,7 @@ def build_sandbox_profile(
     allow_read_traces: bool = False,
 ) -> str:
     """
-    macOS Seatbelt (`sandbox-exec`) profile for Superbrain workers.
+    macOS Seatbelt (`sandbox-exec`) profile for Brain workers.
     Allows reading the system and executing tools, but restricts file-write* operations strictly to:
     - the isolated task worktree (`worktree_dir`) and its `.git/worktrees/<id>` metadata dir
     - the worker's session/socket/tmp directory (`session_dir`)

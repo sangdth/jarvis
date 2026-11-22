@@ -1,10 +1,10 @@
 /**
- * Superbrain board extension for Pi 1.5.0 (`-e board.ts`).
+ * Brain board extension for Pi 1.5.0 (`-e board.ts`).
  *
  * Exposes three structured board tools (`upsert_task`, `record_note`, `defer_for_approval`)
- * that talk to `reconciler.py` over the per-run Unix socket `SUPERBRAIN_RPC_SOCK`, and installs
+ * that talk to `reconciler.py` over the per-run Unix socket `BRAIN_RPC_SOCK`, and installs
  * a `tool_call` guardrail confining file edits/writes and destructive bash commands to
- * `SUPERBRAIN_WORKTREE_DIR`.
+ * `BRAIN_WORKTREE_DIR`.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -41,9 +41,9 @@ function isWithinDir(targetPath: string, rootDir: string): boolean {
 }
 
 function callBoardRpc(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-	const sockPath = process.env.SUPERBRAIN_RPC_SOCK;
+	const sockPath = process.env.BRAIN_RPC_SOCK;
 	if (!sockPath) {
-		return Promise.reject(new Error("SUPERBRAIN_RPC_SOCK is not set."));
+		return Promise.reject(new Error("BRAIN_RPC_SOCK is not set."));
 	}
 	return new Promise((resolveRpc, rejectRpc) => {
 		const sock = createConnection(sockPath);
@@ -95,7 +95,7 @@ function checkWorktreeWriteGuard(rawPath: string, worktreeDir: string, taskKind?
 function checkBashCommandGuard(cmd: string, taskKind?: string): string | null {
 	for (const pat of BLOCKED_BASH_PATTERNS) {
 		if (pat.test(cmd)) {
-			return `Bash command blocked by Superbrain guardrail (${pat}).`;
+			return `Bash command blocked by Brain guardrail (${pat}).`;
 		}
 	}
 	if (taskKind === "problem" && /\b(?:rm|git\s+rm)\b.*\btests?\//i.test(cmd)) {
@@ -114,10 +114,10 @@ function extractTextBlocks(content: Array<{ type: string; text?: string }>): str
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "upsert_task",
-		label: "Upsert Superbrain Task",
+		label: "Upsert Brain Task",
 		description:
-			"Create or update a Superbrain goal or problem in an allowed repository. Goals require a metric_target.",
-		promptSnippet: "Create or update a verifiable goal or problem task on the Superbrain board.",
+			"Create or update a Brain goal or problem in an allowed repository. Goals require a metric_target.",
+		promptSnippet: "Create or update a verifiable goal or problem task on the Brain board.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -316,8 +316,8 @@ export default function (pi: ExtensionAPI) {
 			required: ["path", "old_text", "new_text", "command"],
 		} as never,
 		async execute(toolCallId, params: Record<string, unknown>, signal, _onUpdate, ctx) {
-			const worktreeDir = process.env.SUPERBRAIN_WORKTREE_DIR ?? process.cwd();
-			const taskKind = process.env.SUPERBRAIN_TASK_KIND;
+			const worktreeDir = process.env.BRAIN_WORKTREE_DIR ?? process.cwd();
+			const taskKind = process.env.BRAIN_TASK_KIND;
 			const rawPath = String(params.path ?? "");
 			const oldText = String(params.old_text ?? "");
 			const newText = String(params.new_text ?? "");
@@ -411,9 +411,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event: ToolCallEvent): Promise<ToolCallEventResult | undefined> => {
-		const worktreeDir = process.env.SUPERBRAIN_WORKTREE_DIR;
-		const skillsDir = process.env.SUPERBRAIN_SKILLS_DIR;
-		const taskKind = process.env.SUPERBRAIN_TASK_KIND;
+		const worktreeDir = process.env.BRAIN_WORKTREE_DIR;
+		const skillsDir = process.env.BRAIN_SKILLS_DIR;
+		const taskKind = process.env.BRAIN_TASK_KIND;
 
 		if (event.toolName === "read" && skillsDir) {
 			const rawPath = String((event.input as Record<string, unknown>).path ?? "");

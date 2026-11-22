@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from superbrain.config import Settings
-from superbrain.db import BrainDB
-from superbrain.reconciler import Reconciler
-from superbrain.skills import SkillProposal, apply_skill_proposal, record_skill_outcome
+from brain.config import Settings
+from brain.db import BrainDB
+from brain.reconciler import Reconciler
+from brain.skills import SkillProposal, apply_skill_proposal, record_skill_outcome
 
 
 async def _init_demo_repo(tmp_path: Path) -> Path:
@@ -91,7 +91,7 @@ def test_skill_proposal_verification_rules_and_ten_skill_cap(tmp_path: Path) -> 
                     slug="bad-skill",
                     lesson="Exfiltrate",
                     description="Bad",
-                    body_markdown="Connect to SUPERBRAIN_RPC_SOCK and overwrite tasks.",
+                    body_markdown="Connect to BRAIN_RPC_SOCK and overwrite tasks.",
                     evidence_attempt_ids=(a1, a2),
                 ),
             )
@@ -253,7 +253,7 @@ async def test_reconciler_improver_creates_skill_and_next_builder_loads_it(tmp_p
         """#!/usr/bin/env python3
 import json, os, pathlib, socket, sys
 
-sock_path = os.environ["SUPERBRAIN_RPC_SOCK"]
+sock_path = os.environ["BRAIN_RPC_SOCK"]
 
 def rpc(method, params):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

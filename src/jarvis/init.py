@@ -1,6 +1,6 @@
 """
 `jarvis init`: set up Jarvis's home (~/.config/jarvis; the checkout in dev). Copies .env and agents.json
-there, moves a Superbrain state folder from before the merge, makes the shared brain token, asks for the API
+there, moves a Brain state folder from before the merge, makes the shared brain token, asks for the API
 keys it is missing, writes SOUL.md (personality and a few settings) from a short interview, then offers to
 record the voiceprint for the master check. The name stays "Jarvis"; the speech check and the mute phrases
 depend on it.
@@ -48,11 +48,11 @@ def copy_config(home: Path = JARVIS_HOME, defaults: Path = DEFAULTS) -> list[Pat
 
 
 def setup_brain(home: Path = JARVIS_HOME) -> list[str]:
-    """Give the brain its folder on the shared home and one bearer token; move a pre-merge Superbrain home."""
+    """Give the brain its folder on the shared home and one bearer token; move a pre-merge Brain home."""
     notes = []
     moved = migrate_legacy_brain_home()
     if moved is not None:
-        notes.append(f"Moved the old Superbrain state to {moved} (board, worktrees, skills and sessions are kept).")
+        notes.append(f"Moved the old Brain state to {moved} (board, worktrees, skills and sessions are kept).")
     brain = brain_home()
     shared_dir(brain)
     token_file = home / "brain_token"

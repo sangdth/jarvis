@@ -18,7 +18,7 @@ from pathlib import Path
 PACKAGE = "jarvis-harness"
 # The installed Jarvis keeps its state here; every Jarvis, dev or installed, keeps the one-mic lock here.
 SHARED_HOME = Path("~/.config/jarvis").expanduser()
-# Superbrain's own home before it moved into this repository; read until `jarvis init` moves it.
+# The brain's own home before it moved into this repository; read until `jarvis init` moves it.
 LEGACY_BRAIN_HOME = Path("~/.config/superbrain").expanduser()
 BRAIN_DIRNAME = "brain"
 BRAIN_TOKEN_FILE = "brain_token"
@@ -75,10 +75,10 @@ def shared_dir(path: Path, *, mode: int = 0o700) -> Path:
 
 def brain_home() -> Path:
     """
-    The brain daemon's state folder. `SUPERBRAIN_HOME` (or `JARVIS_BRAIN_HOME`) wins; otherwise
+    The brain daemon's state folder. `BRAIN_HOME` (or `JARVIS_BRAIN_HOME`) wins; otherwise
     `JARVIS_HOME/brain`, falling back to the old `~/.config/superbrain` until `jarvis init` moves it.
     """
-    explicit = os.environ.get("JARVIS_BRAIN_HOME") or os.environ.get("SUPERBRAIN_HOME")
+    explicit = os.environ.get("JARVIS_BRAIN_HOME") or os.environ.get("BRAIN_HOME")
     if explicit and explicit.strip():
         return Path(explicit.strip()).expanduser()
     home = JARVIS_HOME / BRAIN_DIRNAME
@@ -107,9 +107,13 @@ def env_file_value(name: str, *paths: Path) -> str:
 
 def brain_token() -> str:
     """The bearer token the daemon, the voice harness and the cockpit share; made on first use (0600)."""
-    explicit = os.environ.get("SUPERBRAIN_API_KEY", "").strip()
+    explicit = os.environ.get("BRAIN_API_KEY", "").strip()
+    if not explicit:  # the name before the rename, so a running daemon keeps its key
+        explicit = os.environ.get("SUPERBRAIN_API_KEY", "").strip()
     if not explicit:
-        explicit = env_file_value("SUPERBRAIN_API_KEY", JARVIS_HOME / ".env", brain_home() / ".env")
+        explicit = env_file_value("BRAIN_API_KEY", JARVIS_HOME / ".env", brain_home() / ".env")
+    if not explicit:
+        explicit = env_file_value("SUPERBRAIN_API_KEY", brain_home() / ".env")
     if explicit:
         return explicit
     if BRAIN_TOKEN_PATH.is_file():

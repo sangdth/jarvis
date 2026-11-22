@@ -175,7 +175,7 @@ class OutboxRow:
 
 
 class BrainDB:
-    """Thread-safe SQLite WAL state store for Superbrain."""
+    """Thread-safe SQLite WAL state store for Brain."""
 
     def __init__(
         self,
@@ -196,7 +196,7 @@ class BrainDB:
         if self.db_path.exists():
             os.chmod(self.db_path, 0o600)
 
-        schema_sql = files("superbrain").joinpath("schema.sql").read_text(encoding="utf-8")
+        schema_sql = files("brain").joinpath("schema.sql").read_text(encoding="utf-8")
         with self._lock, self._conn:
             self._conn.executescript(schema_sql)
             self._ensure_attempt_columns_locked()
@@ -321,7 +321,7 @@ class BrainDB:
 
     def record_post_upgrade_outcome(self, *, succeeded: bool) -> str | None:
         """
-        Tracks runtime health of the active Superbrain self-upgrade. If the first 2 task attempts
+        Tracks runtime health of the active Brain self-upgrade. If the first 2 task attempts
         after a self-upgrade fail with 0 successes, clears probation and returns `last_good_sha`
         for automatic git rollback + daemon restart. Once a post-upgrade attempt succeeds (or the
         2-attempt window passes without 2/2 failures), clears `last_good_sha` so unrelated future
