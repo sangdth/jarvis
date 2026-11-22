@@ -16,5 +16,14 @@ __pycache__/
 /feedback/
 /remote_token
 /brain_token
-# Rust build output (the cockpit and any crate added later)
+# Rust build output (the cockpit and any crate added later; the workspace builds into /target/)
 /target/
+**/target/
+
+# Tool caches and build leftovers, whichever language made them
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
