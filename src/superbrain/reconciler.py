@@ -43,6 +43,7 @@ from superbrain.telemetry import (
     TelemetryHub,
     preview,
 )
+from superbrain.upgrade import GitState, classify_git_state
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 
@@ -350,12 +351,16 @@ class Reconciler:
         if role == "builder" and task.repo == "superbrain" and pinned_sha:
             await self._git_fetch(repo_dir)
             if await self._git_rc(repo_dir, "cat-file", "-e", f"{pinned_sha}^{{commit}}") == 0:
-                await self._apply_self_upgrade(repo_dir, pinned_sha, task.id)
+                applied = await self._apply_self_upgrade(repo_dir, pinned_sha, task.id)
                 finished_task = self.db.finish_attempt(
                     task_id=task.id,
                     role="builder",
-                    summary="Applied owner-approved protected self-upgrade.",
-                    outcome="pushed",
+                    summary=(
+                        "Applied owner-approved protected self-upgrade."
+                        if applied
+                        else "Refused owner-approved self-upgrade: checkout diverged from origin/master."
+                    ),
+                    outcome="pushed" if applied else "errored",
                     git_branch=f"brain/{task.id}",
                     git_sha=pinned_sha,
                 )
@@ -421,11 +426,33 @@ class Reconciler:
         branch_name = f"brain/{task.id}"
         try:
             await self._git_fetch(repo_dir)
+            # Self-upgrades must build on top of what GitHub master actually has. Only keep local
+            # HEAD when it carries unpublished commits that origin/master does not contain; if the
+            # two histories diverged, refuse rather than reset the checkout backwards.
+            prefer_local_head = False
+            if task.repo == "superbrain":
+                base_state = await self._git_state_vs_origin_master(repo_dir)
+                if base_state is GitState.DIVERGED:
+                    await self._report_self_upgrade_divergence(
+                        repo_dir, task.id, verified_sha="", phase="prepare"
+                    )
+                    finished_task = self.db.finish_attempt(
+                        task_id=task.id,
+                        role="builder",
+                        summary=(
+                            "Refused self-upgrade: local HEAD and origin/master have diverged; "
+                            "resolve the checkout before retrying."
+                        ),
+                        outcome="errored",
+                    )
+                    self._finalize_attempt_artifacts(task.id)
+                    return finished_task
+                prefer_local_head = base_state is GitState.LOCAL_AHEAD
             base_sha = await self._prepare_worktree(
                 repo_dir,
                 worktree_dir,
                 branch_name,
-                prefer_local_head=(task.repo == "superbrain"),
+                prefer_local_head=prefer_local_head,
             )
             prompt = self._build_builder_prompt(task, worktree_dir)
             pi_res = await self._run_pi(
@@ -608,7 +635,30 @@ class Reconciler:
 
             just_upgraded_self = False
             if task.repo == "superbrain":
-                await self._apply_self_upgrade(repo_dir, git_sha, task.id)
+                if not await self._apply_self_upgrade(repo_dir, git_sha, task.id):
+                    finished_task = self.db.finish_attempt(
+                        task_id=task.id,
+                        role="builder",
+                        summary=(
+                            "Refused self-upgrade: checkout diverged from or is not based on "
+                            "origin/master; it was not reset backwards."
+                        ),
+                        outcome="errored",
+                        cost_usd=pi_res.cost_usd,
+                        pi_session_id=pi_res.session_id,
+                        session_jsonl_path=pi_res.session_jsonl_path,
+                        git_branch=branch_name,
+                        git_sha=git_sha,
+                        verify_output=verify_output,
+                        metric_value=metric_val,
+                        skills_used=pi_res.skills_used,
+                        diagnostic=pi_res.diagnostic,
+                    )
+                    self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
+                    record_skill_outcome(
+                        self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
+                    )
+                    return finished_task
                 just_upgraded_self = True
             finished_task = self.db.finish_attempt(
                 task_id=task.id,
@@ -1629,10 +1679,135 @@ class Reconciler:
                 protected.add(line.strip())
         return sorted(protected)
 
+    async def _git_ref_sha(self, repo_dir: Path, ref: str) -> str | None:
+        if await self._git_rc(repo_dir, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}") != 0:
+            return None
+        return (await self._git_out(repo_dir, "rev-parse", "--verify", f"{ref}^{{commit}}")).strip()
+
+    async def _git_state_vs_origin_master(self, repo_dir: Path) -> GitState:
+        local_sha = await self._git_ref_sha(repo_dir, "HEAD")
+        origin_sha = await self._git_ref_sha(repo_dir, "origin/master")
+        if origin_sha is None:
+            return GitState.UP_TO_DATE
+        merge_base: str | None = None
+        if local_sha is not None:
+            if await self._git_rc(repo_dir, "merge-base", "HEAD", "origin/master") == 0:
+                merge_base = (
+                    await self._git_out(repo_dir, "merge-base", "HEAD", "origin/master")
+                ).strip()
+        return classify_git_state(local_sha, origin_sha, merge_base)
+
+    async def _report_self_upgrade_divergence(
+        self, repo_dir: Path, task_id: str, *, verified_sha: str, phase: str
+    ) -> None:
+        local_sha = await self._git_ref_sha(repo_dir, "HEAD") or "unknown"
+        origin_sha = await self._git_ref_sha(repo_dir, "origin/master") or "unknown"
+        logger.error(
+            f"[Reconciler] self-upgrade {task_id} ({phase}): local HEAD {local_sha[:7]} and "
+            f"origin/master {origin_sha[:7]} diverged; refusing to reset the checkout backwards."
+        )
+        self.db.queue_outbox(
+            kind="blocker",
+            task_id=task_id,
+            summary_spoken=(
+                f"Superbrain self-upgrade {task_id} refused: local HEAD {local_sha[:7]} and "
+                f"origin/master {origin_sha[:7]} have diverged. Resolve the checkout and retry."
+            ),
+            details={
+                "reason": "diverged_from_origin_master",
+                "phase": phase,
+                "local_head": local_sha,
+                "origin_master": origin_sha,
+                "verified_sha": verified_sha,
+                "remedy": (
+                    f"git -C {repo_dir} fetch origin --prune && "
+                    f"git -C {repo_dir} rebase origin/master  # or reset --hard after saving local commits"
+                ),
+            },
+        )
+
+    async def _report_self_upgrade_stale_base(
+        self, repo_dir: Path, task_id: str, *, verified_sha: str, origin_sha: str
+    ) -> None:
+        logger.error(
+            f"[Reconciler] self-upgrade {task_id}: candidate {verified_sha[:7]} is not a descendant "
+            f"of origin/master {origin_sha[:7]}; refusing to rewind the checkout."
+        )
+        self.db.queue_outbox(
+            kind="blocker",
+            task_id=task_id,
+            summary_spoken=(
+                f"Superbrain self-upgrade {task_id} refused: origin/master moved to {origin_sha[:7]} "
+                f"while the candidate was built. Rebase the task branch on master and retry."
+            ),
+            details={
+                "reason": "origin_master_advanced_past_candidate",
+                "verified_sha": verified_sha,
+                "origin_master": origin_sha,
+                "remedy": (
+                    f"git -C {repo_dir} branch brain/{task_id} {verified_sha} && "
+                    f"git -C {repo_dir} rebase origin/master"
+                ),
+            },
+        )
+
+    async def _report_self_upgrade_push_rejected(
+        self, repo_dir: Path, task_id: str, *, local_sha: str, detail: str
+    ) -> None:
+        origin_sha = await self._git_ref_sha(repo_dir, "origin/master") or "unknown"
+        logger.error(
+            f"[Reconciler] self-upgrade {task_id}: git push origin HEAD:master was rejected "
+            f"(local {local_sha[:7]}, origin/master {origin_sha[:7]}): {detail}"
+        )
+        self.db.queue_outbox(
+            kind="report",
+            task_id=task_id,
+            summary_spoken=(
+                f"Superbrain self-upgrade {task_id} applied locally but could not be pushed to "
+                f"origin/master; master moved to {origin_sha[:7]}. Local checkout needs a manual merge."
+            ),
+            details={
+                "reason": "push_rejected_non_fast_forward",
+                "local_head": local_sha,
+                "origin_master": origin_sha,
+                "git_error": detail,
+                "remedy": (
+                    f"git -C {repo_dir} fetch origin --prune && "
+                    f"git -C {repo_dir} rebase origin/master && "
+                    f"git -C {repo_dir} push origin HEAD:master"
+                ),
+            },
+        )
+
     async def _apply_self_upgrade(
         self, repo_dir: Path, verified_sha: str, task_id: str
-    ) -> None:
+    ) -> bool:
+        """Applies a verified self-upgrade in place. Returns False when divergence forced a refusal."""
         old_head = (await self._git_out(repo_dir, "rev-parse", "HEAD")).strip()
+        remotes = await self._git_out(repo_dir, "remote", check=False)
+        has_origin = "origin" in remotes.splitlines()
+        if has_origin:
+            await self._git_fetch(repo_dir)
+            if await self._git_state_vs_origin_master(repo_dir) is GitState.DIVERGED:
+                await self._report_self_upgrade_divergence(
+                    repo_dir, task_id, verified_sha=verified_sha, phase="apply"
+                )
+                return False
+            origin_sha = await self._git_ref_sha(repo_dir, "origin/master")
+            if (
+                origin_sha is not None
+                and origin_sha != verified_sha
+                and await self._git_rc(
+                    repo_dir, "merge-base", "--is-ancestor", origin_sha, verified_sha
+                )
+                != 0
+            ):
+                # The candidate is not a descendant of the current master (master moved while the
+                # builder ran); applying it would rewind the checkout and the push would be rejected.
+                await self._report_self_upgrade_stale_base(
+                    repo_dir, task_id, verified_sha=verified_sha, origin_sha=origin_sha
+                )
+                return False
         self.db.set_last_good_sha(old_head)
         dirty = (await self._git_out(repo_dir, "status", "--porcelain", check=False)).strip()
         if dirty:
@@ -1646,13 +1821,14 @@ class Reconciler:
                 check=False,
             )
         await self._git_out(repo_dir, "reset", "--hard", verified_sha)
+        new_head = (await self._git_out(repo_dir, "rev-parse", "HEAD")).strip()
         dep_diff = (
             await self._git_out(
                 repo_dir,
                 "diff",
                 "--name-only",
                 old_head,
-                verified_sha,
+                new_head,
                 "--",
                 "pyproject.toml",
                 "uv.lock",
@@ -1669,10 +1845,15 @@ class Reconciler:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await sync_proc.wait()
-        remotes = await self._git_out(repo_dir, "remote", check=False)
-        if "origin" in remotes.splitlines():
-            await self._git_out(repo_dir, "push", "origin", "HEAD:master", check=False)
+        if has_origin:
+            # Never swallow this: a rejected push means origin/master moved ahead of the checkout.
+            push_rc, push_detail = await self._git_capture(repo_dir, "push", "origin", "HEAD:master")
+            if push_rc != 0:
+                await self._report_self_upgrade_push_rejected(
+                    repo_dir, task_id, local_sha=new_head, detail=push_detail
+                )
         self.restart_pending = True
+        return True
 
     async def _git_fetch(self, repo_dir: Path) -> None:
         remotes = await self._git_out(repo_dir, "remote")
@@ -1739,6 +1920,21 @@ class Reconciler:
             stderr=asyncio.subprocess.DEVNULL,
         )
         return await proc.wait()
+
+    @staticmethod
+    async def _git_capture(cwd: Path, *args: str) -> tuple[int, str]:
+        """Runs git and returns `(returncode, stdout+stderr)` for loud failure reporting."""
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "-C",
+            str(cwd),
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        returncode = proc.returncode if proc.returncode is not None else 1
+        return returncode, out.decode("utf-8", errors="replace").strip()
 
     @staticmethod
     async def _git_out(cwd: Path, *args: str, check: bool = True) -> str:

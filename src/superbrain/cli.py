@@ -15,6 +15,7 @@ from superbrain.db import BrainDB
 from superbrain.reconciler import Reconciler
 from superbrain.server import BrainServer
 from superbrain.telemetry import TelemetryHub
+from superbrain.upgrade import run_upgrade
 
 
 def build_launchd_plist() -> str:
@@ -227,6 +228,22 @@ def main(argv: list[str] | None = None) -> int:
     launchd_p = sub.add_parser("launchd", help="Print or install the macOS LaunchAgent plist")
     launchd_p.add_argument("--install", action="store_true")
 
+    upgrade_p = sub.add_parser(
+        "upgrade",
+        help="Fast-forward this checkout to origin/master, sync deps if needed, and restart the daemon",
+    )
+    upgrade_p.add_argument(
+        "--check", action="store_true", help="Report local HEAD vs origin/master without mutating anything"
+    )
+    upgrade_p.add_argument(
+        "--fetch", action="store_true", help="Refresh origin/master during --check (still read-only)"
+    )
+    upgrade_p.add_argument("--stash", action="store_true", help="Auto-stash a dirty tree before updating")
+    upgrade_p.add_argument("--no-restart", action="store_true", help="Update the checkout but do not restart")
+    upgrade_p.add_argument(
+        "--repo", default=None, help="Checkout to upgrade (default: this Superbrain checkout)"
+    )
+
     args = parser.parse_args(argv)
     if args.cmd == "serve":
         asyncio.run(_serve_async())
@@ -235,6 +252,14 @@ def main(argv: list[str] | None = None) -> int:
         return run_self_check()
     if args.cmd == "top":
         return run_dashboard(list(args.top_args or []))
+    if args.cmd == "upgrade":
+        return run_upgrade(
+            repo_dir=Path(args.repo) if args.repo else None,
+            check=args.check,
+            fetch=args.fetch,
+            stash=args.stash,
+            restart=not args.no_restart,
+        )
 
     if args.cmd == "launchd":
         plist_text = build_launchd_plist()
