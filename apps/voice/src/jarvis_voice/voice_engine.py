@@ -109,6 +109,9 @@ class VoiceAudio:
             if not ok:
                 raise RuntimeError(f"audio engine could not start: {err}")
         if self._play_format is not None and not self.player.isPlaying():
+            # Voice processing delivers no mic input until the output has played a reference signal, so
+            # play half a second of silence to prime the echo canceller before the greeting arrives.
+            self.play(bytes(int(self._play_format.sampleRate())), speech=False)
             self.player.play()
 
     def play(self, pcm16: bytes, *, speech: bool = True) -> float:
