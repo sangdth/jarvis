@@ -1,9 +1,28 @@
 # Jarvis — Architecture
 
+## 0. Three apps, one repository
+
+| App | Package / binary | Job | Where |
+| :--- | :--- | :--- | :--- |
+| Voice layer | `jarvis-voice` (Python) | hears, checks the sentence, talks, drives agents | `apps/voice/` |
+| Brain | `brain` (Python) | board of goals/problems, `pi` workers in worktrees, HTTP/SSE | `apps/brain/` |
+| Cockpit | `jarvis-top` (Rust) | fullscreen board, attempts, spend and live telemetry | `apps/tui/` |
+
+`packages/jarvis-core` holds what all three share: `JARVIS_HOME`, the `.env` settings base, `SOUL.md` and the brain
+token. `src/jarvis` is the one command (`jarvis`) that starts the brain with the voice, and brain's own commands
+(`status`, `add`, `research`, `improve`, `launchd`, `serve`, `upgrade`) are reached through it.
+
+`jarvis` probes the brain on `127.0.0.1:8643` with the shared token: when a daemon answers (the 24/7 LaunchAgent, or
+another window) it attaches, so overnight work is never restarted by a voice restart; when nothing answers it runs
+`brain.cli.running()` in the same event loop and stops it on exit. One machine, one board, one SQLite writer.
+
+Each language keeps its native workspace (`uv`, `cargo`; `pnpm`/`go.work` when a client or service in another
+language arrives), so a new app is a folder and a workspace line. Cross-language contracts live in `schemas/`.
+
 ## 1. Core Requirements
 
 1. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
-2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **T3 Code** (or **Claude Code** or **OpenCode** when named), everything else to **Hermes Agent**. Jarvis only routes and relays; the work happens in each agent's own harness.
+2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **T3 Code** (or **Claude Code** or **OpenCode** when named), everything else to **the brain** (`brain`), which always runs alongside the voice. Jarvis only routes and relays; the work happens in each app's or agent's own harness.
 3. **Plain-Words Reporting:** Agent questions and approval requests are read out as they are. A finished turn is long markdown full of file paths and diffs; Jarvis has its conversation model retell it as one short first-person outcome, about ten words; a plan or choice waiting on the user gets one phrase per heading, then its question (`AGENT_REPORT_PROMPT`).
 4. **Dynamic Silence / Notification Mode:**
    - Saying **"Shut up"** or **"Be quiet"** immediately silences Jarvis's voice (`BEEP_ONLY` mode), interrupting any active speech and using short audio chimes ("beep") to notify when new agent decisions arrive.
@@ -35,7 +54,7 @@ flowchart LR
     subgraph CodingAgents ["3. Sub-Agent Watcher (SDK / HTTP)"]
         CC["Claude Code (Agent SDK)"] --> Buffer["Agent Watchers"]
         OC["OpenCode (HTTP SSE)"] --> Buffer
-        HA["Hermes Agent (HTTP runs)"] --> Buffer
+        HA["The brain (HTTP runs)"] --> Buffer
         T3["T3 Code (WebSocket RPC)"] --> Buffer
         Buffer -->|"Questions, approvals, finished turns"| Notify{"Check Mode"}
     end
@@ -46,6 +65,16 @@ flowchart LR
     Notify -->|"mode == VOICE"| LLM
     LLM --> TTS["TTS Output to Speaker"]
     LLM -->|"send_agent_task / answer_agent / stop_agent"| CodingAgents
+
+    subgraph BrainApp ["4. The brain (`apps/brain`)"]
+        SB["Board (SQLite WAL)"] --> REC["Reconciler"]
+        REC -->|"one `pi` worker per repo"| WT["Worktree `brain/<task_id>`"]
+        WT -->|"verify_cmd, then push (never merge)"| SB
+        SRV["HTTP/SSE :8643"] --- SB
+        TUI["`jarvis top` (Rust cockpit)"] -->|"read-only state.db + /v1/telemetry"| SB
+    end
+
+    LLM -->|"type `brain`: /v1/runs over HTTP/SSE"| SRV
 ```
 
 ---
@@ -70,7 +99,7 @@ Without a wake word, two local filtering stages prevent false triggers and API c
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
 2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/whisper-large-v3-turbo`) transcribes speech locally on the Apple GPU at $0 cost. With `MASTER_CHECK=true` (off by default; `jarvis enroll` turns it on), in the same step a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker embedding (3D-Speaker ERes2Net, about 100 ms, run alongside Whisper) compares the whole sentence with the enrolled voiceprint (`~/.config/jarvis/owner_voice.npy`); below `SPEAKER_THRESHOLD` the sentence is dropped, unless it is a mute or unmute phrase. Turns come only from sentences that pass both checks: the user aggregator runs on Pipecat's `ExternalUserTurnStrategies`, and `JarvisIntentGate` wraps each passed sentence in proposed start/stop frames, so background voices never interrupt Jarvis or hold a turn open. Voice detection still cuts Whisper's sentences: with `SMART_TURN=true` (default) a 0.2 s pause asks Pipecat's Smart Turn v3 (local ONNX, about 50 ms) whether the voice sounds finished; if not, `SpeakerVerifiedWhisperSTT` keeps the sentence open until the user goes on or 1.5 s of silence pass, so Whisper and the voice check get it whole; a sentence held past 30 s (`MAX_HELD_SECS`, a TV that never sounds done) goes on as it is. With `SMART_TURN=false` every 0.6 s pause ends a sentence, and one Whisper ends with "..." or a dash waits up to 2 s after the user's next silence and joins what they say next, once (`HOLD_SECS`). Research: `docs/research/speaker-verification.md`. Each answered turn logs `[Latency]` lines (Pipecat's `UserBotLatencyObserver`, `enable_metrics` on; `latency.py` skips cycles with no released user turn) and `[Intent] ... ms` for the speech check, which Pipecat counts inside transcription. With `SAVE_SEGMENTS=N`, every segment Whisper gets (even one it returns no text for) is saved as a WAV in `JARVIS_HOME/clips` (folder 0700, files 0600, newest N kept) and named on its `[Speaker] score=` log line, to re-run Whisper and the voice check on real misses; off by default. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to Laya's `jarvis-intent` (`POST $LAYA_BASE_URL/v1/systemone`, one `choice` question, fine-tuned for Jarvis, about 90 ms), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`. The OpenRouter decision model `typesafe/jev-1.14` (`FILTER_MODEL`, `POST /api/alpha/decisions`, about 230 ms) gets the same question at the same time; its answer is used only when Laya fails or passes `LAYA_TIMEOUT_SECS`, and both answers go to `feedback/intent.jsonl` for retraining. A sentence that passes goes to `TranscriptCleaner` (`cleanup.py`, `TRANSCRIPT_CLEANUP`) before the `[Room]` / `[Speaker: ...]` / `[Meeting transcript:` labels are added: one OpenRouter call (`CLEANUP_MODEL`, thinking off, 1.5 s cap) fixes punctuation, drops fillers and resolves a slip fixed in the same sentence, and keeps an opening "No, sorry," so a correction still replaces the running task. Sentences of eight words or fewer skip it unless they hold a filler or a `CLEANUP_CUES` phrase; the speech check and its feedback log keep the words as heard; `[Cleanup] ... ms` logs the time.
 
-### C. Agent Integration (Claude Code, OpenCode, Hermes, T3 Code)
+### C. Agent Integration (Claude Code, OpenCode, the brain, T3 Code)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
 Each agent has three actions, one LLM tool each: `send_agent_task` (new work), `answer_agent` (reply to the question
 or approval the agent is waiting on) and `stop_agent`. An answer never becomes a new prompt, and a task never answers
@@ -106,12 +135,15 @@ ignores `session` and `project`.
    (`POST /api/session/:id/prompt`); answers go to
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
 
-3. **Hermes Agent (`HermesAdapter`):** Talks to the Hermes API server (`hermes gateway`, port 8642, Bearer
-   `HERMES_API_KEY`). A task is `POST /v1/runs` with `input`, and later tasks pass the first run's id as
+3. **The brain (`HermesAdapter`, type `brain`):** Talks to Brain on `127.0.0.1:8643` (Bearer
+   `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`) with exactly the protocol below, which Brain serves from
+   `apps/brain/src/brain/server.py`. The same adapter with `type: "hermes"` drives a separate Hermes Agent
+   (`hermes gateway`, port 8642, Bearer `HERMES_API_KEY`) when one runs, so the two never share a token. A task is `POST /v1/runs` with `input`, and later tasks pass the first run's id as
    `session_id`, so Hermes keeps the conversation. Each run's `GET /v1/runs/:id/events` stream gives
    `approval.request` (read out; answered with `POST /v1/runs/:id/approval`, `once` or `deny`) and
    `run.completed` / `run.failed` (retold); `run.cancelled` is silent. If the stream drops, `GET /v1/runs/:id`
-   gives the result. Stop is `POST /v1/runs/:id/stop`. Hermes's guardian model decides which commands need a human.
+   gives the result. Stop is `POST /v1/runs/:id/stop`. The brain's own reconciler decides which work waits for the
+   owner; a separate Hermes uses its guardian model instead. The whole contract is `schemas/openapi.json`.
 4. **T3 Code (`T3Adapter`, `t3_adapter.py`):** Talks to the running T3 Code app over `ws://127.0.0.1:3773/ws`
    (`?orchestrationProtocol=2`), the API the T3 window itself uses: Effect RPC messages as JSON (`Request`, `Exit`,
    `Chunk`, and an `Ack` for every chunk). Auth is a 30-day bearer token from
@@ -151,7 +183,7 @@ ignores `session` and `project`.
 
 ## 4. Codebase Mapping
 
-All files are in `src/jarvis/`.
+The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voice/src/jarvis_voice/`.
 
 | File                  | What it holds                                                              |
 | :-------------------- | :------------------------------------------------------------------------- |
@@ -163,7 +195,7 @@ All files are in `src/jarvis/`.
 | `config.py`           | `Settings` from `.env`, `JARVIS_HOME`, dev checkout vs. installed          |
 | `soul.py`             | `SOUL.md` read and write                                                   |
 | `system_prompts.py`   | `SYSTEM.md`: optional `## Name` sections that replace shipped prompts      |
-| `init.py`             | `jarvis init`: copies the defaults, asks for keys, writes `SOUL.md`        |
+| `init.py`             | `jarvis init`: copies the defaults, makes the brain folder and token, writes `SOUL.md` |
 | `mac_audio.py`        | `MacVoiceTransport`: mic and speaker through macOS voice processing        |
 | `voice_engine.py`     | `VoiceAudio`, `MicConverter`: that engine, without Pipecat (enroll, client) |
 | `remote_audio.py`     | `RemoteVoiceTransport`: `jarvis remote`, the mic of another Mac over WS     |
@@ -178,7 +210,7 @@ All files are in `src/jarvis/`.
 | `sessions.py`         | `CodingSessionAdapter` (list, pick, new session), `match_sessions`         |
 | `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |
 | `opencode_adapter.py` | `OpenCodeSSEAdapter`: found OpenCode 2 service, SSE events, `cwd` only     |
-| `hermes_adapter.py`   | `HermesAdapter`: Hermes API server runs                                    |
+| `hermes_adapter.py`   | `HermesAdapter`: the brain's runs (`type: brain`), or a Hermes Agent  |
 | `orchestrator.py`     | `AgentOrchestrator`, `ADAPTERS` (agents.json type to adapter), reminders   |
 | `waiting_lines.py`    | `WaitingLines`: the per-task "still working" lines, refilled in batches    |
 | `t3_adapter.py`       | `T3Adapter`, project list, `jarvis connect` thread lookup                  |

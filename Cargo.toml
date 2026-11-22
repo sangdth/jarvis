@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["apps/tui"]
+
+# One lockfile and one `target/` per checkout: the cockpit, and any Rust crate or native extension
+# added later, share compilation caches.

@@ -11,8 +11,8 @@ import statistics
 import sys
 import time
 
-from jarvis.executive_filter import ExecutiveFilter
-from jarvis.state import UserIntent
+from jarvis_voice.executive_filter import ExecutiveFilter
+from jarvis_voice.state import UserIntent
 
 MIN_ACCURACY = 0.97  # INTENT_QUESTION scored 97% on 2026-11-02; a wording change may not go below it
 

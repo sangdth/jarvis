@@ -1,0 +1,19 @@
+# Toolchains pinned for the whole repo, one file for every language. `mise install` reads this;
+# a language we add later gets a line here and nowhere else.
+[tools]
+python = "3.12"
+uv = "latest"
+rust = "stable"
+# The Pi and Meet extensions are TypeScript/JavaScript; a React client would live in `apps/web`.
+node = "22"
+pnpm = "latest"
+# go = "latest"  # when a Go service or client arrives (then a root `go.work`)
+
+[tasks.sync]
+run = "just sync"
+
+[tasks.test]
+run = "just test"
+
+[tasks.lint]
+run = "just lint"

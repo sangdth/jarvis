@@ -17,19 +17,27 @@ class CliTest(unittest.TestCase):
     def test_version_of_a_git_install_names_branch_and_commit(self) -> None:
         url = {"url": "https://github.com/sangdth/jarvis", "vcs_info": {"vcs": "git", "requested_revision": "master",
                                                                        "commit_id": "0fbc724abcdef"}}
-        with patch("jarvis.config.distribution", return_value=dist(url)):
+        with patch("jarvis_core.home.distribution", return_value=dist(url)):
             self.assertEqual(cli.version(), "master @ 0fbc724")
 
     def test_version_of_a_checkout_is_dev_with_its_folder(self) -> None:
         url = {"url": "file:///Users/me/jarvis", "dir_info": {"editable": True}}
-        with patch("jarvis.config.distribution", return_value=dist(url)):
+        with patch("jarvis_core.home.distribution", return_value=dist(url)):
             self.assertEqual(cli.version(), "dev (/Users/me/jarvis)")
 
-    def test_update_refuses_a_dev_checkout(self) -> None:
-        with patch.object(cli, "version", return_value="dev (/x)"), patch.object(cli.subprocess, "run") as run:
-            with self.assertRaises(SystemExit):
-                cli.update()
-            run.assert_not_called()
+    def test_upgrade_of_a_dev_checkout_fast_forwards_with_its_flags(self) -> None:
+        with patch.object(cli.sys, "argv", ["jarvis", "upgrade", "--check"]), \
+                patch.object(cli, "version", return_value="dev (/x)"), \
+                patch.object(cli, "brain") as brain:
+            cli.main()
+        brain.assert_called_once_with(["upgrade", "--check"])
+
+    def test_upgrade_of_an_installed_jarvis_upgrades_the_tool(self) -> None:
+        with patch.object(cli.sys, "argv", ["jarvis", "upgrade"]), \
+                patch.object(cli, "version", return_value="master @ abc1234"), \
+                patch.object(cli, "update_installed") as update, patch("builtins.print"):
+            cli.main()
+        update.assert_called_once_with()
 
     def test_second_jarvis_is_stopped_by_the_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,38 +100,50 @@ class CliTest(unittest.TestCase):
             self.assertFalse(home.exists())
             run.assert_not_called()
 
-    def test_connect_names_what_to_connect_to(self) -> None:
+    @staticmethod
+    def _attached():
+        """The brain side of `jarvis`: attach to a daemon that is already up, so no token files or ports."""
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def running():
+            yield False
+
+        return running
+
+    def _listen(self, argv: list[str]):
+        """Run `jarvis` with the voice pipeline and the brain faked; returns the pipeline mock."""
+        from contextlib import ExitStack
         from unittest.mock import AsyncMock
 
+        run = AsyncMock()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(cli.sys, "argv", argv))
+            stack.enter_context(patch.object(cli, "checkout_root", return_value=None))
+            stack.enter_context(patch.object(cli, "hold_lock"))
+            stack.enter_context(patch.object(cli, "prepare_brain"))
+            stack.enter_context(patch("jarvis.supervisor.brain_running", new=self._attached()))
+            stack.enter_context(patch("jarvis_voice.main.run_pipecat_harness", new=run))
+            cli.main()
+        return run
+
+    def test_connect_names_what_to_connect_to(self) -> None:
         for argv, target in ((["jarvis"], None), (["jarvis", "connect"], "t3"), (["jarvis", "connect", "pi"], "pi"),
                             (["jarvis", "connect", "claude"], "claude")):
-            with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
-                    patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
-                cli.main()
-            run.assert_awaited_once_with(connect=target, meeting=False, remote=False)
+            self._listen(argv).assert_awaited_once_with(connect=target, meeting=False, remote=False)
 
     def test_meeting_flag_and_subcommand_enable_meeting_mode(self) -> None:
-        from unittest.mock import AsyncMock
-
         for argv, target in (
             (["jarvis", "meeting"], None),
             (["jarvis", "--meeting"], None),
             (["jarvis", "meeting", "connect"], "t3"),
             (["jarvis", "connect", "pi", "--meeting"], "pi"),
         ):
-            with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
-                    patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
-                cli.main()
-            run.assert_awaited_once_with(connect=target, meeting=True, remote=False)
+            self._listen(argv).assert_awaited_once_with(connect=target, meeting=True, remote=False)
 
     def test_remote_subcommand_listens_for_a_relay_client(self) -> None:
-        from unittest.mock import AsyncMock
-
         for argv, target in ((["jarvis", "remote"], None), (["jarvis", "remote", "connect"], "t3")):
-            with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
-                    patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
-                cli.main()
-            run.assert_awaited_once_with(connect=target, meeting=False, remote=True)
+            self._listen(argv).assert_awaited_once_with(connect=target, meeting=False, remote=True)
 
     def test_remote_and_meeting_together_are_refused(self) -> None:
         with patch.object(cli.sys, "argv", ["jarvis", "remote", "meeting"]), self.assertRaises(SystemExit) as stopped:

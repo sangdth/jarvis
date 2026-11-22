@@ -1,30 +1,33 @@
 [project]
 name = "jarvis-harness"
 version = "0.1.0"
-description = "Always-on voice harness that hands work to Claude Code, OpenCode and Hermes Agent."
+description = "Always-on voice harness, its always-on brain, and the cockpit over it."
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
-    # Pinned to the minor release we test: voice_gates.py and latency.py extend Pipecat's private methods, and
-    # `uv tool install` from master ignores uv.lock.
-    "pipecat-ai[silero,mlx-whisper,openai,elevenlabs]>=1.15,<1.16",
-    "pydantic-settings>=2.2.0",
+    # the three apps, installed together so `jarvis` can run the brain with the voice
+    "jarvis-core",
+    "jarvis-voice",
+    "brain",
+    # the CLI itself: the health probe on the brain, and the log lines
     "httpx>=0.27.0",
     "loguru>=0.7.2",
-    "claude-agent-sdk>=0.2.176",
-    "mem0ai>=2.2.1",
-    "qdrant-client>=1.12.0",
-    "ollama>=0.4.0",
-    "websockets>=13.0",
-    "sherpa-onnx>=2.0.1",
-    "pyobjc-framework-AVFoundation>=11.0",
-    "pyobjc-framework-Quartz>=11.0",
 ]
 
 [project.scripts]
 jarvis = "jarvis.cli:main"
+
+[tool.uv.workspace]
+# Native workspaces per ecosystem: `uv` here, `Cargo.toml` for Rust, `pnpm-workspace.yaml`/`go.work`
+# when a client or a service in another language arrives. Nothing outside `members` is installed.
+members = ["apps/brain", "apps/voice", "packages/jarvis-core"]
+
+[tool.uv.sources]
+jarvis-core = { workspace = true }
+jarvis-voice = { workspace = true }
+brain = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
@@ -34,21 +37,31 @@ build-backend = "hatchling.build"
 packages = ["src/jarvis"]
 
 [dependency-groups]
-dev = ["ruff>=0.8", "mypy>=1.13"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
+
+[tool.pytest.ini_options]
+# Brain's suite is asyncio-first; the voice harness's tests are unittest classes, which pytest also runs.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests", "apps/voice/tests", "apps/brain/tests"]
 
 [tool.ruff]
 line-length = 130
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "apps", "packages", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
+[tool.ruff.lint.isort]
+# Every workspace member is first-party, so imports group as stdlib / third-party / ours.
+known-first-party = ["jarvis", "jarvis_core", "jarvis_voice", "brain"]
+
 [tool.ruff.lint.per-file-ignores]
 # Prompt text: a newline inside it is part of what the model reads, so its lines stay as written.
-"src/jarvis/prompts.py" = ["E501"]
+"apps/voice/src/jarvis_voice/prompts.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src/jarvis"]
+files = ["src/jarvis", "apps/voice/src/jarvis_voice", "apps/brain/src/brain", "packages/jarvis-core/src/jarvis_core"]
 ignore_missing_imports = true

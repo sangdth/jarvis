@@ -6,7 +6,12 @@
 
 Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sherpa-onnx**, the **Claude Agent SDK** and the **OpenCode v2 API**.
 
-It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **Hermes Agent**. It reads out their questions and approvals and retells each finished turn in plain words.
+It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **the brain** (`brain`), the daemon it runs alongside itself: goals, research, notes, email, calendar. It reads out their questions and approvals and retells each finished turn in plain words.
+
+Jarvis is one repository of three apps: the **voice layer** (`jarvis-voice`), the **brain** (`brain`, an
+always-on daemon that starts with the voice) and the **cockpit** (`jarvis-top`, a Rust terminal dashboard over the
+brain). Python and Rust share the workspace and the state home, and the layout leaves room for a Go service or a
+React client without moving anything.
 
 What it does:
 - **Can talk only with you.** Turn on the master check (`MASTER_CHECK=true`, set by `jarvis enroll`) and it checks
@@ -37,11 +42,33 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
 | Tidy a sentence before the model  | `TranscriptCleaner` (`CLEANUP_MODEL`)       | `cleanup.py`          |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
-| Claude Code, OpenCode, Hermes     | `*Adapter` classes                          | `*_adapter.py`        |
+| Claude Code, OpenCode, the brain  | `*Adapter` classes                          | `*_adapter.py`        |
 | T3 Code, projects by name         | `T3Adapter`                                 | `t3_adapter.py`       |
 | Memory                            | Mem0 + Qdrant + Ollama `bge-m3`             | `memory.py`           |
+| Goals, problems, overnight work   | `Reconciler` + `pi` workers in worktrees    | `reconciler.py`       |
+| Its own board, spend and approvals| SQLite WAL + HTTP/SSE (`:8643`)             | `server.py`           |
+| Seeing what it is doing           | Rust + Ratatui cockpit                      | `apps/tui/`           |
 
-Files are in [`src/jarvis/`](src/jarvis/).
+The voice files above are in [`apps/voice/src/jarvis_voice/`](apps/voice/src/jarvis_voice/); the brain's are in
+[`apps/brain/src/brain/`](apps/brain/src/brain/); the `jarvis` command itself is
+[`src/jarvis/cli.py`](src/jarvis/cli.py).
+
+### Repository layout
+
+```
+apps/voice/            jarvis-voice: Pipecat ear, speech check, executive model, agent watchers
+apps/brain/            brain: board (SQLite), reconciler, pi workers, HTTP/SSE server
+apps/tui/              jarvis-top: the Ratatui cockpit (Rust)
+packages/jarvis-core/  the shared state home, .env settings base, brain token, SOUL.md
+src/jarvis/            the `jarvis` command: init, upgrade, cockpit launcher, brain-with-voice supervisor
+schemas/               the cross-language contracts (the brain's HTTP/SSE API)
+scripts/               the speech and routing benchmarks
+```
+
+Each language keeps its own workspace: [uv](pyproject.toml) for Python, [Cargo](Cargo.toml) for Rust, and
+`pnpm-workspace.yaml` / `go.work` when a client or service in another language arrives. [justfile](justfile) is the
+one command runner (`just test`, `just lint`, `just build`), and [mise.toml](mise.toml) pins the toolchains. Each
+contract lives in one place, listed in [schemas/README.md](schemas/README.md).
 
 ---
 
@@ -53,8 +80,10 @@ curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh
 ```
 The [script](site/install.sh) installs [uv](https://docs.astral.sh/uv/) if it is missing, which brings its own Python
 (your own Python is left alone), runs `uv tool install --python 3.12 "git+https://github.com/sangdth/jarvis@master"`,
-then `jarvis init`. Apple Silicon Macs only. This puts the `jarvis` command on your PATH, so it runs from any folder. `jarvis update` moves it to the newest
-master and prints the commit it went from and to; `jarvis --version` shows the one you have (`master @ 0fbc724`).
+then `jarvis init`. If a Rust toolchain is on the machine it also builds the cockpit (`jarvis top`). Apple Silicon
+Macs only. This puts the `jarvis` command on your PATH, so it runs from any folder. `jarvis upgrade` (also spelled
+`jarvis update`) moves it to the newest master and prints the commit it went from and to; `jarvis --version` shows
+the one you have (`master @ 0fbc724`).
 Everything of yours lives in `~/.config/jarvis/`, never in the folder you run it from. `jarvis uninstall` deletes that
 folder and removes the `jarvis` command; it asks first and refuses while Jarvis is listening.
 
@@ -77,7 +106,9 @@ already running (pid ...)".
 jarvis init
 ```
 It creates `~/.config/jarvis/` with a `.env` and an `agents.json` from
-[`src/jarvis/defaults/`](src/jarvis/defaults/); it never overwrites them. It asks for your OpenRouter and
+[`src/jarvis/defaults/`](src/jarvis/defaults/), the brain's own folder under it (`brain/`, with a board, worktrees and
+skills) and a `brain_token` the voice, the brain and the cockpit share; it never overwrites your files. Moving over
+from a standalone Superbrain? `jarvis init` moves `~/.config/superbrain` to `~/.config/jarvis/brain` for you. It asks for your OpenRouter and
 ElevenLabs keys (typing stays hidden; Enter skips one) and saves them in `.env`, readable only by you; a key
 already set, in `.env` or exported in your shell, is never asked. A shell key stays out of `.env`, so it must be
 exported wherever Jarvis runs. Then it asks a few questions (Jarvis's personality, what to call you,
@@ -124,8 +155,14 @@ what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path
 - **OpenCode** 2 runs its own service, and Jarvis finds it (`~/.local/state/opencode/service.json`); its sessions
   go in the agent's `cwd`, and requests from other projects are ignored. To use a server of your own instead, start
   it with `OPENCODE_SERVER_PASSWORD=<same value as in .env> opencode serve --port 4096` in the project folder.
-- **Hermes Agent** needs its API server: `API_SERVER_ENABLED=true` and an `API_SERVER_KEY` of 16+ characters in
-  `~/.hermes/.env`, then `hermes gateway install` (port 8642). Hermes's own approval settings decide what it asks.
+- **The brain** (the default for everything that is not coding) needs no setup: `jarvis` starts it on
+  `127.0.0.1:8643` when nothing is listening there, and attaches to a `launchd` one otherwise
+  (`jarvis launchd --install` keeps it up 24/7, overnight work included). Its board, spend and skills:
+  `jarvis status`; watch it live: `jarvis top`.
+- **Hermes Agent**, if you run a separate one, needs its API server: `API_SERVER_ENABLED=true` and an
+  `API_SERVER_KEY` of 16+ characters in `~/.hermes/.env`, then `hermes gateway install` (port 8642). Its own
+  approval settings decide what it asks. Add it to `agents.json` as `{"type": "hermes"}` with `HERMES_API_KEY` in
+  `.env`.
 - **T3 Code** (the default) needs the T3 Code app running (port 3773). Jarvis gets its own token through the `t3`
   CLI. Say "continue working on the Hugger Hustle platform" and Jarvis picks the folder from your git repos one or
   two levels under your projects folder (`~/Projects/` unless `SOUL.md` says otherwise; read at startup) and
@@ -148,6 +185,25 @@ processing (the echo canceller FaceTime uses), so you can talk over Jarvis. With
 voice again after updating from an older version (`jarvis enroll`): it now records through the same processing.
 Updated from a version that required enrollment? Your voiceprint stays, but the check is now off until you set
 `MASTER_CHECK=true`; the startup log says so.
+
+### The brain and the cockpit
+
+The brain is the part of Jarvis that keeps working when you stop talking: it holds a board of goals and problems,
+picks one when it is allowed to (mode `AUTONOMOUS`, under a daily budget), and runs a `pi` worker in a clean worktree
+on a branch of its own — never merging to master on its own. In `ASSIST` mode it only does what you ask for.
+
+```bash
+jarvis status                     # mode, spend today, the board, active skills
+jarvis add --repo jarvis --kind goal --title "..." --spec "..." --ready
+jarvis top                        # live cockpit: tasks, attempts, spend, telemetry (cargo build first)
+jarvis launchd --install          # keep the brain up 24/7, overnight work included
+jarvis serve                      # run it in this terminal instead (what launchd starts)
+```
+
+`jarvis` starts the brain with the voice when nothing is listening on `127.0.0.1:8643`, and attaches to the daemon
+when something is, so overnight work is never interrupted by restarting the voice. Both share one state: `jarvis`
+writes `.env`, `SOUL.md` (its `projects_dir` decides where the brain may work), the board, and the token in
+`~/.config/jarvis/brain_token`.
 
 ### Listen from another Mac (thin client)
 ```bash
@@ -214,7 +270,7 @@ and you answer it at the keyboard. A saved session with no window open isn't lis
 jarvis meeting               # or: jarvis connect --meeting
 ```
 Load the Chrome extension once from the source: `chrome://extensions`, turn on Developer mode, **Load unpacked**,
-pick `src/jarvis/defaults/meet` (the installed `jarvis` logs its own copy's path on start). After a change to it,
+pick `apps/voice/src/jarvis_voice/defaults/meet` (the installed `jarvis` logs its own copy's path on start). After a change to it,
 press its reload button there. Then open the call in Chrome (reload a tab that was already open). Keep your usual mic in
 Meet: the extension mixes Jarvis's voice into it, so the call hears you both, and muting yourself in Meet mutes
 Jarvis too. If Chrome asks whether Meet may reach apps on this device, allow it: that is Jarvis's voice socket
@@ -255,7 +311,7 @@ says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there t
 - **"What sessions do I have?" / "Name the threads in [project]"** — Reads out session titles, newest first.
 - **"Start a new session" / "Go back to the thread about [topic]" / "On OpenCode, continue the session about
   [topic]"** — Starts a clean session, or goes back to the earlier one whose title, branch or folder matches.
-- **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Hermes.
+- **"Check my calendar" / "Email Minh..." / "Look up..."** — Sends it to Brain.
 - **Answering an agent** ("yes", "use Postgres") — Goes to the question or approval the agent is waiting on.
 - **"Stop it"** / **"Stop that"** / **"Cancel that"** / **"Stop Claude"** — Stops the agent's current turn; with
   nothing running, Jarvis says so. "Stop" stops the work, "shut up" mutes Jarvis.

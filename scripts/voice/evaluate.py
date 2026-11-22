@@ -17,7 +17,7 @@ from pathlib import Path
 import mlx_whisper
 import numpy as np
 
-from jarvis.config import JARVIS_HOME
+from jarvis_voice.config import JARVIS_HOME
 
 DATA_DIR = JARVIS_HOME / "voice_data"
 BASE_MODELS = ["mlx-community/whisper-large-v3-turbo", "mlx-community/whisper-large-v3-mlx"]

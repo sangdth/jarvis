@@ -1,34 +1,54 @@
 # Jarvis
 
-An always-on voice harness (Pipecat) that talks to the user and hands work to agents: coding to T3 Code
-(or Claude Code or OpenCode when named), everything else to Hermes Agent. No wake word. Jarvis stays thin: it routes and
-relays; the work, tools and memory live in each agent's own harness.
+One repository, three apps. The **voice layer** (`jarvis-voice`, Pipecat) talks to the user and hands work to
+agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else to **the brain** (`brain`), the daemon
+that always runs with it. The **cockpit** (`jarvis-top`, Rust + Ratatui) shows the brain's board live. No wake word.
+Jarvis stays thin: it routes and relays; the work, tools and memory live in each app's or agent's own harness.
 Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS.md`. Setup and voice commands:
 `README.md`.
 
 ## Commands
 
 - Production: `curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh` (`site/install.sh`: uv, then
-  `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis update` upgrades it,
+  `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis upgrade` upgrades it (`update` also works),
   `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
   in), `jarvis connect claude|opencode|pi` (continue a session of that client; for Pi, an open window), `jarvis meeting` (sit in a call; `--meeting` after `connect`), `jarvis remote` (the mic and speaker of another Mac, every model here), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
   (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
   (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
-- Needs: OpenCode 2's own service (found in `~/.local/state/opencode/service.json`), or `opencode serve` pinned with
-  `OPENCODE_SERVER_PASSWORD`; Hermes its gateway service
-  (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
-- Test: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests`
-- Lint and types: `uv run ruff check src tests scripts` and `uv run mypy` (config in `pyproject.toml`)
+- Needs: nothing extra for the brain (it runs with `jarvis`); OpenCode 2's own service (found in
+  `~/.local/state/opencode/service.json`), or `opencode serve` pinned with `OPENCODE_SERVER_PASSWORD`; a separate
+  Hermes its gateway service (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
+- Test: `uv run pytest` (the CLI, the voice harness and the brain; config in `pyproject.toml`), and
+  `cargo test --workspace` for the cockpit. `just test` runs both, `just lint` runs ruff, mypy and clippy.
+- Lint and types: `uv run ruff check src apps packages tests scripts`, `uv run mypy`, and
+  `cargo clippy --workspace --all-targets -- -D warnings`
+- Build the cockpit: `cargo build --release --workspace` (binary `target/release/jarvis-top`, `jarvis top` finds it)
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 150 at 3 rounds)
 - Routing benchmark: `uv run python scripts/bench_routing.py` (about 240 paid calls; `bench_routing.py 1` runs one round, 80)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
   <https://sangdth.github.io/jarvis/> on every push to master that touches `site/`.
 
+## Repository layout
+
+| Path | What lives there |
+| :--- | :--------------- |
+| `apps/voice/src/jarvis_voice/` | the voice layer (`jarvis-voice`): ear, speech check, executive model, agent watchers |
+| `apps/brain/src/brain/` | the brain (`brain`): board, reconciler, `pi` workers, HTTP/SSE server |
+| `apps/tui/` | the cockpit (`jarvis-top`, Rust + Ratatui) |
+| `packages/jarvis-core/` | what all three share: `JARVIS_HOME`, the `.env` settings base, the brain token, `SOUL.md` |
+| `src/jarvis/` | the `jarvis` command: dispatch, `init`, `upgrade`, `top`, and the supervisor that runs the brain with the voice |
+| `schemas/` | cross-language contracts (the brain's HTTP/SSE API, see `schemas/README.md`) |
+
+Each language keeps its native workspace (`pyproject.toml` + `uv.lock`, `Cargo.toml` + `Cargo.lock`, and
+`pnpm-workspace.yaml`/`go.work` when a React client or a Go service arrives). `justfile` is the one task runner,
+`mise.toml` pins the toolchains. A new app is a folder under `apps/` and one line in the workspace, not a new repo.
+
 ## Where to fix "Jarvis"
 
 Start from what the user heard or didn't. The obvious file is often wrong: "Jarvis ignores me" is usually the
-speech check dropping the sentence, not the conversation model.
+speech check dropping the sentence, not the conversation model. Paths in the table are inside
+`apps/voice/src/jarvis_voice/` unless they name another app.
 
 | Symptom                              | Where                                                           |
 | :----------------------------------- | :-------------------------------------------------------------- |
@@ -42,10 +62,14 @@ speech check dropping the sentence, not the conversation model.
 | Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                            |
 | Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`        |
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`               |
+| Brain runs nothing overnight         | `apps/brain/src/brain/reconciler.py`, `DEFAULT_MODE`    |
+| Brain spends too much, or stops      | `db.py` budget breaker, `DAILY_BUDGET_USD`                      |
+| Cockpit shows nothing / no data      | `apps/tui/src/db.rs`, `telemetry.py`, `jarvis top`              |
+| `jarvis` starts a second brain       | `src/jarvis/supervisor.py` (`listening`, `BRAIN_URL`)      |
 | Answer or stop hits the wrong agent  | `orchestrator.py` `find_waiting`, `find_busy`                   |
 | A correction runs as a second task   | `agent_tools.py` `send` (`replace`), each `interrupt`           |
 | "Still waiting" timing or wording    | `remind_while_busy`, `waiting_lines.py`, `WAITING_PROMPT`       |
-| Hermes runs, approvals, stop         | `hermes_adapter.py` `HermesAdapter`                             |
+| Brain runs, approvals, stop          | `hermes_adapter.py` `HermesAdapter` (type `brain`), `server.py` |
 | T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)             |
 | `jarvis connect <agent>`, sessions   | `sessions.py` `CodingSessionAdapter`, `main.py` `pick_session`  |
 | Pi windows                           | `pi_adapter.py` `PiAdapter`, `defaults/pi/jarvis.ts`            |
@@ -76,15 +100,20 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   prompt runs `scripts/bench_routing.py` before and after; it exits 1 below 95%.
 - **Thin layer.** Jarvis never does an agent's job: no email, calendar or coding logic here. A new kind of
   work is a new `role` (or a new agent in `agents.json`), not new code in Jarvis.
-- **Hermes decides its own approvals.** Its guardian model (`approvals` in `~/.hermes/config.yaml`) lets safe
-  commands run; only flagged ones reach Jarvis as `approval.request`. A question Hermes asks ends its turn, so
-  the reply goes back with `send_agent_task` into the same Hermes session.
+- **The brain runs with the voice, one per machine.** `src/jarvis/supervisor.py` probes `BRAIN_URL` (default
+  `127.0.0.1:8643`) with the shared token and either attaches to the `launchd` daemon or starts `brain.cli`
+  in-process for as long as `jarvis` listens, so overnight work is never restarted by a voice restart. Both share
+  one state home: `JARVIS_HOME/brain` (board, worktrees, sessions, skills) and `JARVIS_HOME/brain_token` (0600).
+  The brain's `allowed_repo_set` always includes `jarvis` and `brain`, both of which mean this checkout. The
+  `hermes` agent type still exists for a separate Hermes Agent, on its own `HERMES_API_KEY`.
+- **The brain decides its own approvals.** Its planner defers to the owner for anything protected (`outbox`
+  `approval_request`, read out by the voice and answered with `answer_agent`).
 - **Every coding client shares one session contract; T3 Code is the first-class one.** T3 Code, Claude Code,
   OpenCode and Pi extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`,
   `session_id`); T3's sessions are its threads. A new client implements those, with no case of its own in
   `main.py`, `agent_tools.py` or `prompts.py`. What only T3 does (its projects, `jarvis connect` with no agent,
   continuing its newest thread on the first task) is reached through `orchestrator.t3`, never by checking for a
-  method. A switch never happens mid-turn (`busy`). Hermes is not a coding client and stays on the base.
+  method. A switch never happens mid-turn (`busy`). The brain is not a coding client and stays on the base.
   By voice, `send_agent_task` takes `session` (`"new"`, or words matched against titles by `match_sessions`) and
   `project` (a listed folder: its newest session that is not running, or a new one) (`agent_tools.py`
   `switch_session`); a connected session ignores both. Results name the session the work went to.
@@ -111,8 +140,10 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Pi is reached only through an open window.** `jarvis connect pi` installs `defaults/pi/jarvis.ts` into
   `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
   make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.
-- **All user state lives in `JARVIS_HOME`** (`config.py`): `.env`, `agents.json`, `SOUL.md`, `SYSTEM.md`, the voiceprint,
-  models, memory, and the relay token (`remote_token`, made by `jarvis remote`). The installed `jarvis` uses
+- **All user state lives in `JARVIS_HOME`** (`packages/jarvis-core/src/jarvis_core/home.py`): `.env`, `agents.json`,
+  `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the relay token (`remote_token`, made by `jarvis remote`),
+  the brain's own state in `brain/` (board, worktrees, sessions, traces, skills, progress notes), and the token the
+  three apps share (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env` wins over it). The installed `jarvis` uses
   `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's
   folder (`checkout_root`, found from the running code, never the current folder; gitignored) and stops without its
   `.env`. The T3 setup script copies that state into new worktrees. The one-mic lock stays in `~/.config/jarvis`
@@ -152,8 +183,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   check off nobody is `[Room]`: everyone counts as the master. Memory neither saves meeting turns nor searches for
   the room.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
-- **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `hermes`), matched as written in `agents.json`. A bad
-  `DEFAULT_CODING_AGENT` stops Jarvis at startup.
+- **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `brain`, or `hermes` for a separate one), matched as
+  written in `agents.json`. A bad `DEFAULT_CODING_AGENT` stops Jarvis at startup.
 - **Model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
   `LAYA_MODEL` (Laya's `jarvis-intent`) decides whether a sentence is meant for Jarvis, with `FILTER_MODEL` (an
   OpenRouter decision model on `/api/alpha/decisions`) as its fallback; `EXTRACTION_MODEL` picks memory facts, a

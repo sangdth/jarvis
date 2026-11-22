@@ -5,8 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from jarvis import init
-from jarvis.config import Settings
-from jarvis.soul import load_soul
+from jarvis_core.soul import load_soul
+from jarvis_voice.config import Settings
 
 
 class InitTest(unittest.TestCase):
@@ -16,8 +16,9 @@ class InitTest(unittest.TestCase):
             path = home / "SOUL.md"
             answers = iter(["warm, playful", "Sang", tmp, "", "n"])
             with patch.object(init, "SHARED_HOME", home), patch.object(init, "SOUL_PATH", path), \
-                    patch("builtins.input", lambda _: next(answers)), patch("jarvis.enroll.main") as enroll, \
+                    patch("builtins.input", lambda _: next(answers)), patch("jarvis_voice.enroll.main") as enroll, \
                     patch("builtins.print"), patch.object(init, "copy_config", return_value=[]), \
+                    patch.object(init, "setup_brain", return_value=[]), \
                     patch.object(init, "ask_api_keys"):
                 init.main()
             enroll.assert_not_called()

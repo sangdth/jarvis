@@ -35,6 +35,45 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `jarvis remote` the scores compare that voiceprint with another Mac's mic. Usually close enough; the
   `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling through the relay is not built.
 
+- **The brain moved into this repository and was renamed.** Superbrain became `apps/brain` (package `brain`) with its
+  full history via `git subtree`; the Rust cockpit came out to `apps/tui` and the two histories join at one merge.
+  Limits: the old `sangdth/superbrain` repository is frozen (leave it read-only, do not push fixes there), and a task
+  queued before the rename as `repo='superbrain'` no longer means "this checkout" — re-point it
+  (`jarvis add --id <task> --repo brain …`) or it is treated as an ordinary folder under `projects_dir`.
+- **`brain` is the name everywhere; the old `SUPERBRAIN_*` keys are still read, never written.** Settings are
+  `BRAIN_HOME`, `BRAIN_HOST`, `BRAIN_PORT`, `BRAIN_API_KEY`, `BRAIN_URL`; the worker env vars are `BRAIN_WORKTREE_DIR`,
+  `BRAIN_RPC_SOCK`, `BRAIN_TASK_ID`, `BRAIN_TASK_KIND`, `BRAIN_ALLOWED_REPOS`, `BRAIN_SKILLS_DIR`. Two reads stay for
+  a running daemon or an old `.env`: `SUPERBRAIN_HOME` and `SUPERBRAIN_API_KEY` (Python and the cockpit, as fallbacks)
+  and the state folder `~/.config/superbrain` until `jarvis init` moves it. The separate `brain` console script is
+  gone: one command, `jarvis` (`jarvis serve|status|…`, or `uv run python -m brain.cli …` when working inside
+  `apps/brain`).
+- **One brain per machine, attach or start.** `src/jarvis/supervisor.py` probes `BRAIN_URL` with the shared token:
+  a daemon answering means attach (the 24/7 LaunchAgent keeps overnight work alive across voice restarts), nothing
+  answering means run `brain.cli.running()` in this loop and stop it at exit. Limits: a dev checkout on a Mac
+  with the daemon running attaches to that daemon (with `MASTER_CHECK` off, that means the dev voice can queue work on
+  the live board); set `BRAIN_URL`/`BRAIN_PORT` on the dev side to keep them apart. A token mismatch stops Jarvis
+  with a named error instead of silently starting a second daemon.
+- **One home, one `.env`, one token.** The brain's state is `JARVIS_HOME/brain` and the bearer token is
+  `JARVIS_HOME/brain_token` (0600), shared by the voice, the daemon and the cockpit; `BRAIN_API_KEY` in `.env`
+  wins over it. `jarvis init` moves a pre-merge `~/.config/superbrain` into place. Limits: until it is moved, an
+  installed Jarvis keeps using the old folder (`brain_home()` prefers it), so two paths exist for a while; the Rust
+  cockpit mirrors the same rule. Keys `HOST`/`PORT` in an old `.env` are no longer read (the defaults are
+  `127.0.0.1:8643`); the settings are `BRAIN_HOST`/`BRAIN_PORT`, so a stray `PORT=3000` exported for a web dev server
+  cannot move the daemon.
+- **Native workspaces, one task runner — not Bazel/Buck/Pants.** `uv` and `cargo` keep their own lockfiles, caches and
+  native linking (MLX, sherpa-onnx, pyobjc, rusqlite), and `just` is the one entry point (`just test`, `just lint`,
+  `just build`). Limits: there is no single cross-language dependency graph or remote cache, so a change to a shared
+  schema is coordinated by the `schemas/` table and the commit, not enforced by a build tool. Revisit (moon/Nx, or
+  Bazel) only if the repo grows to many apps with heavy CI fan-out.
+- **The cockpit is a binary of its own.** `cargo install --git ... --bin jarvis-top` (the installer does it when a
+  Rust toolchain is present; `jarvis upgrade` rebuilds it), and `jarvis top` looks on `PATH` and in
+  `target/{release,debug}`. Limits: no toolchain means no cockpit; the voice and the brain never depend on it, and a
+  failed cockpit build only warns.
+- **`schemas/` documents contracts; the canonical files stay in their apps.** `schema.sql` stays in the Python package
+  (the daemon reads it as package data at startup) and `openapi.json` describes the server the daemon runs. Limits: the
+  Rust side queries tables by hand, so a column rename still needs a matching change in `apps/tui/src/db.rs`; a
+  contract test on each side is what catches it.
+
 ## Open risks
 
 Not yet checked against real use:
