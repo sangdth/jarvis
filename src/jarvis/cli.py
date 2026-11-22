@@ -21,6 +21,7 @@ from jarvis.config import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, inst
 
 USAGE = """usage: jarvis [command]
   (none)     listen and hand work to the agents
+  remote     listen for a thin client on the network: another Mac's mic and speaker, every model and agent here
   meeting    sit in a call with you (hears the call, speaks into Google Meet through a Chrome extension); also `--meeting`
              after `connect`
   connect    continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
@@ -126,9 +127,14 @@ def main() -> None:
         from jarvis.enroll import main as enroll  # imported here: loads the speaker model
 
         return enroll()
-    meeting = "meeting" in args or "--meeting" in args
-    rest = [a for a in args if a not in ("meeting", "--meeting")]
-    if (rest and (rest[0] != "connect" or len(rest) > 2)) or len(args) - len(rest) > 1:
+    flags = {"meeting": "meeting", "--meeting": "meeting", "remote": "remote"}
+    given = [a for a in args if a in flags]
+    kinds = {flags[a] for a in given}
+    if len(given) != len(kinds) or len(kinds) > 1:
+        sys.exit(USAGE)  # `meeting` with `remote` (the call is this Mac's) or a flag twice
+    remote, meeting = "remote" in kinds, "meeting" in kinds
+    rest = [a for a in args if a not in flags]
+    if rest and (rest[0] != "connect" or len(rest) > 2):
         sys.exit(USAGE)
     if checkout_root() and not (JARVIS_HOME / ".env").exists():
         sys.exit(f"No .env in {JARVIS_HOME}: a dev checkout uses its own. Run the T3 setup script or `uv run jarvis init`.")
@@ -138,7 +144,7 @@ def main() -> None:
 
     connect = None if not rest else rest[1] if len(rest) == 2 else "t3"
     try:
-        asyncio.run(run_pipecat_harness(connect=connect, meeting=meeting))
+        asyncio.run(run_pipecat_harness(connect=connect, meeting=meeting, remote=remote))
     except KeyboardInterrupt:
         logger.info("Jarvis stopped.")
         sys.exit(0)

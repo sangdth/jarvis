@@ -100,7 +100,7 @@ class CliTest(unittest.TestCase):
             with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
                     patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
                 cli.main()
-            run.assert_awaited_once_with(connect=target, meeting=False)
+            run.assert_awaited_once_with(connect=target, meeting=False, remote=False)
 
     def test_meeting_flag_and_subcommand_enable_meeting_mode(self) -> None:
         from unittest.mock import AsyncMock
@@ -114,7 +114,21 @@ class CliTest(unittest.TestCase):
             with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
                     patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
                 cli.main()
-            run.assert_awaited_once_with(connect=target, meeting=True)
+            run.assert_awaited_once_with(connect=target, meeting=True, remote=False)
+
+    def test_remote_subcommand_listens_for_a_relay_client(self) -> None:
+        from unittest.mock import AsyncMock
+
+        for argv, target in ((["jarvis", "remote"], None), (["jarvis", "remote", "connect"], "t3")):
+            with patch.object(cli.sys, "argv", argv), patch.object(cli, "checkout_root", return_value=None), \
+                    patch.object(cli, "hold_lock"), patch("jarvis.main.run_pipecat_harness", new=AsyncMock()) as run:
+                cli.main()
+            run.assert_awaited_once_with(connect=target, meeting=False, remote=True)
+
+    def test_remote_and_meeting_together_are_refused(self) -> None:
+        with patch.object(cli.sys, "argv", ["jarvis", "remote", "meeting"]), self.assertRaises(SystemExit) as stopped:
+            cli.main()
+        self.assertEqual(stopped.exception.code, cli.USAGE)
 
     def test_unknown_command_prints_usage(self) -> None:
         for argv in (["jarvis", "bogus"], ["jarvis", "connect", "claude", "extra"]):

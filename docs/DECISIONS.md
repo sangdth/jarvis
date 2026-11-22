@@ -21,6 +21,19 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   (`OpenCodeSSEAdapter._is_ours`, one lookup per session); a request from another project is never read out or
   answered. A server pinned with `OPENCODE_SERVER_PASSWORD` or a custom `url` is taken as one folder's, unfiltered.
 - **Two memories.** Hermes keeps its own; what you tell Hermes is not in Jarvis's Mem0, and the other way round.
+- **`jarvis remote` cancels echo on the other Mac, not here.** With the mic and speaker over the network, the voice
+  processing has to span the machine that plays the sound and the machine that hears it; it can't, so the client
+  runs it and sends already-cancelled audio. Limits: echo cancellation is only as good as that Mac's speaker/mic
+  pair, and anything that bypasses the client (another app on the Mac mini playing sound) is not cancelled.
+- **The relay port trusts a token, not the network.** It is plain HTTP and WebSocket with one shared secret
+  (`REMOTE_TOKEN`, else `~/.config/jarvis/remote_token`). Anyone who reads the token, or the URL it rides in, can
+  talk to Jarvis: with `MASTER_CHECK=false` that means run tasks. Keep it to your own network or a VPN, set your own
+  token to re-pair, and delete the file to cut every client off.
+- **One relay client at a time.** A second Mac is refused (1013) while one holds the mic; Jarvis has one ear.
+  Connecting a new client after a drop does not replay what was said meanwhile.
+- **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so with
+  `jarvis remote` the scores compare that voiceprint with another Mac's mic. Usually close enough; the
+  `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling through the relay is not built.
 
 ## Open risks
 
