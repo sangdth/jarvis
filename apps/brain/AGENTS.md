@@ -3,7 +3,7 @@
 An always-on goal and problem reconciler. It lives in this repository as `apps/brain` and **always runs with
 Jarvis**: the supervisor (`src/jarvis/supervisor.py`) runs it and the voice in one process on this checkout, and its
 HTTP/SSE/WebSocket gateway on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface. It is
-driven from the voice harness (`HermesAdapter`, agent type `brain`), the cockpit (`apps/tui`), `jarvis` itself
+driven from the voice harness (`BrainClientAdapter`, agent type `brain`), the cockpit (`apps/tui`), `jarvis` itself
 (`jarvis status|add|mode|...` are HTTP calls), or an iPhone Shortcut over Tailscale (`POST /v1/ask`). Plan and
 history: `docs/super-brain-plan.md`, `docs/architecture.md`.
 
@@ -35,16 +35,32 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `.env` (shared: `JARVIS_HOME/.env` wins), `state.db` (SQLite WAL, the only writer), `worktrees/<task_id>` (`0700`),
   `sessions/<task_id>`, `traces/attempt-<id>.json`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created
   personal skills), and `memory/progress/<task_id>.md` (handoff + deterministic negative-result ledger).
-- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
-  `child_strategy IN ('all', 'any')`, `best_metric`, `best_branch`, `best_sha`), `attempts` (append-only run ledger
-  with `metric_value`, `skills_used`, `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline
-  `sha256`, usage counters, and previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary
-  approvals), plus the 1-row `system_state` table (`mode`, `daily_budget_usd` defaulting to `$200.00/day`,
-  `last_good_sha`, `upgrade_runs`, `upgrade_failures`). The reconciler loop runs continuously in both modes, resolving
-  ready `ASSIST` tasks when in `ASSIST` mode and ready `AUTONOMOUS` tasks when in `AUTONOMOUS` mode. When the owner
-  gives a new request clearly related to the current topic or active tasks, the Planner sets `mode='ASSIST'` and
-  `ready=true`; if unsure when to resolve it, the Planner asks the owner first. The cockpit reads these tables
-  directly, read-only: a column it draws must not change shape without `apps/tui/src/db.rs`.
+- **6 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
+  `child_strategy IN ('all', 'any')`, `runner IN ('pi', 't3', 'claude', 'opencode')` defaulting to `pi`,
+  `thread_id`, `best_metric`, `best_branch`, `best_sha`), `attempts` (append-only run ledger with `thread_id`,
+  `metric_value`, `skills_used`, `diagnostic`, and `reflected`), `threads` (one bound long-lived client thread per
+  repo: `runner`, `thread_id`, `project_id`, `title`, `worktree_path`, `branch`, `last_sequence`), `skills`
+  (versioned personal skills with baseline `sha256`, usage counters, and previous-version rollback snapshot), and
+  `outbox` (queued reports, blockers, and binary approvals), plus the 1-row `system_state` table (`mode`,
+  `daily_budget_usd` defaulting to `$200.00/day`, `last_good_sha`, `upgrade_runs`, `upgrade_failures`). The
+  reconciler loop runs continuously in both modes, resolving ready `ASSIST` tasks when in `ASSIST` mode and ready
+  `AUTONOMOUS` tasks when in `AUTONOMOUS` mode. When the owner gives a new request clearly related to the current
+  topic or active tasks, the Planner sets `mode='ASSIST'` and `ready=true`; if unsure when to resolve it, the
+  Planner asks the owner first. The cockpit reads these tables directly, read-only: a column it draws must not
+  change shape without `apps/tui/src/db.rs`.
+- **One orchestrator, several runners (`orchestrator.py` + `runners/`):**
+  - `BrainOrchestrator.route` turns one interactive request into one runner call: a `Mode`/brief/improve/task
+    command is handled in code first; a pinned `jarvis connect` session bypasses the router; otherwise one cheap
+    OpenRouter tool call (thinking off) picks `delegate_project`, `ask_ephemeral_pi`, `list_sessions`,
+    `queue_board_task` or `reply_direct`, and a local rule stands in when the router is unavailable.
+  - `EphemeralPiRunner`: one `pi` process in a fresh `0700` temp dir, `read,grep,find,ls,bash`, Seatbelt writes
+    only in that dir, daily-budget kill, and `shutil.rmtree` in `finally` — a question never becomes a session.
+  - `T3Runner`: one WebSocket (protocol 2) carrying every watched thread; binds a repo to a thread in `threads`;
+    starts `t3 serve --mode desktop` on loopback when nothing answers; relays `approval.request` /
+    `question.request` verbatim and answers with `runtime-request.respond` (deterministic mapping, no LLM).
+  - `ClaudeRunner` / `OpenCodeRunner`: deliberately minimal, lazy one-shot clients, used only when named.
+  - Board work stays with the `pi` Builder: isolated worktree, `edit_and_run`, `verify_cmd`, held-out tests and
+    self-upgrade rollback are unchanged.
 - **SoL-Pi auto-research & harness efficiency (`board.ts` + `reconciler.py` + `skills.py`):**
   - **Action Fusion (`edit_and_run`):** `board.ts` fuses worktree-guarded file mutations (`createEditToolDefinition` /
     `createWriteToolDefinition`) with immediate follow-up `createBashToolDefinition` execution in a single turn
@@ -112,9 +128,10 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `record_note`, `defer_for_approval`).
 - **The gateway, served here (`server.py`):** one aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default
   `0.0.0.0:8643`). `POST /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events`,
-  `POST /v1/runs/{id}/approval` and `POST /v1/runs/{id}/stop` with Bearer auth (`BRAIN_API_KEY`, else
-  `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` -> `{"spoken": "..."}`) for the iPhone
-  Shortcut over Tailscale; the operator routes `/v1/status`, `/v1/board`, `GET|POST /v1/tasks`,
+  `POST /v1/runs/{id}/answer` (`{"answer": "..."}`, with `/approval` kept for binary callers),
+  `POST /v1/runs/{id}/stop`, `GET /v1/sessions`, `POST /v1/connect` and `GET /v1/events` with Bearer auth
+  (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` -> `{"spoken": "..."}`)
+  for the iPhone Shortcut over Tailscale; the operator routes `/v1/status`, `/v1/board`, `GET|POST /v1/tasks`,
   `/v1/tasks/{id}/research`, `/v1/mode`, `/v1/skills/improve`, `/v1/restart`; the cockpit's telemetry; and the thin
   client's `/ws` + `/client.py` (registered from `jarvis_voice/remote_audio.py`). `/health` is the only route
   without a token. Any route also accepts `?token=` or `X-Jarvis-Token`. The contract is `schemas/openapi.json`;

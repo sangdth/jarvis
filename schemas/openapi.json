@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Jarvis gateway: HTTP, SSE and WebSocket",
-    "version": "2.0.0",
-    "description": "The one network surface of a Jarvis instance: the brain's run protocol, the cockpit's telemetry, the small operator API, device pairing, and the thin client's mic and speaker. Every route except `/health`, `GET /client.py` and `POST /v1/pair` needs a credential: the shared token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`), or a paired device's secret from `POST /v1/pair`. The shared token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; paired devices live in `JARVIS_HOME/devices.json` as hashes, and only the shared token can mint or revoke them. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`); `GET /client.py` serves the zero-install thin client with this server's address filled in."
+    "version": "2.1.0",
+    "description": "The one network surface of a Jarvis instance: the brain's run protocol (which routes each turn to a T3 Code thread, a one-shot pi answer, a minimal Claude/OpenCode turn, or the board), the cockpit's telemetry, the small operator API, device pairing, and the thin client's mic and speaker. Every route except `/health`, `GET /client.py` and `POST /v1/pair` needs a credential: the shared token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`), or a paired device's secret from `POST /v1/pair`. The shared token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; paired devices live in `JARVIS_HOME/devices.json` as hashes, and only the shared token can mint or revoke them. Questions and approvals travel verbatim (`approval.request`, `question.request`) and are answered with `POST /v1/runs/{run_id}/answer`; no model decides them. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`); `GET /client.py` serves the zero-install thin client with this server's address filled in."
   },
   "servers": [
     {
@@ -46,6 +46,43 @@
           "session_id": {
             "type": "string",
             "description": "Continue an earlier run's Pi session."
+          },
+          "replace": {
+            "type": "boolean",
+            "description": "Stop the run already working on this session and run this one instead."
+          },
+          "session": {
+            "type": "string",
+            "description": "\"new\" for a fresh thread, or \"continuing\" when `pinned` names one."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "A project folder the voice already resolved."
+          },
+          "screenshot": {
+            "type": "string",
+            "description": "Absolute path to a front-window screenshot for this task."
+          },
+          "pinned": {
+            "type": "object",
+            "description": "`jarvis connect`: every task in this session goes to this client session.",
+            "required": [
+              "runner",
+              "session_id"
+            ],
+            "properties": {
+              "runner": {
+                "type": "string",
+                "enum": [
+                  "t3",
+                  "claude",
+                  "opencode"
+                ]
+              },
+              "session_id": {
+                "type": "string"
+              }
+            }
           }
         }
       },
@@ -395,6 +432,60 @@
           "secret": {
             "type": "string",
             "description": "Shown once; the device keeps it."
+          }
+        }
+      },
+      "Answer": {
+        "type": "object",
+        "required": [
+          "answer"
+        ],
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectRequest": {
+        "type": "object",
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": [
+              "t3",
+              "claude",
+              "opencode"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string",
+            "description": "A listed folder, to narrow the list."
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
           }
         }
       }
@@ -945,6 +1036,111 @@
           },
           "404": {
             "description": "Not a relay path"
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/answer": {
+      "post": {
+        "summary": "Answer the pending question or approval (free text; no model decides it)",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Answer"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved"
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "summary": "List a runner's sessions/threads (newest first)",
+        "parameters": [
+          {
+            "name": "runner",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "t3"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runner": {
+                      "type": "string"
+                    },
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Session"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/connect": {
+      "post": {
+        "summary": "Pin one session for this run, or list what can be picked (`jarvis connect`)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Pinned session or the pickable list"
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "summary": "SSE stream of events no voice-initiated run is waiting on",
+        "responses": {
+          "200": {
+            "description": "text/event-stream"
           }
         }
       }

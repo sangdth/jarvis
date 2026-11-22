@@ -75,8 +75,7 @@ def build_sandbox_profile(
     return "\n".join(lines)
 
 
-def wrap_with_sandbox(
-    cmd: list[str],
+def wrap_with_sandbox(    cmd: list[str],
     *,
     worktree_dir: Path,
     session_dir: Path,
@@ -98,6 +97,53 @@ def wrap_with_sandbox(
             home_dir=home_dir,
             allow_read_traces=allow_read_traces,
         ),
+        encoding="utf-8",
+    )
+    return ["sandbox-exec", "-f", str(profile_path), *cmd]
+
+
+def build_ephemeral_sandbox_profile(work_dir: Path, *, home_dir: Path | None = None) -> str:
+    """Seatbelt profile for a one-shot `pi` answer: writes only in its own temp dir, reads no secrets.
+
+    It may read the repository and the network (a lookup needs both), but it cannot change anything outside
+    `work_dir`; the temp dir is deleted as soon as the answer is in.
+    """
+    work = _escape_sb_path(work_dir)
+    lines = [
+        "(version 1)",
+        "(allow default)",
+        '(deny file-write* (subpath "/"))',
+        '(allow file-write* (subpath "/dev"))',
+        '(allow file-write* (subpath "/tmp"))',
+        '(allow file-write* (subpath "/private/tmp"))',
+        f'(allow file-write* (subpath "{work}"))',
+    ]
+    ssh_dir = Path("~/.ssh").expanduser()
+    if ssh_dir.exists():
+        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(ssh_dir)}"))')
+    if home_dir is not None:
+        lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / ".env")}"))')
+        for db_name in ("state.db", "state.db-wal", "state.db-shm", "state.db-journal"):
+            lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / db_name)}"))')
+        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "traces")}"))')
+    lines.append("")
+    return "\n".join(lines)
+
+
+def wrap_ephemeral(
+    cmd: list[str],
+    *,
+    work_dir: Path,
+    home_dir: Path | None = None,
+    enabled: bool = True,
+) -> list[str]:
+    """Wrap a one-shot worker in a temp-dir-only Seatbelt profile on macOS."""
+    if not enabled or sys.platform != "darwin" or shutil.which("sandbox-exec") is None:
+        return cmd
+    work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    profile_path = work_dir / "sandbox.sb"
+    profile_path.write_text(
+        build_ephemeral_sandbox_profile(work_dir, home_dir=home_dir),
         encoding="utf-8",
     )
     return ["sandbox-exec", "-f", str(profile_path), *cmd]

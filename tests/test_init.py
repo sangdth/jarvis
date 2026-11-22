@@ -37,7 +37,7 @@ class InitTest(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in init.copy_config(home)), [".env", "agents.json"])
             self.assertEqual(home.stat().st_mode & 0o777, 0o700)
             self.assertIn("OPENROUTER_API_KEY=", (home / ".env").read_text())
-            self.assertIn('"t3-code"', (home / "agents.json").read_text())
+            self.assertIn('"brain"', (home / "agents.json").read_text())
             self.assertEqual((home / ".env").stat().st_mode & 0o777, 0o600)
             (home / ".env").write_text("KEY=mine")
             self.assertEqual(init.copy_config(home), [])  # never overwrites

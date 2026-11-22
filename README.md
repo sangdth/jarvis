@@ -138,8 +138,7 @@ your shell wins over the file, so `op run -- jarvis` (1Password) works too:
   sentence ("make it 42, sorry, 24" becomes "Make it 24"). It uses `CLEANUP_MODEL` (empty = `EXECUTIVE_MODEL`,
   thinking off), adds about 250-500 ms when it runs, and passes the sentence on as heard after 1.5 s or on any error.
   `[Cleanup]` log lines show the time and the change.
-- `DEFAULT_CODING_AGENT`: the exact `agents.json` id (e.g. `t3-code`) that gets coding tasks like *"build a login screen"* when you don't name an agent. Empty means the first enabled agent. An unknown id stops Jarvis at startup.
-- `HERMES_API_KEY`: the same value as `API_SERVER_KEY` in `~/.hermes/.env`.
+- `DEFAULT_CODING_AGENT`: the exact `agents.json` id that gets work when you don't name an agent. The shipped roster has one, `brain`; empty means the first enabled agent. An unknown id stops Jarvis at startup.
 - `LANGUAGE`: `en` (default) or `vi`. It sets the language Whisper listens for and, while `WHISPER_MODEL` is empty, the model: `mlx-community/whisper-large-v3-turbo` for `en`, [`sangdth/phowhisper-large-vien-cs-mlx-16bit`](https://huggingface.co/sangdth/phowhisper-large-vien-cs-mlx-16bit) for `vi`: VinAI's PhoWhisper-large tuned for Vietnamese with English words mixed in, about 3 GB, downloaded on first start. It takes about twice as long per sentence as turbo.
 - `ELEVENLABS_API_KEY`: voice output with `eleven_v4_turbo` (about 100 ms to first audio; it laughs and sighs when the brain tags a reply).
 
@@ -152,20 +151,20 @@ what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path
 - **OpenCode** 2 runs its own service, and Jarvis finds it (`~/.local/state/opencode/service.json`); its sessions
   go in the agent's `cwd`, and requests from other projects are ignored. To use a server of your own instead, start
   it with `OPENCODE_SERVER_PASSWORD=<same value as in .env> opencode serve --port 4096` in the project folder.
-- **The brain** (the default for everything that is not coding) needs no setup: it always runs with the voice, in
-  the same process, and its HTTP/SSE/WebSocket gateway is the only network surface Jarvis exposes. Its board, spend
-  and skills: `jarvis status`; watch it live: `jarvis top`.
-- **Hermes Agent**, if you run a separate one, needs its API server: `API_SERVER_ENABLED=true` and an
-  `API_SERVER_KEY` of 16+ characters in `~/.hermes/.env`, then `hermes gateway install` (port 8642). Its own
-  approval settings decide what it asks. Add it to `agents.json` as `{"type": "hermes"}` with `HERMES_API_KEY` in
-  `.env`.
-- **T3 Code** (the default) needs the T3 Code app running (port 3773). Jarvis gets its own token through the `t3`
-  CLI. Say "continue working on the Hugger Hustle platform" and Jarvis picks the folder from your git repos one or
-  two levels under your projects folder (`~/Projects/` unless `SOUL.md` says otherwise; read at startup) and
-  continues your newest thread there that isn't running. With none, or when you ask for a new session, your next
+- **The brain** (the only agent in the shipped roster) needs no setup: it always runs with the voice, in
+  the same process, and its HTTP/SSE/WebSocket gateway is the only network surface Jarvis exposes. It routes each
+  task itself: a small question to a one-shot `pi` worker, project work to a T3 Code thread, a named Claude Code or
+  OpenCode turn to that client, and anything for later to its board. Its board, spend and skills:
+  `jarvis status`; watch it live: `jarvis top`.
+- **T3 Code** is the coding surface the brain drives: the owner sees the thread, the diff and the review. The brain
+  starts `t3 serve --mode desktop` on loopback itself when nothing answers on port 3773, and gets its own token
+  through the `t3` CLI. Say "continue working on the Hugger Hustle platform" and the brain picks the folder from your
+  git repos one or two levels under your projects folder (`~/Projects/` unless `SOUL.md` says otherwise; read at
+  startup) and continues your newest thread there that isn't running. With none, or when you ask for a new session,
+  your next
   task starts a thread (adding the folder to T3 as a project if needed) that syncs with master first, then does the
-  task; T3 titles it. Coding with no project named works in `cwd` from `agents.json` the same way. Threads use your
-  T3 default model and mode; Jarvis watches one thread at a time and says its title when it changes.
+  task; T3 titles it. Coding with no project named goes to the most recently used project. Threads use your T3
+  default model and mode; the brain can watch several threads at once and says a title when the work moved.
 
 ### 5. Memory
 Jarvis remembers facts about you between runs (local [Mem0](https://github.com/mem0ai/mem0) with Qdrant in

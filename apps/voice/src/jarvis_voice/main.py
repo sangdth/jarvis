@@ -29,10 +29,12 @@ from jarvis_voice.t3_adapter import current_thread, recent_threads
 
 
 async def pick_connection(orchestrator: AgentOrchestrator, target: str) -> dict[str, Any]:
-    """`jarvis connect [agent]`: pick the T3 thread or the coding session that every task goes to this run."""
+    """`jarvis connect [agent]`: pick the session every task goes to this run."""
     t3 = orchestrator.t3
-    if target == "t3" or (t3 is not None and target == t3.config.id):
+    if t3 is not None and (target == "t3" or target == t3.config.id):
         return await pick_thread(orchestrator)
+    if target in ("t3", "brain") and "brain" in orchestrator.adapters:
+        return await pick_session(orchestrator, "brain")
     return await pick_session(orchestrator, target)
 
 

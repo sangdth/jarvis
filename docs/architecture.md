@@ -24,7 +24,10 @@ language arrives), so a new app is a folder and a workspace line. Cross-language
 ## 1. Core Requirements
 
 1. **Always-On (No Wake Word), Respond Only When Needed:** Continuously listen without requiring *"Hey Jarvis"*, while distinguishing between self-talk/background conversation and utterances actually addressed to Jarvis.
-2. **Multi-Agent Orchestration:** Route each request by the agents' `role` in `agents.json`: coding to **T3 Code** (or **Claude Code** or **OpenCode** when named), everything else to **the brain** (`brain`), which always runs alongside the voice. Jarvis only routes and relays; the work happens in each app's or agent's own harness.
+2. **Multi-Agent Orchestration:** The voice routes every task that needs doing to **the brain** (`brain`), which
+   always runs alongside it. The brain decides the runner: coding and project work in a **T3 Code** thread, a small
+   question in a one-shot `pi` worker, a named Claude Code or OpenCode turn in that client, and overnight or
+   self-upgrade work on its board. Jarvis only routes and relays; the work happens in each runner's own harness.
 3. **Plain-Words Reporting:** Agent questions and approval requests are read out as they are. A finished turn is long markdown full of file paths and diffs; Jarvis has its conversation model retell it as one short first-person outcome, about ten words; a plan or choice waiting on the user gets one phrase per heading, then its question (`AGENT_REPORT_PROMPT`).
 4. **Dynamic Silence / Notification Mode:**
    - Saying **"Shut up"** or **"Be quiet"** immediately silences Jarvis's voice (`BEEP_ONLY` mode), interrupting any active speech and using short audio chimes ("beep") to notify when new agent decisions arrive.
@@ -53,20 +56,25 @@ flowchart LR
         Intent -->|"Addressed to Jarvis"| LLM["Executive LLM (Context + Summary)"]
     end
 
-    subgraph CodingAgents ["3. Sub-Agent Watcher (SDK / HTTP)"]
-        CC["Claude Code (Agent SDK)"] --> Buffer["Agent Watchers"]
-        OC["OpenCode (HTTP SSE)"] --> Buffer
-        HA["The brain (HTTP runs)"] --> Buffer
-        T3["T3 Code (WebSocket RPC)"] --> Buffer
-        Buffer -->|"Questions, approvals, finished turns"| Notify{"Check Mode"}
+    subgraph Orchestration ["3. BrainClient — one orchestrator"]
+        BC["BrainClient (HTTP/SSE)"] --> ROUTE["BrainOrchestrator.route"]
+        ROUTE -->|"small question"| EP["Ephemeral `pi` (temp dir, destroyed)"]
+        ROUTE -->|"project work"| T3["T3Runner (long-lived threads)"]
+        ROUTE -->|"named client"| MIN["ClaudeRunner / OpenCodeRunner (minimal)"]
+        ROUTE -->|"overnight / self-upgrade"| BOARD["Board + `pi` Builder"]
+        EP --> Buffer["Questions, approvals, finished turns"]
+        T3 --> Buffer
+        MIN --> Buffer
+        BOARD --> Buffer
+        Buffer -->|"spoken verbatim or retold"| Notify2{"Check Mode"}
     end
 
-    Mute -.-> Notify
-    Unmute -.-> Notify
-    Notify -->|"mode == BEEP_ONLY"| Beep["Play Beep + Queue Topic"]
-    Notify -->|"mode == VOICE"| LLM
-    LLM --> TTS["TTS Output to Speaker"]
-    LLM -->|"send_agent_task / answer_agent / stop_agent"| CodingAgents
+    Mute -.-> Notify2
+    Unmute -.-> Notify2
+    Notify2 -->|"mode == BEEP_ONLY"| Beep2["Play Beep + Queue Topic"]
+    Notify2 -->|"mode == VOICE"| LLM2["Executive LLM retells finished turns"]
+    LLM2 --> TTS2["TTS Output to Speaker"]
+    LLM -->|"send_agent_task / answer_agent / stop_agent"| BC
 
     subgraph BrainApp ["4. The brain (`apps/brain`)"]
         SB["Board (SQLite WAL)"] --> REC["Reconciler"]
@@ -76,7 +84,7 @@ flowchart LR
         TUI["`jarvis top` (Rust cockpit)"] -->|"read-only state.db + /v1/telemetry"| SB
     end
 
-    LLM -->|"type `brain`: /v1/runs over HTTP/SSE"| SRV
+    BC -->|"POST /v1/runs, GET /v1/runs/:id/events"| SRV
 ```
 
 ---
@@ -137,16 +145,21 @@ ignores `session` and `project`.
    (`POST /api/session/:id/prompt`); answers go to
    `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
 
-3. **The brain (`HermesAdapter`, type `brain`):** Talks to Brain on `127.0.0.1:8643` (Bearer
-   `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`) with exactly the protocol below, which Brain serves from
-   `apps/brain/src/brain/server.py`. The same adapter with `type: "hermes"` drives a separate Hermes Agent
-   (`hermes gateway`, port 8642, Bearer `HERMES_API_KEY`) when one runs, so the two never share a token. A task is `POST /v1/runs` with `input`, and later tasks pass the first run's id as
-   `session_id`, so Hermes keeps the conversation. Each run's `GET /v1/runs/:id/events` stream gives
-   `approval.request` (read out; answered with `POST /v1/runs/:id/approval`, `once` or `deny`) and
-   `run.completed` / `run.failed` (retold); `run.cancelled` is silent. If the stream drops, `GET /v1/runs/:id`
-   gives the result. Stop is `POST /v1/runs/:id/stop`. The brain's own reconciler decides which work waits for the
-   owner; a separate Hermes uses its guardian model instead. The whole contract is `schemas/openapi.json`.
-4. **T3 Code (`T3Adapter`, `t3_adapter.py`):** Talks to the running T3 Code app over `ws://127.0.0.1:3773/ws`
+3. **The brain (`BrainClientAdapter`, type `brain`):** The voice's one agent. It talks to Brain on
+   `127.0.0.1:8643` (Bearer `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`) with the protocol below, which
+   Brain serves from `apps/brain/src/brain/server.py`. A task is `POST /v1/runs` with `input` (and optionally
+   `pinned`, `session`, `cwd`, `replace`, `screenshot`); later tasks pass the first run's id as `session_id`.
+   Each run's `GET /v1/runs/:id/events` stream gives `approval.request` / `question.request` (read out; answered
+   with `POST /v1/runs/:id/answer`, free text mapped deterministically), `session.switched` (the thread changed),
+   and `run.completed` / `run.failed` (retold); `run.cancelled` is silent. If the stream drops,
+   `GET /v1/runs/:id` gives the result. Stop is `POST /v1/runs/:id/stop`. `GET /v1/events` carries events no voice
+   run is waiting on. Inside Brain, `BrainOrchestrator.route` picks the runner: a one-shot `pi` worker for a small
+   question, a long-lived T3 thread for project work (auto-starting `t3 serve` on loopback), a minimal
+   Claude/OpenCode turn when the owner names one, or the board. The reconciler still decides which board work waits
+   for the owner. The whole contract is `schemas/openapi.json`.
+4. **T3 Code (`T3Adapter` in the voice, `T3Runner` in the brain):** The normal path is `T3Runner` behind
+   `POST /v1/runs`; the voice adapter remains for an `agents.json` that enables `t3-code` directly and for
+   `jarvis connect`. Both talk to the running T3 Code app over `ws://127.0.0.1:3773/ws`
    (`?orchestrationProtocol=2`), the API the T3 window itself uses: Effect RPC messages as JSON (`Request`, `Exit`,
    `Chunk`, and an `Ack` for every chunk). Auth is a 30-day bearer token from
    `t3 auth session issue --scope orchestration:read --scope orchestration:operate`, issued once per run and again
@@ -209,12 +222,12 @@ The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voi
 | `cleanup.py`          | `TranscriptCleaner`: tidies a passed sentence before the model reads it    |
 | `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`, meeting mode), fast commands, beep synth |
 | `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval  |
-| `sessions.py`         | `CodingSessionAdapter` (list, pick, new session), `match_sessions`         |
-| `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |
-| `opencode_adapter.py` | `OpenCodeSSEAdapter`: found OpenCode 2 service, SSE events, `cwd` only     |
-| `hermes_adapter.py`   | `HermesAdapter`: the brain's runs (`type: brain`), or a Hermes Agent  |
+| `sessions.py`         | `CodingSessionAdapter` (list, pick, new session); `match_sessions` from `jarvis_core` |
+| `brain_client.py`     | `BrainClientAdapter`: the brain's runs, answers, stops, and session picker |
+| `claude_adapter.py`   | `ClaudeCodeAdapter`: optional direct Claude Code (enabled in `agents.json`)  |
+| `opencode_adapter.py` | `OpenCodeSSEAdapter`: optional direct OpenCode 2 service                    |
 | `orchestrator.py`     | `AgentOrchestrator`, `ADAPTERS` (agents.json type to adapter), reminders   |
 | `waiting_lines.py`    | `WaitingLines`: the per-task "still working" lines, refilled in batches    |
 | `meeting_notes.py`    | `jarvis meeting` comments: the day's notes file, appended and read back     |
-| `t3_adapter.py`       | `T3Adapter`, project list, `jarvis connect` thread lookup                  |
+| `t3_adapter.py`       | `T3Adapter`, optional direct T3 Code, `jarvis connect` thread lookup       |
 | `memory.py`           | Local Mem0 config, `LastExchangeMemory` (saves only the newest exchange)   |

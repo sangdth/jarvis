@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority INTEGER NOT NULL DEFAULT 50,
     strike_count INTEGER NOT NULL DEFAULT 0,
     child_strategy TEXT NOT NULL DEFAULT 'all' CHECK (child_strategy IN ('all', 'any')),
+    -- which runner executes this task: the pi Builder (default), or a coding client the brain drives
+    runner TEXT NOT NULL DEFAULT 'pi',
+    thread_id TEXT,
     best_metric REAL,
     best_branch TEXT,
     best_sha TEXT,
@@ -38,9 +41,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL REFERENCES tasks(id),
-    role TEXT NOT NULL CHECK (role IN ('planner', 'builder', 'improver')),
+    role TEXT NOT NULL CHECK (role IN ('planner', 'builder', 'improver', 't3', 'ephemeral', 'claude', 'opencode')),
     pi_session_id TEXT,
     session_jsonl_path TEXT,
+    -- the coding client's thread/session id, when a runner other than the pi Builder ran it
+    thread_id TEXT,
     summary TEXT NOT NULL,
     git_branch TEXT,
     git_sha TEXT,
@@ -54,6 +59,19 @@ CREATE TABLE IF NOT EXISTS attempts (
     diagnostic TEXT,
     reflected INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- One bound long-lived thread per repo/runner: the brain continues it instead of opening a new one per task.
+CREATE TABLE IF NOT EXISTS threads (
+    repo TEXT PRIMARY KEY,
+    runner TEXT NOT NULL DEFAULT 't3',
+    thread_id TEXT NOT NULL,
+    project_id TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    worktree_path TEXT,
+    branch TEXT NOT NULL DEFAULT '',
+    last_sequence INTEGER,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS skills (

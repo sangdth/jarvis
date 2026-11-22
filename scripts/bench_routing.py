@@ -29,13 +29,17 @@ SELF = "answer yourself"  # no tool call
 
 
 def after(first: str, agent_id: str, task: str, then: str) -> list[dict]:
-    """A second sentence said while `agent_id` still works on `task` (sent for the first sentence)."""
+    """A second sentence said while `agent_id` still works on `task` (sent for the first sentence).
+
+    The roster has one agent now, so the fabricated earlier call uses `brain` whatever label the case came
+    with; otherwise the model would copy a stale id out of its own history.
+    """
     call = {"id": "call_1", "type": "function",
-            "function": {"name": "send_agent_task", "arguments": json.dumps({"agent_id": agent_id, "task": task})}}
+            "function": {"name": "send_agent_task", "arguments": json.dumps({"agent_id": "brain", "task": task})}}
     return [
         {"role": "user", "content": first},
         {"role": "assistant", "content": "", "tool_calls": [call]},
-        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps({"status": "sent", "agent_id": agent_id})},
+        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps({"status": "sent", "agent_id": "brain"})},
         {"role": "assistant", "content": "On it, one moment."},
         {"role": "user", "content": then},
     ]
@@ -204,18 +208,31 @@ async def main(rounds: int) -> int:
     if not orchestrator.adapters:  # an empty roster tells the model no agent exists: the score would mean nothing
         print(f"No agents loaded from {settings.watch_config_path}; copy agents.json there (see README) and run again.")
         return 2
-    # The shipped roster names the brain `brain`; an older agents.json still calls it `hermes`.
-    non_coding = "brain" if "brain" in orchestrator.adapters else "hermes"
-    expected = lambda want: want.replace("hermes", non_coding)  # noqa: E731
+    # One orchestrator: every task goes to `brain`, which picks the runner. The case labels keep their
+    # project/session/screen/replace suffixes; only the agent id changes.
+    def expected(want: str) -> str:
+        if want in (SELF, "stop", "look", "list", "answer"):
+            return want
+        return re.sub(r"^(?:t3-code|claude|opencode|hermes)", "brain", want)
     personality = load_soul().personality
     prompts = {lang: system_prompt(orchestrator, personality, language=lang) for lang in ("en", "vi")}
     tools = [{"type": "function", "function": t.to_default_dict()} for t in agent_tools()]
     misses: dict[str, str] = {}
-    hits = calls = 0
+    hits = calls = skipped = 0
     latencies: list[float] = []
+    listed = {p.lower() for p in _projects}
+
+    def routable(want: str) -> bool:
+        """A case naming a project that is not on this machine cannot be routed; skip it instead of faking a miss."""
+        match = re.search(r"@([^+]+)", want)
+        return match is None or match.group(1).lower() in listed
+
     async with httpx.AsyncClient(timeout=30.0, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}) as http:
         for _ in range(rounds):
             for lang, text, want in [("en", t, w) for t, w in CASES] + [("vi", t, w) for t, w in VI_CASES]:
+                if not routable(want):
+                    skipped += 1
+                    continue
                 start = time.perf_counter()
                 resp = await http.post(
                     f"{settings.openrouter_base_url.rstrip('/')}/chat/completions",
@@ -240,7 +257,8 @@ async def main(rounds: int) -> int:
         await adapter.stop()
 
     accuracy = hits / calls
-    print(f"model {settings.executive_model}: {accuracy:.0%} over {calls} calls, median {statistics.median(latencies):.0f} ms")
+    print(f"model {settings.executive_model}: {accuracy:.0%} over {calls} calls, median {statistics.median(latencies):.0f} ms"
+          f" ({skipped} skipped: project not on this machine)")
     for text, got in misses.items():
         print(f"  miss: {text!r} -> {got}")
     return 0 if accuracy >= MIN_ACCURACY else 1

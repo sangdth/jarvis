@@ -69,6 +69,20 @@ class Settings(EnvSettings):
     sandbox_enabled: bool = True
     max_personal_skills: int = 10
     auto_research_after_strikes: int = 0
+
+    # Interactive orchestration. A small question is one-shot `pi`; project work goes to a long-lived client
+    # thread (`t3` by default). `orchestrator_model` routes a turn; empty = a fast default model.
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    default_project_runner: Literal["t3", "pi"] = "t3"
+    orchestrator_model: str = ""
+    ephemeral_model: str = ""
+    ephemeral_timeout_seconds: int = 120
+    # T3 Code's app server. On loopback the brain starts `t3 serve` itself when nothing answers.
+    t3_url: str = "http://127.0.0.1:3773"
+    t3_auto_start: bool = True
+    t3_start_timeout_seconds: float = 10.0
+    t3_max_run_seconds: int = 1800
     # The whole monorepo before a self-upgrade lands: Python lint, types, tests and the canary, then Rust.
     self_upgrade_verify_cmd: str = (
         "uv run ruff check src apps packages tests && uv run mypy && uv run pytest && uv run jarvis self-check"

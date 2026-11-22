@@ -20,9 +20,9 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   (HTTP calls to the running server, `--url` for another machine), `jarvis top`, `jarvis init`, `jarvis enroll`.
   One listens at a time (`hold_lock`, `~/.config/jarvis/jarvis.lock`, which stays machine-wide so two checkouts
   cannot share one mic).
-- Needs: nothing extra for the brain (it runs with `jarvis`); OpenCode 2's own service (found in
-  `~/.local/state/opencode/service.json`), or `opencode serve` pinned with `OPENCODE_SERVER_PASSWORD`; a separate
-  Hermes its gateway service (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
+- Needs: nothing extra for the brain (it runs with `jarvis`); T3 Code on loopback (the brain starts
+  `t3 serve --mode desktop` itself when nothing answers on `127.0.0.1:3773`); OpenCode 2's service only when
+  the owner names OpenCode.
 - Test: `uv run pytest` (the CLI, the voice harness and the brain; config in `pyproject.toml`), and
   `cargo test --workspace` for the cockpit. `just test` runs both, `just lint` runs ruff, mypy and clippy.
 - Lint and types: `uv run ruff check src apps packages tests scripts`, `uv run mypy`, and
@@ -70,11 +70,12 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Brain spends too much, or stops      | `db.py` budget breaker, `DAILY_BUDGET_USD`                      |
 | Cockpit shows nothing / no data      | `apps/tui/src/db.rs`, `telemetry.py`, `jarvis top`              |
 | `jarvis` starts a second brain       | `src/jarvis/supervisor.py` (`listening`, `BRAIN_URL`)      |
-| Answer or stop hits the wrong agent  | `orchestrator.py` `find_waiting`, `find_busy`                   |
-| A correction runs as a second task   | `agent_tools.py` `send` (`replace`), each `interrupt`           |
+| Answer or stop hits the wrong agent  | `brain_server.py` `pending_approval_future`, each runner `interrupt` |
+| A correction runs as a second task   | `agent_tools.py` `send` (`replace`), `server.py` `handle_create_run` |
 | "Still waiting" timing or wording    | `remind_while_busy`, `waiting_lines.py`, `WAITING_PROMPT`       |
-| Brain runs, approvals, stop          | `hermes_adapter.py` `HermesAdapter` (type `brain`), `server.py` |
-| T3 Code threads, approvals, stop     | `t3_adapter.py` `T3Adapter` (WebSocket, protocol 2)             |
+| Brain runs, approvals, stop          | `brain_client.py` `BrainClientAdapter` (type `brain`), `server.py` |
+| Which runner a turn takes            | `apps/brain/src/brain/orchestrator.py` `route`, `runners/`      |
+| T3 Code threads, approvals, stop     | `apps/brain/src/brain/runners/t3.py` (auto-starts `t3 serve`)   |
 | `jarvis connect <agent>`, sessions   | `sessions.py` `CodingSessionAdapter`, `main.py` `pick_session`  |
 | Pi windows                           | `pi_adapter.py` `PiAdapter`, `defaults/pi/jarvis.ts`            |
 | Beeps, muted queue, unmute digest    | `state.py` `JarvisState`                                        |
@@ -110,8 +111,10 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   by the server and the relay) holds a SHA-256 per device, never the secret; `GET /v1/devices` and
   `POST /v1/devices/{id}/revoke` are the owner's alone, so a leaked laptop is cut off without disturbing anyone else
   or rotating the shared token (`jarvis_core/devices.py`, `server.py`, `remote_audio.py`).
-- **Thin layer.** Jarvis never does an agent's job: no email, calendar or coding logic here. A new kind of
-  work is a new `role` (or a new agent in `agents.json`), not new code in Jarvis.
+- **Thin layer, one orchestrator.** Jarvis never does an agent's job: no email, calendar or coding logic here.
+  The voice routes every task that needs doing to `brain`; the brain decides which runner (one-shot `pi`, a T3
+  thread, a minimal Claude/OpenCode turn, or the board). A new kind of work is a new runner in
+  `apps/brain/src/brain/runners/`, not new code in the voice.
 - **The checkout is the runtime; one gateway is the surface.** `src/jarvis/supervisor.py` runs the brain and the
   voice in one process on this checkout (no wheel, no `uv tool`), and `jarvis restart` is the only update step.
   Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`), built by
@@ -123,33 +126,41 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   relay token (`remote_token`), the brain's state in `brain/` (board, worktrees, sessions, traces, skills, notes,
   `state.db`), and the token the three apps share (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env`
   wins over it). The brain's `allowed_repo_set` always includes `jarvis` and `brain`, both of which mean this
-  checkout. The `hermes` agent type still exists for a separate Hermes Agent, on its own `HERMES_API_KEY`.
+  checkout. The shipped `agents.json` has one agent, `brain`; the voice never talks to a coding client directly.
 - **The brain decides its own approvals.** Its planner defers to the owner for anything protected (`outbox`
   `approval_request`, read out by the voice and answered with `answer_agent`).
 - **Every coding client shares one session contract; T3 Code is the first-class one.** T3 Code, Claude Code,
   OpenCode and Pi extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`,
   `session_id`); T3's sessions are its threads. A new client implements those, with no case of its own in
   `main.py`, `agent_tools.py` or `prompts.py`. What only T3 does (its projects, `jarvis connect` with no agent,
-  continuing its newest thread on the first task) is reached through `orchestrator.t3`, never by checking for a
-  method. A switch never happens mid-turn (`busy`). The brain is not a coding client and stays on the base.
+  continuing its newest thread on the first task) is reached through `orchestrator.t3` when T3 is enabled,
+  never by checking for a method. A switch never happens mid-turn (`busy`). The shipped roster's one agent,
+  `brain`, is a coding-session adapter too: its sessions are T3 threads, listed and picked through
+  `GET /v1/sessions` and `POST /v1/connect`.
   By voice, `send_agent_task` takes `session` (`"new"`, or words matched against titles by `match_sessions`) and
   `project` (a listed folder: its newest session that is not running, or a new one) (`agent_tools.py`
   `switch_session`); a connected session ignores both. Results name the session the work went to.
   `list_sessions` reads titles out on request (`owner_only` for a meeting guest); the system prompt lists none.
+- **The brain picks the runner.** `BrainOrchestrator.route` ([apps/brain/src/brain/orchestrator.py])
+  turns one request into one runner call: `EphemeralPiRunner` for a small self-contained question (a `0700`
+  temp dir, destroyed in `finally`), `T3Runner` for project work in a listed folder (one connection, many
+  watched threads, `t3 serve` auto-started on loopback), the minimal `ClaudeRunner`/`OpenCodeRunner` when the
+  owner names them, or the board. Mode switches, `jarvis connect` sessions and board commands bypass the router.
 - **Claude Code uses the user's own settings** (`~/.claude/settings.json`, `defaultMode` and allow rules), as in
   their terminal or T3 Code. Jarvis sets no permission mode; only prompts those settings raise reach Jarvis.
 - **T3 Code threads use the user's T3 defaults** (`defaultModelSelection`, `defaultRuntimeMode` in
   `~/.t3/userdata/settings.json`, or the project's model). Jarvis picks no model or mode of its own.
 - **Projects come from a folder list, not an agent.** Git repos one or two levels under `projects_dir`
   (`SOUL.md`, default `~/Projects`) go into the prompt, newest first (`.git/index` time, `_last_touched`);
-  only a listed folder is opened. With no thread picked, T3's first task continues the newest idle thread in its
-  folder (`_continue_newest`); a running one may be the user's own, typed in T3, so it is never steered. With no
-  idle thread, or after `session: "new"`, the next task starts a thread with "Sync with the master branch first.
-  Then: <task>" (`_launch`, `generateTitle`, so T3 titles it); `new_session` sends nothing on its own. Questions about the list
-  itself ("how many projects in OpsCom?") are answered from it, with no agent.
-  A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `T3Adapter.attach`) gets no message
+  only a listed folder is opened. With no thread picked, `T3Runner` continues the repo's bound thread from
+  `state.db` `threads`, else the newest idle thread in its folder; a running one may be the user's own, typed
+  in T3, so it is never steered. With no idle thread, or after `session: "new"`, the next task starts a thread
+  with "Sync with the master branch first. Then: <task>" (`_launch`, so T3 titles it); `new_session` sends
+  nothing on its own. Questions about the list itself ("how many projects in OpsCom?") are answered from it,
+  with no runner.
+  A thread picked with `jarvis connect` (`current_thread`, `recent_threads`, `POST /v1/connect`) gets no message
   at all: it is the user's work in progress. For the rest of that run every task goes to it, even one naming a
-  project; Jarvis starts no other thread (`connected`), and the system prompt names it (`connected_thread`).
+  project; Jarvis starts no other thread (`pinned`), and the system prompt names it (`connected_thread`).
   T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
 - **A connected session is the default agent.** `jarvis connect claude|opencode|pi` lists that client's sessions
@@ -207,8 +218,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   a system note (`JarvisState.notify`) so no restart is needed. `JarvisState.meeting` is the one source of truth —
   the gate, the STT and the comment tools read it live; `jarvis meeting` at startup is just its initial value.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
-- **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `brain`, or `hermes` for a separate one), matched as
-  written in `agents.json`. A bad `DEFAULT_CODING_AGENT` stops Jarvis at startup.
+- **Agent ids are exact** (`brain` in the shipped roster; `claude`, `opencode`, `t3-code` exist only when an
+  `agents.json` enables them), matched as written. A bad `DEFAULT_CODING_AGENT` stops Jarvis at startup.
 - **Model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
   `LAYA_MODEL` (Laya's `jarvis-intent`) decides whether a sentence is meant for Jarvis, with `FILTER_MODEL` (an
   OpenRouter decision model on `/api/alpha/decisions`) as its fallback; `EXTRACTION_MODEL` picks memory facts, a

@@ -21,9 +21,9 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
         with patch("jarvis_voice.orchestrator.settings.default_coding_agent", ""):
             roster = agent_roster(self.orch)
         self.assertIn("id `opencode` (DEFAULT for coding): Agent One", roster)
-        self.assertIn("a coding task goes to `opencode`", roster)
-        self.orch.adapters["hermes"] = fake_adapter("hermes", "Hermes", role="everything that is not coding")
-        self.assertIn("id `hermes`: Hermes — everything that is not coding", agent_roster(self.orch))
+        self.assertIn("There is one agent: `opencode`", roster)
+        self.orch.adapters["brain"] = fake_adapter("brain", "Brain", role="everything that needs doing")
+        self.assertIn("id `brain`", agent_roster(self.orch))
 
     def test_default_agent_gets_unnamed_tasks_and_exact_ids_only(self) -> None:
         self.orch.adapters["claude"] = fake_adapter("claude")

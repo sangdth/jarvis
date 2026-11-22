@@ -17,7 +17,9 @@ from loguru import logger
 
 from brain.config import Settings, settings
 from brain.db import BrainDB
+from brain.orchestrator import BrainOrchestrator
 from brain.reconciler import Reconciler
+from brain.runners import ClaudeRunner, EphemeralPiRunner, OpenCodeRunner, Runner, T3Runner
 from brain.telemetry import (
     EVENT_APPROVAL_REQUEST,
     EVENT_APPROVAL_RESPONDED,
@@ -30,6 +32,7 @@ from brain.telemetry import (
 from jarvis_core.devices import DeviceStore
 from jarvis_core.home import JARVIS_HOME, REPO_ROOT, git_version
 from jarvis_core.net import advertised_hosts
+from jarvis_core.questions import is_approval
 
 # A pairing code is short, single-use and short-lived; five wrong guesses in a minute stops the guessing.
 PAIR_TTL_SECS = 300
@@ -64,14 +67,21 @@ class RunRecord:
     error: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
     subscribers: set[asyncio.Queue[dict[str, Any]]] = field(default_factory=set)
-    pending_approval_future: asyncio.Future[bool] | None = None
+    pending_approval_future: asyncio.Future[str | None] | None = None
     pending_outbox_id: str | None = None
+    pending_question: dict[str, Any] | None = None
+    pinned: dict[str, str] | None = None
+    session_mode: str | None = None  # "new", or "continuing" (a picked session for this task)
+    cwd: str | None = None  # a folder the voice already resolved (project picker)
     task_handle: asyncio.Task[None] | None = None
+    mirror: Callable[[dict[str, Any]], None] | None = None
 
     def publish(self, event: dict[str, Any]) -> None:
         self.events.append(event)
         for q in list(self.subscribers):
             q.put_nowait(event)
+        if self.mirror is not None:
+            self.mirror(event)
 
 
 class BrainServer:
@@ -92,6 +102,8 @@ class BrainServer:
         voice_snapshot: Callable[[], dict[str, Any]] | None = None,
         extra_routes: list[web.RouteDef] | None = None,
         started_at: float | None = None,
+        runners: dict[str, Runner] | None = None,
+        orchestrator: BrainOrchestrator | None = None,
     ) -> None:
         self.db = db
         self.reconciler = reconciler
@@ -100,6 +112,16 @@ class BrainServer:
         self.runs: dict[str, RunRecord] = {}
         self._pi_sessions: dict[str, str] = {}
         self.devices = devices if devices is not None else DeviceStore.load()
+        self.runners: dict[str, Runner] = runners if runners is not None else {
+            "ephemeral": EphemeralPiRunner(cfg, db),
+            "t3": T3Runner(cfg, db),
+            "claude": ClaudeRunner(cfg),
+            "opencode": OpenCodeRunner(cfg),
+        }
+        self.orchestrator = orchestrator or BrainOrchestrator(
+            cfg, db, reconciler, runners=self.runners, last_project=self._last_project
+        )
+        self._global_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         # One pairing code at a time, in memory: a restart clears it, which is what we want.
         self._pair_codes: dict[str, float] = {}
         self._pair_failures: deque[float] = deque(maxlen=PAIR_MAX_FAILURES * 2)
@@ -121,12 +143,16 @@ class BrainServer:
                 web.post("/v1/mode", self.handle_mode),
                 web.post("/v1/skills/improve", self.handle_improve),
                 web.post("/v1/restart", self.handle_restart),
+                web.get("/v1/sessions", self.handle_sessions),
+                web.post("/v1/connect", self.handle_connect),
                 web.post("/v1/runs", self.handle_create_run),
                 web.get("/v1/runs/{run_id}", self.handle_get_run),
                 web.get("/v1/runs/{run_id}/events", self.handle_stream_events),
                 web.post("/v1/runs/{run_id}/approval", self.handle_approval),
+                web.post("/v1/runs/{run_id}/answer", self.handle_answer),
                 web.post("/v1/runs/{run_id}/stop", self.handle_stop_run),
                 web.post("/v1/ask", self.handle_ask),
+                web.get("/v1/events", self.handle_events),
                 web.get("/v1/telemetry/events", self.handle_telemetry_events),
                 web.get("/v1/telemetry/snapshot", self.handle_telemetry_snapshot),
                 web.post("/v1/outbox/{outbox_id}/resolve", self.handle_outbox_resolve),
@@ -199,9 +225,122 @@ class BrainServer:
             oldest_key = next(iter(self._pi_sessions))
             self._pi_sessions.pop(oldest_key, None)
 
-    @staticmethod
-    def async_json(data: Any) -> web.Response:
-        return web.json_response(data)
+    async def start_background(self) -> None:
+        """Start the long-lived runners (T3's socket; the others are lazy)."""
+        for runner in self.runners.values():
+            try:
+                await runner.start()
+            except Exception as exc:
+                logger.warning(f"[Brain] runner {runner.id} did not start: {exc!r}")
+
+    async def stop_background(self) -> None:
+        for runner in self.runners.values():
+            try:
+                await runner.stop()
+            except Exception:
+                pass
+        await self.orchestrator.close()
+
+    def _last_project(self, session_id: str) -> str | None:
+        return None
+
+    def _publish_global(self, event: dict[str, Any]) -> None:
+        for queue in list(self._global_subscribers):
+            queue.put_nowait(event)
+
+    async def handle_events(self, request: web.Request) -> web.StreamResponse:
+        """The daemon-to-voice stream: events no voice-initiated run is waiting on (a T3 thread finished,
+        a background task asks for approval). The voice speaks them under the same mute rules."""
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await resp.prepare(request)
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._global_subscribers.add(queue)
+        try:
+            await resp.write(b": brain events connected\n\n")
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    await resp.write(b": keepalive\n\n")
+                    continue
+                await resp.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        finally:
+            self._global_subscribers.discard(queue)
+        return resp
+
+    async def handle_sessions(self, request: web.Request) -> web.Response:
+        """List a runner's sessions/threads, newest first, for `jarvis connect` and the model."""
+        runner_id = request.query.get("runner", "t3")
+        runner = self.runners.get(runner_id)
+        if runner is None:
+            return web.json_response({"error": f"Unknown runner {runner_id!r}"}, status=404)
+        project = request.query.get("project")
+        cwd = None
+        if project:
+            from jarvis_core.projects import resolve_project
+
+            folder = resolve_project(project)
+            if folder is None:
+                return web.json_response({"error": f"Unknown project {project!r}"}, status=404)
+            cwd = str(folder)
+        try:
+            sessions = await runner.list_sessions(cwd, limit=20)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        return web.json_response({
+            "runner": runner_id,
+            "sessions": [
+                {"id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch, "running": s.running}
+                for s in sessions
+            ],
+        })
+
+    async def handle_connect(self, request: web.Request) -> web.Response:
+        """`jarvis connect`: pin one session for the run, or list what can be picked."""
+        body = await self._read_json_dict(request)
+        runner_id = str(body.get("runner") or "t3")
+        runner = self.runners.get(runner_id)
+        if runner is None:
+            return web.json_response({"error": f"Unknown runner {runner_id!r}"}, status=404)
+        session_id = str(body.get("session_id") or "").strip()
+        project = str(body.get("project") or "").strip() or None
+        try:
+            sessions = await runner.list_sessions(None, limit=20)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        if session_id:
+            chosen = next((s for s in sessions if s.id == session_id), None)
+            if chosen is None:
+                return web.json_response({"error": "Session not found"}, status=404)
+            return web.json_response({
+                "pinned": {"runner": runner_id, "session_id": chosen.id},
+                "session": {"id": chosen.id, "title": chosen.title, "cwd": chosen.cwd,
+                            "branch": chosen.branch, "running": chosen.running},
+            })
+        if project:
+            from jarvis_core.projects import resolve_project
+
+            folder = resolve_project(project)
+            if folder is not None:
+                sessions = [s for s in sessions if s.cwd == str(folder)]
+        return web.json_response({
+            "runner": runner_id,
+            "sessions": [
+                {"id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch, "running": s.running}
+                for s in sessions
+            ],
+        })
+
 
     def _task_dict(self, t: Any) -> dict[str, Any]:
         return {
@@ -469,18 +608,53 @@ class BrainServer:
         self._prune_history()
         run_id = f"run-{uuid.uuid4().hex[:12]}"
         session_id = str(body.get("session_id") or run_id)
-        rec = RunRecord(run_id=run_id, session_id=session_id)
+        raw_pinned = body.get("pinned")
+        pinned = (
+            {"runner": str(raw_pinned.get("runner") or "t3"),
+             "session_id": str(raw_pinned.get("session_id") or "")}
+            if isinstance(raw_pinned, dict) and raw_pinned.get("session_id")
+            else None
+        )
+        rec = RunRecord(run_id=run_id, session_id=session_id, pinned=pinned,
+                        session_mode=str(body.get("session") or "") or None,
+                        cwd=str(body.get("cwd") or "") or None)
         self.runs[run_id] = rec
+        if bool(body.get("replace")):
+            for other in list(self.runs.values()):
+                if (
+                    other is not rec
+                    and other.session_id == session_id
+                    and other.status == "running"
+                ):
+                    await self._stop_run(other, reason="Replaced by a corrected task.")
+        screenshot = str(body.get("screenshot") or "") or None
         self.hub.emit(
             EVENT_HTTP_INBOUND,
-            source="macbook_hermes",
+            source="voice",
             route="/v1/runs",
             run_id=run_id,
             session_id=session_id,
             input_preview=preview(user_input),
         )
-        rec.task_handle = asyncio.create_task(self._execute_run(rec, user_input))
+        rec.task_handle = asyncio.create_task(self._execute_run(rec, user_input, screenshot=screenshot))
         return web.json_response({"run_id": run_id, "session_id": session_id})
+
+    async def handle_answer(self, request: web.Request) -> web.Response:
+        """Answer the approval or question the active run is waiting on. Approvals never go through an LLM."""
+        run_id = request.match_info["run_id"]
+        rec = self.runs.get(run_id)
+        if rec is None:
+            return web.json_response({"error": "Run not found"}, status=404)
+        body = await self._read_json_dict(request)
+        answer = str(body.get("answer") or "").strip()
+        if not answer:
+            return web.json_response({"error": "answer is required"}, status=400)
+        if rec.pending_approval_future is None or rec.pending_approval_future.done():
+            return web.json_response({"error": "No pending question on this run"}, status=409)
+        rec.pending_approval_future.set_result(answer)
+        rec.publish({"event": "approval.responded", "run_id": run_id, "request_id": body.get("request_id")})
+        self.hub.emit(EVENT_APPROVAL_RESPONDED, run_id=run_id, approved=None, source="voice")
+        return web.json_response({"ok": True})
 
     async def handle_get_run(self, request: web.Request) -> web.Response:
         run_id = request.match_info["run_id"]
@@ -628,13 +802,13 @@ class BrainServer:
         approved = str(body.get("choice") or "").lower() == "once"
 
         if rec.pending_approval_future and not rec.pending_approval_future.done():
-            rec.pending_approval_future.set_result(approved)
+            rec.pending_approval_future.set_result("yes" if approved else "no")
             rec.publish({"event": "approval.responded", "run_id": run_id, "approved": approved})
             self.hub.emit(
                 EVENT_APPROVAL_RESPONDED,
                 run_id=run_id,
                 approved=approved,
-                source="hermes",
+                source="voice",
             )
             return web.json_response({"ok": True})
 
@@ -647,16 +821,24 @@ class BrainServer:
             return web.json_response({"error": "Run not found"}, status=404)
         if rec.status in ("completed", "failed", "cancelled"):
             return web.json_response({"ok": True, "status": rec.status})
+        await self._stop_run(rec, reason="Stopped by the user.")
+        return web.json_response({"ok": True})
 
-        self.reconciler.abort_run(run_id)
+    async def _stop_run(self, rec: RunRecord, *, reason: str) -> None:
+        """Stop one run: abort its worker, release a waiting question, and cancel its task."""
+        self.reconciler.abort_run(rec.run_id)
+        for runner in self.runners.values():
+            try:
+                await runner.interrupt(rec.run_id)
+            except Exception:
+                pass
         if rec.pending_approval_future and not rec.pending_approval_future.done():
-            rec.pending_approval_future.set_result(False)
-        if rec.task_handle and not rec.task_handle.done():
+            rec.pending_approval_future.set_result(None)
+        if rec.task_handle and not rec.task_handle.done() and rec.task_handle is not asyncio.current_task():
             rec.task_handle.cancel()
         rec.status = "cancelled"
-        rec.publish({"event": "run.cancelled", "run_id": run_id})
-        self.hub.emit(EVENT_RUN_STATUS, run_id=run_id, status="cancelled", source="hermes")
-        return web.json_response({"ok": True})
+        rec.publish({"event": "run.cancelled", "run_id": rec.run_id, "reason": reason})
+        self.hub.emit(EVENT_RUN_STATUS, run_id=rec.run_id, status="cancelled", source="voice")
 
     async def handle_ask(self, request: web.Request) -> web.Response:
         """Synchronous iPhone Shortcut / Siri endpoint (`POST /v1/ask` -> `{"spoken": "..."}`)."""
@@ -682,7 +864,8 @@ class BrainServer:
         return web.json_response({"run_id": run_id, "status": rec.status, "spoken": spoken})
 
     async def _execute_run(
-        self, rec: RunRecord, user_input: str, *, allow_live_approval: bool = True
+        self, rec: RunRecord, user_input: str, *, allow_live_approval: bool = True,
+        screenshot: str | None = None,
     ) -> None:
         """Wraps the run body with live telemetry bookkeeping for the dashboard."""
         self.hub.emit(
@@ -693,7 +876,9 @@ class BrainServer:
             input_preview=preview(user_input),
         )
         try:
-            await self._execute_run_inner(rec, user_input, allow_live_approval=allow_live_approval)
+            await self._execute_run_inner(
+                rec, user_input, allow_live_approval=allow_live_approval, screenshot=screenshot
+            )
         finally:
             self.hub.emit(
                 EVENT_RUN_STATUS,
@@ -712,7 +897,8 @@ class BrainServer:
             )
 
     async def _execute_run_inner(
-        self, rec: RunRecord, user_input: str, *, allow_live_approval: bool = True
+        self, rec: RunRecord, user_input: str, *, allow_live_approval: bool = True,
+        screenshot: str | None = None,
     ) -> None:
         try:
             # 1. Fast zero-token commands (mode switches, morning brief, explicit task trigger)
@@ -752,7 +938,7 @@ class BrainServer:
                 summary_text = " ".join(lines)
                 if pending_approval and allow_live_approval:
                     loop = asyncio.get_running_loop()
-                    fut: asyncio.Future[bool] = loop.create_future()
+                    fut: asyncio.Future[str | None] = loop.create_future()
                     rec.pending_outbox_id = pending_approval.id
                     rec.pending_approval_future = fut
                     rec.publish(
@@ -764,7 +950,7 @@ class BrainServer:
                         }
                     )
                     try:
-                        approved = await asyncio.wait_for(fut, timeout=120.0)
+                        answer = await asyncio.wait_for(fut, timeout=120.0)
                     except asyncio.TimeoutError:
                         rec.output = f"{summary_text} Approval timed out; kept in queue."
                         rec.status = "completed"
@@ -775,6 +961,7 @@ class BrainServer:
                     finally:
                         rec.pending_outbox_id = None
                         rec.pending_approval_future = None
+                    approved = answer is not None and is_approval(answer)
 
                     outbox_row = self.db.resolve_approval(pending_approval.id, approved)
                     if (
@@ -788,7 +975,7 @@ class BrainServer:
                             user_input="The owner approved your deferred request. Proceed.",
                             run_key=rec.run_id,
                             resume_session_id=outbox_row.resume_session_id,
-                            approval_cb=self._make_approval_cb(rec),
+                            approval_cb=self._make_bool_approval_cb(rec),
                         )
                         rec.output = f"Approved. {resumed.summary}".strip()
                     else:
@@ -841,7 +1028,7 @@ class BrainServer:
                 finished = await self.reconciler.execute_claimed_task(
                     claimed,
                     run_key=rec.run_id,
-                    approval_cb=(self._make_approval_cb(rec) if allow_live_approval else None),
+                    approval_cb=(self._make_bool_approval_cb(rec) if allow_live_approval else None),
                 )
                 restart_note = " Restarting Brain daemon now." if self.reconciler.restart_pending else ""
                 rec.output = f"Task {finished.id} finished with status {finished.status}.{restart_note}"
@@ -850,49 +1037,38 @@ class BrainServer:
                 self._schedule_restart_if_pending()
                 return
 
-            # 2. Interactive Planner turn
-            res = await self.reconciler.run_interactive_planner(
+            # 2. One router decision: one-shot pi answer, a T3/Claude/OpenCode thread, or the board.
+            async def emit(event: dict[str, Any]) -> None:
+                rec.publish({**event, "run_id": rec.run_id})
+
+            result = await self.orchestrator.route(
+                run_id=rec.run_id,
                 user_input=user_input,
-                run_key=rec.run_id,
-                resume_session_id=self._pi_sessions.get(rec.session_id),
+                session_id=rec.session_id,
+                pinned=rec.pinned,
                 approval_cb=(self._make_approval_cb(rec) if allow_live_approval else None),
+                emit=emit,
+                screenshot=screenshot,
+                session_mode=rec.session_mode,
+                cwd=rec.cwd,
             )
-            if res.session_id:
-                self._pi_sessions[rec.session_id] = res.session_id
-            if res.outcome == "errored":
-                rec.error = res.summary
+            if result.outcome == "deferred_approval" and result.question:
+                # Nobody can answer live (an iPhone one-shot): leave it on the board for the owner.
+                outbox = self.db.queue_outbox(
+                    kind="approval_request",
+                    summary_spoken=str(result.question.get("description") or result.summary),
+                    details=result.question,
+                )
+                result.summary = f"{result.summary} (queued as {outbox.id})"
+            if result.outcome in ("errored", "timed_out"):
+                rec.error = result.summary
                 rec.status = "failed"
                 rec.publish({"event": "run.failed", "run_id": rec.run_id, "error": rec.error})
                 return
-
-            # 3. If Planner queued a ready self-improvement task for repo='brain', run it immediately
-            self_notes: list[str] = []
-            for tid in res.upserted_task_ids or []:
-                t = self.db.get_task(tid)
-                if t.repo == "brain" and t.status == "ready" and t.verify_cmd:
-                    claimed_self = self.db.claim_next_task(
-                        lease_seconds=self.cfg.lease_seconds, task_id=t.id
-                    )
-                    if claimed_self is not None:
-                        done_self = await self.reconciler.execute_claimed_task(
-                            claimed_self,
-                            run_key=rec.run_id,
-                            approval_cb=(
-                                self._make_approval_cb(rec) if allow_live_approval else None
-                            ),
-                        )
-                        if done_self.status == "done":
-                            self_notes.append(
-                                f"Self-upgrade {done_self.id} passed verification and was applied."
-                            )
-                        else:
-                            self_notes.append(
-                                f"Self-upgrade {done_self.id} ended with status {done_self.status}."
-                            )
-
+            notes: list[str] = []
             if self.reconciler.restart_pending:
-                self_notes.append("Restarting Brain daemon now.")
-            rec.output = " ".join([res.summary, *self_notes]).strip()
+                notes.append("Restarting Brain daemon now.")
+            rec.output = " ".join([result.summary, *notes]).strip()
             rec.status = "completed"
             rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
             self._schedule_restart_if_pending()
@@ -915,9 +1091,9 @@ class BrainServer:
     ) -> Any:
         async def _cb(
             summary_spoken: str, _details: str, _session_id: str | None
-        ) -> bool | None:
+        ) -> str | None:
             loop = asyncio.get_running_loop()
-            fut: asyncio.Future[bool] = loop.create_future()
+            fut: asyncio.Future[str | None] = loop.create_future()
             rec.pending_approval_future = fut
             req_id = f"req-{uuid.uuid4().hex[:8]}"
             rec.publish(
@@ -933,7 +1109,7 @@ class BrainServer:
                 run_id=rec.run_id,
                 request_id=req_id,
                 description=preview(summary_spoken),
-                source="hermes",
+                source="voice",
             )
             try:
                 return await asyncio.wait_for(fut, timeout=120.0)
@@ -941,5 +1117,17 @@ class BrainServer:
                 return None
             finally:
                 rec.pending_approval_future = None
+
+        return _cb
+
+    def _make_bool_approval_cb(self, rec: RunRecord) -> Any:
+        """The reconciler asks a yes/no question; the voice answers in words, so map them here."""
+        from jarvis_core.questions import is_approval
+
+        text_cb = self._make_approval_cb(rec)
+
+        async def _cb(summary_spoken: str, details: str, session_id: str | None) -> bool | None:
+            answer = await text_cb(summary_spoken, details, session_id)
+            return None if answer is None else is_approval(answer)
 
         return _cb

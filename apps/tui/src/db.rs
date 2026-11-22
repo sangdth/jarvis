@@ -90,6 +90,12 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| "all".to_string()),
+                runner: row
+                    .get::<_, Option<String>>("runner")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "pi".to_string()),
+                thread_id: opt_str(row, "thread_id"),
                 best_metric: row.get::<_, Option<f64>>("best_metric").ok().flatten(),
                 best_branch: opt_str(row, "best_branch"),
                 best_sha: opt_str(row, "best_sha"),
@@ -102,7 +108,7 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
         .collect();
 
     let mut stmt = conn.prepare(
-        "SELECT id, task_id, role, pi_session_id, session_jsonl_path, summary, git_branch, \
+        "SELECT id, task_id, role, pi_session_id, session_jsonl_path, thread_id, summary, git_branch, \
          git_sha, cost_usd, outcome, verify_output, metric_value, skills_used, diagnostic, \
          reflected, created_at FROM attempts ORDER BY id DESC LIMIT 400",
     )?;
@@ -124,6 +130,7 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
                 skills_used: json_string_array(opt_str(row, "skills_used")),
                 diagnostic: opt_str(row, "diagnostic"),
                 reflected: row.get::<_, i64>("reflected").unwrap_or(0) != 0,
+                thread_id: opt_str(row, "thread_id"),
                 created_at: row.get("created_at")?,
             })
         })?

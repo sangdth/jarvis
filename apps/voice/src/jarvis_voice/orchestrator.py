@@ -8,9 +8,9 @@ import httpx
 from loguru import logger
 
 from jarvis_voice.agent_adapter import BaseAgentAdapter, WatchedAgentConfig
+from jarvis_voice.brain_client import BrainClientAdapter
 from jarvis_voice.claude_adapter import ClaudeCodeAdapter
 from jarvis_voice.config import settings
-from jarvis_voice.hermes_adapter import HermesAdapter
 from jarvis_voice.opencode_adapter import OpenCodeSSEAdapter
 from jarvis_voice.sessions import CodingSessionAdapter
 from jarvis_voice.state import JarvisMode, JarvisState
@@ -21,16 +21,13 @@ from jarvis_voice.waiting_lines import WaitingLines
 ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
     "claude_code": ClaudeCodeAdapter,
     "opencode_sse": OpenCodeSSEAdapter,
-    "hermes": HermesAdapter,  # a separate Hermes Agent, if one runs
-    "brain": HermesAdapter,  # the brain in this repository: same wire protocol, its own token
+    "brain": BrainClientAdapter,  # the brain: routing, T3 threads, one-shot pi answers, the board
     "t3": T3Adapter,
 }
 
 
 def make_adapter(cfg: WatchedAgentConfig, state: JarvisState, adapter_cls: type[BaseAgentAdapter]) -> BaseAgentAdapter:
-    """Builds an adapter; the brain's token is its own, so it never borrows a Hermes key."""
-    if cfg.type == "brain":
-        return HermesAdapter(cfg, state, api_key=settings.brain_api_key)
+    """Builds an adapter; the brain's token is its own, so it never borrows another client's key."""
     return adapter_cls(cfg, state)
 
 

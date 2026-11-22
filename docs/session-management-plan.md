@@ -18,8 +18,8 @@ an empty context and says nothing. Pi can pick a window, but only through its ow
    `hasattr(agent, "open_project")` (`agent_tools.py:98`, `prompts.py:155`) or `isinstance(a, T3Adapter)`
    (`main.py:35`).
 2. **Claude Code, OpenCode and Pi share one session contract**, with different transports underneath.
-3. **Hermes stays on the four-action base** (`send_task`, `answer`, `interrupt`, `busy`). It is not a coding
-   client and has no sessions Jarvis should manage.
+3. **The brain stays on the four-action base** (`send_task`, `answer`, `interrupt`, `busy`). It is not a coding
+   client: it owns the board and drives the runners.
 4. **Jarvis stays thin.** Sessions live in each client's own store. Jarvis lists, picks, creates and relays.
 
 ## How a voice tool runs (for the people touching `agent_tools.py`)

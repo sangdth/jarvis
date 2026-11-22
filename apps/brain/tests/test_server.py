@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
+from brain_fakes import PlannerOrchestrator
 
 from brain.config import Settings
 from brain.db import BrainDB
@@ -65,7 +66,7 @@ async def test_hermes_endpoints_auth_mode_brief_and_iphone_ask(tmp_path: Path) -
     (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
     db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
     reconciler = Reconciler(db, cfg)
-    brain_server = BrainServer(db, reconciler, cfg)
+    brain_server = BrainServer(db, reconciler, cfg, orchestrator=PlannerOrchestrator(db, reconciler))
 
     async with TestClient(TestServer(brain_server.app)) as client:
         # 1. Unauthorized without Bearer token
@@ -256,7 +257,7 @@ print(json.dumps({
     )
     empty_db = BrainDB(empty_cfg.db_path, empty_cfg.allowed_repo_set)
     empty_rec = Reconciler(empty_db, empty_cfg)
-    empty_srv = BrainServer(empty_db, empty_rec, empty_cfg)
+    empty_srv = BrainServer(empty_db, empty_rec, empty_cfg, orchestrator=PlannerOrchestrator(empty_db, empty_rec))
     async with TestClient(TestServer(empty_srv.app)) as unauth_client:
         r = await unauth_client.post("/v1/ask", json={"input": "morning brief"})
         assert r.status == 401
@@ -280,7 +281,7 @@ print(json.dumps({
 
     os.environ["TEST_WAL_PATH"] = str(wal_path)
     reconciler = Reconciler(db, cfg)
-    srv = BrainServer(db, reconciler, cfg)
+    srv = BrainServer(db, reconciler, cfg, orchestrator=PlannerOrchestrator(db, reconciler))
     headers = {"Authorization": "Bearer secret"}
 
     try:

@@ -2,12 +2,12 @@
 
 Choices that look like bugs but were made on purpose, with their known limits. Revisit one when its limit bites.
 
-- **One pending request per agent** (OpenCode `_pending_permission` / `_pending_form`, Hermes `_pending_approval`).
+- **One pending request per client** (T3 `runtime-request`, OpenCode `_pending_permission` / `_pending_form`).
   A second request before the first is answered replaces it. With one user answering by voice this has not
   happened; Claude Code serializes its own prompts with `_ask_lock`.
-- **Hermes approves its own commands.** Its guardian model ran `rm -rf` on a test folder without asking during an
-  integration run. Only commands it flags reach Jarvis. Tightening is a Hermes setting (`approvals` in
-  `~/.hermes/config.yaml`), not Jarvis code.
+- **Hermes is gone.** The brain is the only orchestrator. The old separate Hermes Agent, its `HERMES_API_KEY` and
+  its own guardian approvals were removed: a coding client's questions and approvals now arrive on the run's SSE
+  stream and are answered deterministically, never by a model (`jarvis_core.questions`).
 - **macOS voice processing needs a plain output device.** With a Multi-Output or aggregate device as the system
   output, the mic delivers nothing; `MacVoiceInputTransport` logs `SILENT_MIC_WARNING` after 3 s. To record both
   voices, capture system audio in the recorder (OBS, Screen Studio).
@@ -20,7 +20,8 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 - **OpenCode's shared service streams every session.** Jarvis follows only sessions whose folder is the agent's `cwd`
   (`OpenCodeSSEAdapter._is_ours`, one lookup per session); a request from another project is never read out or
   answered. A server pinned with `OPENCODE_SERVER_PASSWORD` or a custom `url` is taken as one folder's, unfiltered.
-- **Two memories.** Hermes keeps its own; what you tell Hermes is not in Jarvis's Mem0, and the other way round.
+- **One memory.** The brain runs in the same process as the voice, so what you tell Jarvis and what the board
+  learned share one home; there is no second assistant with its own memory any more.
 - **`jarvis remote` cancels echo on the other Mac, not here.** With the mic and speaker over the network, the voice
   processing has to span the machine that plays the sound and the machine that hears it; it can't, so the client
   runs it and sends already-cancelled audio. Limits: echo cancellation is only as good as that Mac's speaker/mic
@@ -87,5 +88,7 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 
 Not yet checked against real use:
 
-- A Hermes event stream that drops mid-run in real life (the `GET /v1/runs/:id` fallback is only unit-tested).
+- A run's SSE stream that drops mid-run in real life (the `GET /v1/runs/:id` fallback is only unit-tested).
+- T3's worktree `workspaceStrategy` fields against a live T3 build: the automatic thread path uses `root`, and the
+  board still builds on `pi`, so no board task depends on the worktree variant yet.
 - What Mem0 stores from a week of real conversation: duplicates and drift.

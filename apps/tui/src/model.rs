@@ -45,6 +45,8 @@ pub struct Task {
     pub priority: i64,
     pub strike_count: i64,
     pub child_strategy: String,
+    pub runner: String,
+    pub thread_id: Option<String>,
     pub best_metric: Option<f64>,
     pub best_branch: Option<String>,
     pub best_sha: Option<String>,
@@ -86,6 +88,7 @@ pub struct Attempt {
     pub skills_used: Vec<String>,
     pub diagnostic: Option<String>,
     pub reflected: bool,
+    pub thread_id: Option<String>,
     pub created_at: String,
 }
 

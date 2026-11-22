@@ -24,7 +24,7 @@ from jarvis_core.home import (
 from jarvis_core.soul import DEFAULT_PROJECTS_DIR, SOUL_PATH, render_soul
 
 ENV_PATH = JARVIS_HOME / ".env"
-# Keys `jarvis init` asks for; the others (OpenCode, Hermes) belong to agents the user may not run.
+# Keys `jarvis init` asks for; the others (OpenCode, T3) belong to agents the user may not run.
 API_KEYS = (
     ("OPENROUTER_API_KEY", "OpenRouter API key (https://openrouter.ai/keys), so Jarvis can think", ""),
     ("ELEVENLABS_API_KEY", "ElevenLabs API key (https://elevenlabs.io/app/settings/api-keys), so Jarvis can speak", "sk_"),

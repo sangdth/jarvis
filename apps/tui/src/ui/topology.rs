@@ -26,8 +26,8 @@ pub const NODES: [NodeSpec; 13] = [
     NodeSpec {
         id: "macbook",
         title: "MacBook · Jarvis",
-        summary: "Voice harness → HermesAdapter",
-        detail: "POSTs /v1/runs over Tailscale with a Bearer token. Each request becomes a RunRecord whose SSE events the voice harness speaks aloud.",
+        summary: "Voice harness → BrainClient",
+        detail: "POSTs /v1/runs over Tailscale with a Bearer token. The brain routes the turn to a T3 thread, a one-shot pi answer, or the board; its SSE events are spoken aloud.",
     },
     NodeSpec {
         id: "iphone",
@@ -39,19 +39,19 @@ pub const NODES: [NodeSpec; 13] = [
         id: "server",
         title: "BrainServer",
         summary: "aiohttp · SSE · auth",
-        detail: "Owns the Hermes 5-endpoint contract plus /v1/ask, /v1/telemetry/events and /v1/outbox/{id}/resolve. Every route is guarded by hmac-compared Bearer auth.",
+        detail: "The brain's contract: /v1/runs, /v1/runs/{id}/events, /answer, /v1/events, /v1/sessions, /v1/connect, plus /v1/ask, telemetry and /v1/outbox/{id}/resolve. Every route is guarded by hmac-compared Bearer auth.",
     },
     NodeSpec {
         id: "db",
         title: "state.db",
-        summary: "SQLite WAL · 5 tables",
-        detail: "Single source of truth: system_state, tasks, attempts, skills, outbox. WAL mode lets this dashboard read concurrently while the daemon writes.",
+        summary: "SQLite WAL · 6 tables",
+        detail: "Single source of truth: system_state, tasks, attempts, threads, skills, outbox. `threads` remembers the T3 thread bound to each repo; WAL lets this dashboard read while the daemon writes.",
     },
     NodeSpec {
         id: "reconciler",
-        title: "Reconciler",
-        summary: "Deterministic tick loop",
-        detail: "Every reconcile_interval_seconds: reap stale leases, claim the highest-priority ready task for a free repo, spawn one ephemeral pi worker, then verify and push.",
+        title: "Orchestrator",
+        summary: "Router · runners · tick",
+        detail: "A turn is routed in-process: one-shot pi, a T3 thread (auto-starting `t3 serve` when needed), a minimal Claude/OpenCode turn, or the board. The tick loop still claims verified board tasks for the pi Builder.",
     },
     NodeSpec {
         id: "planner",

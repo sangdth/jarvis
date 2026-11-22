@@ -59,7 +59,9 @@ Mode = Literal["ASSIST", "AUTONOMOUS"]
 TaskKind = Literal["goal", "problem"]
 TaskStatus = Literal["draft", "ready", "in_progress", "done", "blocked"]
 ChildStrategy = Literal["all", "any"]
-WorkerRole = Literal["planner", "builder", "improver"]
+# `pi` is the worktree Builder; the rest are coding clients the brain drives (T3 Code, Claude Code, OpenCode).
+RunnerName = Literal["pi", "t3", "claude", "opencode"]
+WorkerRole = Literal["planner", "builder", "improver", "t3", "ephemeral", "claude", "opencode"]
 SkillStatus = Literal["active", "retired"]
 AttemptOutcome = Literal[
     "pushed",
@@ -119,6 +121,8 @@ class TaskRow:
     updated_at: str
     mode: Mode = "AUTONOMOUS"
     child_strategy: ChildStrategy = "all"
+    runner: RunnerName = "pi"
+    thread_id: str | None = None
     best_metric: float | None = None
     best_branch: str | None = None
     best_sha: str | None = None
@@ -142,6 +146,22 @@ class AttemptRow:
     skills_used: tuple[str, ...] = field(default_factory=tuple)
     diagnostic: str | None = None
     reflected: bool = False
+    thread_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ThreadRow:
+    """One long-lived coding-client thread the brain continues for a repo."""
+
+    repo: str
+    runner: RunnerName
+    thread_id: str
+    project_id: str | None
+    title: str
+    worktree_path: str | None
+    branch: str
+    last_sequence: int | None
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -244,6 +264,10 @@ class BrainDB:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN best_branch TEXT")
         if "best_sha" not in task_cols:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN best_sha TEXT")
+        if "runner" not in task_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN runner TEXT NOT NULL DEFAULT 'pi'")
+        if "thread_id" not in task_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN thread_id TEXT")
 
         cols = {
             str(r["name"])
@@ -257,6 +281,57 @@ class BrainDB:
             self._conn.execute("ALTER TABLE attempts ADD COLUMN diagnostic TEXT")
         if "reflected" not in cols:
             self._conn.execute("ALTER TABLE attempts ADD COLUMN reflected INTEGER NOT NULL DEFAULT 0")
+        self._ensure_attempts_runner_columns_locked()
+
+    def _ensure_attempts_runner_columns_locked(self) -> None:
+        """Widen `attempts.role` and add `thread_id`; SQLite cannot ALTER a CHECK, so rebuild the table once."""
+        row = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'attempts'"
+        ).fetchone()
+        sql = str(row["sql"] or "") if row is not None else ""
+        if not sql:
+            return
+        if "'t3'" in sql and "thread_id" in sql:
+            return
+        self._conn.executescript(
+            """
+            CREATE TABLE attempts_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL REFERENCES tasks(id),
+                role TEXT NOT NULL CHECK (role IN (
+                    'planner', 'builder', 'improver', 't3', 'ephemeral', 'claude', 'opencode'
+                )),
+                pi_session_id TEXT,
+                session_jsonl_path TEXT,
+                thread_id TEXT,
+                summary TEXT NOT NULL,
+                git_branch TEXT,
+                git_sha TEXT,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                outcome TEXT NOT NULL CHECK (
+                    outcome IN ('pushed', 'decomposed', 'failed_verify', 'deferred_approval',
+                                'timed_out', 'errored', 'reaped')
+                ),
+                verify_output TEXT,
+                metric_value REAL,
+                skills_used TEXT NOT NULL DEFAULT '[]',
+                diagnostic TEXT,
+                reflected INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            INSERT INTO attempts_new (
+                id, task_id, role, pi_session_id, session_jsonl_path, summary,
+                git_branch, git_sha, cost_usd, outcome, verify_output, metric_value,
+                skills_used, diagnostic, reflected, created_at
+            )
+            SELECT id, task_id, role, pi_session_id, session_jsonl_path, summary,
+                   git_branch, git_sha, cost_usd, outcome, verify_output, metric_value,
+                   COALESCE(skills_used, '[]'), diagnostic, COALESCE(reflected, 0), created_at
+            FROM attempts;
+            DROP TABLE attempts;
+            ALTER TABLE attempts_new RENAME TO attempts;
+            """
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -271,6 +346,13 @@ class BrainDB:
                 f"Repository {cleaned!r} is not in ALLOWED_REPOS ({sorted(self.allowed_repos)})."
             )
         return cleaned
+
+    @staticmethod
+    def validate_runner(runner: RunnerName | str) -> RunnerName:
+        cleaned = str(runner).strip().lower()
+        if cleaned not in ("pi", "t3", "claude", "opencode"):
+            raise ValueError(f"Invalid runner: {runner!r} (use pi, t3, claude or opencode).")
+        return cleaned  # type: ignore[return-value]
 
     def get_state(self) -> SystemState:
         today = _local_date_str()
@@ -421,11 +503,14 @@ class BrainDB:
         verify_cmd: str | None = None,
         priority: int = 50,
         child_strategy: ChildStrategy | None = None,
+        runner: RunnerName | str | None = None,
+        thread_id: str | None = None,
         ready: bool | None = None,
     ) -> TaskRow:
         cleaned_repo = self.validate_repo(repo)
         if kind not in ("goal", "problem"):
             raise ValueError(f"Invalid task kind: {kind!r}")
+        normalized_runner = self.validate_runner(runner) if runner is not None else None
         normalized_mode: Mode | None = None
         if mode is not None and str(mode).strip():
             upper_mode = str(mode).strip().upper()
@@ -487,6 +572,11 @@ class BrainDB:
                 if child_strategy is not None
                 else (existing["child_strategy"] if existing is not None else "all")
             )
+            resolved_runner: RunnerName = (
+                normalized_runner
+                if normalized_runner is not None
+                else (str(existing["runner"]) if existing is not None and "runner" in existing.keys() else "pi")  # type: ignore[assignment]
+            )
             now = _iso(_utc_now())
             if existing is None:
                 self._conn.execute(
@@ -494,8 +584,8 @@ class BrainDB:
                     INSERT INTO tasks (
                         id, parent_id, kind, mode, repo, title, spec, metric_target,
                         verify_cmd, status, priority, strike_count, child_strategy,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                        runner, thread_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -510,6 +600,8 @@ class BrainDB:
                         status,
                         int(priority),
                         resolved_strategy,
+                        resolved_runner,
+                        thread_id,
                         now,
                         now,
                     ),
@@ -520,7 +612,7 @@ class BrainDB:
                     UPDATE tasks
                     SET parent_id = ?, kind = ?, mode = ?, repo = ?, title = ?, spec = ?,
                         metric_target = ?, verify_cmd = ?, status = ?, priority = ?,
-                        child_strategy = ?, updated_at = ?
+                        child_strategy = ?, runner = ?, thread_id = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -535,6 +627,8 @@ class BrainDB:
                         status,
                         int(priority),
                         resolved_strategy,
+                        resolved_runner,
+                        thread_id if thread_id is not None else existing["thread_id"],
                         now,
                         resolved_id,
                     ),
@@ -566,6 +660,73 @@ class BrainDB:
                 tuple(params),
             ).fetchall()
             return [self._row_to_task(r) for r in rows]
+
+    def get_thread_binding(self, repo: str) -> ThreadRow | None:
+        """The long-lived thread the brain continues for this repo, if one is bound."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM threads WHERE repo = ?", (repo.strip().strip("/"),)
+            ).fetchone()
+            return self._row_to_thread(row) if row is not None else None
+
+    def list_thread_bindings(self) -> list[ThreadRow]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM threads ORDER BY updated_at DESC").fetchall()
+            return [self._row_to_thread(r) for r in rows]
+
+    def set_thread_binding(
+        self,
+        *,
+        repo: str,
+        runner: RunnerName | str,
+        thread_id: str,
+        project_id: str | None = None,
+        title: str = "",
+        worktree_path: str | None = None,
+        branch: str = "",
+        last_sequence: int | None = None,
+    ) -> ThreadRow:
+        """Bind (or re-bind) one repo to one thread. The runner continues it instead of opening a new one."""
+        cleaned_repo = repo.strip().strip("/")
+        cleaned_runner = self.validate_runner(runner)
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO threads (
+                    repo, runner, thread_id, project_id, title, worktree_path, branch,
+                    last_sequence, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repo) DO UPDATE SET
+                    runner = excluded.runner,
+                    thread_id = excluded.thread_id,
+                    project_id = excluded.project_id,
+                    title = excluded.title,
+                    worktree_path = excluded.worktree_path,
+                    branch = excluded.branch,
+                    last_sequence = excluded.last_sequence,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    cleaned_repo,
+                    cleaned_runner,
+                    thread_id,
+                    project_id,
+                    title,
+                    worktree_path,
+                    branch,
+                    last_sequence,
+                    _iso(_utc_now()),
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM threads WHERE repo = ?", (cleaned_repo,)
+            ).fetchone()
+            assert row is not None
+            return self._row_to_thread(row)
+
+    def clear_thread_binding(self, repo: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM threads WHERE repo = ?", (repo.strip().strip("/"),))
 
     def reap_stale_leases(self, now: datetime | None = None) -> list[str]:
         now_dt = now or _utc_now()
@@ -668,6 +829,7 @@ class BrainDB:
         metric_value: float | None = None,
         skills_used: list[str] | None = None,
         diagnostic: str | None = None,
+        thread_id: str | None = None,
     ) -> TaskRow:
         now_iso = _iso(_utc_now())
         with self._lock, self._conn:
@@ -681,6 +843,7 @@ class BrainDB:
                 cost_usd=cost_usd,
                 pi_session_id=pi_session_id,
                 session_jsonl_path=session_jsonl_path,
+                thread_id=thread_id,
                 git_branch=git_branch,
                 git_sha=git_sha,
                 verify_output=verify_output,
@@ -707,22 +870,24 @@ class BrainDB:
         metric_value: float | None = None,
         skills_used: list[str] | None = None,
         diagnostic: str | None = None,
+        thread_id: str | None = None,
     ) -> TaskRow:
         task = self.get_task(task_id)
         dedup_skills = list(dict.fromkeys(s.strip() for s in (skills_used or []) if s.strip()))
         self._conn.execute(
             """
             INSERT INTO attempts (
-                task_id, role, pi_session_id, session_jsonl_path, summary,
+                task_id, role, pi_session_id, session_jsonl_path, thread_id, summary,
                 git_branch, git_sha, cost_usd, outcome, verify_output,
                 metric_value, skills_used, diagnostic, reflected, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
             (
                 task_id,
                 role,
                 pi_session_id,
                 session_jsonl_path,
+                thread_id,
                 summary,
                 git_branch,
                 git_sha,
@@ -1223,6 +1388,12 @@ class BrainDB:
                 if "child_strategy" in keys and row["child_strategy"] in ("all", "any")
                 else "all"
             ),
+            runner=(
+                row["runner"]
+                if "runner" in keys and row["runner"] in ("pi", "t3", "claude", "opencode")
+                else "pi"
+            ),
+            thread_id=row["thread_id"] if "thread_id" in keys else None,
             best_metric=(
                 float(row["best_metric"])
                 if "best_metric" in keys and row["best_metric"] is not None
@@ -1261,6 +1432,22 @@ class BrainDB:
             skills_used=parsed_skills,
             diagnostic=row["diagnostic"] if "diagnostic" in keys else None,
             reflected=bool(row["reflected"]) if "reflected" in keys else False,
+            thread_id=row["thread_id"] if "thread_id" in keys else None,
+        )
+
+    @staticmethod
+    def _row_to_thread(row: sqlite3.Row) -> ThreadRow:
+        raw_sequence = row["last_sequence"] if "last_sequence" in row.keys() else None
+        return ThreadRow(
+            repo=str(row["repo"]),
+            runner=str(row["runner"]) if row["runner"] in ("pi", "t3", "claude", "opencode") else "t3",  # type: ignore[arg-type]
+            thread_id=str(row["thread_id"]),
+            project_id=row["project_id"] if "project_id" in row.keys() else None,
+            title=str(row["title"] or ""),
+            worktree_path=row["worktree_path"] if "worktree_path" in row.keys() else None,
+            branch=str(row["branch"] or ""),
+            last_sequence=int(raw_sequence) if raw_sequence is not None else None,
+            updated_at=str(row["updated_at"]),
         )
 
     @staticmethod

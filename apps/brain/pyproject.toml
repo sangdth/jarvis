@@ -10,6 +10,11 @@ dependencies = [
     "jarvis-core",
     "pydantic-settings>=2.2.0",
     "loguru>=0.7.2",
+    # the turn router, and the T3 orchestration socket
+    "httpx>=0.27.0",
+    "websockets>=13.0",
+    # the minimal Claude Code runner; the CLI is the user's own install
+    "claude-agent-sdk>=0.2.176",
 ]
 
 [build-system]

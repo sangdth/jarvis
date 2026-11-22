@@ -68,8 +68,6 @@ class Settings(EnvSettings):
     # Pins an `opencode serve` started with this password; empty = OpenCode 2's own service (service.json)
     opencode_server_password: str = ""
     watch_config_path: str = str(JARVIS_HOME / "agents.json")  # a relative path counts from JARVIS_HOME
-    # Hermes API server key (API_SERVER_KEY in ~/.hermes/.env), for a separate Hermes besides the brain
-    hermes_api_key: str = ""
 
     # OpenRouter model IDs
     executive_model: str = "deepseek/deepseek-v4.1-flash"

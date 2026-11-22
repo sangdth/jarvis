@@ -185,6 +185,7 @@ async def running(
         db.close()
         raise
     reconciler.start()
+    await server.start_background()
     logger.info(
         f"Jarvis server listening on {settings.endpoint_url} "
         f"(mode={db.get_state().mode}, home={settings.home_dir}, allowed_repos={sorted(settings.allowed_repo_set)})"
@@ -192,6 +193,7 @@ async def running(
     try:
         yield server
     finally:
+        await server.stop_background()
         await reconciler.stop()
         await runner.cleanup()
         db.close()

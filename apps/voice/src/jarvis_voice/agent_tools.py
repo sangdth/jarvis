@@ -56,7 +56,8 @@ def agent_tools() -> list:
                     "description": "Only when the user asks for it: \"new\" to start a clean session (a T3 Code thread"
                     " or a Claude Code, OpenCode or Pi conversation), or the user's words naming an earlier session to"
                     " continue (e.g. 'the speaker verification one'), matched against session titles. Omit otherwise;"
-                    " a plain task stays in the current session.",
+                    " a plain task stays in the current session. With `session`, omit `task` when the user only"
+                    " starts or continues a session and names no work.",
                 },
                 "include_screen": {
                     "type": "boolean",

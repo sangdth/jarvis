@@ -5,6 +5,7 @@ import stat
 from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
+from brain_fakes import PlannerOrchestrator
 
 from brain.cli import build_launchd_plist, run_self_check
 from brain.config import Settings
@@ -127,7 +128,7 @@ else:
     )
     db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
     reconciler = Reconciler(db, cfg, on_restart_requested=restarted.set)
-    server = BrainServer(db, reconciler, cfg)
+    server = BrainServer(db, reconciler, cfg, orchestrator=PlannerOrchestrator(db, reconciler))
 
     async with TestClient(TestServer(server.app)) as client:
         resp = await client.post(
