@@ -83,6 +83,7 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
 | Other Mac: no sound, or not heard    | `remote_audio.py` (token, one client), `defaults/remote/client.py` |
+| Answers on the wrong Mac             | `remote_audio.py` `Ear.offer` (`SPEECH_PEAK`, `HANDOVER_SECS`), `[Ear]` lines |
 | Meeting: Jarvis can't hear the call  | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Meeting: the call can't hear Jarvis  | `meet_voice.py` `MeetVoice`, `defaults/meet/jarvis.js`          |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |

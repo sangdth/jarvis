@@ -62,19 +62,21 @@ async def start_all(
     Run the brain and the voice together until the pipeline ends or a restart is requested.
 
     `remote` puts the mic and speaker on another machine and serves the thin client from this same server.
+    `RELAY_EARS=true` keeps this Mac's mic and speaker too, and the ear follows whichever one hears you.
     """
     from brain.cli import running
     from jarvis_core.devices import DeviceStore
+    from jarvis_voice.config import settings
 
     restart = asyncio.Event()
     voice_state: dict[str, Any] = {"state": "starting", "meeting": meeting, "remote": remote, "client": None}
     devices = DeviceStore.load()
 
     relay: Any = None
-    if remote:
+    if not meeting and (remote or settings.relay_ears):
         from jarvis_voice.remote_audio import make_transport
 
-        relay = make_transport(devices=devices)
+        relay = make_transport(devices=devices, local=not remote)
 
     def voice_snapshot() -> dict[str, Any]:
         snapshot = dict(voice_state)

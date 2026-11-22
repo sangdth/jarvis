@@ -122,7 +122,8 @@ async def run_pipecat_harness(
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers.
 
     `relay` is the already-built `RemoteVoiceTransport` when the shared Jarvis server owns its routes; without it,
-    `remote=True` builds one and listens on its own (the voice without the brain). `status`, when given, is kept
+    `remote=True` builds one and listens on its own (the voice without the brain). With `RELAY_EARS=true` the
+    supervisor passes a local+relay transport even though `remote` is false. `status`, when given, is kept
     up to date for the server's `/v1/status` answer.
     """
     live = status if status is not None else {}
@@ -169,11 +170,14 @@ async def run_pipecat_harness(
         check += f"; meeting guests: {guests}"
     if remote:
         check += "; mic and speaker on another Mac"
-        if settings.master_check:
-            logger.warning(
-                "MASTER_CHECK is on and the mic is another Mac's: the voiceprint was recorded with this one, so your "
-                "sentences may score low. Watch the [Speaker] score= lines; lower SPEAKER_THRESHOLD if they are dropped."
-            )
+    elif settings.relay_ears and not meeting:
+        check += "; ears: this Mac and another Mac"
+    if (remote or settings.relay_ears) and settings.master_check and not meeting:
+        logger.warning(
+            "MASTER_CHECK is on and the relay lets another Mac's mic in: the voiceprint was recorded with this one, "
+            "so your sentences there may score low. Watch the [Speaker] score= lines; lower SPEAKER_THRESHOLD if "
+            "they are dropped."
+        )
     # The log is where misses get investigated; it has to say which setup heard them.
     logger.info(f"Hearing {settings.language} with Whisper {settings.whisper_model}, {check}")
 
@@ -237,15 +241,16 @@ async def run_pipecat_harness(
 
     # 1. Mic and speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
     # voice so the user can talk over it on speakers. With remote audio they belong to another Mac, and the
-    # canceller runs there instead: it has to sit where the speaker does.
+    # canceller runs there instead: it has to sit where the speaker does. With RELAY_EARS both are present and
+    # `Ear` follows whichever Mac hears you.
     relay_is_standalone = False
-    if remote:
-        if relay is None:
-            from jarvis_voice.remote_audio import make_transport
+    if remote and relay is None:
+        from jarvis_voice.remote_audio import make_transport
 
-            relay = make_transport()
-            await relay.start_server()
-            relay_is_standalone = True
+        relay = make_transport()
+        await relay.start_server()
+        relay_is_standalone = True
+    if relay is not None:
         transport: BaseTransport = relay
     else:
         transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)

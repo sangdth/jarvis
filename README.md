@@ -226,6 +226,9 @@ stops it.
   you, so the echo canceller that lets you interrupt Jarvis sits where the speaker is. Its speech plays on that
   Mac's speakers; an interruption drops what it still had queued.
 - **One listener at a time.** A second Mac is refused while one is connected: they share one ear.
+- **Walk between Macs.** Set `RELAY_EARS=true` and run `jarvis` rather than `jarvis remote`: this Mac keeps its own
+  mic and speaker, another Mac joins over the relay, and the ear follows whichever one hears you. A client that
+  connects takes the ear at once.
 - **Each device has its own key.** `jarvis devices` lists them; `jarvis devices revoke <id>` cuts one off
   (a lost laptop) without touching the others or the CLI. Only the machine running Jarvis — the shared token — can
   pair or revoke.

@@ -194,6 +194,9 @@ async def listen(ws, audio: AudioBridge, outbox: asyncio.Queue[bytes]) -> None:
             elif control.get("type") == "hello":
                 print(f"Connected to Jarvis ({control.get('rate')} Hz). Talk when you like; Ctrl+C to stop.",
                       flush=True)
+            elif control.get("type") == "ear":
+                print("Jarvis's ear is on this Mac: talk here." if control.get("active") else
+                      "Jarvis is listening on another Mac; talk here to bring the ear back.", flush=True)
     finally:
         sender.cancel()
 
