@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'ready', 'in_progress', 'done', 'blocked')),
     priority INTEGER NOT NULL DEFAULT 50,
     strike_count INTEGER NOT NULL DEFAULT 0,
+    child_strategy TEXT NOT NULL DEFAULT 'all' CHECK (child_strategy IN ('all', 'any')),
     best_metric REAL,
     best_branch TEXT,
     best_sha TEXT,

@@ -330,8 +330,12 @@ def validate_evidence_receipt(root_dir: Path, raw_output: str) -> dict[str, Any]
         except Exception:
             parsed = {}
 
-    summary = str(parsed.get("summary") or raw_output.strip())[:600]
-    uncertain = bool(parsed.get("uncertain", not bool(parsed)))
+    summary = (
+        str(parsed.get("summary") or "No summary provided.")[:600]
+        if parsed
+        else "Unverified scout output rejected."
+    )
+    uncertain = bool(parsed.get("uncertain", True)) if parsed else True
     raw_items = parsed.get("evidence")
     items = raw_items if isinstance(raw_items, list) else []
 
@@ -339,6 +343,7 @@ def validate_evidence_receipt(root_dir: Path, raw_output: str) -> dict[str, Any]
     verified: list[dict[str, Any]] = []
     rejected_count = 0
     seen: set[tuple[str, str]] = set()
+    file_cache: dict[Path, str | None] = {}
 
     for item in items[:12]:
         if not isinstance(item, dict):
@@ -356,10 +361,16 @@ def validate_evidence_receipt(root_dir: Path, raw_output: str) -> dict[str, Any]
             if target != resolved_root and not str(target).startswith(f"{resolved_root}{os.sep}"):
                 rejected_count += 1
                 continue
-            if not target.is_file():
+            if target not in file_cache:
+                if not target.is_file() or target.stat().st_size > 2_000_000:
+                    file_cache[target] = None
+                else:
+                    file_cache[target] = target.read_text(encoding="utf-8", errors="replace")
+            cached_body = file_cache[target]
+            if cached_body is None:
                 rejected_count += 1
                 continue
-            file_body = target.read_text(encoding="utf-8", errors="replace")
+            file_body = cached_body
         except Exception:
             rejected_count += 1
             continue
@@ -379,6 +390,10 @@ def validate_evidence_receipt(root_dir: Path, raw_output: str) -> dict[str, Any]
                 "quote": quote,
             }
         )
+
+    if items and not verified:
+        uncertain = True
+        summary = "All cited quotes failed byte-for-byte verification; summary withheld."
 
     receipt_lines = [
         "sol_pi_evidence_receipt_v1",

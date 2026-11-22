@@ -7,13 +7,18 @@
  * `SUPERBRAIN_WORKTREE_DIR`.
  */
 
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, resolve, sep } from "node:path";
 
-import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import {
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createWriteToolDefinition,
+	type ExtensionAPI,
+	type ToolCallEvent,
+	type ToolCallEventResult,
+} from "@earendil-works/pi-coding-agent";
 
 function _nearest_existing_resolved(targetPath: string): string {
 	const abs = resolve(targetPath);
@@ -99,23 +104,11 @@ function checkBashCommandGuard(cmd: string, taskKind?: string): string | null {
 	return null;
 }
 
-function runShellCommand(command: string, cwd: string, timeoutMs: number): Promise<{ code: number; output: string }> {
-	return new Promise((resolveCmd) => {
-		execFile(
-			"/bin/sh",
-			["-c", command],
-			{ cwd, timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024 },
-			(error, stdout, stderr) => {
-				const out = [stdout, stderr].filter(Boolean).join("\n").trim();
-				if (error) {
-					const exitCode = typeof error.code === "number" ? error.code : 1;
-					resolveCmd({ code: exitCode, output: out || error.message });
-					return;
-				}
-				resolveCmd({ code: 0, output: out });
-			},
-		);
-	});
+function extractTextBlocks(content: Array<{ type: string; text?: string }>): string {
+	return content
+		.filter((b) => b.type === "text" && typeof b.text === "string")
+		.map((b) => b.text as string)
+		.join("\n");
 }
 
 export default function (pi: ExtensionAPI) {
@@ -137,6 +130,11 @@ export default function (pi: ExtensionAPI) {
 				metric_target: { type: "string", description: "Required when kind='goal' (e.g. 'pytest passes')" },
 				verify_cmd: { type: "string", description: "Deterministic shell verification command" },
 				priority: { type: "integer", description: "0 = urgent P0, 50 = normal, 90 = low" },
+				child_strategy: {
+					type: "string",
+					enum: ["all", "any"],
+					description: "'all' when all child steps must finish; 'any' for competing hypotheses",
+				},
 				ready: { type: "boolean", description: "True to mark ready for execution immediately" },
 			},
 			required: ["kind", "repo", "title", "spec"],
@@ -317,14 +315,18 @@ export default function (pi: ExtensionAPI) {
 			},
 			required: ["path", "old_text", "new_text", "command"],
 		} as never,
-		async execute(_toolCallId, params: Record<string, unknown>) {
+		async execute(toolCallId, params: Record<string, unknown>, signal, _onUpdate, ctx) {
 			const worktreeDir = process.env.SUPERBRAIN_WORKTREE_DIR ?? process.cwd();
 			const taskKind = process.env.SUPERBRAIN_TASK_KIND;
 			const rawPath = String(params.path ?? "");
 			const oldText = String(params.old_text ?? "");
 			const newText = String(params.new_text ?? "");
 			const command = String(params.command ?? "");
-			const timeoutMs = Math.max(1, Number(params.timeout_seconds ?? 60)) * 1000;
+			const rawTimeout = params.timeout_seconds;
+			const timeoutSecs =
+				typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
+					? rawTimeout
+					: 60;
 
 			const writeErr = checkWorktreeWriteGuard(rawPath, worktreeDir, taskKind);
 			if (writeErr) {
@@ -343,25 +345,33 @@ export default function (pi: ExtensionAPI) {
 				} as never;
 			}
 
+			const execCtx = { ...ctx, cwd: worktreeDir };
 			const targetPath = resolve(worktreeDir, rawPath);
+			let mutationText = `Updated ${rawPath}.`;
 			try {
-				if (!existsSync(targetPath)) {
-					if (oldText !== "") {
-						throw new Error(`File not found: ${rawPath}`);
-					}
-					mkdirSync(dirname(targetPath), { recursive: true });
-					writeFileSync(targetPath, newText, "utf8");
-				} else {
-					const current = readFileSync(targetPath, "utf8");
-					if (oldText === "" || !current.includes(oldText)) {
-						throw new Error(`old_text not found in ${rawPath}`);
-					}
-					const firstIdx = current.indexOf(oldText);
-					if (current.indexOf(oldText, firstIdx + Math.max(1, oldText.length)) !== -1) {
-						throw new Error(`old_text matched multiple locations in ${rawPath}; provide more context.`);
-					}
-					const updated = current.slice(0, firstIdx) + newText + current.slice(firstIdx + oldText.length);
-					writeFileSync(targetPath, updated, "utf8");
+				const mutRes =
+					!existsSync(targetPath) && oldText === ""
+						? await createWriteToolDefinition(worktreeDir).execute(
+								toolCallId,
+								{ path: rawPath, content: newText },
+								signal,
+								undefined,
+								execCtx,
+							)
+						: await createEditToolDefinition(worktreeDir).execute(
+								toolCallId,
+								{ path: rawPath, edits: [{ oldText, newText }] },
+								signal,
+								undefined,
+								execCtx,
+							);
+				mutationText = extractTextBlocks(mutRes.content as Array<{ type: string; text?: string }>) || mutationText;
+				if ((mutRes as { isError?: boolean }).isError) {
+					return {
+						content: [{ type: "text", text: `${mutationText}\n\n[then_run:skipped] The file mutation did not complete successfully; the command was not run.` }],
+						details: { status: "skipped" },
+						isError: true,
+					} as never;
 				}
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -372,25 +382,31 @@ export default function (pi: ExtensionAPI) {
 				} as never;
 			}
 
-			const hashBefore = createHash("sha256").update(readFileSync(targetPath)).digest("hex");
-			await new Promise<void>((r) => setImmediate(r));
-			const hashAfter = createHash("sha256").update(readFileSync(targetPath)).digest("hex");
-			if (hashBefore !== hashAfter) {
+			const bashDef = createBashToolDefinition(worktreeDir, { exposeSessionEnvironment: false });
+			try {
+				const bashRes = await bashDef.execute(
+					`${toolCallId}:then_run`,
+					{ command, timeout: timeoutSecs },
+					signal,
+					undefined,
+					execCtx,
+				);
+				const failed = Boolean((bashRes as { isError?: boolean }).isError);
+				const outText = extractTextBlocks(bashRes.content as Array<{ type: string; text?: string }>);
+				const tag = failed ? "[then_run:failed]" : "[then_run:succeeded]";
 				return {
-					content: [{ type: "text", text: `[then_run:skipped] target content changed after the fused mutation; the command was not run.` }],
-					details: { status: "skipped" },
+					content: [{ type: "text", text: [mutationText, outText ? `${tag}\n${outText}` : tag].join("\n\n") }],
+					details: { status: failed ? "failed" : "succeeded" },
+					...(failed ? { isError: true } : {}),
+				} as never;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text", text: [mutationText, "[then_run:failed]", msg].join("\n\n") }],
+					details: { status: "failed" },
 					isError: true,
 				} as never;
 			}
-
-			const { code, output } = await runShellCommand(command, worktreeDir, timeoutMs);
-			const tag = code === 0 ? "[then_run:succeeded]" : "[then_run:failed]";
-			const combined = [`Updated ${rawPath}.`, output ? `${tag}\n${output}` : tag].join("\n\n");
-			return {
-				content: [{ type: "text", text: combined }],
-				details: { status: code === 0 ? "succeeded" : "failed", exitCode: code },
-				...(code !== 0 ? { isError: true } : {}),
-			} as never;
 		},
 	});
 

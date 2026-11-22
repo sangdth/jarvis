@@ -23,21 +23,23 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
   `worktrees/<task_id>` (`0700`), `sessions/<task_id>`, `traces/attempt-<id>.json` (per-attempt trajectory digests),
   `skills/<slug>/SKILL.md` (capped at 10 active auto-created personal skills), and `memory/progress/<task_id>.md`
   (handoff + deterministic negative-result ledger).
-- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `best_metric`, `best_branch`, `best_sha`),
-  `attempts` (append-only run ledger with `metric_value`, `skills_used`, `diagnostic`, and `reflected`), `skills`
-  (versioned personal skills with baseline `sha256`, usage counters, and previous-version rollback snapshot), and
-  `outbox` (queued reports, blockers, and binary approvals), plus the 1-row `system_state` table (`mode`,
-  `daily_budget_usd` defaulting to `$200.00/day`, `last_good_sha`, `upgrade_runs`, `upgrade_failures`).
+- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `child_strategy IN ('all', 'any')`,
+  `best_metric`, `best_branch`, `best_sha`), `attempts` (append-only run ledger with `metric_value`, `skills_used`,
+  `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline `sha256`, usage counters, and
+  previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary approvals), plus the 1-row
+  `system_state` table (`mode`, `daily_budget_usd` defaulting to `$200.00/day`, `last_good_sha`, `upgrade_runs`,
+  `upgrade_failures`).
 - **SoL-Pi auto-research & harness efficiency (`board.ts` + `reconciler.py` + `skills.py`):**
-  - **Action Fusion (`edit_and_run`):** `board.ts` fuses worktree-guarded file edits with immediate follow-up test
-    commands in a single turn (`[then_run:succeeded|failed|skipped]`), verifying file `sha256` stability before running.
-  - **Evidence-Preserving Research Scout (`research_scout`):** Delegates read-only codebase reconnaissance to an
-    isolated `scout_model` worker (`-t read,grep,find,ls`), charges its spend to `spent_today_usd`, and verifies every
-    returned `{file, quote}` byte-for-byte against disk (`sol_pi_evidence_receipt_v1`) before returning it.
+  - **Action Fusion (`edit_and_run`):** `board.ts` fuses worktree-guarded file mutations (`createEditToolDefinition` /
+    `createWriteToolDefinition`) with immediate follow-up `createBashToolDefinition` execution in a single turn
+    (`[then_run:succeeded|failed|skipped]`).
+  - **Evidence-Preserving Research Scout (`research_scout`):** Delegates read-only reconnaissance to a Seatbelt-sandboxed
+    `scout_model` worker (`-t read,grep,find,ls`), streams spend against `daily_budget_usd`, and verifies every returned
+    `{file, quote}` byte-for-byte on disk (`sol_pi_evidence_receipt_v1`).
   - **Oracle + BFS Hypothesis Tournament (`run_auto_research`):** Computes Oracle trajectory signals (`assistant_turns`,
-    `adjacent_edit_bash_pairs`, `repeated_error_tools`), fans out 2–3 competing child hypotheses, parses `METRIC: <float>`
-    against `metric_target` comparators (`<=`, `<`, `>=`, `>`, `==`), tracks `best_metric`/`best_branch` on the parent
-    task, and marks remaining sibling hypotheses `done` once the quantitative target is met.
+    `adjacent_edit_bash_pairs`, `repeated_error_tools`), fans out competing hypotheses (`child_strategy='any'`), parses
+    `METRIC: <float>` against `metric_target` comparators (`<=`, `<`, `>=`, `>`, `==`), tracks `best_metric`/`best_branch`,
+    and closes remaining `'any'` sibling hypotheses once the quantitative target is met.
   - **Sealed held-out evaluation:** Held-out baseline failure output on `repo='superbrain'` is sealed from worker-visible
     `verify_output` and progress notes to prevent test overfitting, while preserved in owner `outbox` details.
 - **Self-improving skills loop (`skills.py` + `reconciler.py`):**

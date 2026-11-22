@@ -16,7 +16,14 @@ from typing import Any, Awaitable, Callable
 from loguru import logger
 
 from superbrain.config import Settings, settings
-from superbrain.db import AttemptOutcome, BrainDB, TaskRow, WorkerRole, check_metric_target
+from superbrain.db import (
+    AttemptOutcome,
+    BrainDB,
+    TaskRow,
+    WorkerRole,
+    check_metric_target,
+    has_metric_comparator,
+)
 from superbrain.sandbox import wrap_with_sandbox
 from superbrain.skills import (
     SkillProposal,
@@ -39,7 +46,8 @@ BUILDER_TOOLS = (
 )
 IMPROVER_TOOLS = "read,grep,find,ls,research_scout,propose_skill_change"
 SCOUT_TOOLS = "read,grep,find,ls"
-_METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
+_METRIC_CMD_RE = re.compile(r"\bMETRIC\b", re.IGNORECASE)
 PROTECTED_SELF_PATHS = {
     "pyproject.toml",
     "src/superbrain/config.py",
@@ -54,6 +62,45 @@ def extract_metric_value(output: str | None) -> float | None:
         return None
     matches = _METRIC_LINE_RE.findall(output)
     return float(matches[-1]) if matches else None
+
+
+@dataclass
+class _PiStreamState:
+    session_id: str | None = None
+    last_text: str = ""
+    completed_cost: float = 0.0
+    streaming_cost: float = 0.0
+
+    @property
+    def total_cost(self) -> float:
+        return self.completed_cost + self.streaming_cost
+
+    def feed_line(self, line_str: str) -> None:
+        if not line_str:
+            return
+        try:
+            event = json.loads(line_str)
+        except json.JSONDecodeError:
+            self.last_text = line_str
+            return
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "session" and isinstance(event.get("id"), str):
+            self.session_id = event["id"]
+        elif isinstance(event.get("session_id"), str):
+            self.session_id = event["session_id"]
+        elif isinstance(event.get("sessionId"), str):
+            self.session_id = event["sessionId"]
+        text = extract_assistant_text(event)
+        if text:
+            self.last_text = text
+        ev_cost = extract_event_cost(event)
+        if ev_cost > 0:
+            if event.get("type") == "message_update":
+                self.streaming_cost = max(self.streaming_cost, ev_cost)
+            else:
+                self.completed_cost += ev_cost
+                self.streaming_cost = 0.0
 
 
 @dataclass
@@ -159,11 +206,12 @@ class Reconciler:
                 proc.terminate()
 
     def abort_run(self, run_key: str) -> bool:
-        proc = self._active_procs.get(run_key)
-        if proc and proc.returncode is None:
-            proc.terminate()
-            return True
-        return False
+        aborted = False
+        for key, proc in list(self._active_procs.items()):
+            if (key == run_key or key.startswith(f"{run_key}:scout:")) and proc.returncode is None:
+                proc.terminate()
+                aborted = True
+        return aborted
 
     async def _run_loop(self) -> None:
         while True:
@@ -347,7 +395,19 @@ class Reconciler:
                 worktree_dir, session_dir, effective_verify_cmd
             )
             metric_val = extract_metric_value(verify_output)
-            if (
+            requires_metric_line = bool(_METRIC_CMD_RE.search(effective_verify_cmd))
+            if not requires_metric_line and task.parent_id:
+                parent_row = self.db.get_task(task.parent_id)
+                requires_metric_line = parent_row.child_strategy == "any" and has_metric_comparator(
+                    parent_row.metric_target or task.metric_target
+                )
+            if verified and requires_metric_line and metric_val is None:
+                verified = False
+                verify_output = (
+                    f"{verify_output}\n"
+                    "Expected METRIC: <number> in verify_cmd output, but none was found."
+                ).strip()
+            elif (
                 verified
                 and metric_val is not None
                 and not check_metric_target(task.metric_target, metric_val)
@@ -608,6 +668,8 @@ class Reconciler:
         `SG-<id>.2`, ...) evaluated under the parent's verification and metric gates.
         """
         task = self.db.get_task(task_id)
+        if task.status == "in_progress":
+            raise ValueError(f"Cannot run auto-research while task {task.id!r} is in_progress.")
         repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
         cwd = repo_dir if repo_dir.is_dir() else self.cfg.home_dir
         session_dir = self.cfg.sessions_dir / f"{task.id}-research"
@@ -655,17 +717,20 @@ class Reconciler:
         )
         if res.cost_usd > 0:
             self.db.add_spend(res.cost_usd)
-        if res.upserted_task_ids:
+        child_ids = [uid for uid in (res.upserted_task_ids or []) if uid != task.id]
+        if child_ids:
+            latest = self.db.get_task(task.id)
             self.db.upsert_task(
-                task_id=task.id,
-                parent_id=task.parent_id,
-                kind=task.kind,
-                repo=task.repo,
-                title=task.title,
-                spec=task.spec,
-                metric_target=task.metric_target,
-                verify_cmd=task.verify_cmd,
-                priority=task.priority,
+                task_id=latest.id,
+                parent_id=latest.parent_id,
+                kind=latest.kind,
+                repo=latest.repo,
+                title=latest.title,
+                spec=latest.spec,
+                metric_target=latest.metric_target,
+                verify_cmd=latest.verify_cmd,
+                priority=latest.priority,
+                child_strategy="any",
                 ready=False,
             )
         return res
@@ -728,15 +793,15 @@ class Reconciler:
         skills_loaded: list[str] = []
         diagnostics: list[str] = []
         modified_skills: list[str] = []
-        completed_cost = 0.0
-        streaming_cost = 0.0
-        total_cost = 0.0
+        stream_state = _PiStreamState(session_id=resume_session_id)
+        extra_scout_cost = 0.0
         timed_out = False
         budget_exceeded = False
+        start_monotonic = time.monotonic()
         initial_state = self.db.get_state()
 
         async def handle_rpc(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            nonlocal deferred_flag, completed_cost, total_cost, budget_exceeded
+            nonlocal deferred_flag, extra_scout_cost, budget_exceeded
             try:
                 line = await reader.readline()
                 if not line:
@@ -757,6 +822,7 @@ class Reconciler:
                         metric_target=params.get("metric_target"),
                         verify_cmd=params.get("verify_cmd"),
                         priority=int(params.get("priority", 50)),
+                        child_strategy=params.get("child_strategy"),
                         ready=params.get("ready"),
                     )
                     upserted_ids.append(t.id)
@@ -784,6 +850,13 @@ class Reconciler:
                     question = str(params.get("question") or "").strip()
                     if not question:
                         raise ValueError("research_scout requires a non-empty question.")
+                    spent_so_far = (
+                        initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
+                    )
+                    budget_left = initial_state.daily_budget_usd - spent_so_far
+                    if budget_left <= 0:
+                        budget_exceeded = True
+                        raise ValueError("Daily budget reached; research_scout skipped.")
                     raw_paths = params.get("paths")
                     focus_paths = (
                         [str(p).strip() for p in raw_paths if str(p).strip()]
@@ -791,23 +864,30 @@ class Reconciler:
                         else []
                     )
                     scout_root = worktree_dir if worktree_dir is not None else cwd
-                    scout_text, scout_cost = await self._run_research_scout(
+                    remaining_secs = max(
+                        1.0, self.cfg.max_run_seconds - (time.monotonic() - start_monotonic)
+                    )
+                    scout_text, scout_cost, scout_over_budget = await self._run_research_scout(
                         root_dir=scout_root,
                         session_dir=session_dir,
                         question=question,
                         paths=focus_paths,
+                        run_key=f"{run_key}:scout:{uuid.uuid4().hex[:8]}",
+                        timeout_seconds=min(120.0, remaining_secs),
+                        budget_limit_usd=budget_left,
                     )
-                    if scout_cost > 0:
-                        completed_cost += scout_cost
-                        total_cost = completed_cost + streaming_cost
-                        if (
-                            initial_state.spent_today_usd + total_cost
-                            > initial_state.daily_budget_usd
-                        ):
-                            budget_exceeded = True
-                            proc_ref = self._active_procs.get(run_key)
-                            if proc_ref and proc_ref.returncode is None:
-                                proc_ref.terminate()
+                    extra_scout_cost += scout_cost
+                    if (
+                        scout_over_budget
+                        or initial_state.spent_today_usd
+                        + stream_state.total_cost
+                        + extra_scout_cost
+                        > initial_state.daily_budget_usd
+                    ):
+                        budget_exceeded = True
+                        proc_ref = self._active_procs.get(run_key)
+                        if proc_ref and proc_ref.returncode is None:
+                            proc_ref.terminate()
                     receipt = validate_evidence_receipt(scout_root, scout_text)
                     resp = {"ok": True, "result": receipt}
                 elif method == "propose_skill_change":
@@ -944,10 +1024,6 @@ class Reconciler:
             env["SUPERBRAIN_TASK_ID"] = task.id
             env["SUPERBRAIN_TASK_KIND"] = task.kind
 
-        last_text = ""
-        session_id = resume_session_id
-        start_monotonic = time.monotonic()
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -975,36 +1051,14 @@ class Reconciler:
                     continue
                 if not raw_line:
                     break
-                line_str = raw_line.decode("utf-8", errors="replace").strip()
-                if not line_str:
-                    continue
-                try:
-                    event = json.loads(line_str)
-                except json.JSONDecodeError:
-                    last_text = line_str
-                    continue
-                if isinstance(event, dict):
-                    if event.get("type") == "session" and isinstance(event.get("id"), str):
-                        session_id = event["id"]
-                    elif isinstance(event.get("session_id"), str):
-                        session_id = event["session_id"]
-                    elif isinstance(event.get("sessionId"), str):
-                        session_id = event["sessionId"]
-                    text = extract_assistant_text(event)
-                    if text:
-                        last_text = text
-                    ev_cost = extract_event_cost(event)
-                    if ev_cost > 0:
-                        if event.get("type") == "message_update":
-                            streaming_cost = max(streaming_cost, ev_cost)
-                        else:
-                            completed_cost += ev_cost
-                            streaming_cost = 0.0
-                        total_cost = completed_cost + streaming_cost
-                        if initial_state.spent_today_usd + total_cost > initial_state.daily_budget_usd:
-                            budget_exceeded = True
-                            proc.terminate()
-                            break
+                stream_state.feed_line(raw_line.decode("utf-8", errors="replace").strip())
+                if (
+                    initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
+                    > initial_state.daily_budget_usd
+                ):
+                    budget_exceeded = True
+                    proc.terminate()
+                    break
 
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
@@ -1020,6 +1074,9 @@ class Reconciler:
             await server.wait_closed()
             sock_path.unlink(missing_ok=True)
 
+        total_cost = stream_state.total_cost + extra_scout_cost
+        last_text = stream_state.last_text
+        session_id = stream_state.session_id
         session_jsonl_path = self._find_session_jsonl(session_dir, session_id)
         diag_joined = "; ".join(diagnostics) if diagnostics else None
 
@@ -1090,10 +1147,14 @@ class Reconciler:
         session_dir: Path,
         question: str,
         paths: list[str],
-    ) -> tuple[str, float]:
+        run_key: str,
+        timeout_seconds: float,
+        budget_limit_usd: float,
+    ) -> tuple[str, float, bool]:
         """
-        Spawns an isolated read-only `pi` scout subprocess to answer `question` with exact quotes
-        copied byte-for-byte from files under `root_dir`, returning `(raw_output, cost_usd)`.
+        Spawns a Seatbelt-sandboxed read-only `pi` scout subprocess to answer `question` with exact
+        quotes copied byte-for-byte from files under `root_dir`, streaming output against both
+        `timeout_seconds` and `budget_limit_usd`.
         """
         focus_hint = f"\nFocus paths: {', '.join(paths)}" if paths else ""
         scout_prompt = (
@@ -1105,26 +1166,40 @@ class Reconciler:
             '"quote": "<exact contiguous lines copied byte-for-byte from file>"}]}\n'
             "Every `quote` MUST appear byte-for-byte in `file`."
         )
-        cmd = [
-            self.cfg.pi_bin,
-            "-p",
-            "--mode",
-            "json",
-            "--no-approve",
-            "--no-skills",
-            "--no-prompt-templates",
-            "--no-mcp",
-            "--no-extensions",
-            "--no-session",
-            "--model",
-            self.cfg.scout_model,
-            "-t",
-            SCOUT_TOOLS,
-            "--",
-            scout_prompt,
-        ]
-        env = self._build_sandbox_env(session_dir)
+        scout_session_dir = session_dir / "scout"
+        scout_session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cmd = wrap_with_sandbox(
+            [
+                self.cfg.pi_bin,
+                "-p",
+                "--mode",
+                "json",
+                "--no-approve",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-mcp",
+                "--no-extensions",
+                "--no-session",
+                "--model",
+                self.cfg.scout_model,
+                "-t",
+                SCOUT_TOOLS,
+                "--",
+                scout_prompt,
+            ],
+            worktree_dir=root_dir,
+            session_dir=scout_session_dir,
+            notes_dir=self.cfg.notes_dir,
+            home_dir=self.cfg.home_dir,
+            enabled=self.cfg.sandbox_enabled,
+        )
+        env = self._build_sandbox_env(scout_session_dir)
         env["SUPERBRAIN_RESEARCH_SCOUT"] = "1"
+        scout_state = _PiStreamState()
+        over_budget = False
+        timed_out = False
+        started = time.monotonic()
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(root_dir),
@@ -1132,39 +1207,45 @@ class Reconciler:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        last_text = ""
-        completed_cost = 0.0
-        streaming_cost = 0.0
+        self._active_procs[run_key] = proc
+        assert proc.stdout is not None
         try:
-            out_bytes, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=min(120, self.cfg.max_run_seconds)
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return '{"summary": "Scout timed out", "uncertain": true, "evidence": []}', 0.0
-
-        for raw_line in out_bytes.decode("utf-8", errors="replace").splitlines():
-            line_str = raw_line.strip()
-            if not line_str:
-                continue
+            while True:
+                rem = timeout_seconds - (time.monotonic() - started)
+                if rem <= 0:
+                    timed_out = True
+                    proc.terminate()
+                    break
+                try:
+                    raw_line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=min(5.0, max(0.1, rem))
+                    )
+                except asyncio.TimeoutError:
+                    if proc.returncode is not None:
+                        break
+                    continue
+                if not raw_line:
+                    break
+                scout_state.feed_line(raw_line.decode("utf-8", errors="replace").strip())
+                if scout_state.total_cost > budget_limit_usd:
+                    over_budget = True
+                    proc.terminate()
+                    break
             try:
-                ev = json.loads(line_str)
-            except json.JSONDecodeError:
-                last_text = line_str
-                continue
-            if isinstance(ev, dict):
-                txt = extract_assistant_text(ev)
-                if txt:
-                    last_text = txt
-                c = extract_event_cost(ev)
-                if c > 0:
-                    if ev.get("type") == "message_update":
-                        streaming_cost = max(streaming_cost, c)
-                    else:
-                        completed_cost += c
-                        streaming_cost = 0.0
-        return last_text, completed_cost + streaming_cost
+                await asyncio.wait_for(proc.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        finally:
+            self._active_procs.pop(run_key, None)
+
+        if timed_out:
+            return (
+                '{"summary": "Scout timed out", "uncertain": true, "evidence": []}',
+                scout_state.total_cost,
+                over_budget,
+            )
+        return scout_state.last_text, scout_state.total_cost, over_budget
 
     @staticmethod
     def _find_session_jsonl(session_dir: Path, session_id: str | None) -> str | None:
