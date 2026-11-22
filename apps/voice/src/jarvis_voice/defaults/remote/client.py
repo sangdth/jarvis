@@ -239,9 +239,11 @@ async def main() -> None:
                 async with connect(url, max_size=1 << 20, **connect_kwargs) as ws:
                     await listen(ws, audio, outbox)
             except InvalidStatus as exc:
-                print(f"Jarvis refused this client ({exc.response.status_code}): this Mac's pairing was revoked.",
-                      flush=True)
-                return
+                status = exc.response.status_code
+                if status in (401, 403):
+                    print(f"Jarvis refused this client ({status}): this Mac's pairing was revoked.", flush=True)
+                    return
+                print(f"Jarvis answered {status}; retrying in {RETRY_SECS:.0f}s.", flush=True)
             except (OSError, WebSocketException, TimeoutError) as exc:
                 print(f"Not connected ({exc!r}); retrying in {RETRY_SECS:.0f}s. Is Jarvis running?", flush=True)
             await asyncio.sleep(RETRY_SECS)

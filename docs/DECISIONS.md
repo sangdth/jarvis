@@ -58,12 +58,12 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   and the state folder `~/.config/superbrain` until `jarvis init` moves it. The separate `brain` console script is
   gone: one command, `jarvis` (`jarvis serve|status|…`, or `uv run python -m brain.cli …` when working inside
   `apps/brain`).
-- **One brain per machine, attach or start.** `src/jarvis/supervisor.py` probes `BRAIN_URL` with the shared token:
-  a daemon answering means attach (the 24/7 LaunchAgent keeps overnight work alive across voice restarts), nothing
-  answering means run `brain.cli.running()` in this loop and stop it at exit. Limits: a dev checkout on a Mac
-  with the daemon running attaches to that daemon (with `MASTER_CHECK` off, that means the dev voice can queue work on
-  the live board); set `BRAIN_URL`/`BRAIN_PORT` on the dev side to keep them apart. A token mismatch stops Jarvis
-  with a named error instead of silently starting a second daemon.
+- **One brain per machine, in this process.** `src/jarvis/supervisor.py` runs `brain.cli.running()` inside the
+  `jarvis` process and stops it at exit, so the voice and the board always share one home and one token; the
+  one-mic lock (`~/.config/jarvis/jarvis.lock`) stops a second `jarvis` on the same machine. A client on another
+  machine reaches that same process over `BRAIN_URL` (default `0.0.0.0:8643`). Limits: there is no attach mode, so
+  a dev checkout runs its own brain; set `BRAIN_HOME` / `BRAIN_PORT` to keep its board and port apart from an
+  installed one.
 - **The checkout is the runtime; one home, one `.env`, one token.** Nothing is packaged: `install.sh` clones the
   repository, `uv sync`s it, and `~/.local/bin/jarvis` is a three-line shim into that checkout's `.venv`, so an
   edit plus `jarvis restart` is live and there is no release to wait for. Limits: a checkout with uncommitted

@@ -4,6 +4,56 @@ import shutil
 import sys
 from pathlib import Path
 
+from jarvis_core.home import JARVIS_HOME
+
+# Credentials a worker must never inherit. It runs model-authored commands, and the gateway token would let a
+# prompt-injected worker approve its own protected changes over loopback.
+SECRET_ENV = (
+    "BRAIN_API_KEY",
+    "JARVIS_TOKEN",
+    "SUPERBRAIN_API_KEY",
+    "OPENROUTER_API_KEY",
+    "ELEVENLABS_API_KEY",
+    "LAYA_API_KEY",
+    "OPENCODE_SERVER_PASSWORD",
+)
+
+
+def strip_secrets(env: dict[str, str]) -> dict[str, str]:
+    """Drop the owner's credentials from a worker environment; the sandbox also denies reading their files."""
+    for key in SECRET_ENV:
+        env.pop(key, None)
+    return env
+
+
+def _deny_reads(
+    home_dir: Path | None, *, allow_read_traces: bool = False, deny_env_file: bool = True
+) -> list[str]:
+    """`deny file-read-data` lines for the credentials and the board: no worker needs to read them."""
+    lines: list[str] = []
+    ssh_dir = Path("~/.ssh").expanduser()
+    if ssh_dir.exists():
+        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(ssh_dir)}"))')
+    secrets = [
+        JARVIS_HOME / "brain_token",
+        JARVIS_HOME / "remote_token",
+        JARVIS_HOME / "devices.json",
+        Path("~/.config/jarvis-remote/credentials.json").expanduser(),
+    ]
+    # shortcut: `verify_cmd` keeps `.env` (pytest imports the settings that read it); only the pi sessions deny it.
+    if deny_env_file:
+        secrets.append(JARVIS_HOME / ".env")
+        if home_dir is not None:
+            secrets.append(home_dir / ".env")
+    for path in secrets:
+        lines.append(f'(deny file-read-data (literal "{_escape_sb_path(path)}"))')
+    if home_dir is not None:
+        for db_name in ("state.db", "state.db-wal", "state.db-shm", "state.db-journal"):
+            lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / db_name)}"))')
+        if not allow_read_traces:
+            lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "traces")}"))')
+    return lines
+
 
 def _escape_sb_path(path: Path) -> str:
     resolved = str(path.resolve())
@@ -31,6 +81,7 @@ def build_sandbox_profile(
     *,
     home_dir: Path | None = None,
     allow_read_traces: bool = False,
+    deny_env_file: bool = True,
 ) -> str:
     """
     macOS Seatbelt (`sandbox-exec`) profile for Brain workers.
@@ -60,17 +111,9 @@ def build_sandbox_profile(
     wt_gitdir = _resolve_worktree_gitdir(worktree_dir)
     if wt_gitdir is not None:
         lines.append(f'(allow file-write* (subpath "{_escape_sb_path(wt_gitdir)}"))')
-    ssh_dir = Path("~/.ssh").expanduser()
-    if ssh_dir.exists():
-        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(ssh_dir)}"))')
-    if home_dir is not None:
-        env_file = home_dir / ".env"
-        lines.append(f'(deny file-read-data (literal "{_escape_sb_path(env_file)}"))')
-        for db_name in ("state.db", "state.db-wal", "state.db-shm", "state.db-journal"):
-            lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / db_name)}"))')
-        if not allow_read_traces:
-            traces_dir = home_dir / "traces"
-            lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(traces_dir)}"))')
+    lines.extend(
+        _deny_reads(home_dir, allow_read_traces=allow_read_traces, deny_env_file=deny_env_file)
+    )
     lines.append("")
     return "\n".join(lines)
 
@@ -83,6 +126,7 @@ def wrap_with_sandbox(    cmd: list[str],
     home_dir: Path | None = None,
     allow_read_traces: bool = False,
     enabled: bool = True,
+    deny_env_file: bool = True,
 ) -> list[str]:
     """Wraps `cmd` in `sandbox-exec -f <profile.sb>` on macOS when enabled."""
     if not enabled or sys.platform != "darwin" or shutil.which("sandbox-exec") is None:
@@ -96,13 +140,16 @@ def wrap_with_sandbox(    cmd: list[str],
             notes_dir,
             home_dir=home_dir,
             allow_read_traces=allow_read_traces,
+            deny_env_file=deny_env_file,
         ),
         encoding="utf-8",
     )
     return ["sandbox-exec", "-f", str(profile_path), *cmd]
 
 
-def build_ephemeral_sandbox_profile(work_dir: Path, *, home_dir: Path | None = None) -> str:
+def build_ephemeral_sandbox_profile(
+    work_dir: Path, *, home_dir: Path | None = None, deny_env_file: bool = True
+) -> str:
     """Seatbelt profile for a one-shot `pi` answer: writes only in its own temp dir, reads no secrets.
 
     It may read the repository and the network (a lookup needs both), but it cannot change anything outside
@@ -118,14 +165,7 @@ def build_ephemeral_sandbox_profile(work_dir: Path, *, home_dir: Path | None = N
         '(allow file-write* (subpath "/private/tmp"))',
         f'(allow file-write* (subpath "{work}"))',
     ]
-    ssh_dir = Path("~/.ssh").expanduser()
-    if ssh_dir.exists():
-        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(ssh_dir)}"))')
-    if home_dir is not None:
-        lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / ".env")}"))')
-        for db_name in ("state.db", "state.db-wal", "state.db-shm", "state.db-journal"):
-            lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / db_name)}"))')
-        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "traces")}"))')
+    lines.extend(_deny_reads(home_dir, deny_env_file=deny_env_file))
     lines.append("")
     return "\n".join(lines)
 
@@ -136,6 +176,7 @@ def wrap_ephemeral(
     work_dir: Path,
     home_dir: Path | None = None,
     enabled: bool = True,
+    deny_env_file: bool = True,
 ) -> list[str]:
     """Wrap a one-shot worker in a temp-dir-only Seatbelt profile on macOS."""
     if not enabled or sys.platform != "darwin" or shutil.which("sandbox-exec") is None:
@@ -143,7 +184,7 @@ def wrap_ephemeral(
     work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile_path = work_dir / "sandbox.sb"
     profile_path.write_text(
-        build_ephemeral_sandbox_profile(work_dir, home_dir=home_dir),
+        build_ephemeral_sandbox_profile(work_dir, home_dir=home_dir, deny_env_file=deny_env_file),
         encoding="utf-8",
     )
     return ["sandbox-exec", "-f", str(profile_path), *cmd]

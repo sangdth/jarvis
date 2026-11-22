@@ -295,7 +295,7 @@ fn draw_database(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "DAEMON LOG (tail · brain.err.log)",
+        "DAEMON LOG (tail · jarvis.err.log)",
         theme::bold(theme::PURPLE),
     )));
     let log = app.daemon_log();

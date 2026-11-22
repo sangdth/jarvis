@@ -13,115 +13,23 @@ from loguru import logger
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import InvalidStatus
 
-from jarvis_core.soul import load_soul
+from jarvis_core.projects import list_projects, projects_dir, resolve_project  # noqa: F401 (re-exported)
+from jarvis_core.t3 import (  # noqa: F401 (re-exported: the voice's callers import them from here)
+    ACTIVE_STATUSES,
+    T3_HOME,
+    current_thread,
+    find_project,
+    recent_threads,
+    t3_defaults,
+)
 from jarvis_voice.agent_adapter import WatchedAgentConfig, describe_fields, form_answer, is_approval, question_fields
 from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
 from jarvis_voice.state import JarvisState
 
-T3_HOME = Path.home() / ".t3"
 PROTOCOL = 2  # T3's ORCHESTRATION_PROTOCOL_VERSION; the server answers 426 to any other
-_ACTIVE = {"preparing", "queued", "starting", "running", "waiting"}
+_ACTIVE = ACTIVE_STATUSES
 _ASKS = {"approval_request", "user_input_request"}
-def projects_dir() -> tuple[str, Path]:
-    """The projects folder from SOUL.md, as written (for the model) and expanded (for the filesystem)."""
-    label = load_soul().projects_dir
-    return label, Path(label).expanduser()
-
-
-PROJECTS_LABEL, PROJECTS = projects_dir()  # initial values, kept for callers that import them directly
 SYNC_MASTER = "Sync with the master branch"
-
-
-def find_project(projects: list[dict[str, Any]], cwd: str) -> dict[str, Any] | None:
-    """The T3 project whose folder holds cwd; the deepest one when projects are nested."""
-    folder = Path(cwd).expanduser().resolve()
-    holding = [
-        p for p in projects
-        if p.get("workspaceRoot") and not p.get("archivedAt")
-        and folder.is_relative_to(Path(p["workspaceRoot"]).expanduser().resolve())
-    ]
-    return max(holding, key=lambda p: len(p["workspaceRoot"]), default=None)
-
-
-def _last_touched(repo: Path) -> float:
-    """When git last wrote the repo's index (commit, checkout, add, pull); a new repo has only `.git`."""
-    git = repo / ".git"
-    return (git / "index").stat().st_mtime if (git / "index").exists() else git.stat().st_mtime
-
-
-def list_projects(root: Path | None = None, *, sort: bool = True) -> list[str]:
-    """Git repos one or two folders under root, as relative paths ("HuggerHustle/platform-v2"), newest first."""
-    base = projects_dir()[1] if root is None else root
-    found: list[str] = []
-    for top in sorted(base.iterdir()) if base.is_dir() else []:
-        if top.name.startswith(".") or not top.is_dir():
-            continue
-        if (top / ".git").exists():
-            found.append(top.name)
-            continue
-        try:
-            found += [f"{top.name}/{sub.name}" for sub in sorted(top.iterdir()) if (sub / ".git").exists()]
-        except OSError:
-            continue  # unreadable folder: not a project Jarvis can open
-    return sorted(found, key=lambda folder: _last_touched(base / folder), reverse=True) if sort else found
-
-
-def resolve_project(folder: str) -> Path | None:
-    """A listed project's folder for the name the model gave, else None: the model never picks an arbitrary path.
-    Case-blind, like the macOS file system."""
-    label, root = projects_dir()
-    cleaned = folder.strip("/")
-    prefix = f"{label.strip('/')}/"
-    if cleaned.lower().startswith(prefix.lower()):
-        cleaned = cleaned[len(prefix):].strip("/")
-    listed = {f.lower(): f for f in list_projects(root, sort=False)}.get(cleaned.lower())
-    return root / listed if listed else None
-
-
-def recent_threads(snapshot: dict[str, Any], limit: int | None = 15) -> list[dict[str, Any]]:
-    """Threads the user started in T3 (not imports or agent children), newest first, with their folder."""
-    projects = {p["id"]: p for p in snapshot.get("projects", []) if p.get("workspaceRoot")}
-    mine = [
-        t for t in snapshot.get("threads", [])
-        if t.get("createdBy") == "user" and not t.get("archivedAt") and t.get("projectId") in projects
-    ]
-    mine.sort(key=lambda t: t.get("updatedAt") or "", reverse=True)
-    return [
-        {
-            "id": t["id"], "title": t.get("title") or "Untitled", "status": t.get("status") or "idle",
-            "updatedAt": t.get("updatedAt") or "", "projectId": t["projectId"],
-            "projectRoot": projects[t["projectId"]]["workspaceRoot"], "branch": t.get("branch") or "",
-            "project": projects[t["projectId"]].get("title") or Path(projects[t["projectId"]]["workspaceRoot"]).name,
-            "root": t.get("worktreePath") or projects[t["projectId"]]["workspaceRoot"],
-            "worktree": bool(t.get("worktreePath")), "visitedAt": t.get("lastVisitedAt") or t.get("updatedAt") or "",
-        }
-        for t in mine[:limit]
-    ]
-
-
-def current_thread(snapshot: dict[str, Any], project_root: str, worktree_path: str | None) -> dict[str, Any] | None:
-    """
-    The thread a T3 project script runs in. T3 gives scripts only folders (T3CODE_PROJECT_ROOT, T3CODE_WORKTREE_PATH):
-    a worktree belongs to its one thread; on the project root, take the thread viewed last, the one just clicked.
-    """
-    def same(a: str, b: str) -> bool:
-        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
-
-    threads = recent_threads(snapshot, limit=None)
-    if worktree_path:
-        matches = [t for t in threads if t["worktree"] and same(t["root"], worktree_path)]
-    else:
-        matches = [t for t in threads if not t["worktree"] and same(t["root"], project_root)]
-    return max(matches, key=lambda t: t["visitedAt"], default=None)
-
-
-def t3_defaults() -> dict[str, Any]:
-    """The user's own T3 settings: the model and runtime mode a thread started in the T3 window gets."""
-    # shortcut: ignores per-project overrides in T3 settings; read them here if Jarvis ever targets such a project.
-    try:
-        return json.loads((T3_HOME / "userdata" / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
 
 
 class T3Adapter(CodingSessionAdapter):

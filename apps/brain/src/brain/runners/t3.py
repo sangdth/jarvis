@@ -33,52 +33,12 @@ from brain.runners.base import EventCallback, RunRequest, RunResult
 from jarvis_core.projects import resolve_project
 from jarvis_core.questions import describe_fields, form_answer, is_approval, question_fields
 from jarvis_core.sessions import AgentSession, match_sessions
+from jarvis_core.t3 import ACTIVE_STATUSES, T3_HOME, find_project, recent_threads, t3_defaults
 
-T3_HOME = Path.home() / ".t3"
 PROTOCOL = 2  # T3's ORCHESTRATION_PROTOCOL_VERSION; the server answers 426 to any other
-_ACTIVE = {"preparing", "queued", "starting", "running", "waiting"}
+_ACTIVE = ACTIVE_STATUSES
 _ASKS = {"approval_request", "user_input_request"}
 SYNC_MASTER = "Sync with the master branch first. Then: "
-
-
-def t3_defaults() -> dict[str, Any]:
-    """The user's own T3 settings: the model and runtime mode a thread started in the T3 window gets."""
-    try:
-        return json.loads((T3_HOME / "userdata" / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
-def find_project(projects: list[dict[str, Any]], cwd: str) -> dict[str, Any] | None:
-    """The T3 project whose folder holds cwd; the deepest one when projects are nested."""
-    folder = Path(cwd).expanduser().resolve()
-    holding = [
-        p for p in projects
-        if p.get("workspaceRoot") and not p.get("archivedAt")
-        and folder.is_relative_to(Path(p["workspaceRoot"]).expanduser().resolve())
-    ]
-    return max(holding, key=lambda p: len(p["workspaceRoot"]), default=None)
-
-
-def recent_threads(snapshot: dict[str, Any], limit: int | None = 15) -> list[dict[str, Any]]:
-    """Threads the user started in T3 (not imports or agent children), newest first, with their folder."""
-    projects = {p["id"]: p for p in snapshot.get("projects", []) if p.get("workspaceRoot")}
-    mine = [
-        t for t in snapshot.get("threads", [])
-        if t.get("createdBy") == "user" and not t.get("archivedAt") and t.get("projectId") in projects
-    ]
-    mine.sort(key=lambda t: t.get("updatedAt") or "", reverse=True)
-    return [
-        {
-            "id": t["id"], "title": t.get("title") or "Untitled", "status": t.get("status") or "idle",
-            "updatedAt": t.get("updatedAt") or "", "projectId": t["projectId"],
-            "projectRoot": projects[t["projectId"]]["workspaceRoot"], "branch": t.get("branch") or "",
-            "project": projects[t["projectId"]].get("title") or Path(projects[t["projectId"]]["workspaceRoot"]).name,
-            "root": t.get("worktreePath") or projects[t["projectId"]]["workspaceRoot"],
-            "worktree": bool(t.get("worktreePath")), "visitedAt": t.get("lastVisitedAt") or t.get("updatedAt") or "",
-        }
-        for t in mine[:limit]
-    ]
 
 
 @dataclass
@@ -94,6 +54,8 @@ class _ThreadState:
     branch: str = ""
     worktree_path: str | None = None
     project_id: str | None = None
+    # A thread this runner just launched already carries the task as its first message.
+    initial_message_sent: bool = False
 
     def publish(self, event: dict[str, Any]) -> None:
         for queue in list(self.listeners):
@@ -182,6 +144,7 @@ class T3Runner:
                 self._snapshots.clear()
                 for state in self._threads.values():
                     state.runs.clear()
+                    state.last_text.clear()
                     state.pending = None
             await asyncio.sleep(wait)
 
@@ -476,7 +439,11 @@ class T3Runner:
                                   "description": f"asks: {describe_fields(fields)}", "questions": fields})
         try:
             before = set(state.runs)
-            ok = await self._command(state.thread_id, {
+            # A thread this run just launched carries the task as its first message already; dispatching it
+            # again would run the whole thing a second time.
+            already_sent = state.initial_message_sent
+            state.initial_message_sent = False
+            ok = already_sent or await self._command(state.thread_id, {
                 "type": "message.dispatch", "createdBy": "user", "creationSource": "web",
                 "messageId": str(uuid.uuid4()), "text": request.prompt, "attachments": [],
                 "deliveryIntent": "auto", "dispatchMode": {"type": "queue_after_active"},
@@ -676,7 +643,7 @@ class T3Runner:
         title = request.prompt.strip().splitlines()[0][:80] or "Jarvis task"
         launched = await self._call("orchestration.launchThread", {
             "commandId": str(uuid.uuid4()), "threadId": thread_id, "projectId": project["id"],
-            "title": title, "generateTitle": False, "modelSelection": model,
+            "title": title, "generateTitle": True, "modelSelection": model,
             "runtimeMode": defaults.get("defaultRuntimeMode") or "auto",
             "interactionMode": "default", "workspaceStrategy": strategy,
             "initialMessage": {"text": SYNC_MASTER + request.prompt, "attachments": []},
@@ -686,6 +653,7 @@ class T3Runner:
         state = self._state(launched.get("threadId") or thread_id)
         state.cwd, state.title, state.project_id = str(cwd), title, project["id"]
         state.branch, state.worktree_path = branch, None
+        state.initial_message_sent = True
         await self._subscribe(state)
         self.db.set_thread_binding(
             repo=repo_key, runner=self.id, thread_id=state.thread_id, project_id=state.project_id,

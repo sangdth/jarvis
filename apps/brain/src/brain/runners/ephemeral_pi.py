@@ -9,7 +9,6 @@ age and count; a board worker never uses this path.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import shutil
@@ -21,44 +20,14 @@ from typing import Any
 
 from brain.config import Settings
 from brain.db import BrainDB
+from brain.pi_stream import PiStreamState
 from brain.runners.base import EventCallback, RunRequest, RunResult
-from brain.sandbox import wrap_ephemeral
+from brain.sandbox import strip_secrets, wrap_ephemeral
 
 TOOLS = "read,grep,find,ls,bash"
 # Words that make an answer worth streaming while it is written; the rest of the JSON event is machinery.
 _STREAM_PREVIEW = 240
 _SAFE_KEY_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
-
-
-def _assistant_text(event: dict[str, Any]) -> str | None:
-    message = event.get("message") if isinstance(event.get("message"), dict) else event
-    if not isinstance(message, dict) or message.get("role") != "assistant":
-        return None
-    content = message.get("content")
-    if isinstance(content, str) and content.strip():
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            str(item.get("text", "")).strip()
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
-        ]
-        joined = "\n".join(part for part in parts if part)
-        return joined or None
-    return None
-
-
-def _event_cost(event: dict[str, Any]) -> float:
-    for source in (event, event.get("usage"), event.get("message")):
-        if isinstance(source, dict):
-            for key in ("cost_usd", "cost"):
-                value = source.get(key)
-                if isinstance(value, (int, float)):
-                    return float(value)
-            nested = source.get("cost")
-            if isinstance(nested, dict) and isinstance(nested.get("total"), (int, float)):
-                return float(nested["total"])
-    return 0.0
 
 
 class EphemeralPiRunner:
@@ -190,7 +159,8 @@ class EphemeralPiRunner:
             self._active[request.run_id] = proc
             assert proc.stdout is not None
             cost = 0.0
-            last_text = ""
+            stream = PiStreamState()
+            emitted = ""
             timed_out = False
             over_budget = False
             over_cap = False
@@ -212,18 +182,13 @@ class EphemeralPiRunner:
                     line = raw.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
-                    try:
-                        event: dict[str, Any] = json.loads(line)
-                    except json.JSONDecodeError:
-                        last_text = line
-                        continue
-                    text = _assistant_text(event)
-                    if text:
-                        last_text = text
-                        if len(text) > _STREAM_PREVIEW:
-                            await emit({"event": "worker.progress", "run_id": request.run_id,
-                                        "preview": text[:_STREAM_PREVIEW]})
-                    cost += _event_cost(event)
+                    stream.feed_line(line)
+                    text = stream.last_text
+                    if text and len(text) > _STREAM_PREVIEW and text != emitted:
+                        emitted = text
+                        await emit({"event": "worker.progress", "run_id": request.run_id,
+                                    "preview": text[:_STREAM_PREVIEW]})
+                    cost = stream.total_cost
                     if cost > budget_left:
                         over_budget = True
                         self._terminate(proc)
@@ -267,10 +232,10 @@ class EphemeralPiRunner:
             if proc.returncode != 0:
                 return RunResult(
                     outcome="errored",
-                    summary=stderr or last_text or f"pi exited with code {proc.returncode}.",
+                    summary=stderr or stream.last_text or f"pi exited with code {proc.returncode}.",
                     cost_usd=cost,
                 )
-            return RunResult(outcome="pushed", summary=last_text or "Done.", cost_usd=cost)
+            return RunResult(outcome="pushed", summary=stream.last_text or "Done.", cost_usd=cost)
         finally:
             if persisted:
                 self._prune_chat_sessions()
@@ -284,7 +249,7 @@ class EphemeralPiRunner:
             env.pop(key, None)
         env["HOME"] = env.get("HOME", str(Path.home()))
         env["TMPDIR"] = str(tmp_dir)
-        return env
+        return strip_secrets(env)
 
     @staticmethod
     def _terminate(proc: asyncio.subprocess.Process, sig: signal.Signals = signal.SIGTERM) -> None:

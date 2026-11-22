@@ -26,13 +26,6 @@ ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
 }
 
 
-def make_adapter(cfg: WatchedAgentConfig, state: JarvisState, adapter_cls: type[BaseAgentAdapter]) -> BaseAgentAdapter:
-    """Builds an adapter; the brain's token is its own, so it never borrows another client's key."""
-    return adapter_cls(cfg, state)
-
-
-
-
 class AgentOrchestrator:
     """Manages all coding agent watchers and routes user verbal decisions back to the right agent."""
 
@@ -67,7 +60,7 @@ class AgentOrchestrator:
             if adapter_cls is None:
                 logger.warning(f"Agent {cfg.id!r} has unknown type {cfg.type!r}; skipped.")
                 continue
-            self.adapters[cfg.id] = make_adapter(cfg, self.state, adapter_cls)
+            self.adapters[cfg.id] = adapter_cls(cfg, self.state)
 
         default = settings.default_coding_agent
         if default and default not in self.adapters:

@@ -15,6 +15,7 @@ from loguru import logger
 from jarvis_core.soul import load_soul
 from jarvis_voice.agent_adapter import WatchedAgentConfig
 from jarvis_voice.agent_tools import agent_tool_handlers, agent_tools
+from jarvis_voice.brain_client import BrainClientAdapter
 from jarvis_voice.config import WHISPER_MODELS, settings
 from jarvis_voice.executive_filter import ExecutiveFilter
 from jarvis_voice.feedback import FeedbackLog
@@ -22,7 +23,7 @@ from jarvis_voice.memory import create_memory_service
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.pi_adapter import PiAdapter, install_extension
 from jarvis_voice.prompts import AGENT_REPORT_PROMPT, LANGUAGES, greeting_prompt, system_prompt
-from jarvis_voice.sessions import CodingSessionAdapter
+from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
 from jarvis_voice.state import JarvisState
 from jarvis_voice.system_prompts import load_overrides
 from jarvis_voice.t3_adapter import current_thread, recent_threads
@@ -33,7 +34,10 @@ async def pick_connection(orchestrator: AgentOrchestrator, target: str) -> dict[
     t3 = orchestrator.t3
     if t3 is not None and (target == "t3" or target == t3.config.id):
         return await pick_thread(orchestrator)
-    if target in ("t3", "brain") and "brain" in orchestrator.adapters:
+    brain = orchestrator.adapters.get("brain")
+    if isinstance(brain, BrainClientAdapter) and target in ("t3", "brain", "claude", "opencode"):
+        # The brain owns the T3 threads and the named clients, so its picker serves every one of them.
+        brain.runner = "t3" if target in ("t3", "brain") else target
         return await pick_session(orchestrator, "brain")
     return await pick_session(orchestrator, target)
 
@@ -79,8 +83,13 @@ async def pick_session(orchestrator: AgentOrchestrator, agent_id: str) -> dict[s
     if not sessions:
         sys.exit("No Pi window is open with Jarvis's extension. Open pi in the project, then run this again."
                  if agent_id == "pi" else f"No {name} sessions to continue.")
-    labels = [f"{Path(s.cwd).name}: {s.title}  ({_when(s.updated_at)})" for s in sessions]
-    session = sessions[choose(f"Your recent {name} sessions", labels, "Session to continue")]
+    picked = _thread_for_this_folder(sessions)
+    if picked is not None:
+        session = sessions[picked]
+        logger.info(f"[{adapter.config.id}] this folder's thread: {session.title} ({session.cwd})")
+    else:
+        labels = [f"{Path(s.cwd).name}: {s.title}  ({_when(s.updated_at)})" for s in sessions]
+        session = sessions[choose(f"Your recent {name} sessions", labels, "Session to continue")]
     if not await adapter.pick_session(session, connected=True):
         sys.exit(f"Could not connect to that {name} session; it is busy or gone. Try again.")
     orchestrator.adapters[adapter.config.id] = adapter
@@ -95,6 +104,22 @@ def _when(moment: str | float | None) -> str:
         return ""
     when = datetime.fromisoformat(moment) if isinstance(moment, str) else datetime.fromtimestamp(moment)
     return when.astimezone().strftime("%b %d %H:%M")
+
+
+def _thread_for_this_folder(sessions: list[AgentSession]) -> int | None:
+    """A T3 project script names its folder and nothing else: take the first thread there, no keyboard prompt."""
+    root = os.environ.get("T3CODE_PROJECT_ROOT") or os.environ.get("T3CODE_WORKTREE_PATH")
+    if not root:
+        return None
+    wanted = Path(root).expanduser().resolve()
+    return next(
+        (
+            index
+            for index, session in enumerate(sessions)
+            if session.cwd and Path(session.cwd).expanduser().resolve() == wanted
+        ),
+        None,
+    )
 
 
 def choose(heading: str, labels: list[str], question: str) -> int:

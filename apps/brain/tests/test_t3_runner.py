@@ -114,6 +114,62 @@ async def test_t3_resolution_idle_bound_and_launch(tmp_path: Path, monkeypatch: 
         db.close()
 
 
+class _ScriptedT3(_FakeT3):
+    """Fakes T3's socket: records every command, and the test publishes the run's events."""
+
+    async def _ensure_connected(self) -> bool:
+        return True
+
+    async def _command(self, thread_id: str, command: dict[str, Any]) -> bool:
+        self.calls.append((str(command.get("type")), command))
+        return True
+
+
+async def test_run_sends_a_new_threads_task_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A launched thread already carries the task as its first message; dispatching it again runs it twice."""
+    cfg = _cfg(tmp_path)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    monkeypatch.setattr(
+        "brain.runners.t3.t3_defaults",
+        lambda: {"defaultModelSelection": {"providerInstanceId": "p", "model": "m"},
+                 "defaultRuntimeMode": "auto"},
+    )
+    events: list[dict[str, Any]] = []
+
+    async def emit(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    async def finish(runner: _ScriptedT3, request: RunRequest) -> RunResult:
+        running = asyncio.create_task(runner.run(request, emit))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if any(state.listeners for state in runner._threads.values()):
+                break
+        for state in runner._threads.values():
+            state.publish({"event": "turn.completed", "run_id": None, "text": "Pushed the fix."})
+        return await asyncio.wait_for(running, timeout=5)
+
+    try:
+        runner = _ScriptedT3(cfg, db)
+        cwd = cfg.projects_dir / "app"
+        result = await finish(runner, RunRequest(run_id="r1", prompt="Fix the navbar", session="new", cwd=cwd))
+        assert result.outcome == "pushed" and result.summary == "Pushed the fix."
+        assert [kind for kind, _ in runner.calls if kind == "message.dispatch"] == []
+        launch = next(payload for kind, payload in runner.calls if kind == "orchestration.launchThread")
+        assert launch["initialMessage"]["text"].endswith("Fix the navbar")
+        assert any(event.get("event") == "session.switched" for event in events)
+
+        # An existing thread gets the task by dispatch, exactly once.
+        runner.calls.clear()
+        await finish(runner, RunRequest(run_id="r2", prompt="Run the tests", cwd=cwd))
+        dispatched = [payload for kind, payload in runner.calls if kind == "message.dispatch"]
+        assert [payload["text"] for payload in dispatched] == ["Run the tests"]
+    finally:
+        db.close()
+
+
 async def test_router_dispatches_a_question_to_the_one_shot_runner(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     db = BrainDB(cfg.db_path, cfg.allowed_repo_set)

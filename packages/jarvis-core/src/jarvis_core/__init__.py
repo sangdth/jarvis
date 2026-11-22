@@ -16,14 +16,16 @@ from jarvis_core.home import (
     shared_dir,
     workspace_root,
 )
-from jarvis_core.net import advertised_hosts, public_host
+from jarvis_core.net import advertised_hosts
 from jarvis_core.projects import is_listed_project, list_projects, projects_dir, resolve_project
 from jarvis_core.questions import describe_fields, form_answer, is_approval, question_fields
 from jarvis_core.sessions import AgentSession, match_sessions
 from jarvis_core.settings import EnvSettings
 from jarvis_core.soul import DEFAULT_PROJECTS_DIR, SOUL_PATH, Soul, load_soul, parse_soul, render_soul
+from jarvis_core.t3 import ACTIVE_STATUSES, current_thread, find_project, recent_threads, t3_defaults
 
 __all__ = [
+    "ACTIVE_STATUSES",
     "AgentSession",
     "BRAIN_TOKEN_PATH",
     "DEFAULT_PROJECTS_DIR",
@@ -39,9 +41,10 @@ __all__ = [
     "brain_home",
     "brain_token",
     "advertised_hosts",
-    "public_host",
+    "current_thread",
     "describe_fields",
     "env_file_value",
+    "find_project",
     "form_answer",
     "git_version",
     "hash_secret",
@@ -54,9 +57,11 @@ __all__ = [
     "parse_soul",
     "projects_dir",
     "question_fields",
+    "recent_threads",
     "render_soul",
     "resolve_home",
     "resolve_project",
     "shared_dir",
+    "t3_defaults",
     "workspace_root",
 ]

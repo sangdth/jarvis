@@ -12,7 +12,6 @@ import asyncio
 import os
 from typing import Any
 
-import httpx
 from loguru import logger
 
 from jarvis_core.home import brain_home, brain_token, shared_dir
@@ -32,24 +31,6 @@ def prepare_environment() -> None:
     os.environ.setdefault("BRAIN_HOME", str(brain_home()))
     os.environ.setdefault("BRAIN_API_KEY", brain_token())
     shared_dir(brain_home())
-
-
-def brain_url() -> str:
-    """Where the server listens, for a client: loopback when bound to a wildcard address."""
-    from brain.config import settings
-
-    return settings.endpoint_url
-
-
-async def listening(url: str) -> bool | None:
-    """True when a Jarvis answers there, False when nothing does, None when one refuses our token."""
-    token = os.environ.get("BRAIN_API_KEY", "")
-    try:
-        async with httpx.AsyncClient(timeout=1.5) as client:
-            resp = await client.get(f"{url}/v1/status", headers={"Authorization": f"Bearer {token}"})
-    except httpx.HTTPError:
-        return False
-    return True if resp.status_code == 200 else None
 
 
 async def start_all(

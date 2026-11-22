@@ -246,6 +246,11 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             if not await agent.new_session(cwd):
                 return refused()
             return {"status": "session_ready", "session": "new", "project": Path(cwd or agent.cwd).name}
+        if not session and getattr(agent, "_fresh", False):
+            # A staged "new session" survives the next turn naming a project, instead of picking an old thread.
+            if cwd and cwd != agent.cwd and not await agent.new_session(cwd):
+                return refused()
+            return {"status": "session_ready", "project": Path(cwd or agent.cwd).name}
         if not session and cwd == agent.cwd and (agent.session_id or getattr(agent, "_fresh", False)):
             return {"status": "session_ready"}  # already working there
         try:

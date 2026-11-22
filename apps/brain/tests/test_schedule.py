@@ -37,6 +37,22 @@ def test_leap_day_schedule_is_found() -> None:
     assert nxt.isoformat() == "2028-02-29T00:00:00+00:00"
 
 
+def test_fall_back_repeats_an_hour_without_firing_in_the_past() -> None:
+    """On 2026-11-01 Los Angeles repeats 01:00; a run time must never land before the moment asked from."""
+    after = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)  # 01:00 PST, the second pass
+    nxt = schedule.next_occurrence("30 1 * * *", "America/Los_Angeles", after=after)
+    assert schedule.parse_utc(schedule.iso_utc(nxt)) > after
+    assert nxt.isoformat() == "2026-11-01T01:30:00-08:00"
+
+
+def test_spring_forward_skips_the_missing_hour() -> None:
+    """On 2026-03-08 Los Angeles has no 02:30; the next occurrence is the following day, not the past."""
+    after = datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc)  # 01:00 PST, before the jump
+    nxt = schedule.next_occurrence("30 2 * * *", "America/Los_Angeles", after=after)
+    assert schedule.parse_utc(schedule.iso_utc(nxt)) > after
+    assert nxt.isoformat() == "2026-03-09T02:30:00-07:00"
+
+
 def test_duration_words() -> None:
     assert schedule.parse_duration("30") == timedelta(minutes=30)
     assert schedule.parse_duration("2h30m") == timedelta(hours=2, minutes=30)

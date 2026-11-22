@@ -11,18 +11,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from brain.db import AttemptRow, BrainDB, SkillRow
+from brain.memory import FORBIDDEN_PATTERNS
 
 ProposalAction = Literal["create", "update", "append", "retire"]
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_FORBIDDEN_SKILL_PATTERNS = (
-    re.compile(r"BRAIN_RPC_SOCK", re.IGNORECASE),
-    re.compile(r"\bstate\.db\b", re.IGNORECASE),
-    re.compile(r"\b(?:curl|wget|nc|netcat)\s+https?://", re.IGNORECASE),
-    re.compile(r"\bbase64\s+(?:-d|--decode)\b", re.IGNORECASE),
-    re.compile(r"\bgit\s+push\s+.*--force\b", re.IGNORECASE),
-    re.compile(r"\brm\s+-[a-z]*r[a-z]*f\s+\/(?:\s|$)", re.IGNORECASE),
-)
 
 
 @dataclass(frozen=True)
@@ -111,7 +104,7 @@ def validate_skill_proposal(
         raise ValueError("Skill body_markdown exceeds 150-line limit.")
 
     rendered = render_skill_markdown(slug, desc, body)
-    for pat in _FORBIDDEN_SKILL_PATTERNS:
+    for pat in FORBIDDEN_PATTERNS:
         if pat.search(rendered):
             raise ValueError(f"Skill content rejected by safety guardrail ({pat.pattern}).")
 
