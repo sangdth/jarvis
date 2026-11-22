@@ -145,7 +145,8 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
     async def test_the_client_script_comes_with_this_servers_url_and_token(self) -> None:
         # The laptop fetches it with curl, so this is a plain HTTP GET, not a WebSocket.
         script = await asyncio.to_thread(self._fetch, f"/client.py?token={self.TOKEN}")
-        url = f"ws://{self.transport.public_host()}:{self.port}/ws?token={self.TOKEN}"
+        # The address is the one the laptop used, so a LAN IP or a Tailscale name works without mDNS.
+        url = f"ws://127.0.0.1:{self.port}/ws?token={self.TOKEN}"
         self.assertIn(f'DEFAULT_URL = "{url}"', script)
         self.assertNotIn(remote_audio.CLIENT_URL_PLACEHOLDER, script)
         for dependency in ("numpy", "soxr", "websockets", "pyobjc-framework-AVFoundation"):
@@ -153,6 +154,12 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
         # The laptop gets no Jarvis and no Pipecat: the script stands alone.
         for heavy in ("import jarvis", "import pipecat", "mlx", "torch"):
             self.assertNotIn(heavy, script)
+
+    async def test_a_wildcard_fetch_bakes_in_the_advertised_name(self) -> None:
+        # The logged command names the Bonjour name; a request that reaches us as `0.0.0.0` must not bake that in.
+        self.assertNotIn("0.0.0.0", self.transport.client_script("0.0.0.0"))
+        self.assertIn(f"ws://{self.transport.public_host()}:{self.port}/ws", self.transport.client_script("0.0.0.0"))
+        self.assertIn(f"ws://192.168.1.20:{self.port}/ws", self.transport.client_script("192.168.1.20"))
 
     def _fetch(self, path: str) -> str:
         import urllib.request

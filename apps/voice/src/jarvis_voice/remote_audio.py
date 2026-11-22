@@ -328,7 +328,7 @@ class RemoteVoiceTransport(BaseTransport):
         if not self._authorized(request):
             logger.warning(f"Relay: refused {request.remote or '?'} for the client script (bad token).")
             return web.Response(status=401, text="Jarvis relay: the token does not match this Mac's.\n")
-        body = self.client_script()
+        body = self.client_script(request.url.host)
         return web.Response(
             text=body,
             content_type="text/x-python",
@@ -372,12 +372,20 @@ class RemoteVoiceTransport(BaseTransport):
                 "Mac (System Settings > Privacy & Security > Microphone), then restart it."
             )
 
-    def client_script(self) -> str:
-        """The thin client, with this Mac's address and token filled in so the laptop needs no arguments."""
-        url = f"ws://{self.public_host()}:{self.port}/ws?token={self.token}"
+    def client_script(self, fetched_from: str | None = None) -> str:
+        """
+        The thin client, with this Mac's address and token filled in so the laptop needs no arguments.
+
+        `fetched_from` is the host the laptop used to download it, so a fetch over a LAN IP or a Tailscale name bakes
+        in exactly that address; the advertised Bonjour name is only the fallback for the logged command.
+        """
+        host = self.public_host(fetched_from)
+        url = f"ws://{host}:{self.port}/ws?token={self.token}"
         return CLIENT_SCRIPT.read_text(encoding="utf-8").replace(CLIENT_URL_PLACEHOLDER, f'DEFAULT_URL = "{url}"')
 
-    def public_host(self) -> str:
+    def public_host(self, override: str | None = None) -> str:
+        if override and override not in ("0.0.0.0", "::", "[::]"):
+            return override
         hosts = advertised_hosts()
         return hosts[0] if hosts else "127.0.0.1"
 

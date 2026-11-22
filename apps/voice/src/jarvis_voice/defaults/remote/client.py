@@ -12,7 +12,7 @@ own voice coming out of these speakers, and so talking over it or saying "shut u
 
 Get it from the Mac running Jarvis (`jarvis remote` prints the command, which fills in this file's server URL):
 
-    curl -fsSL 'http://<mac-mini>:47210/client.py?token=<token>' -o /tmp/jarvis-remote.py
+    curl -fsSL 'http://<mac-mini>:8643/client.py?token=<token>' -o /tmp/jarvis-remote.py
     uv run /tmp/jarvis-remote.py
 
 Only uv (https://docs.astral.sh/uv/) is needed here: it fetches the four small packages above into a cache, not a
