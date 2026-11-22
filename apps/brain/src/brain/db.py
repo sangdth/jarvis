@@ -1057,6 +1057,20 @@ class BrainDB:
         assert row is not None
         return self._row_to_outbox(row)
 
+    def list_outbox(self, limit: int = 200) -> list[OutboxRow]:
+        """Queued approvals first, then newest: the order the cockpit draws."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM outbox
+                ORDER BY CASE WHEN kind = 'approval_request' AND status = 'queued' THEN 0 ELSE 1 END ASC,
+                         created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [self._row_to_outbox(r) for r in rows]
+
     def drain_digest(self) -> tuple[list[OutboxRow], OutboxRow | None]:
         """Marks queued non-approval items as spoken and returns them plus the oldest pending approval."""
         with self._lock, self._conn:

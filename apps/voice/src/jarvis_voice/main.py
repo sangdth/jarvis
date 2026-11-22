@@ -109,8 +109,21 @@ def choose(heading: str, labels: list[str], question: str) -> int:
     return int(choice) - 1
 
 
-async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = False, remote: bool = False) -> None:
-    """Assemble and run the full Pipecat voice pipeline + background coding agent watchers."""
+async def run_pipecat_harness(
+    connect: str | None = None,
+    *,
+    meeting: bool = False,
+    remote: bool = False,
+    relay: Any = None,
+    status: dict[str, Any] | None = None,
+) -> None:
+    """Assemble and run the full Pipecat voice pipeline + background coding agent watchers.
+
+    `relay` is the already-built `RemoteVoiceTransport` when the shared Jarvis server owns its routes; without it,
+    `remote=True` builds one and listens on its own (the voice without the brain). `status`, when given, is kept
+    up to date for the server's `/v1/status` answer.
+    """
+    live = status if status is not None else {}
     from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -212,14 +225,16 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     thread = await pick_connection(orchestrator, connect) if connect else None
 
     # 1. Mic and speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
-    # voice so the user can talk over it on speakers. With `jarvis remote` they belong to another Mac, and the
+    # voice so the user can talk over it on speakers. With remote audio they belong to another Mac, and the
     # canceller runs there instead: it has to sit where the speaker does.
-    relay: Any = None  # RemoteVoiceTransport, with `jarvis remote`; kept typed as Any so its import stays lazy
+    relay_is_standalone = False
     if remote:
-        from jarvis_voice.remote_audio import make_transport
+        if relay is None:
+            from jarvis_voice.remote_audio import make_transport
 
-        relay = make_transport(settings.remote_port)
-        await relay.start_server()
+            relay = make_transport()
+            await relay.start_server()
+            relay_is_standalone = True
         transport: BaseTransport = relay
     else:
         transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
@@ -390,15 +405,17 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
 
     # Start background coding agent watchers (Claude Code, OpenCode)
     await orchestrator.start_all()
+    live["state"] = "listening"
     logger.info("Jarvis is listening (no wake word required). Say 'Shut up' to mute to beep-only mode.")
 
     runner = PipelineRunner()
     try:
         await runner.run(task)
     finally:
+        live["state"] = "stopped"
         await orchestrator.stop_all()
         await executive_filter.aclose()
         if cleaner is not None:
             await cleaner.aclose()
-        if relay is not None:
+        if relay is not None and relay_is_standalone:
             await relay.stop_server()

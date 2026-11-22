@@ -1,21 +1,30 @@
 .env
 .venv/
 __pycache__/
-# A dev checkout keeps its own Jarvis state here (`uv run jarvis`); the installed one uses ~/.config/jarvis
+
+# Runtime state, secrets, logs, models, and databases live locally and are never committed
 /agents.json
 /SOUL.md
 /SYSTEM.md
 /owner_voice.npy
 /models/
 /memory/
-# The brain's state in a dev checkout (board, worktrees, sessions, skills)
+/speakers/
 /brain/
+/logs/
 /clips/
 /screen/
 /voice_data/
 /feedback/
 /remote_token
 /brain_token
+/jarvis.lock
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
 # Rust build output (the cockpit and any crate added later; the workspace builds into /target/)
 /target/
 **/target/

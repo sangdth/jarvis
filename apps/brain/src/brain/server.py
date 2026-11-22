@@ -5,9 +5,10 @@ import hmac
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -23,6 +24,7 @@ from brain.telemetry import (
     TelemetryHub,
     preview,
 )
+from jarvis_core.home import JARVIS_HOME, REPO_ROOT, git_version
 
 _AUTONOMOUS_RE = re.compile(
     r"\b(switch\s+to\s+autonomous|start\s+(?:the\s+)?night\s+(?:mode|run)|autonomous\s+mode)\b",
@@ -64,7 +66,9 @@ class RunRecord:
 
 class BrainServer:
     """
-    Serves the 5-endpoint `HermesAdapter` HTTP/SSE contract plus `POST /v1/ask` for iPhone Shortcuts.
+    The one Jarvis network surface: the brain's HTTP/SSE contract, the thin client's mic and speaker routes, the
+    cockpit's telemetry, and the small operator API a probe or a script needs (`/health`, `/v1/status`, `/v1/board`,
+    `/v1/tasks`, `/v1/mode`, `/v1/restart`). Everything except `/health` needs the shared token.
     """
 
     def __init__(
@@ -73,6 +77,10 @@ class BrainServer:
         reconciler: Reconciler,
         cfg: Settings = settings,
         hub: TelemetryHub | None = None,
+        *,
+        voice_snapshot: Callable[[], dict[str, Any]] | None = None,
+        extra_routes: list[web.RouteDef] | None = None,
+        started_at: float | None = None,
     ) -> None:
         self.db = db
         self.reconciler = reconciler
@@ -80,9 +88,20 @@ class BrainServer:
         self.hub = hub if hub is not None else reconciler.hub
         self.runs: dict[str, RunRecord] = {}
         self._pi_sessions: dict[str, str] = {}
+        self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
+        self._started_at = started_at if started_at is not None else time.time()
         self.app = web.Application(middlewares=[self._auth_middleware])
         self.app.add_routes(
             [
+                web.get("/health", self.handle_health),
+                web.get("/v1/status", self.handle_status),
+                web.get("/v1/board", self.handle_board),
+                web.get("/v1/tasks", self.handle_list_tasks),
+                web.post("/v1/tasks", self.handle_add_task),
+                web.post("/v1/tasks/{task_id}/research", self.handle_research),
+                web.post("/v1/mode", self.handle_mode),
+                web.post("/v1/skills/improve", self.handle_improve),
+                web.post("/v1/restart", self.handle_restart),
                 web.post("/v1/runs", self.handle_create_run),
                 web.get("/v1/runs/{run_id}", self.handle_get_run),
                 web.get("/v1/runs/{run_id}/events", self.handle_stream_events),
@@ -92,8 +111,17 @@ class BrainServer:
                 web.get("/v1/telemetry/events", self.handle_telemetry_events),
                 web.get("/v1/telemetry/snapshot", self.handle_telemetry_snapshot),
                 web.post("/v1/outbox/{outbox_id}/resolve", self.handle_outbox_resolve),
+                *(extra_routes or []),
             ]
         )
+
+    @staticmethod
+    def request_token(request: web.Request) -> str:
+        """The shared token, from `Authorization: Bearer`, `?token=`, or `X-Jarvis-Token` (all clients work)."""
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth.removeprefix("Bearer ").strip()
+        return (request.query.get("token") or request.headers.get("X-Jarvis-Token") or "").strip()
 
     @web.middleware
     async def _auth_middleware(
@@ -101,10 +129,10 @@ class BrainServer:
         request: web.Request,
         handler: Any,
     ) -> web.StreamResponse:
+        if request.path == "/health":
+            return await handler(request)  # the liveness probe: no secret, and no state
         expected = self.cfg.brain_api_key.strip()
-        auth = request.headers.get("Authorization", "")
-        token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-        if not expected or not hmac.compare_digest(token, expected):
+        if not expected or not hmac.compare_digest(self.request_token(request), expected):
             return web.json_response({"error": "Unauthorized"}, status=401)
         return await handler(request)
 
@@ -136,6 +164,211 @@ class BrainServer:
         while len(self._pi_sessions) > max_entries:
             oldest_key = next(iter(self._pi_sessions))
             self._pi_sessions.pop(oldest_key, None)
+
+    @staticmethod
+    def async_json(data: Any) -> web.Response:
+        return web.json_response(data)
+
+    def _task_dict(self, t: Any) -> dict[str, Any]:
+        return {
+            "id": t.id,
+            "parent_id": t.parent_id,
+            "kind": t.kind,
+            "repo": t.repo,
+            "title": t.title,
+            "spec": t.spec,
+            "metric_target": t.metric_target,
+            "verify_cmd": t.verify_cmd,
+            "status": t.status,
+            "priority": t.priority,
+            "strike_count": t.strike_count,
+            "child_strategy": t.child_strategy,
+            "best_metric": t.best_metric,
+            "best_branch": t.best_branch,
+            "best_sha": t.best_sha,
+            "lease_until": t.lease_until,
+            "created_at": t.created_at,
+            "updated_at": t.updated_at,
+        }
+
+    def _attempt_dict(self, a: Any) -> dict[str, Any]:
+        return {
+            "id": a.id,
+            "task_id": a.task_id,
+            "role": a.role,
+            "pi_session_id": a.pi_session_id,
+            "session_jsonl_path": a.session_jsonl_path,
+            "summary": a.summary,
+            "git_branch": a.git_branch,
+            "git_sha": a.git_sha,
+            "cost_usd": a.cost_usd,
+            "outcome": a.outcome,
+            "verify_output": a.verify_output,
+            "metric_value": a.metric_value,
+            "skills_used": list(a.skills_used),
+            "diagnostic": a.diagnostic,
+            "reflected": a.reflected,
+            "created_at": a.created_at,
+        }
+
+    def _skill_dict(self, s: Any) -> dict[str, Any]:
+        return {
+            "slug": s.slug,
+            "name": s.name,
+            "description": s.description,
+            "version": s.version,
+            "sha256": s.sha256,
+            "status": s.status,
+            "content": s.content,
+            "lesson": s.lesson,
+            "evidence_attempt_ids": list(s.evidence_attempt_ids),
+            "loads_since_update": s.loads_since_update,
+            "successes_since_update": s.successes_since_update,
+            "failures_since_update": s.failures_since_update,
+            "created_at": s.created_at,
+            "updated_at": s.updated_at,
+        }
+
+    def _outbox_dict(self, o: Any) -> dict[str, Any]:
+        try:
+            details = json.loads(o.details_json or "{}")
+        except ValueError:
+            details = {}
+        return {
+            "id": o.id,
+            "kind": o.kind,
+            "task_id": o.task_id,
+            "resume_session_id": o.resume_session_id,
+            "summary_spoken": o.summary_spoken,
+            "details": details,
+            "status": o.status,
+            "created_at": o.created_at,
+        }
+
+    def status_payload(self) -> dict[str, Any]:
+        """Everything a probe, `jarvis status`, or a phone needs: version, uptime, mode, spend, counts, voice."""
+        st = self.db.get_state()
+        tasks = self.db.list_tasks()
+        skills = self.db.list_skills(status="active")
+        outbox = self.db.list_outbox()
+        return {
+            "ok": True,
+            "version": git_version(),
+            "repo": str(REPO_ROOT),
+            "home": str(JARVIS_HOME),
+            "pid": os.getpid(),
+            "uptime_s": round(time.time() - self._started_at, 1),
+            "mode": st.mode,
+            "spent_today_usd": round(st.spent_today_usd, 4),
+            "daily_budget_usd": st.daily_budget_usd,
+            "budget_remaining_usd": round(st.budget_remaining_usd, 4),
+            "tasks": len(tasks),
+            "tasks_ready": sum(1 for t in tasks if t.status == "ready"),
+            "tasks_running": sum(1 for t in tasks if t.status == "in_progress"),
+            "skills_active": len(skills),
+            "approvals_waiting": sum(1 for o in outbox if o.kind == "approval_request" and o.status == "queued"),
+            "telemetry_seq": self.hub.sequence,
+            "voice": self._voice_snapshot(),
+        }
+
+    async def handle_health(self, request: web.Request) -> web.Response:
+        """Unauthenticated liveness probe: is a Jarvis answering here, and which build?"""
+        return web.json_response(
+            {
+                "ok": True,
+                "service": "jarvis",
+                "version": git_version(),
+                "pid": os.getpid(),
+                "uptime_s": round(time.time() - self._started_at, 1),
+            }
+        )
+
+    async def handle_status(self, request: web.Request) -> web.Response:
+        return web.json_response(self.status_payload())
+
+    async def handle_board(self, request: web.Request) -> web.Response:
+        """The full board snapshot in one body: what a remote cockpit draws, with no direct SQLite access."""
+        st = self.db.get_state()
+        return web.json_response(
+            {
+                "state": {
+                    "mode": st.mode,
+                    "daily_budget_usd": st.daily_budget_usd,
+                    "spent_today_usd": st.spent_today_usd,
+                    "spend_date": st.spend_date,
+                    "last_good_sha": st.last_good_sha,
+                    "upgrade_runs": st.upgrade_runs,
+                    "upgrade_failures": st.upgrade_failures,
+                },
+                "tasks": [self._task_dict(t) for t in self.db.list_tasks()],
+                "attempts": [self._attempt_dict(a) for a in self.db.list_attempts()],
+                "skills": [self._skill_dict(s) for s in self.db.list_skills(status=None)],
+                "outbox": [self._outbox_dict(o) for o in self.db.list_outbox()],
+            }
+        )
+
+    async def handle_list_tasks(self, request: web.Request) -> web.Response:
+        raw = (request.query.get("status") or "").strip()
+        valid = {"draft", "ready", "in_progress", "done", "blocked"}
+        if raw and raw not in valid:
+            return web.json_response({"error": f"status must be one of {sorted(valid)}"}, status=400)
+        tasks = self.db.list_tasks(status=raw) if raw else self.db.list_tasks()  # type: ignore[arg-type]
+        return web.json_response({"tasks": [self._task_dict(t) for t in tasks]})
+
+    async def handle_add_task(self, request: web.Request) -> web.Response:
+        """Queue a goal or a problem from a script or a phone, the same call `jarvis add` makes."""
+        body = await self._read_json_dict(request)
+        kind = str(body.get("kind") or "goal").strip().lower()
+        if kind not in ("goal", "problem"):
+            return web.json_response({"error": "kind must be goal or problem"}, status=400)
+        try:
+            task = self.db.upsert_task(
+                task_id=(str(body.get("id")).strip() or None) if body.get("id") else None,
+                kind=kind,  # type: ignore[arg-type]
+                repo=str(body.get("repo") or "jarvis"),
+                title=str(body.get("title") or "").strip(),
+                spec=str(body.get("spec") or "").strip(),
+                metric_target=body.get("metric"),
+                verify_cmd=body.get("verify"),
+                priority=int(body.get("priority") or 50),
+                ready=True if body.get("ready") else None,
+            )
+        except (ValueError, KeyError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"task": self._task_dict(task)})
+
+    async def handle_research(self, request: web.Request) -> web.Response:
+        task_id = request.match_info["task_id"]
+        res = await self.reconciler.run_auto_research(task_id)
+        return web.json_response(
+            {
+                "outcome": res.outcome,
+                "summary": res.summary,
+                "hypotheses": list(res.upserted_task_ids or []),
+            }
+        )
+
+    async def handle_mode(self, request: web.Request) -> web.Response:
+        body = await self._read_json_dict(request)
+        mode = str(body.get("mode") or "").upper()
+        if mode not in ("ASSIST", "AUTONOMOUS"):
+            return web.json_response({"error": "mode must be ASSIST or AUTONOMOUS"}, status=400)
+        st = self.db.set_mode(mode)  # type: ignore[arg-type]
+        return web.json_response({"ok": True, "mode": st.mode, "budget_remaining_usd": round(st.budget_remaining_usd, 4)})
+
+    async def handle_improve(self, request: web.Request) -> web.Response:
+        res = await self.reconciler.run_skill_improver()
+        return web.json_response(
+            {"outcome": res.outcome, "summary": res.summary, "modified": list(res.modified_skills or [])}
+        )
+
+    async def handle_restart(self, request: web.Request) -> web.Response:
+        """Restart the whole daemon (voice included) on the current checkout; launchd brings it back."""
+        if self.reconciler.on_restart_requested is None:
+            return web.json_response({"error": "no restart hook: this Jarvis is not supervised"}, status=409)
+        self.reconciler.restart_pending = True
+        self._schedule_restart_if_pending()
+        return web.json_response({"ok": True, "restarting": True})
 
     async def handle_create_run(self, request: web.Request) -> web.Response:
         body = await self._read_json_dict(request)
@@ -270,7 +503,11 @@ class BrainServer:
         """Approves or rejects a queued outbox item directly from the dashboard."""
         outbox_id = request.match_info["outbox_id"]
         body = await self._read_json_dict(request)
-        approved = bool(body.get("approved"))
+        # The cockpit sends `{"approved": true}`; scripts and the OpenAPI contract send `{"action": "approve"}`.
+        if "approved" in body:
+            approved = bool(body.get("approved"))
+        else:
+            approved = str(body.get("action") or "").lower() in ("approve", "approved", "once", "yes")
         row = self.db.resolve_approval(outbox_id, approved)
         if row is None:
             return web.json_response({"error": "Outbox item not found"}, status=404)

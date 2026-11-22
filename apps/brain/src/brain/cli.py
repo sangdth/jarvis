@@ -20,14 +20,15 @@ from brain.reconciler import Reconciler
 from brain.server import BrainServer
 from brain.telemetry import TelemetryHub
 from brain.upgrade import LAUNCHD_LABEL, run_upgrade
+from jarvis_core.home import JARVIS_HOME
 
 # `jarvis top` opens the cockpit; it lives in the root CLI so one command finds it for every app.
 
 
-def build_launchd_plist() -> str:
-    uv_bin = Path(sys.executable).absolute()
+def build_launchd_plist(serve_args: list[str] | None = None) -> str:
+    """The LaunchAgent that runs this checkout itself: `.venv`'s Python, `-m jarvis.cli serve`, in the repo."""
     repo_root = settings.self_repo_dir
-    log_dir = settings.home_dir / "logs"
+    log_dir = JARVIS_HOME / "logs"
     log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     home = Path.home()
     launch_path = ":".join(
@@ -41,6 +42,9 @@ def build_launchd_plist() -> str:
             "/sbin",
         ]
     )
+    python = repo_root / ".venv" / "bin" / "python"
+    program = str(python if python.is_file() else Path(sys.executable).absolute())
+    args = "\n".join(f"        <string>{a}</string>" for a in ["-m", "jarvis.cli", "serve", *(serve_args or [])])
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -49,10 +53,8 @@ def build_launchd_plist() -> str:
     <string>{LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{uv_bin}</string>
-        <string>-m</string>
-        <string>jarvis.cli</string>
-        <string>serve</string>
+        <string>{program}</string>
+{args}
     </array>
     <key>WorkingDirectory</key>
     <string>{repo_root}</string>
@@ -68,9 +70,9 @@ def build_launchd_plist() -> str:
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{log_dir / "brain.out.log"}</string>
+    <string>{log_dir / "jarvis.out.log"}</string>
     <key>StandardErrorPath</key>
-    <string>{log_dir / "brain.err.log"}</string>
+    <string>{log_dir / "jarvis.err.log"}</string>
 </dict>
 </plist>
 """
@@ -140,10 +142,15 @@ def _rollback_if_last_good() -> None:
 
 
 @asynccontextmanager
-async def running(*, on_restart: Callable[[], None] | None = None) -> AsyncIterator[BrainServer]:
+async def running(
+    *,
+    on_restart: Callable[[], None] | None = None,
+    extra_routes: list[web.RouteDef] | None = None,
+    voice_snapshot: Callable[[], dict] | None = None,
+) -> AsyncIterator[BrainServer]:
     """
-    The daemon as a context manager: board, reconciler and HTTP/SSE server in this process and loop.
-    `jarvis serve` waits on it for launchd; `jarvis` runs it alongside the voice harness.
+    The daemon as a context manager: board, reconciler and the one HTTP/SSE/WS server in this process and loop.
+    `jarvis serve` waits on it for launchd; `jarvis` runs the voice harness alongside it.
     """
     if not settings.brain_api_key.strip():
         raise ValueError(
@@ -157,7 +164,14 @@ async def running(*, on_restart: Callable[[], None] | None = None) -> AsyncItera
     )
     hub = TelemetryHub()
     reconciler = Reconciler(db, settings, on_restart_requested=on_restart, hub=hub)
-    server = BrainServer(db, reconciler, settings, hub=hub)
+    server = BrainServer(
+        db,
+        reconciler,
+        settings,
+        hub=hub,
+        voice_snapshot=voice_snapshot,
+        extra_routes=extra_routes,
+    )
     runner = web.AppRunner(server.app)
     await runner.setup()
     site = web.TCPSite(runner, host=settings.brain_host, port=settings.brain_port)
@@ -169,7 +183,7 @@ async def running(*, on_restart: Callable[[], None] | None = None) -> AsyncItera
         raise
     reconciler.start()
     logger.info(
-        f"Brain listening on {settings.endpoint_url} "
+        f"Jarvis server listening on {settings.endpoint_url} "
         f"(mode={db.get_state().mode}, home={settings.home_dir}, allowed_repos={sorted(settings.allowed_repo_set)})"
     )
     try:
@@ -195,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="brain")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("serve", help="Run the Brain HTTP/SSE server and reconciler loop")
+    sub.add_parser("serve", help="Run the HTTP/SSE/WS gateway and the reconciler without the voice")
     sub.add_parser("status", help="Show system state, tasks, and active personal skills")
     sub.add_parser("improve", help="Run the self-improving skill reflection loop on recent attempts")
     sub.add_parser("self-check", help="Run smoke canary verification on this checkout")
@@ -214,8 +228,9 @@ def main(argv: list[str] | None = None) -> int:
     add_p.add_argument("--priority", type=int, default=50)
     add_p.add_argument("--ready", action="store_true")
 
-    launchd_p = sub.add_parser("launchd", help="Print or install the macOS LaunchAgent plist")
+    launchd_p = sub.add_parser("launchd", help="Print or install the macOS LaunchAgent for this checkout")
     launchd_p.add_argument("--install", action="store_true")
+    launchd_p.add_argument("--remote", action="store_true", help="Serve another Mac's mic and speaker (thin client)")
 
     upgrade_p = sub.add_parser(
         "upgrade",
@@ -243,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.cmd == "launchd":
-        plist_text = build_launchd_plist()
+        plist_text = build_launchd_plist(["--remote"] if args.remote else [])
         if args.install:
             target = Path(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist").expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)

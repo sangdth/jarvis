@@ -15,7 +15,7 @@ class InitTest(unittest.TestCase):
             home = Path(tmp) / "shared"
             path = home / "SOUL.md"
             answers = iter(["warm, playful", "Sang", tmp, "", "n"])
-            with patch.object(init, "SHARED_HOME", home), patch.object(init, "SOUL_PATH", path), \
+            with patch.object(init, "SOUL_PATH", path), \
                     patch("builtins.input", lambda _: next(answers)), patch("jarvis_voice.enroll.main") as enroll, \
                     patch("builtins.print"), patch.object(init, "copy_config", return_value=[]), \
                     patch.object(init, "setup_brain", return_value=[]), \
@@ -24,14 +24,12 @@ class InitTest(unittest.TestCase):
             enroll.assert_not_called()
             self.assertEqual(load_soul(path).projects_dir, tmp)
             self.assertIn("warm, playful", load_soul(path).personality)
-            self.assertEqual(home.stat().st_mode & 0o777, 0o700)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_init_copies_the_defaults_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
-            with patch.object(init, "SHARED_HOME", home):
-                self.assertEqual(sorted(p.name for p in init.copy_config(home)), [".env", "agents.json"])
+            self.assertEqual(sorted(p.name for p in init.copy_config(home)), [".env", "agents.json"])
             self.assertEqual(home.stat().st_mode & 0o777, 0o700)
             self.assertIn("OPENROUTER_API_KEY=", (home / ".env").read_text())
             self.assertIn('"t3-code"', (home / "agents.json").read_text())

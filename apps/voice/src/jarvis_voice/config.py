@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import field_validator, model_validator
 
-from jarvis_core.home import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, install_info  # noqa: F401 (re-exported)
+from jarvis_core.home import JARVIS_HOME
 from jarvis_core.settings import EnvSettings
 
 # The Whisper model for each LANGUAGE, unless WHISPER_MODEL names one. For vi: VinAI's PhoWhisper-large with a
@@ -46,14 +46,16 @@ class Settings(EnvSettings):
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
     # `jarvis remote`: the mic and speaker are on another Mac, which runs `defaults/remote/client.py`; the models,
-    # agents and memory stay here. The port is on the LAN, so every connection needs the shared token: this one, or
-    # the one kept in JARVIS_HOME/remote_token (made on first use).
-    remote_port: int = 47210
+    # agents and memory stay here. Its two routes live on the one Jarvis HTTP app, so the port is the brain's
+    # (`BRAIN_PORT`) and the token is the brain token, unless `REMOTE_PORT` / `REMOTE_TOKEN` pin something else.
+    remote_port: int = 0  # 0 = the same port as the HTTP/SSE/WS gateway (`BRAIN_PORT`)
     remote_token: str = ""
 
-    # The brain (Brain, this repository's `apps/brain`): `jarvis` starts it in-process when nothing
-    # answers on this URL, so goals and long-horizon work always have somewhere to go.
-    brain_url: str = "http://127.0.0.1:8643"
+    # The brain (this repository's `apps/brain`): the always-on daemon `jarvis` supervises, with the voice in
+    # the same process. Its HTTP/SSE/WS gateway is the only network surface Jarvis exposes.
+    brain_host: str = "0.0.0.0"
+    brain_port: int = 8643
+    brain_url: str = ""
     # Its bearer token; empty = the one in JARVIS_HOME/brain_token, made on first use
     brain_api_key: str = ""
 
@@ -98,6 +100,15 @@ class Settings(EnvSettings):
     def _whisper_for_language(self) -> "Settings":
         self.whisper_model = self.whisper_model or WHISPER_MODELS[self.language]
         return self
+
+    @property
+    def connect_host(self) -> str:
+        """Loopback when bound to a wildcard address, otherwise the configured host."""
+        return "127.0.0.1" if self.brain_host in ("", "0.0.0.0", "::") else self.brain_host
+
+    @property
+    def endpoint(self) -> str:
+        return self.brain_url.rstrip("/") or f"http://{self.connect_host}:{self.brain_port}"
 
 
 settings = Settings()

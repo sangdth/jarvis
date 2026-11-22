@@ -9,13 +9,17 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 
 ## Commands
 
-- Production: `curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh` (`site/install.sh`: uv, then
-  `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis upgrade` upgrades it (`update` also works),
-  `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
-  Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
-  in), `jarvis connect claude|opencode|pi` (continue a session of that client; for Pi, an open window), `jarvis meeting` (sit in a call; `--meeting` after `connect`), `jarvis remote` (the mic and speaker of another Mac, every model here), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
-  (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
-  (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
+- Production is a checkout, not a package: `curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh`
+  (`site/install.sh`: uv, clone into `~/Projects/jarvis`, `uv sync`, a thin `~/.local/bin/jarvis` shim into that
+  `.venv`, then `jarvis init`). The checkout *is* the runtime: an edit plus `jarvis restart` is live, and so is
+  `git pull` plus `jarvis restart`. `jarvis --version` names the running branch and commit (`+dirty` when edited).
+  Commands: `jarvis` (listen here), `jarvis serve [--remote|--meeting|--connect X]` (the same, spelled out),
+  `jarvis start|stop|restart|logs` (the 24/7 launchd service on this checkout), `jarvis remote` (another Mac's mic
+  and speaker), `jarvis meeting` (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
+  project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve`
+  (HTTP calls to the running server, `--url` for another machine), `jarvis top`, `jarvis init`, `jarvis enroll`.
+  One listens at a time (`hold_lock`, `~/.config/jarvis/jarvis.lock`, which stays machine-wide so two checkouts
+  cannot share one mic).
 - Needs: nothing extra for the brain (it runs with `jarvis`); OpenCode 2's own service (found in
   `~/.local/state/opencode/service.json`), or `opencode serve` pinned with `OPENCODE_SERVER_PASSWORD`; a separate
   Hermes its gateway service (`hermes gateway status`, `API_SERVER_ENABLED=true`); T3 Code the T3 app running.
@@ -36,9 +40,9 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 | `apps/voice/src/jarvis_voice/` | the voice layer (`jarvis-voice`): ear, speech check, executive model, agent watchers |
 | `apps/brain/src/brain/` | the brain (`brain`): board, reconciler, `pi` workers, HTTP/SSE server |
 | `apps/tui/` | the cockpit (`jarvis-top`, Rust + Ratatui) |
-| `packages/jarvis-core/` | what all three share: `JARVIS_HOME`, the `.env` settings base, the brain token, `SOUL.md` |
-| `src/jarvis/` | the `jarvis` command: dispatch, `init`, `upgrade`, `top`, and the supervisor that runs the brain with the voice |
-| `schemas/` | cross-language contracts (the brain's HTTP/SSE API, see `schemas/README.md`) |
+| `packages/jarvis-core/` | what all three share: `REPO_ROOT`/`JARVIS_HOME`, the `.env` settings base, the tokens, `SOUL.md` |
+| `src/jarvis/` | the `jarvis` command: dispatch, `init`, `top`, the launchd service, and the supervisor that runs the stack |
+| `schemas/` | cross-language contracts (the gateway's HTTP/SSE/WS API, see `schemas/README.md`) |
 
 Each language keeps its native workspace (`pyproject.toml` + `uv.lock`, `Cargo.toml` + `Cargo.lock`, and
 `pnpm-workspace.yaml`/`go.work` when a React client or a Go service arrives). `justfile` is the one task runner,
@@ -100,12 +104,18 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   prompt runs `scripts/bench_routing.py` before and after; it exits 1 below 95%.
 - **Thin layer.** Jarvis never does an agent's job: no email, calendar or coding logic here. A new kind of
   work is a new `role` (or a new agent in `agents.json`), not new code in Jarvis.
-- **The brain runs with the voice, one per machine.** `src/jarvis/supervisor.py` probes `BRAIN_URL` (default
-  `127.0.0.1:8643`) with the shared token and either attaches to the `launchd` daemon or starts `brain.cli`
-  in-process for as long as `jarvis` listens, so overnight work is never restarted by a voice restart. Both share
-  one state home: `JARVIS_HOME/brain` (board, worktrees, sessions, skills) and `JARVIS_HOME/brain_token` (0600).
-  The brain's `allowed_repo_set` always includes `jarvis` and `brain`, both of which mean this checkout. The
-  `hermes` agent type still exists for a separate Hermes Agent, on its own `HERMES_API_KEY`.
+- **The checkout is the runtime; one gateway is the surface.** `src/jarvis/supervisor.py` runs the brain and the
+  voice in one process on this checkout (no wheel, no `uv tool`), and `jarvis restart` is the only update step.
+  Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`), built by
+  `BrainServer`: the brain's API, the cockpit's telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`,
+  `/v1/mode`, `/v1/restart`, and the thin client's `/ws` + `/client.py`. Every route but `/health` needs the shared
+  token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`). A client on another machine needs no `jarvis`
+  install: `jarvis health --url http://<mac-mini>:8643`. Both share one state home, `JARVIS_HOME` (this checkout
+  unless set, and gitignored): `.env`, `agents.json`, `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the
+  relay token (`remote_token`), the brain's state in `brain/` (board, worktrees, sessions, traces, skills, notes,
+  `state.db`), and the token the three apps share (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env`
+  wins over it). The brain's `allowed_repo_set` always includes `jarvis` and `brain`, both of which mean this
+  checkout. The `hermes` agent type still exists for a separate Hermes Agent, on its own `HERMES_API_KEY`.
 - **The brain decides its own approvals.** Its planner defers to the owner for anything protected (`outbox`
   `approval_request`, read out by the voice and answered with `answer_agent`).
 - **Every coding client shares one session contract; T3 Code is the first-class one.** T3 Code, Claude Code,

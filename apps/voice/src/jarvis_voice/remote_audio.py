@@ -1,44 +1,38 @@
 """
-`jarvis remote`: Jarvis runs here, the mic and speaker are on another Mac.
+The thin client's mic and speaker, on the same HTTP server as everything else.
 
-The heavy half (Whisper, the speech check, the agents, the models, memory) stays on this machine. The other Mac
-runs one small script (`defaults/remote/client.py`) that captures its mic through macOS voice processing and plays
-what comes back, so barge-in and "shut up" still work: the echo canceller has to sit where the speaker is.
+Jarvis runs here; the heavy half (Whisper, the speech check, the agents, the models, memory) never leaves this
+Mac. Another Mac (or this one) runs one small script (`defaults/remote/client.py`) that captures its mic through
+macOS voice processing and plays what comes back, so barge-in and "shut up" still work: the echo canceller has to
+sit where the speaker is.
 
-Wire: one WebSocket per listening Jarvis, 16-bit mono PCM at `SAMPLE_RATE` both ways. Audio frames are binary;
-control is JSON (`hello`, `flush`). The token is a shared secret kept in `JARVIS_HOME/remote_token` (0600) and
-required on every connection: with `MASTER_CHECK` off any voice may talk to Jarvis, and the port is on the LAN.
+Wire: `GET /client.py` serves that script; `GET /ws?token=...` is one WebSocket per listening Jarvis with 16-bit
+mono PCM at `SAMPLE_RATE` both ways. Audio frames are binary; control is JSON (`hello`, `flush`). The routes are
+registered on the one Jarvis HTTP app (`BrainServer`), so a thin client needs one host, one port and one token.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import secrets
 import socket
-from email.utils import formatdate
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs
+from typing import Any, Protocol
 
+from aiohttp import WSMsgType, web
 from loguru import logger
 from pipecat.frames.frames import InputAudioRawFrame, InterruptionFrame, OutputAudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
-from websockets.asyncio.server import Server, ServerConnection, serve
-from websockets.datastructures import Headers
-from websockets.exceptions import ConnectionClosed
-from websockets.http11 import Response
 
-from jarvis_voice.config import JARVIS_HOME, settings
+from jarvis_core.home import brain_token
+from jarvis_voice.config import settings
 from jarvis_voice.voice_engine import PLAY_AHEAD_SECS
 
 SAMPLE_RATE = 16000  # 16-bit mono both ways, the rate the pipeline runs at; the client resamples to it
-PORT = 47210  # also in `jarvis remote`'s logs and the printed client command
-TOKEN_PATH = JARVIS_HOME / "remote_token"
 CLIENT_SCRIPT = Path(__file__).parent / "defaults" / "remote" / "client.py"
 # Mic audio waiting for the pipeline, in 20 ms blocks: past a second behind, the oldest goes rather than lag.
 MIC_QUEUE_BLOCKS = 50
@@ -51,15 +45,19 @@ SILENT_CLIENT_SECS = 3.0
 CLIENT_URL_PLACEHOLDER = 'DEFAULT_URL = ""'
 
 
+class RelaySocket(Protocol):
+    """What `RelayHub` needs from a connected client, so a test can stand in for one."""
+
+    async def send_bytes(self, data: bytes) -> None: ...
+
+    async def send_text(self, data: str) -> None: ...
+
+
 def relay_token() -> str:
-    """The shared secret for relay clients: `REMOTE_TOKEN` if set, else one kept in `JARVIS_HOME/remote_token`."""
+    """The token for relay clients: the one shared gateway token (`remote_token` / `REMOTE_TOKEN` can override)."""
     if settings.remote_token:
         return settings.remote_token
-    if not TOKEN_PATH.exists():
-        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_PATH.write_text(secrets.token_urlsafe(24))
-        os.chmod(TOKEN_PATH, 0o600)
-    return TOKEN_PATH.read_text().strip()
+    return settings.brain_api_key or brain_token()
 
 
 def advertised_hosts() -> list[str]:
@@ -75,19 +73,44 @@ def advertised_hosts() -> list[str]:
     return list(dict.fromkeys(hosts))
 
 
+def remote_command(hosts: list[str], token: str, port: int) -> str:
+    """What to paste on the other Mac: fetch the client from here and run it. Only uv is needed there."""
+    host = hosts[0] if hosts else "127.0.0.1"
+    return (
+        f"curl -fsSL 'http://{host}:{port}/client.py?token={token}' -o /tmp/jarvis-remote.py"
+        f" && uv run /tmp/jarvis-remote.py"
+    )
+
+
+class _HttpRelaySocket:
+    """Adapts one aiohttp WebSocket to what `RelayHub` and `send_audio` speak."""
+
+    def __init__(self, ws: web.WebSocketResponse) -> None:
+        self.ws = ws
+        self.remote = "?"
+
+    async def send_bytes(self, data: bytes) -> None:
+        await self.ws.send_bytes(data)
+
+    async def send_text(self, data: str) -> None:
+        await self.ws.send_str(data)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        await self.ws.close(code=code, message=reason.encode())
+
+
 class RelayHub:
     """One relay client at a time, and the frames between it and the pipeline."""
 
-    def __init__(self, token: str = "", port: int = PORT) -> None:
-        self.token, self.port = token, port  # only to print the command to reconnect
-        self.client: ServerConnection | None = None
+    def __init__(self) -> None:
+        self.client: RelaySocket | None = None
         self.connected = asyncio.Event()
         self.mic_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MIC_QUEUE_BLOCKS)
         self._send_lock = asyncio.Lock()
         self.dropped_mic = 0
         self.received = 0  # bytes of mic audio from the current client, to notice a silent one
 
-    def attach(self, ws: ServerConnection) -> bool:
+    def attach(self, ws: RelaySocket) -> bool:
         """Take the client, unless another Mac is already the mic; False means refuse it."""
         if self.client is not None:
             return False
@@ -97,7 +120,7 @@ class RelayHub:
         logger.info("Relay client connected: hearing its mic and speaking into its speakers.")
         return True
 
-    def detach(self, ws: ServerConnection) -> None:
+    def detach(self, ws: RelaySocket) -> None:
         if self.client is not ws:
             return  # a refused or replaced client, not the one in use
         self.client = None
@@ -105,8 +128,12 @@ class RelayHub:
         self.connected.clear()
         logger.info(
             "Relay client disconnected. "
-            f"To listen from another Mac again: {remote_command(advertised_hosts(), self.token, self.port)}"
+            f"To listen from another Mac again: {self.reconnect_hint()}"
         )
+
+    def reconnect_hint(self) -> str:
+        """The line to paste, filled in at print time since the port is only known once it listens."""
+        return self._hint
 
     def _drain_mic(self) -> None:
         while not self.mic_queue.empty():
@@ -126,8 +153,8 @@ class RelayHub:
         if client is not None and pcm:
             try:
                 async with self._send_lock:  # one sender at a time: a flush must not land inside a frame
-                    await asyncio.wait_for(client.send(pcm), SEND_TIMEOUT_SECS)
-            except ConnectionClosed:
+                    await asyncio.wait_for(client.send_bytes(pcm), SEND_TIMEOUT_SECS)
+            except (ConnectionError, RuntimeError):
                 pass  # detach() logs it; the pipeline keeps running and drops frames until a client returns
             except TimeoutError:
                 logger.warning("Relay: the client stopped reading audio; dropping it until it reconnects.")
@@ -141,14 +168,16 @@ class RelayHub:
             return
         try:
             async with self._send_lock:
-                await asyncio.wait_for(client.send(json.dumps({"type": "flush"})), SEND_TIMEOUT_SECS)
-        except ConnectionClosed:
+                await asyncio.wait_for(client.send_text(json.dumps({"type": "flush"})), SEND_TIMEOUT_SECS)
+        except (ConnectionError, RuntimeError):
             pass
         except TimeoutError:
             self.detach(client)
 
     async def wait_for_client(self) -> None:
         await self.connected.wait()
+
+    _hint = ""
 
 
 class RemoteVoiceInputTransport(BaseInputTransport):
@@ -209,34 +238,66 @@ class RemoteVoiceOutputTransport(BaseOutputTransport):
 
 
 class RemoteVoiceTransport(BaseTransport):
-    """The pipeline's audio, on another Mac: this side keeps every model and every agent."""
+    """
+    The pipeline's audio, on another Mac: this side keeps every model and every agent.
 
-    def __init__(self, params: TransportParams, *, port: int = PORT, token: str | None = None) -> None:
+    The two routes (`/ws` and `/client.py`) are registered on the one Jarvis HTTP app; `web_app()` builds a
+    standalone app for the voice-only case and the tests.
+    """
+
+    def __init__(
+        self,
+        params: TransportParams,
+        *,
+        token: str | None = None,
+        hub: RelayHub | None = None,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> None:
         super().__init__()
         self._params = params
         self.token = relay_token() if token is None else token
-        self.port = port
-        self.hub = RelayHub(self.token, port)
-        self._server: Server | None = None
+        self.host = host or settings.brain_host
+        self.port = settings.brain_port if port is None else port
+        self.hub = hub or RelayHub()
+        self.hub._hint = remote_command(advertised_hosts(), self.token, self.port)
+        self._runner: web.AppRunner | None = None
         self._input: RemoteVoiceInputTransport | None = None
         self._output: RemoteVoiceOutputTransport | None = None
 
+    def routes(self) -> list[web.RouteDef]:
+        """The relay's two routes, to register on the shared Jarvis app."""
+        return [web.get("/client.py", self.handle_client_script), web.get("/ws", self.handle_ws)]
+
+    def web_app(self) -> web.Application:
+        app = web.Application()
+        app.add_routes(self.routes())
+        return app
+
     async def start_server(self) -> None:
-        """Listen for the client; it may connect before, during or after the pipeline's own startup."""
-        self._server = await serve(
-            self._handle, "0.0.0.0", self.port, process_request=self._process_request, max_size=1 << 20
-        )
-        self.port = self._server.sockets[0].getsockname()[1]
-        self.hub.port = self.port  # the printed command must name the port actually used
-        command = remote_command(advertised_hosts(), self.token, self.port)
-        logger.info(f"Relay listening on port {self.port}: the mic and speaker of another Mac reach this Jarvis only.")
-        logger.info(f"On that Mac (needs only uv, https://docs.astral.sh/uv/):\n  {command}")
+        """Listen on its own (the voice without the brain, and the tests). Attaching to the shared app skips this."""
+        self._runner = web.AppRunner(self.web_app())
+        await self._runner.setup()
+        site = web.TCPSite(self._runner, host=self.host, port=self.port)
+        await site.start()
+        sockets = getattr(site._server, "sockets", None)
+        if sockets:
+            self.port = sockets[0].getsockname()[1]
+        self.hub._hint = remote_command(advertised_hosts(), self.token, self.port)
+        logger.info(f"Relay listening on {self.host}:{self.port}: the mic and speaker of another Mac reach this Jarvis.")
+        logger.info(f"On that Mac (needs only uv, https://docs.astral.sh/uv/):\n  {self.hub.reconnect_hint()}")
 
     async def stop_server(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        if self._runner is not None:
+            await self._runner.cleanup()
+            self._runner = None
+
+    def announce(self) -> None:
+        """Log the command to paste, once the shared app knows the real port."""
+        logger.info(
+            f"Relay on {self.public_host()}:{self.port}: the mic and speaker of another Mac reach this Jarvis."
+        )
+        logger.info(f"On that Mac (needs only uv, https://docs.astral.sh/uv/):\n  {self.hub.reconnect_hint()}")
 
     async def wait_for_client(self) -> None:
         await self.hub.wait_for_client()
@@ -251,79 +312,82 @@ class RemoteVoiceTransport(BaseTransport):
             self._output = RemoteVoiceOutputTransport(self.hub, self._params)
         return self._output
 
-    def _process_request(self, connection: ServerConnection, request: Any) -> Response | None:
-        """Serve the client script and refuse a connection without this Mac's token; both are behind the token."""
-        path, _, query = request.path.partition("?")
-        if not secrets.compare_digest(parse_qs(query).get("token", [""])[0], self.token):
-            logger.warning(f"Relay: refused a connection from {connection.remote_address[0]} (bad token).")
-            return connection.respond(401, "Jarvis relay: the token does not match this Mac's.\n")
-        if path == "/client.py":
-            return self._script_response()
-        if path == "/ws":
-            return None  # the WebSocket the client speaks on
-        return connection.respond(404, "Jarvis relay: /client.py and /ws, nothing else.\n")
+    @staticmethod
+    def _token_from(request: web.Request) -> str:
+        """The token, from `Authorization: Bearer` or `?token=`, so a browser and an iOS Shortcut both work."""
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth.removeprefix("Bearer ").strip()
+        return (request.query.get("token") or request.headers.get("X-Jarvis-Token") or "").strip()
 
-    def _script_response(self) -> Response:
-        """The client script as a plain HTTP file (the laptop curls it), not a WebSocket."""
-        body = self.client_script().encode()
-        headers = Headers(
-            [
-                ("Date", formatdate(usegmt=True)),
-                ("Connection", "close"),
-                ("Content-Length", str(len(body))),
-                ("Content-Type", "text/x-python; charset=utf-8"),
-            ]
+    def _authorized(self, request: web.Request) -> bool:
+        return secrets.compare_digest(self._token_from(request), self.token)
+
+    async def handle_client_script(self, request: web.Request) -> web.Response:
+        """The thin client, as a plain HTTP file (the laptop curls it), never as a WebSocket."""
+        if not self._authorized(request):
+            logger.warning(f"Relay: refused {request.remote or '?'} for the client script (bad token).")
+            return web.Response(status=401, text="Jarvis relay: the token does not match this Mac's.\n")
+        body = self.client_script()
+        return web.Response(
+            text=body,
+            content_type="text/x-python",
+            charset="utf-8",
+            headers={"Cache-Control": "no-store", "Content-Disposition": 'inline; filename="jarvis-remote.py"'},
         )
-        return Response(200, "OK", headers, body)
 
-    def client_script(self) -> str:
-        """The thin client, with this Mac's address and token filled in so the laptop needs no arguments."""
-        url = f"ws://{self.public_host()}:{self.port}/ws?token={self.token}"
-        return CLIENT_SCRIPT.read_text().replace(CLIENT_URL_PLACEHOLDER, f'DEFAULT_URL = "{url}"')
-
-    def public_host(self) -> str:
-        hosts = advertised_hosts()
-        return hosts[0] if hosts else "127.0.0.1"
-
-    async def _handle(self, ws: ServerConnection) -> None:
-        if not self.hub.attach(ws):
-            await ws.close(code=1013, reason="another Mac is already this Jarvis's mic")
-            return
+    async def handle_ws(self, request: web.Request) -> web.StreamResponse:
+        """One WebSocket per listening Jarvis: binary audio down, binary audio up, JSON control both ways."""
+        if not self._authorized(request):
+            logger.warning(f"Relay: refused a connection from {request.remote} (bad token).")
+            return web.Response(status=401, text="Jarvis relay: the token does not match this Mac's.\n")
+        ws = web.WebSocketResponse(max_msg_size=1 << 20)
+        await ws.prepare(request)
+        sock = _HttpRelaySocket(ws)
+        sock.remote = request.remote or "?"
+        if not self.hub.attach(sock):
+            await ws.close(code=1013, message=b"another Mac is already this Jarvis's mic")
+            return ws
         self.hub.received = 0
-        silence_check = asyncio.create_task(self._warn_if_silent(ws))
+        silence_check = asyncio.create_task(self._warn_if_silent(sock))
         try:
-            await ws.send(json.dumps({"type": "hello", "rate": SAMPLE_RATE}))
+            await ws.send_str(json.dumps({"type": "hello", "rate": SAMPLE_RATE}))
             async for message in ws:
-                if isinstance(message, bytes):
-                    self.hub.push_mic(message)
-        except ConnectionClosed:
-            pass
+                if message.type == WSMsgType.BINARY:
+                    self.hub.push_mic(message.data)
+                elif message.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.ERROR):
+                    break
         finally:
             silence_check.cancel()
-            self.hub.detach(ws)
+            self.hub.detach(sock)
+        return ws
 
-    async def _warn_if_silent(self, ws: ServerConnection) -> None:
+    async def _warn_if_silent(self, sock: RelaySocket) -> None:
         # Like the local mic's SILENT_MIC_WARNING: a connected client with no Microphone permission sends zeros,
         # or nothing at all, so this is a timer on the first block, not a check of the sound.
         await asyncio.sleep(SILENT_CLIENT_SECS)
-        if self.hub.client is ws and self.hub.received == 0:
+        if self.hub.client is sock and self.hub.received == 0:
             logger.error(
                 "The relay client is connected but its mic sent nothing: allow Microphone for the terminal on that "
                 "Mac (System Settings > Privacy & Security > Microphone), then restart it."
             )
 
+    def client_script(self) -> str:
+        """The thin client, with this Mac's address and token filled in so the laptop needs no arguments."""
+        url = f"ws://{self.public_host()}:{self.port}/ws?token={self.token}"
+        return CLIENT_SCRIPT.read_text(encoding="utf-8").replace(CLIENT_URL_PLACEHOLDER, f'DEFAULT_URL = "{url}"')
 
-def remote_command(hosts: list[str], token: str, port: int = PORT) -> str:
-    """What to paste on the other Mac: fetch the client from here and run it. Only uv is needed there."""
-    host = hosts[0] if hosts else "127.0.0.1"
-    return (
-        f"curl -fsSL 'http://{host}:{port}/client.py?token={token}' -o /tmp/jarvis-remote.py"
-        f" && uv run /tmp/jarvis-remote.py"
-    )
+    def public_host(self) -> str:
+        hosts = advertised_hosts()
+        return hosts[0] if hosts else "127.0.0.1"
 
 
-def make_transport(port: int = PORT) -> RemoteVoiceTransport:
+def make_transport(*, port: int | None = None, token: str | None = None) -> RemoteVoiceTransport:
     """The transport `jarvis remote` puts in place of the local mic and speaker."""
-    params = TransportParams(audio_in_enabled=True, audio_out_enabled=True, audio_in_sample_rate=SAMPLE_RATE,
-                             audio_out_sample_rate=SAMPLE_RATE)
-    return RemoteVoiceTransport(params, port=port)
+    params = TransportParams(
+        audio_in_enabled=True,
+        audio_out_enabled=True,
+        audio_in_sample_rate=SAMPLE_RATE,
+        audio_out_sample_rate=SAMPLE_RATE,
+    )
+    return RemoteVoiceTransport(params, port=port, token=token)

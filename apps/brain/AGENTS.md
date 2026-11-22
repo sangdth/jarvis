@@ -1,25 +1,29 @@
 # Brain
 
 An always-on goal and problem reconciler. It lives in this repository as `apps/brain` and **always runs with
-Jarvis**: `jarvis` starts it in-process on `127.0.0.1:8643` when nothing is listening there, and attaches to the
-24/7 `launchd` daemon otherwise (see `src/jarvis/supervisor.py`). It is driven from the voice harness
-(`HermesAdapter`, agent type `brain`), the cockpit (`apps/tui`), or an iPhone Shortcut over Tailscale
-(`POST /v1/ask`). Plan and history: `docs/super-brain-plan.md`, `docs/architecture.md`.
+Jarvis**: the supervisor (`src/jarvis/supervisor.py`) runs it and the voice in one process on this checkout, and its
+HTTP/SSE/WebSocket gateway on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface. It is
+driven from the voice harness (`HermesAdapter`, agent type `brain`), the cockpit (`apps/tui`), `jarvis` itself
+(`jarvis status|add|mode|...` are HTTP calls), or an iPhone Shortcut over Tailscale (`POST /v1/ask`). Plan and
+history: `docs/super-brain-plan.md`, `docs/architecture.md`.
 
 ## Commands
 
 Run from the repository root. `jarvis …` is the documented surface; `uv run python -m brain.cli …` is the same code.
 
-- Install / sync: `uv sync`
-- Run the daemon: `jarvis serve` (what the LaunchAgent starts) — or simply `jarvis`, which starts it with the voice
-- Check status / tasks: `jarvis status`
+- Install / sync: `uv sync` (the only build step; the checkout is what runs)
+- Run the whole stack: `jarvis` (this terminal) or `jarvis start` (launchd, 24/7)
+- Restart after an edit: `jarvis restart`
+- The server alone, no voice: `uv run python -m brain.cli serve` (what the LaunchAgent used to start)
+- Check status / tasks: `jarvis status`, `jarvis tasks`
 - Add or update a task: `jarvis add --repo <repo> --kind goal|problem --title "..." --spec "..."`
+- Switch mode: `jarvis mode ASSIST|AUTONOMOUS`
 - SoL-Pi auto-research fan-out: `jarvis research <task_id>`
 - Self-improving skill reflection: `jarvis improve`
-- `launchd` plist: `jarvis launchd` (`--install` writes `com.sangdth.jarvis`)
-- Update the checkout and restart the daemon: `jarvis upgrade` (`--check`, `--stash`, `--no-restart`, `--fetch`)
+- `launchd` plist: `jarvis launchd` (`--install` writes it; `jarvis start` does both)
+- Update the checkout and restart: `git pull` then `jarvis restart` (`brain upgrade --check` reports git state)
 - Cockpit: `jarvis top` (Rust, `apps/tui`; build once with `cargo build --release --workspace`)
-- Lint & types: `uv run ruff check apps packages tests` and `uv run mypy` (whole repo, one config)
+- Lint & types: `uv run ruff check src apps packages tests` and `uv run mypy` (whole repo, one config)
 - Tests: `uv run pytest` (this app's suite is `apps/brain/tests`); cockpit: `cargo test --workspace`
   and `cargo clippy --workspace --all-targets -- -D warnings`
 
@@ -103,10 +107,15 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
 - **`pi` tool flag rule:** Passing `-t` sets `allowedToolNames` for both built-in and extension tools, so each
   role passes a single `-t` allowlist that explicitly includes its `board.ts` tool names (`upsert_task`,
   `record_note`, `defer_for_approval`).
-- **The voice's protocol, served here (`server.py`):** `POST /v1/runs`, `GET /v1/runs/{id}`,
-  `GET /v1/runs/{id}/events`, `POST /v1/runs/{id}/approval` and `POST /v1/runs/{id}/stop` with Bearer auth
-  (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` ->
-  `{"spoken": "..."}`) for the iPhone Shortcut over Tailscale. The contract is `schemas/openapi.json`; keep it in step.
+- **The gateway, served here (`server.py`):** one aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default
+  `0.0.0.0:8643`). `POST /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events`,
+  `POST /v1/runs/{id}/approval` and `POST /v1/runs/{id}/stop` with Bearer auth (`BRAIN_API_KEY`, else
+  `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` -> `{"spoken": "..."}`) for the iPhone
+  Shortcut over Tailscale; the operator routes `/v1/status`, `/v1/board`, `GET|POST /v1/tasks`,
+  `/v1/tasks/{id}/research`, `/v1/mode`, `/v1/skills/improve`, `/v1/restart`; the cockpit's telemetry; and the thin
+  client's `/ws` + `/client.py` (registered from `jarvis_voice/remote_audio.py`). `/health` is the only route
+  without a token. Any route also accepts `?token=` or `X-Jarvis-Token`. The contract is `schemas/openapi.json`;
+  keep it in step.
 - **Fullscreen cockpit (`apps/tui` + `telemetry.py`):**
   - `TelemetryHub` is a dependency-free in-memory ring buffer (500 events) that fans out transient events
     (`http.inbound`, `run.status`, `approval.*`, `reconciler.phase`, `board.rpc`, `pi.progress`,

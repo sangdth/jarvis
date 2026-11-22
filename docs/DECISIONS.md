@@ -53,24 +53,33 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   with the daemon running attaches to that daemon (with `MASTER_CHECK` off, that means the dev voice can queue work on
   the live board); set `BRAIN_URL`/`BRAIN_PORT` on the dev side to keep them apart. A token mismatch stops Jarvis
   with a named error instead of silently starting a second daemon.
-- **One home, one `.env`, one token.** The brain's state is `JARVIS_HOME/brain` and the bearer token is
-  `JARVIS_HOME/brain_token` (0600), shared by the voice, the daemon and the cockpit; `BRAIN_API_KEY` in `.env`
-  wins over it. `jarvis init` moves a pre-merge `~/.config/superbrain` into place. Limits: until it is moved, an
-  installed Jarvis keeps using the old folder (`brain_home()` prefers it), so two paths exist for a while; the Rust
-  cockpit mirrors the same rule. Keys `HOST`/`PORT` in an old `.env` are no longer read (the defaults are
-  `127.0.0.1:8643`); the settings are `BRAIN_HOST`/`BRAIN_PORT`, so a stray `PORT=3000` exported for a web dev server
-  cannot move the daemon.
+- **The checkout is the runtime; one home, one `.env`, one token.** Nothing is packaged: `install.sh` clones the
+  repository, `uv sync`s it, and `~/.local/bin/jarvis` is a three-line shim into that checkout's `.venv`, so an
+  edit plus `jarvis restart` is live and there is no release to wait for. Limits: a checkout with uncommitted
+  edits runs those edits (that is the point), so `jarvis --version` prints `+dirty` to make it obvious; two
+  checkouts on one machine would each want the port, and the one-mic lock (`~/.config/jarvis/jarvis.lock`) stops
+  the second.
+- **One state home and one network surface.** The state is `JARVIS_HOME` (this checkout unless set, gitignored):
+  `.env`, `SOUL.md`, `agents.json`, the voiceprint, models, memory, `brain/state.db`, and the tokens
+  (`brain_token` 0600 for the apps, `remote_token` for a pinned relay). `BRAIN_API_KEY` in `.env` wins over the
+  file. `jarvis init` (and the supervisor, on first run) moves a pre-merge `~/.config/superbrain` into
+  `JARVIS_HOME/brain`. Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT`, defaulting to
+  `0.0.0.0:8643` so a laptop or phone can reach the Mac mini; every route but `/health` needs the token, and
+  `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode` and `/v1/restart` mean a client never reads SQLite or the
+  filesystem. Limits: plain HTTP on the LAN, so the token is the only guard (put both machines on Tailscale to go
+  further); a wildcard bind is reached over loopback on the same Mac, which both the Python and Rust clients
+  handle.
 - **Native workspaces, one task runner — not Bazel/Buck/Pants.** `uv` and `cargo` keep their own lockfiles, caches and
   native linking (MLX, sherpa-onnx, pyobjc, rusqlite), and `just` is the one entry point (`just test`, `just lint`,
   `just build`). Limits: there is no single cross-language dependency graph or remote cache, so a change to a shared
   schema is coordinated by the `schemas/` table and the commit, not enforced by a build tool. Revisit (moon/Nx, or
   Bazel) only if the repo grows to many apps with heavy CI fan-out.
-- **The cockpit is a binary of its own.** `cargo install --git ... --bin jarvis-top` (the installer does it when a
-  Rust toolchain is present; `jarvis upgrade` rebuilds it), and `jarvis top` looks on `PATH` and in
-  `target/{release,debug}`. Limits: no toolchain means no cockpit; the voice and the brain never depend on it, and a
-  failed cockpit build only warns.
+- **The cockpit is the one compiled artifact.** `cargo build --release --workspace` in the checkout, and
+  `jarvis top` looks on `PATH` and in `target/{release,debug}`. Limits: Python code is live as written, but a
+  cockpit change needs that build; no toolchain means no cockpit, and the voice and the brain never depend on it.
 - **`schemas/` documents contracts; the canonical files stay in their apps.** `schema.sql` stays in the Python package
-  (the daemon reads it as package data at startup) and `openapi.json` describes the server the daemon runs. Limits: the
+  (the daemon reads it as package data at startup) and `openapi.json` describes the one gateway (HTTP, SSE, and the
+  `/ws` relay). Limits: the
   Rust side queries tables by hand, so a column rename still needs a matching change in `apps/tui/src/db.rs`; a
   contract test on each side is what catches it.
 

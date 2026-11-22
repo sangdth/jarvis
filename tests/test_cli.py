@@ -1,44 +1,18 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 from jarvis import cli
 
 
-def dist(direct_url: dict | None) -> MagicMock:
-    d = MagicMock()
-    d.read_text.return_value = json.dumps(direct_url) if direct_url is not None else None
-    return d
+class VersionTest(unittest.TestCase):
+    def test_version_is_the_running_checkout(self) -> None:
+        with patch.object(cli, "git_version", return_value="master @ abc1234"):
+            self.assertEqual(cli.version(), "master @ abc1234")
 
 
-class CliTest(unittest.TestCase):
-    def test_version_of_a_git_install_names_branch_and_commit(self) -> None:
-        url = {"url": "https://github.com/sangdth/jarvis", "vcs_info": {"vcs": "git", "requested_revision": "master",
-                                                                       "commit_id": "0fbc724abcdef"}}
-        with patch("jarvis_core.home.distribution", return_value=dist(url)):
-            self.assertEqual(cli.version(), "master @ 0fbc724")
-
-    def test_version_of_a_checkout_is_dev_with_its_folder(self) -> None:
-        url = {"url": "file:///Users/me/jarvis", "dir_info": {"editable": True}}
-        with patch("jarvis_core.home.distribution", return_value=dist(url)):
-            self.assertEqual(cli.version(), "dev (/Users/me/jarvis)")
-
-    def test_upgrade_of_a_dev_checkout_fast_forwards_with_its_flags(self) -> None:
-        with patch.object(cli.sys, "argv", ["jarvis", "upgrade", "--check"]), \
-                patch.object(cli, "version", return_value="dev (/x)"), \
-                patch.object(cli, "brain") as brain:
-            cli.main()
-        brain.assert_called_once_with(["upgrade", "--check"])
-
-    def test_upgrade_of_an_installed_jarvis_upgrades_the_tool(self) -> None:
-        with patch.object(cli.sys, "argv", ["jarvis", "upgrade"]), \
-                patch.object(cli, "version", return_value="master @ abc1234"), \
-                patch.object(cli, "update_installed") as update, patch("builtins.print"):
-            cli.main()
-        update.assert_called_once_with()
-
+class LockTest(unittest.TestCase):
     def test_second_jarvis_is_stopped_by_the_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             first = cli.hold_lock(Path(tmp))
@@ -48,113 +22,133 @@ class CliTest(unittest.TestCase):
             first.close()  # released: the next one starts
             cli.hold_lock(Path(tmp)).close()
 
-    def test_dev_checkout_without_its_env_stops_before_listening(self) -> None:
+
+class ForegroundTest(unittest.TestCase):
+    def _run(self, argv: list[str]):
+        run = AsyncMock()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".env").write_text("OPENROUTER_API_KEY=sk-test\n")
+            with patch.object(cli.sys, "argv", ["jarvis", *argv]), patch.object(cli, "hold_lock"), \
+                    patch.object(cli, "JARVIS_HOME", home), \
+                    patch("jarvis.supervisor.prepare_environment"), \
+                    patch("jarvis.supervisor.start_all", new=run):
+                cli.main()
+        return run
+
+    def test_connect_names_what_to_connect_to(self) -> None:
+        for argv, target in ((["connect"], "t3"), (["connect", "pi"], "pi"),
+                             (["connect", "claude"], "claude"), (["serve", "--connect=opencode"], "opencode")):
+            self._run(argv).assert_awaited_once_with(connect=target, meeting=False, remote=False)
+
+    def test_meeting_flag_and_subcommand_enable_meeting_mode(self) -> None:
+        for argv, target in ((["meeting"], None), (["--meeting"], None), (["meeting", "connect"], "t3"),
+                             (["connect", "pi", "--meeting"], "pi")):
+            self._run(argv).assert_awaited_once_with(connect=target, meeting=True, remote=False)
+
+    def test_remote_subcommand_listens_for_a_relay_client(self) -> None:
+        self._run(["remote"]).assert_awaited_once_with(connect=None, meeting=False, remote=True)
+
+    def test_a_checkout_without_its_env_stops_before_listening(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.object(cli.sys, "argv", ["jarvis"]), \
-                patch.object(cli, "checkout_root", return_value=Path(tmp)), patch.object(cli, "JARVIS_HOME", Path(tmp)), \
-                patch.object(cli, "hold_lock") as lock, self.assertRaises(SystemExit) as stopped:
+                patch.object(cli, "JARVIS_HOME", Path(tmp)), patch.object(cli, "hold_lock") as lock, \
+                patch("jarvis.supervisor.prepare_environment"), self.assertRaises(SystemExit) as stopped:
             cli.main()
         self.assertIn("No .env", str(stopped.exception))
         lock.assert_not_called()
 
-    def test_uninstall_deletes_the_folder_then_the_command(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "jarvis"
-            home.mkdir()
-            (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-1")
-            with patch.object(cli, "version", return_value="master @ abc1234"), \
-                    patch.object(cli.shutil, "which", return_value="/bin/uv"), patch("builtins.print"), \
-                    patch("builtins.input", return_value="y"), patch.object(cli.subprocess, "run") as run:
-                run.return_value.returncode = 0
-                cli.uninstall(home)
-            self.assertFalse(home.exists())
-            run.assert_called_once_with(["/bin/uv", "tool", "uninstall", cli.PACKAGE])
-
-    def test_uninstall_keeps_everything_unless_told_yes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            with patch.object(cli, "version", return_value="master @ abc1234"), \
-                    patch.object(cli.shutil, "which", return_value="/bin/uv"), patch("builtins.print"), \
-                    patch("builtins.input", return_value=""), patch.object(cli.subprocess, "run") as run:
-                cli.uninstall(home)
-            self.assertTrue(home.exists())
-            run.assert_not_called()
-
-    def test_uninstall_refuses_while_jarvis_listens(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            listening = cli.hold_lock(Path(tmp))
-            with patch.object(cli, "version", return_value="master @ abc1234"), \
-                    patch.object(cli.shutil, "which", return_value="/bin/uv"), \
-                    patch("builtins.input") as ask, self.assertRaises(SystemExit):
-                cli.uninstall(Path(tmp))
-            ask.assert_not_called()
-            self.assertTrue(Path(tmp).exists())
-            listening.close()
-
-    def test_uninstall_from_a_checkout_keeps_the_uv_tool(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "jarvis"
-            home.mkdir()
-            with patch.object(cli, "version", return_value="dev (/x)"), patch("builtins.print"), \
-                    patch("builtins.input", return_value="y"), patch.object(cli.subprocess, "run") as run:
-                cli.uninstall(home)
-            self.assertFalse(home.exists())
-            run.assert_not_called()
-
-    @staticmethod
-    def _attached():
-        """The brain side of `jarvis`: attach to a daemon that is already up, so no token files or ports."""
-        from contextlib import asynccontextmanager
-
-        @asynccontextmanager
-        async def running():
-            yield False
-
-        return running
-
-    def _listen(self, argv: list[str]):
-        """Run `jarvis` with the voice pipeline and the brain faked; returns the pipeline mock."""
-        from contextlib import ExitStack
-        from unittest.mock import AsyncMock
-
-        run = AsyncMock()
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(cli.sys, "argv", argv))
-            stack.enter_context(patch.object(cli, "checkout_root", return_value=None))
-            stack.enter_context(patch.object(cli, "hold_lock"))
-            stack.enter_context(patch.object(cli, "prepare_brain"))
-            stack.enter_context(patch("jarvis.supervisor.brain_running", new=self._attached()))
-            stack.enter_context(patch("jarvis_voice.main.run_pipecat_harness", new=run))
-            cli.main()
-        return run
-
-    def test_connect_names_what_to_connect_to(self) -> None:
-        for argv, target in ((["jarvis"], None), (["jarvis", "connect"], "t3"), (["jarvis", "connect", "pi"], "pi"),
-                            (["jarvis", "connect", "claude"], "claude")):
-            self._listen(argv).assert_awaited_once_with(connect=target, meeting=False, remote=False)
-
-    def test_meeting_flag_and_subcommand_enable_meeting_mode(self) -> None:
-        for argv, target in (
-            (["jarvis", "meeting"], None),
-            (["jarvis", "--meeting"], None),
-            (["jarvis", "meeting", "connect"], "t3"),
-            (["jarvis", "connect", "pi", "--meeting"], "pi"),
-        ):
-            self._listen(argv).assert_awaited_once_with(connect=target, meeting=True, remote=False)
-
-    def test_remote_subcommand_listens_for_a_relay_client(self) -> None:
-        for argv, target in ((["jarvis", "remote"], None), (["jarvis", "remote", "connect"], "t3")):
-            self._listen(argv).assert_awaited_once_with(connect=target, meeting=False, remote=True)
-
     def test_remote_and_meeting_together_are_refused(self) -> None:
         with patch.object(cli.sys, "argv", ["jarvis", "remote", "meeting"]), self.assertRaises(SystemExit) as stopped:
             cli.main()
+        self.assertIn("do not go together", str(stopped.exception))
+
+
+class UsageTest(unittest.TestCase):
+    def test_help_and_unknown_commands(self) -> None:
+        with patch("builtins.print") as printed, patch.object(cli.sys, "argv", ["jarvis", "--help"]):
+            cli.main()
+        self.assertIn("usage: jarvis", printed.call_args[0][0])
+        with patch.object(cli.sys, "argv", ["jarvis", "bogus"]), self.assertRaises(SystemExit) as stopped:
+            cli.main()
         self.assertEqual(stopped.exception.code, cli.USAGE)
 
-    def test_unknown_command_prints_usage(self) -> None:
-        for argv in (["jarvis", "bogus"], ["jarvis", "connect", "claude", "extra"]):
-            with patch.object(cli.sys, "argv", argv), self.assertRaises(SystemExit) as stopped:
-                cli.main()
-            self.assertEqual(stopped.exception.code, cli.USAGE)
+
+class HttpTest(unittest.TestCase):
+    def test_status_prints_what_the_server_reports(self) -> None:
+        payload = {
+            "version": "master @ abc1234",
+            "pid": 42,
+            "uptime_s": 90.0,
+            "home": "/repo",
+            "mode": "ASSIST",
+            "spent_today_usd": 1.5,
+            "daily_budget_usd": 200.0,
+            "tasks": 3,
+            "tasks_ready": 1,
+            "tasks_running": 0,
+            "skills_active": 2,
+            "approvals_waiting": 1,
+            "voice": {"state": "listening"},
+        }
+        with patch.object(cli, "call", return_value=payload) as called, patch("builtins.print") as printed:
+            cli.dispatch(["status"])
+        called.assert_called_once_with("GET", "/v1/status", url="")
+        text = "\n".join(str(c.args[0]) for c in printed.call_args_list if c.args)
+        self.assertIn("master @ abc1234", text)
+        self.assertIn("ASSIST", text)
+        self.assertIn("listening", text)
+
+    def test_ask_posts_the_sentence_and_prints_the_answer(self) -> None:
+        with patch.object(cli, "call", return_value={"spoken": "Done."}) as called, patch("builtins.print") as printed:
+            cli.dispatch(["ask", "check", "my", "calendar"])
+        called.assert_called_once_with("POST", "/v1/ask", json={"input": "check my calendar"}, timeout=900.0)
+        printed.assert_called_once_with("Done.")
+
+    def test_a_refused_token_explains_itself(self) -> None:
+        import httpx
+
+        request = httpx.Request("GET", "http://127.0.0.1:8643/v1/status")
+        response = httpx.Response(401, json={"error": "Unauthorized"}, request=request)
+        with patch.object(cli.httpx, "Client") as client, self.assertRaises(SystemExit) as stopped:
+            client.return_value.__enter__.return_value.request.return_value = response
+            cli.call("GET", "/v1/status")
+        self.assertIn("refused the token", str(stopped.exception))
+
+
+class ServiceTest(unittest.TestCase):
+    def test_restart_writes_the_plist_and_kicks_launchd(self) -> None:
+        with patch.object(cli, "PLIST_PATH", Path("/tmp/com.sangdth.jarvis.plist")), \
+                patch.object(cli, "sync_dependencies") as sync, patch.object(cli, "write_plist") as write, \
+                patch.object(cli, "launchd_loaded", return_value=True), patch.object(cli, "launchd_kick") as kick, \
+                patch.object(cli.sys, "platform", "darwin"), patch("builtins.print"):
+            cli.service_restart(["--remote"])
+        sync.assert_called_once_with()
+        write.assert_called_once_with(["--remote"])
+        kick.assert_called_once_with()
+
+    def test_restart_keeps_the_mode_already_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plist = Path(tmp) / "p.plist"
+            plist.write_text(
+                "<array><string>/x/python</string><string>-m</string><string>jarvis.cli</string>"
+                "<string>serve</string><string>--remote</string><string>--meeting</string></array>"
+            )
+            with patch.object(cli, "PLIST_PATH", plist):
+                self.assertEqual(cli.plist_serve_args(), ["--remote", "--meeting"])
+
+    def test_a_missing_plist_starts_in_remote_mode(self) -> None:
+        with patch.object(cli, "PLIST_PATH", Path("/tmp/nope-not-here.plist")):
+            self.assertEqual(cli.plist_serve_args(), ["--remote"])
+
+    def test_launch_agent_runs_this_checkout(self) -> None:
+        from brain.cli import build_launchd_plist
+
+        plist = build_launchd_plist(["--remote"])
+        self.assertIn("-m", plist)
+        self.assertIn("jarvis.cli", plist)
+        self.assertIn("<string>serve</string>", plist)
+        self.assertIn("<string>--remote</string>", plist)
+        self.assertIn("WorkingDirectory", plist)
 
 
 if __name__ == "__main__":

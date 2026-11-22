@@ -1,11 +1,12 @@
-//! Tiny loopback HTTP client (plain HTTP on `127.0.0.1`) with an SSE reader that understands
-//! both `Content-Length` and `Transfer-Encoding: chunked` responses.
+//! Tiny loopback HTTP client (plain HTTP) with an SSE reader that understands both `Content-Length` and
+//! `Transfer-Encoding: chunked` responses.
 //!
-//! Deliberately dependency-free: the daemon is always same-host, so TLS and a full HTTP stack
-//! would only add risk to a process that must stay up for weeks.
+//! Deliberately dependency-free: the daemon is same-host, so TLS and a full HTTP stack would only add risk to a
+//! process that must stay up for weeks. The host may be a name (`mac-mini.local`) when `BRAIN_HOST` points at
+//! another machine, so addresses are resolved, not parsed.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -15,9 +16,12 @@ use crate::app::AppEvent;
 use crate::config::Config;
 
 fn socket_addr(cfg: &Config) -> Result<SocketAddr, String> {
-    cfg.endpoint()
-        .parse::<SocketAddr>()
-        .map_err(|e| format!("bad endpoint {}: {e}", cfg.endpoint()))
+    let endpoint = cfg.endpoint();
+    endpoint
+        .to_socket_addrs()
+        .map_err(|e| format!("bad endpoint {endpoint}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("bad endpoint {endpoint}: resolves to nothing"))
 }
 
 /// `POST` a JSON body to the daemon. Returns the raw response body on HTTP 200.

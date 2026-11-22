@@ -5,7 +5,7 @@ set shell := ["bash", "-c"]
 default:
     @just --list
 
-# Python and Rust dependencies, one lockfile each.
+# Python and Rust dependencies, one lockfile each. The only "build" there is: the checkout is the runtime.
 sync:
     uv sync
     cargo fetch
@@ -24,21 +24,25 @@ fmt:
     uv run ruff check --fix src apps packages tests scripts
     cargo fmt --all
 
-# The cockpit, ready for `jarvis top`.
+# The cockpit binary (Rust is the one part that compiles; Python code is live as written).
 build:
     cargo build --release --workspace
 
-top:
-    uv run jarvis top
+# Listen in this terminal with this Mac's mic and speaker.
+run:
+    uv run jarvis
 
-# The brain on its own, as the 24/7 LaunchAgent starts it.
-serve:
-    uv run jarvis serve
+# The 24/7 service on this checkout: sync if deps changed, refresh launchd, restart.
+restart:
+    uv run jarvis restart
 
 status:
     uv run jarvis status
 
-# Set up a home: .env, agents.json, SOUL.md, the brain folder and its token.
+top:
+    uv run jarvis top
+
+# Set up the state home: .env, agents.json, SOUL.md, the brain folder and its token.
 init:
     uv run jarvis init
 

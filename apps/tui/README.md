@@ -25,8 +25,8 @@ cargo build --release --workspace   # ~2.7 MB binary, no runtime deps; target/re
 jarvis top                          # finds it on PATH, or in target/{release,debug}
 ```
 
-An installed Jarvis gets it from `cargo install --git https://github.com/sangdth/jarvis --locked --bin jarvis-top`
-(the installer and `jarvis upgrade` do that when cargo is present).
+An installer or a teammate gets it with `cargo build --release --workspace` in the checkout; there is no packaged
+binary to fetch, because the checkout is the runtime.
 
 For an always-on screen, run it inside Ghostty with a Nerd Font, e.g.:
 

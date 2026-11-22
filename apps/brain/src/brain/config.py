@@ -34,9 +34,9 @@ class Settings(EnvSettings):
     )
 
     home_dir: Path = BRAIN_HOME
-    # BRAIN_HOST/BRAIN_PORT, not HOST/PORT: one .env is shared with every other app, and a stray PORT
-    # exported for a web dev server must not move the daemon.
-    brain_host: str = "127.0.0.1"
+    # Listen on all interfaces by default so thin clients on LAN / Tailscale can reach the Mac mini directly;
+    # every route (except `/health`) is guarded by constant-time token auth (`BRAIN_API_KEY` / `JARVIS_TOKEN`).
+    brain_host: str = "0.0.0.0"
     brain_port: int = 8643
     # Empty unless `.env` or the shell names one: the token `jarvis` makes in the state home, by default_factory
     brain_api_key: str = Field(default_factory=brain_token)
@@ -71,7 +71,7 @@ class Settings(EnvSettings):
     auto_research_after_strikes: int = 0
     # The whole monorepo before a self-upgrade lands: Python lint, types, tests and the canary, then Rust.
     self_upgrade_verify_cmd: str = (
-        "uv run ruff check apps packages tests && uv run mypy && uv run pytest && uv run jarvis self-check"
+        "uv run ruff check src apps packages tests && uv run mypy && uv run pytest && uv run jarvis self-check"
         " && if command -v cargo >/dev/null 2>&1; then cargo test --quiet --manifest-path apps/tui/Cargo.toml; fi"
     )
 
@@ -87,8 +87,13 @@ class Settings(EnvSettings):
         return configured
 
     @property
+    def connect_host(self) -> str:
+        """Loopback when bound to a wildcard address (`0.0.0.0` / `::`), otherwise `brain_host`."""
+        return "127.0.0.1" if self.brain_host in ("", "0.0.0.0", "::") else self.brain_host
+
+    @property
     def endpoint_url(self) -> str:
-        return f"http://{self.brain_host}:{self.brain_port}"
+        return f"http://{self.connect_host}:{self.brain_port}"
 
     @property
     def db_path(self) -> Path:

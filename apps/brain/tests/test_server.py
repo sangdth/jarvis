@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 from pathlib import Path
@@ -361,3 +362,67 @@ print(json.dumps({
         os.environ.pop("TEST_WAL_PATH", None)
         await reconciler.stop()
         db.close()
+
+
+async def test_the_gateway_probe_status_board_tasks_and_restart(tmp_path: Path) -> None:
+    """One HTTP surface: an unauthenticated liveness probe, a query-string token, and the operator routes."""
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        sandbox_enabled=False,
+    )
+    (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    restarts: list[int] = []
+    reconciler = Reconciler(db, cfg, on_restart_requested=lambda: restarts.append(1))
+    server = BrainServer(db, reconciler, cfg, voice_snapshot=lambda: {"state": "listening", "remote": True})
+
+    async with TestClient(TestServer(server.app)) as client:
+        # 1. `/health` needs no secret: a phone or a load balancer can ask if Jarvis is up.
+        health = await client.get("/health")
+        assert health.status == 200
+        assert (await health.json())["service"] == "jarvis"
+
+        # 2. Everything else is guarded, and the token may ride in the query string (browser, iOS Shortcut).
+        assert (await client.get("/v1/status")).status == 401
+        assert (await client.get("/v1/status?token=nope")).status == 401
+        status = await (await client.get("/v1/status?token=secret-token")).json()
+        assert status["ok"] is True
+        assert status["voice"]["state"] == "listening"
+        assert status["mode"] == "ASSIST"
+
+        headers = {"Authorization": "Bearer secret-token"}
+
+        # 3. Queue a task over HTTP, exactly as `jarvis add` does.
+        created = await client.post(
+            "/v1/tasks",
+            json={"kind": "problem", "repo": "jarvis", "title": "Flaky test", "spec": "Fix it", "ready": True},
+            headers=headers,
+        )
+        assert created.status == 200
+        task = (await created.json())["task"]
+        assert task["id"] == "PRB-1"
+
+        listed = await (await client.get("/v1/tasks", headers=headers)).json()
+        assert [t["id"] for t in listed["tasks"]] == ["PRB-1"]
+
+        # 4. The full board in one body, so a remote cockpit needs no SQLite access.
+        board = await (await client.get("/v1/board", headers=headers)).json()
+        assert board["tasks"][0]["id"] == "PRB-1"
+        assert "state" in board and "attempts" in board and "outbox" in board
+
+        # 5. Mode switching, and a refused value.
+        mode = await client.post("/v1/mode", json={"mode": "autonomous"}, headers=headers)
+        assert (await mode.json())["mode"] == "AUTONOMOUS"
+        assert (await client.post("/v1/mode", json={"mode": "turbo"}, headers=headers)).status == 400
+
+        # 6. Restart goes through the supervisor hook, not a raw signal.
+        restarted = await client.post("/v1/restart", headers=headers)
+        assert (await restarted.json())["restarting"] is True
+        await asyncio.sleep(0.7)  # the handler schedules it half a second out
+        assert restarts == [1]
+
+    await reconciler.stop()
+    db.close()

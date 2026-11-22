@@ -187,7 +187,7 @@ def _divergence_message(snapshot: RepoSnapshot) -> str:
         "Suggested remedy (saves your local commits to a backup branch first):\n"
         f"  git -C {snapshot.repo_dir} branch backup/{stamp} HEAD\n"
         f"  git -C {snapshot.repo_dir} rebase origin/master\n"
-        "Then re-run: uv run jarvis upgrade\n"
+        "Then re-run: jarvis restart\n"
         "(or, if the local commits are disposable: git reset --hard origin/master)"
     )
 
@@ -240,7 +240,7 @@ def restart_daemon() -> int:
     if loaded.returncode != 0:
         print(
             f"LaunchAgent {LAUNCHD_LABEL} is not loaded in {domain}; restart the daemon manually:\n"
-            f"  uv run jarvis launchd --install   # or stop the running process for KeepAlive"
+            f"  jarvis start          # or stop the running process for KeepAlive"
         )
         return 0
     kick = subprocess.run(

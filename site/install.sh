@@ -1,7 +1,14 @@
 #!/bin/sh
-# Installs the `jarvis` command: curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh
-# It installs uv (if missing), which brings its own Python, so nothing touches the Python you already have.
+# Installs Jarvis from a checkout: curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh
+#
+# There is no packaged release to wait for. The checkout *is* the runtime, so updating is `git pull` and
+# `jarvis restart`; editing a file is `jarvis restart`. It installs uv (if missing), which brings its own Python,
+# so nothing touches the Python you already have.
 set -eu
+
+REPO_URL="${JARVIS_REPO:-https://github.com/sangdth/jarvis}"
+TARGET="${JARVIS_DIR:-$HOME/Projects/jarvis}"
+BIN_DIR="$HOME/.local/bin"
 
 if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
   echo "Jarvis needs a Mac with Apple Silicon (M1 or newer)." >&2
@@ -9,30 +16,48 @@ if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-  echo "Installing uv (the tool that installs Jarvis)..."
+  echo "Installing uv (it brings the Python Jarvis runs on)..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 # uv's installer puts it here; this shell's PATH does not have it yet.
-PATH="$HOME/.local/bin:$PATH"
+PATH="$BIN_DIR:$PATH"
 
-echo "Installing Jarvis. The first install downloads a few GB and takes a few minutes..."
-uv tool install --force --python 3.12 "git+https://github.com/sangdth/jarvis@master"
-uv tool update-shell >/dev/null 2>&1 || true
+if [ -d "$TARGET/.git" ]; then
+  echo "Updating the checkout in $TARGET..."
+  git -C "$TARGET" pull --ff-only
+else
+  echo "Cloning Jarvis into $TARGET..."
+  mkdir -p "$(dirname "$TARGET")"
+  git clone "$REPO_URL" "$TARGET"
+fi
 
-# The cockpit (`jarvis top`) is Rust. Build it when a toolchain is there; never block the voice setup on it.
+echo "Installing its Python dependencies (the first run downloads a few GB and takes a few minutes)..."
+(cd "$TARGET" && uv sync)
+
+# One small shim on PATH: it runs this checkout's own `.venv`, so the code on disk is the code that runs.
+mkdir -p "$BIN_DIR"
+cat > "$BIN_DIR/jarvis" <<EOF
+#!/bin/sh
+# Jarvis lives in $TARGET. This shim runs that checkout; it is not a packaged install.
+exec "$TARGET/.venv/bin/jarvis" "\$@"
+EOF
+chmod +x "$BIN_DIR/jarvis"
+"$BIN_DIR/jarvis" --version || true
+
+# The cockpit (`jarvis top`) is the one Rust build. Build it when a toolchain is there; never block setup on it.
 if command -v cargo >/dev/null 2>&1; then
   echo "Building the cockpit (jarvis top)..."
-  cargo install --git https://github.com/sangdth/jarvis --locked --bin jarvis-top --force >/dev/null 2>&1 ||
+  (cd "$TARGET" && cargo build --release --workspace >/dev/null 2>&1) ||
     echo "The cockpit did not build; \`jarvis top\` will print what to run."
 else
-  echo "No Rust toolchain, so the cockpit is skipped: \`jarvis top\` needs \`cargo install --git https://github.com/sangdth/jarvis --bin jarvis-top\`."
+  echo "No Rust toolchain, so the cockpit is skipped: \`cargo build --release --workspace\` in $TARGET later."
 fi
 
 echo
-echo "Jarvis is installed. Setting it up now (open a new terminal later to use the jarvis command)."
+echo "Jarvis is installed in $TARGET. Setting it up now (open a new terminal later to use the jarvis command)."
 # stdin is this script when piped from curl, so the questions read from the terminal.
 if [ -r /dev/tty ]; then
-  "$(uv tool dir --bin)/jarvis" init </dev/tty
+  "$BIN_DIR/jarvis" init </dev/tty
 else
   echo "Run: jarvis init"
 fi

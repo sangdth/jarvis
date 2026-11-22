@@ -1,140 +1,115 @@
 """
-The `jarvis` command. One entry point for the three apps in this repository:
+The `jarvis` command: a thin launcher for the one process that runs this checkout.
 
-- the voice harness (`apps/voice`, package `jarvis_voice`): `jarvis`, `jarvis connect`, `jarvis meeting`,
-  `jarvis remote`, `jarvis enroll`;
-- the brain daemon (`apps/brain`, package `brain`): `jarvis serve|status|add|research|improve|launchd`;
-- the cockpit (`apps/tui`, Rust binary `jarvis-top`): `jarvis top`.
+There is no build, wheel or tool install between the code and what runs: the repository *is* the runtime. An edit
+plus `jarvis restart` is live. The CLI only starts, stops and talks to that process:
 
-Production is installed from GitHub master (`uv tool install git+...`) and updated with `jarvis upgrade`;
-a dev checkout runs its own code with `uv run jarvis`. One mic, so only one may listen at a time.
+- foreground: `jarvis` (local mic), `jarvis remote`, `jarvis meeting`, `jarvis connect [agent]`
+- as a service: `jarvis start | stop | restart | logs`
+- over HTTP: `jarvis status | health | ask | add | board | tasks | mode | research | improve`
+- once: `jarvis init | enroll | top`
+
+Everything network-shaped is one HTTP/SSE/WebSocket server on `BRAIN_PORT`, so a thin client on another machine
+needs no `jarvis` install at all (`jarvis health --url http://<mac-mini>:8643`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import fcntl
+import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
+import httpx
 from loguru import logger
 
-from jarvis_core.home import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, install_info, workspace_root
+from jarvis_core.home import IPC_HOME, JARVIS_HOME, REPO_ROOT, brain_token, git_version, workspace_root
 
-REPO_URL = "https://github.com/sangdth/jarvis"
+LAUNCHD_LABEL = "com.sangdth.jarvis"
+PLIST_PATH = Path(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist").expanduser()
 
 USAGE = """usage: jarvis [command]
-  (none)     listen and hand work to the agents; Brain starts with it unless it is already running
-  remote     listen for a thin client on the network: another Mac's mic and speaker, every model and agent here
-  meeting    sit in a call with you (hears the call, speaks into Google Meet through a Chrome extension); also `--meeting`
-             after `connect`
-  connect    continue the T3 Code thread this runs in (a T3 project script), or pick one from a list
-  connect X  continue a session of agent X (claude, opencode or pi), picked from a list; for pi, a window open
-             now (installs Jarvis's Pi extension the first time)
-  top        open the cockpit: tasks, attempts, spend and live telemetry (the Rust TUI)
-  status     the brain's mode, spend, tasks and active skills
-  serve      run Brain on its own, as the 24/7 daemon (what `jarvis launchd --install` starts)
-  add        queue a goal or problem: `jarvis add --repo <repo> --kind goal --title ... --spec ...`
-  research   run the hypothesis fan-out on a task: `jarvis research SG-1`
-  improve    run the brain's skill reflection loop on recent attempts
-  launchd    print or install the brain's LaunchAgent (`--install`)
-  brain X    any of the Brain commands above, spelled out (`jarvis brain status`)
-  init       set up Jarvis's home (~/.config/jarvis; the checkout in dev): .env, agents.json, SOUL.md, brain, voiceprint
-  enroll     record your voiceprint again
-  upgrade    update Jarvis (an installed one from GitHub master; a dev checkout fast-forwarded to origin/master)
-  uninstall  delete the state in ~/.config/jarvis (keys, voiceprint, memory, brain) and the installed jarvis command
-  --version  show which Jarvis this is: master @ commit, or dev and its folder"""
 
-BRAIN_COMMANDS = {"serve", "status", "add", "research", "improve", "launchd", "self-check"}
+foreground (a terminal holds it open):
+  (none)          listen with this Mac's mic and speaker
+  remote          listen for a thin client: another Mac's mic and speaker, every model and agent here
+  meeting         sit in a call with you (hears the call, speaks into Google Meet)
+  connect [X]     continue the T3 thread this runs in, or a session of claude | opencode | pi
+  serve [flags]   the same stack, spelled out (`--remote`, `--meeting`, `--connect X`)
+
+as a service (launchd keeps it up, 24/7):
+  start [flags]   install/refresh the LaunchAgent and start it; keeps the mode it already had
+  stop            stop it
+  restart         sync, refresh the LaunchAgent, restart: the only step an edit needs
+  logs            tail the daemon's log
+
+over the network (one HTTP/SSE/WebSocket server, one token):
+  health          is a Jarvis answering here? (`--url http://<mac-mini>:8643` for another machine)
+  status          version, uptime, mode, spend, tasks, voice
+  ask "text"      one-shot request, answer printed
+  board           the full board as JSON
+  tasks           list the tasks
+  add             queue a goal or problem (`--repo`, `--kind`, `--title`, `--spec`, `--metric`, `--ready`)
+  mode ASSIST|AUTONOMOUS
+  research ID     run the hypothesis fan-out on a task
+  improve         run the skill reflection loop
+  restart --remote  ask the running Jarvis to restart itself
+
+once:
+  top             open the cockpit (the Rust TUI, built from this checkout)
+  init            set up the state home, then offer to record your voiceprint
+  enroll          record your voiceprint again
+  --version       the running checkout's branch and commit
+"""
 
 
 def version() -> str:
-    """`master @ abc1234` for a git install, `dev (<folder>)` for a checkout (pip's direct_url.json says which)."""
-    info = install_info()
-    vcs = info.get("vcs_info")
-    if vcs:
-        return f"{vcs.get('requested_revision') or 'git'} @ {vcs.get('commit_id', '?')[:7]}"
-    return f"dev ({checkout_root(info)})"
+    """`master @ abc1234` for this checkout; the code that is running is the code on disk."""
+    return git_version()
 
 
-def upgrade(flags: list[str]) -> None:
-    """`jarvis upgrade`: a checkout fast-forwards (the brain's divergence-safe upgrade, flags and all)."""
-    if version().startswith("dev"):
-        return brain(["upgrade", *flags])
-    if flags:
-        print("`jarvis upgrade` takes no flags for an installed Jarvis; updating from GitHub master.")
-    update_installed()
+def endpoint() -> str:
+    from brain.config import settings
+
+    return settings.endpoint_url
 
 
-def update_installed() -> None:
-    """`uv tool upgrade` for the installed Jarvis; the cockpit is rebuilt if it is here."""
-    before = version()
-    uv = shutil.which("uv")
-    if uv is None:
-        sys.exit("`jarvis upgrade` needs uv on the PATH.")
-    if subprocess.run([uv, "tool", "upgrade", PACKAGE]).returncode != 0:
-        sys.exit("Update failed; the installed Jarvis is unchanged.")
-    update_cockpit()
-    # A fresh process: this one still has the old package's metadata loaded.
-    after = subprocess.run([sys.executable, "-m", "jarvis.cli", "--version"], capture_output=True, text=True).stdout.strip()
-    print(f"Jarvis is up to date: {after}." if after == before else f"Updated Jarvis: {before} -> {after}.")
+def token() -> str:
+    from brain.config import settings
+
+    return settings.brain_api_key or brain_token()
 
 
-def update_cockpit() -> None:
-    """Rebuild the Rust cockpit in step with the Python side, when it was built and cargo is here."""
-    if shutil.which("jarvis-top") is None or shutil.which("cargo") is None:
-        return
-    print("Rebuilding the cockpit ...")
-    if subprocess.run(
-        ["cargo", "install", "--git", REPO_URL, "--locked", "--bin", "jarvis-top", "--force"],
-        capture_output=True,
-    ).returncode != 0:
-        print("The cockpit did not rebuild; `jarvis top` keeps working on the previous binary.")
-
-
-def folder_size(path: Path) -> str:
-    total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file() and not f.is_symlink())
-    return f"{total / 1e6:.0f} MB" if total >= 1e6 else f"{total / 1e3:.0f} KB"
-
-
-def uninstall(home: Path = SHARED_HOME) -> None:
-    """Delete the installed state, then the `jarvis` command; a dev checkout keeps its code and its own state."""
-    installed = not version().startswith("dev")
-    uv = shutil.which("uv")
-    if installed and uv is None:
-        sys.exit("`jarvis uninstall` needs uv on the PATH to remove the jarvis command; nothing was deleted.")
-    lock: IO[str] | None = None
+def call(method: str, path: str, *, url: str = "", timeout: float = 30.0, **kwargs: Any) -> dict[str, Any]:
+    """One request to the running Jarvis; a clear message instead of a traceback when it is not there."""
+    base = (url or endpoint()).rstrip("/")
     try:
-        if home.exists():
-            lock = hold_lock(home)  # a listening Jarvis is still writing memory there
-            print(f"This deletes {home} ({folder_size(home)}): API keys, SOUL.md, your voiceprint, models, memory,")
-            print("and the brain's board, worktrees and skills.")
-        if installed:
-            print("It also removes the jarvis command from your PATH.")
-        if not home.exists() and not installed:
-            return print(f"Nothing to uninstall: {home} is gone, and a dev checkout's command is `uv run jarvis`.")
-        if input("Delete it all? y/N: ").strip().lower() != "y":
-            return print("Nothing was deleted.")
-        if home.exists():
-            shutil.rmtree(home)  # still holding the lock, so no Jarvis starts halfway through
-            if lock is not None:
-                lock.close()
-            print(f"Deleted {home}.")
-    finally:
-        if lock is not None and not lock.closed:
-            lock.close()
-    if installed and uv and subprocess.run([uv, "tool", "uninstall", PACKAGE]).returncode != 0:
-        sys.exit(f"Removing the jarvis command failed; run `uv tool uninstall {PACKAGE}` yourself.")
-    print("Left in place, shared with other tools: uv, Whisper models in ~/.cache/huggingface, Ollama's bge-m3 "
-          "(`ollama rm bge-m3`), and a Rust `target/` folder if you built the cockpit.")
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.request(
+                method, f"{base}{path}", headers={"Authorization": f"Bearer {token()}"}, **kwargs
+            )
+    except httpx.HTTPError as exc:
+        sys.exit(f"No Jarvis answers at {base} ({exc.__class__.__name__}). Is it running? `jarvis start`.")
+    if resp.status_code == 401:
+        sys.exit(f"{base} refused the token. Is BRAIN_API_KEY / JARVIS_HOME/brain_token the same on both sides?")
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {"text": resp.text}
+    if resp.status_code >= 400:
+        sys.exit(f"{base}{path} failed ({resp.status_code}): {json.dumps(body)[:400]}")
+    return body if isinstance(body, dict) else {"value": body}
 
 
-def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
-    """One listening Jarvis per machine: two would share the mic and Qdrant's memory folder. Keep the file open."""
+# --------------------------------------------------------------------------------------------------------------
+# The service: launchd runs this checkout, and `restart` is the only step an edit needs
+# --------------------------------------------------------------------------------------------------------------
+def hold_lock(home: Path = IPC_HOME) -> IO[str]:
+    """One listening Jarvis per machine: two would share the mic and the vector store. Keep the file open."""
     home.mkdir(parents=True, exist_ok=True)
     lock = (home / "jarvis.lock").open("a+")
     try:
@@ -143,7 +118,7 @@ def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
         lock.seek(0)
         pid = lock.read().strip() or "?"
         lock.close()
-        sys.exit(f"Jarvis is already running (pid {pid}); stop it first.")
+        sys.exit(f"Jarvis is already running (pid {pid}); `jarvis restart` replaces it.")
     lock.seek(0)
     lock.truncate()
     lock.write(str(os.getpid()))
@@ -151,8 +126,122 @@ def hold_lock(home: Path = SHARED_HOME) -> IO[str]:
     return lock
 
 
+def plist_serve_args() -> list[str]:
+    """The mode the installed LaunchAgent already runs, so `restart` never silently changes it."""
+    import re
+
+    try:
+        text = PLIST_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ["--remote"]  # a Mac mini server with no one at the mic
+    if "<string>serve</string>" not in text:
+        return ["--remote"]
+    tail = text.split("<string>serve</string>", 1)[1].split("</array>", 1)[0]
+    return [flag for flag in re.findall(r"<string>(.*?)</string>", tail) if flag.startswith("--")]
+
+
+def write_plist(serve_args: list[str]) -> None:
+    from brain.cli import build_launchd_plist
+
+    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PLIST_PATH.write_text(build_launchd_plist(serve_args), encoding="utf-8")
+    print(f"Wrote {PLIST_PATH} (mode: {' '.join(serve_args) or 'local'}).")
+
+
+def launchd_domain() -> str:
+    return f"gui/{os.getuid()}/{LAUNCHD_LABEL}"
+
+
+def launchd_loaded() -> bool:
+    if sys.platform != "darwin":
+        return False
+    return subprocess.run(["launchctl", "print", launchd_domain()], capture_output=True).returncode == 0
+
+
+def launchd_kick() -> None:
+    kick = subprocess.run(["launchctl", "kickstart", "-k", launchd_domain()], capture_output=True, text=True)
+    if kick.returncode != 0:
+        sys.exit(f"`launchctl kickstart -k {launchd_domain()}` failed: {kick.stderr.strip() or kick.stdout.strip()}")
+
+
+def launchd_boot() -> None:
+    subprocess.run(["launchctl", "bootout", launchd_domain()], capture_output=True)
+    boot = subprocess.run(
+        ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST_PATH)], capture_output=True, text=True
+    )
+    if boot.returncode != 0:
+        sys.exit(f"`launchctl bootstrap` failed: {boot.stderr.strip() or boot.stdout.strip()}")
+
+
+def needs_sync() -> bool:
+    """There is a `.venv` to keep in step, and the daemon runs it."""
+    return (REPO_ROOT / ".venv").is_dir()
+
+
+def sync_dependencies() -> None:
+    """Make `.venv` match this checkout; it is what the daemon runs, so it is the only build step there is."""
+    import shutil
+
+    if not needs_sync():
+        return
+    uv = shutil.which("uv")
+    if uv is None:
+        print("`uv` is not on PATH; skipping the dependency sync (run it yourself if you changed pyproject.toml).")
+        return
+    proc = subprocess.run([uv, "sync", "--quiet"], cwd=str(REPO_ROOT))
+    if proc.returncode != 0:
+        sys.exit("`uv sync` failed; the running code was not restarted. Fix it and run `jarvis restart` again.")
+
+
+def service_start(serve_args: list[str] | None = None) -> None:
+    if sys.platform != "darwin":
+        sys.exit("`jarvis start` uses launchd; on another system run `jarvis serve` in a terminal.")
+    sync_dependencies()
+    write_plist(serve_args if serve_args is not None else plist_serve_args())
+    if launchd_loaded():
+        launchd_kick()
+    else:
+        launchd_boot()
+    print(f"Started {LAUNCHD_LABEL}. `jarvis status` once it is up; `jarvis logs` follows the log.")
+
+
+def service_stop() -> None:
+    if not launchd_loaded():
+        print(f"{LAUNCHD_LABEL} is not running.")
+        return
+    subprocess.run(["launchctl", "bootout", launchd_domain()], capture_output=True)
+    print(f"Stopped {LAUNCHD_LABEL}.")
+
+
+def service_restart(serve_args: list[str] | None = None) -> None:
+    """`jarvis restart`: best-effort sync, refresh the LaunchAgent from this checkout, restart the process."""
+    sync_dependencies()
+    write_plist(serve_args if serve_args is not None else plist_serve_args())
+    if sys.platform != "darwin":
+        sys.exit("`jarvis restart` uses launchd; on another system stop and re-run `jarvis serve`.")
+    launchd_kick() if launchd_loaded() else launchd_boot()
+    print(f"Restarted {LAUNCHD_LABEL} on {version()}.")
+
+
+def follow_logs() -> None:
+    log = JARVIS_HOME / "logs" / "jarvis.err.log"
+    out = JARVIS_HOME / "logs" / "jarvis.out.log"
+    files = [str(p) for p in (log, out) if p.is_file()]
+    if not files:
+        sys.exit(f"No log yet in {log.parent}. Start it with `jarvis start`.")
+    try:
+        subprocess.run(["tail", "-n", "100", "-f", *files])
+    except KeyboardInterrupt:
+        pass
+
+
+# --------------------------------------------------------------------------------------------------------------
+# The cockpit
+# --------------------------------------------------------------------------------------------------------------
 def cockpit_binary() -> Path | None:
-    """The built `jarvis-top`: PATH, or a cargo `target/` in this checkout (`cargo build --release`)."""
+    """The built `jarvis-top`: PATH, or a cargo `target/` in this checkout."""
+    import shutil
+
     if found := shutil.which("jarvis-top"):
         return Path(found)
     root = workspace_root()
@@ -167,7 +256,7 @@ def run_cockpit(args: list[str]) -> int:
     binary = cockpit_binary()
     if binary is None:
         print("`jarvis top` needs the cockpit built first:", file=sys.stderr)
-        print("  cargo build --release --manifest-path apps/tui/Cargo.toml", file=sys.stderr)
+        print("  cargo build --release --workspace", file=sys.stderr)
         return 1
     try:
         return subprocess.call([str(binary), *args])
@@ -175,71 +264,206 @@ def run_cockpit(args: list[str]) -> int:
         return 130
 
 
-def brain(args: list[str]) -> None:
-    """The brain's own commands, reached through the one `jarvis` command."""
-    from brain.cli import main as brain_main
+# --------------------------------------------------------------------------------------------------------------
+# Talking to the running Jarvis
+# --------------------------------------------------------------------------------------------------------------
+def print_status(url: str = "") -> None:
+    s = call("GET", "/v1/status", url=url)
+    voice = s.get("voice") or {}
+    print(f"Jarvis {s.get('version')}  (pid {s.get('pid')}, up {s.get('uptime_s')}s)")
+    print(f"  home      {s.get('home')}")
+    print(f"  mode      {s.get('mode')}   spent today ${s.get('spent_today_usd', 0):.2f} / "
+          f"${s.get('daily_budget_usd', 0):.2f}")
+    print(f"  tasks     {s.get('tasks')} ({s.get('tasks_ready')} ready, {s.get('tasks_running')} running)")
+    print(f"  skills    {s.get('skills_active')} active    approvals waiting: {s.get('approvals_waiting')}")
+    print(f"  voice     {voice.get('state', 'unknown')}"
+          + (f" (relay client connected on port {voice.get('port')})" if voice.get("client") else ""))
 
-    prepare_brain()
-    sys.exit(brain_main(args))
 
+def dispatch(argv: list[str]) -> None:
+    if not argv:
+        return run_foreground()
+    cmd, rest = argv[0], argv[1:]
 
-def prepare_brain() -> None:
-    from jarvis.supervisor import prepare_environment
-
-    prepare_environment()
-
-
-def main() -> None:
-    args = sys.argv[1:]
-    if args == ["--version"]:
+    if cmd in ("-h", "--help", "help"):
+        return print(USAGE)
+    if cmd in ("-V", "--version", "version"):
         return print(version())
-    if args and args[0] == "brain":
-        args = args[1:] or ["status"]
-    if args and args[0] in BRAIN_COMMANDS:
-        return brain(args)
-    if args[:1] in (["upgrade"], ["update"]):
-        return upgrade(args[1:])
-    if args == ["uninstall"]:
-        return uninstall()
-    if args == ["init"]:
+    if cmd == "top":
+        sys.exit(run_cockpit(rest))
+    if cmd == "logs":
+        return follow_logs()
+    if cmd == "start":
+        return service_start(local_or_remote(rest) or None)
+    if cmd == "stop":
+        return service_stop()
+    if cmd in ("restart", "update", "upgrade"):
+        flags = local_or_remote(rest)
+        return service_restart(flags or None)
+    if cmd == "health" or cmd == "probe":
+        url = _take(rest, "--url")
+        body = call("GET", "/health", url=url, timeout=5.0)
+        return print(f"ok  Jarvis {body.get('version')}  (pid {body.get('pid')}, up {body.get('uptime_s')}s)")
+    if cmd == "status":
+        return print_status(_take(rest, "--url"))
+    if cmd == "board":
+        return print(json.dumps(call("GET", "/v1/board"), indent=2))
+    if cmd == "tasks":
+        body = call("GET", "/v1/tasks")
+        rows = body.get("tasks") or []
+        if not rows:
+            return print("No tasks.")
+        for t in rows:
+            print(f"{t['id']:>8} [{t['kind']}/{t['status']}] repo={t['repo']}: {t['title']}")
+        return print(f"\n{len(rows)} task(s).")
+    if cmd == "ask":
+        text = " ".join(rest).strip()
+        if not text:
+            sys.exit('usage: jarvis ask "what do you want"')
+        body = call("POST", "/v1/ask", json={"input": text}, timeout=900.0)
+        return print(body.get("spoken", ""))
+    if cmd == "mode":
+        if not rest:
+            sys.exit("usage: jarvis mode ASSIST|AUTONOMOUS")
+        body = call("POST", "/v1/mode", json={"mode": rest[0]})
+        return print(f"Mode {body.get('mode')}, ${body.get('budget_remaining_usd', 0):.2f} left today.")
+    if cmd == "research":
+        if not rest:
+            sys.exit("usage: jarvis research SG-1")
+        body = call("POST", f"/v1/tasks/{rest[0]}/research", timeout=3600.0)
+        return print(f"[{body.get('outcome')}] {body.get('summary')} (hypotheses={body.get('hypotheses') or []})")
+    if cmd == "improve":
+        body = call("POST", "/v1/skills/improve", timeout=3600.0)
+        return print(f"[{body.get('outcome')}] {body.get('summary')} (modified={body.get('modified') or []})")
+    if cmd == "add":
+        return add_task(rest)
+    if cmd == "init":
         from jarvis.init import main as init
 
         return init()
-    if args and args[0] == "top":
-        sys.exit(run_cockpit(args[1:]))
-    if args == ["enroll"]:
-        prepare_brain()
-        from jarvis_voice.enroll import main as enroll  # imported here: loads the speaker model
+    if cmd == "enroll":
+        from jarvis_voice.enroll import main as enroll
 
         return enroll()
-    flags = {"meeting": "meeting", "--meeting": "meeting", "remote": "remote"}
-    given = [a for a in args if a in flags]
-    kinds = {flags[a] for a in given}
-    if len(given) != len(kinds) or len(kinds) > 1:
-        sys.exit(USAGE)  # `meeting` with `remote` (the call is this Mac's) or a flag twice
+
+    # Foreground modes, with the flags allowed in any order: `jarvis remote connect`, `jarvis --meeting`.
+    return run_foreground(argv)
+
+
+def _take(args: list[str], flag: str) -> str:
+    """`--url X` or `--url=X`, removed from the list when present."""
+    for i, arg in enumerate(args):
+        if arg == flag and i + 1 < len(args):
+            value = args.pop(i + 1)
+            args.pop(i)
+            return value
+        if arg.startswith(f"{flag}="):
+            args.pop(i)
+            return arg.split("=", 1)[1]
+    return ""
+
+
+def local_or_remote(args: list[str]) -> list[str]:
+    """`serve` flags from the command line, normalized to what the LaunchAgent will store."""
+    flags: list[str] = []
+    if "--remote" in args or "remote" in args:
+        flags.append("--remote")
+    if "--meeting" in args or "meeting" in args:
+        flags.append("--meeting")
+    for i, arg in enumerate(args):
+        if arg == "--connect":
+            if i + 1 < len(args):
+                flags += ["--connect", args[i + 1]]
+            else:
+                flags += ["--connect"]
+            break
+    return flags
+
+
+def add_task(args: list[str]) -> None:
+    payload: dict[str, Any] = {"kind": "goal", "repo": "jarvis", "priority": 50}
+    mapping = {
+        "--repo": "repo",
+        "--kind": "kind",
+        "--title": "title",
+        "--spec": "spec",
+        "--metric": "metric",
+        "--verify": "verify",
+        "--priority": "priority",
+        "--id": "id",
+    }
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--ready":
+            payload["ready"] = True
+            i += 1
+            continue
+        key = mapping.get(arg)
+        if key is None:
+            sys.exit(f"unknown flag {arg}\n\n{USAGE}")
+        if i + 1 >= len(args):
+            sys.exit(f"{arg} needs a value")
+        payload[key] = args[i + 1]
+        i += 2
+    if not payload.get("title") or not payload.get("spec"):
+        sys.exit("usage: jarvis add --repo <repo> --kind goal|problem --title ... --spec ... [--metric ...] [--ready]")
+    body = call("POST", "/v1/tasks", json=payload)
+    task = body.get("task") or {}
+    print(f"Upserted {task.get('id')} ({task.get('status')}) in {task.get('repo')}: {task.get('title')}")
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Foreground: the same stack, held by a terminal
+# --------------------------------------------------------------------------------------------------------------
+FLAG_ALIASES = {"meeting": "meeting", "--meeting": "meeting", "remote": "remote", "--remote": "remote"}
+
+
+def parse_foreground(argv: list[str]) -> tuple[bool, bool, str | None]:
+    """`(remote, meeting, connect)` from any order of the flags and the `connect` subcommand."""
+    kinds = {FLAG_ALIASES[a] for a in argv if a in FLAG_ALIASES}
+    if len(kinds) > 1:
+        sys.exit("`remote` and `meeting` do not go together (the call is this Mac's).")
     remote, meeting = "remote" in kinds, "meeting" in kinds
-    rest = [a for a in args if a not in flags]
-    if rest and (rest[0] != "connect" or len(rest) > 2):
+
+    words = [a for a in argv if a not in FLAG_ALIASES]
+    connect: str | None = None
+    if words and words[0] in ("serve", "connect"):
+        sub, words = words[0], words[1:]
+        if sub == "connect":
+            connect = words.pop(0) if words and not words[0].startswith("-") else "t3"
+    if words and words[0].startswith("--connect"):
+        flag = words.pop(0)
+        connect = flag.split("=", 1)[1] if "=" in flag else (words.pop(0) if words else "t3")
+    if words:
         sys.exit(USAGE)
-    if checkout_root() and not (JARVIS_HOME / ".env").exists():
-        sys.exit(f"No .env in {JARVIS_HOME}: a dev checkout uses its own. Run the T3 setup script or `uv run jarvis init`.")
-    prepare_brain()
+    return remote, meeting, connect
+
+
+def run_foreground(argv: list[str] | None = None) -> None:
+    remote, meeting, connect = parse_foreground(list(argv or []))
+    from jarvis.supervisor import prepare_environment
+
+    prepare_environment()
+    if not (JARVIS_HOME / ".env").exists():
+        sys.exit(f"No .env in {JARVIS_HOME}: run `jarvis init` first.")
     lock = hold_lock()  # noqa: F841 (held until exit)
     logger.info(f"Jarvis {version()}")
-    from jarvis.supervisor import brain_running
-    from jarvis_voice.main import run_pipecat_harness  # imported here: loads Pipecat
 
-    connect = None if not rest else rest[1] if len(rest) == 2 else "t3"
-
-    async def listen() -> None:
-        async with brain_running():
-            await run_pipecat_harness(connect=connect, meeting=meeting, remote=remote)
+    from jarvis.supervisor import start_all
 
     try:
-        asyncio.run(listen())
+        asyncio.run(start_all(connect=connect, meeting=meeting, remote=remote))
     except KeyboardInterrupt:
         logger.info("Jarvis stopped.")
         sys.exit(0)
+
+
+def main() -> None:
+    try:
+        dispatch(sys.argv[1:])
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

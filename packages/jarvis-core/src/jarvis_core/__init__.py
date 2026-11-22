@@ -1,17 +1,19 @@
-"""What every Jarvis app shares: the one state home, its .env, and SOUL.md."""
+"""What every Jarvis app shares: the repository runtime home, its `.env`, tokens, and `SOUL.md`."""
 
 from jarvis_core.home import (
     BRAIN_TOKEN_PATH,
+    IPC_HOME,
     JARVIS_HOME,
     LEGACY_BRAIN_HOME,
-    PACKAGE,
-    SHARED_HOME,
+    REPO_ROOT,
     brain_home,
     brain_token,
-    checkout_root,
-    install_info,
+    env_file_value,
+    git_version,
     migrate_legacy_brain_home,
+    resolve_home,
     shared_dir,
+    workspace_root,
 )
 from jarvis_core.settings import EnvSettings
 from jarvis_core.soul import DEFAULT_PROJECTS_DIR, SOUL_PATH, Soul, load_soul, parse_soul, render_soul
@@ -20,19 +22,21 @@ __all__ = [
     "BRAIN_TOKEN_PATH",
     "DEFAULT_PROJECTS_DIR",
     "EnvSettings",
+    "IPC_HOME",
     "JARVIS_HOME",
     "LEGACY_BRAIN_HOME",
-    "PACKAGE",
-    "SHARED_HOME",
+    "REPO_ROOT",
     "SOUL_PATH",
     "Soul",
     "brain_home",
     "brain_token",
-    "checkout_root",
-    "install_info",
+    "env_file_value",
+    "git_version",
     "load_soul",
     "migrate_legacy_brain_home",
     "parse_soul",
     "render_soul",
+    "resolve_home",
     "shared_dir",
+    "workspace_root",
 ]

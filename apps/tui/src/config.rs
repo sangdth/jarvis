@@ -41,7 +41,7 @@ impl Config {
 
         let host = lookup("BRAIN_HOST")
             .or_else(|| lookup("HOST"))
-            .unwrap_or_else(|| "127.0.0.1".to_string());
+            .unwrap_or_else(|| "0.0.0.0".to_string());
         let port = lookup("BRAIN_PORT")
             .or_else(|| lookup("PORT"))
             .and_then(|v| v.parse::<u16>().ok())
@@ -67,7 +67,16 @@ impl Config {
     }
 
     pub fn endpoint(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+        format!("{}:{}", self.connect_host(), self.port)
+    }
+
+    /// The address to dial: a wildcard bind address (`0.0.0.0`, `::`) means "every interface", so a client
+    /// on this Mac must use loopback instead.
+    pub fn connect_host(&self) -> &str {
+        match self.host.trim() {
+            "" | "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+            other => other,
+        }
     }
 
     pub fn has_api_key(&self) -> bool {

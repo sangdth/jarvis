@@ -26,7 +26,10 @@ class FakeConnection:
     def __init__(self) -> None:
         self.sent: list[bytes | str] = []
 
-    async def send(self, message: bytes | str) -> None:
+    async def send_bytes(self, message: bytes) -> None:
+        self.sent.append(message)
+
+    async def send_text(self, message: str) -> None:
         self.sent.append(message)
 
 
@@ -87,7 +90,7 @@ class TestRelayHub(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_client_that_stops_reading_is_dropped_not_the_transport(self) -> None:
         class Stalled(FakeConnection):
-            async def send(self, message) -> None:
+            async def send_bytes(self, message) -> None:
                 await asyncio.sleep(60)  # a Wi-Fi link that went quiet with the socket still up
 
         stalled = Stalled()
@@ -131,7 +134,6 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
             TransportParams(audio_in_enabled=True, audio_out_enabled=True), port=0, token=self.TOKEN
         )
         await self.transport.start_server()
-        assert self.transport._server is not None
         self.port = self.transport.port
 
     async def asyncTearDown(self) -> None:
@@ -298,30 +300,15 @@ class TestClientScript(unittest.IsolatedAsyncioTestCase):
 
 
 class TestToken(unittest.TestCase):
-    def test_the_token_is_made_once_and_kept_private(self) -> None:
-        import tempfile
-        from pathlib import Path
+    def test_the_relay_uses_the_one_gateway_token(self) -> None:
+        with mock.patch.object(remote_audio.settings, "remote_token", ""), \
+                mock.patch.object(remote_audio, "brain_token", return_value="gateway-token"):
+            self.assertEqual(relay_token(), "gateway-token")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "remote_token"
-            with mock.patch.object(remote_audio, "TOKEN_PATH", path), \
-                    mock.patch.object(remote_audio.settings, "remote_token", ""):
-                first = relay_token()
-                second = relay_token()
-            self.assertEqual(first, second)
-            self.assertGreater(len(first), 20)
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-
-    def test_a_configured_token_wins_and_writes_nothing(self) -> None:
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "remote_token"
-            with mock.patch.object(remote_audio, "TOKEN_PATH", path), \
-                    mock.patch.object(remote_audio.settings, "remote_token", "pinned"):
-                self.assertEqual(relay_token(), "pinned")
-            self.assertFalse(path.exists())
+    def test_a_configured_token_wins(self) -> None:
+        with mock.patch.object(remote_audio.settings, "remote_token", "pinned"), \
+                mock.patch.object(remote_audio, "brain_token", return_value="gateway-token"):
+            self.assertEqual(relay_token(), "pinned")
 
 
 if __name__ == "__main__":

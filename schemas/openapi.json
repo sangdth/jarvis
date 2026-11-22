@@ -1,11 +1,11 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Brain HTTP/SSE contract",
-    "version": "1.0.0",
-    "description": "The brain's wire protocol: the five endpoints the voice harness drives (the HermesAdapter contract), the iPhone `/v1/ask` shortcut, and the cockpit's telemetry/operator endpoints. Every route needs `Authorization: Bearer <BRAIN_API_KEY>`; `jarvis` shares that token through JARVIS_HOME/brain_token. Clients in other languages (a React client, a Go service) generate their types from this file."
+    "title": "Jarvis gateway: HTTP, SSE and WebSocket",
+    "version": "2.0.0",
+    "description": "The one network surface of a Jarvis instance: the brain's run protocol, the cockpit's telemetry, the small operator API, and the thin client's mic and speaker. Every route except `/health` needs the shared token, sent as `Authorization: Bearer <token>`, `?token=<token>`, or `X-Jarvis-Token` (browsers, `curl`, and iOS Shortcuts all work). The token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`, made on first use. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`); `GET /client.py` serves the zero-install thin client with this server's URL and token baked in."
   },
-  "servers": [{ "url": "http://127.0.0.1:8643" }],
+  "servers": [{ "url": "http://127.0.0.1:8643", "description": "A wildcard `BRAIN_HOST` means clients on this Mac use loopback; elsewhere use the machine's name." }],
   "security": [{ "bearer": [] }],
   "components": {
     "securitySchemes": {
@@ -48,6 +48,79 @@
         "type": "object",
         "properties": { "spoken": { "type": "string" } }
       },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "service": { "type": "string", "const": "jarvis" },
+          "version": { "type": "string", "description": "The running checkout: branch and commit, `+dirty` if edited." },
+          "pid": { "type": "integer" },
+          "uptime_s": { "type": "number" }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "version": { "type": "string" },
+          "repo": { "type": "string" },
+          "home": { "type": "string" },
+          "pid": { "type": "integer" },
+          "uptime_s": { "type": "number" },
+          "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] },
+          "spent_today_usd": { "type": "number" },
+          "daily_budget_usd": { "type": "number" },
+          "budget_remaining_usd": { "type": "number" },
+          "tasks": { "type": "integer" },
+          "tasks_ready": { "type": "integer" },
+          "tasks_running": { "type": "integer" },
+          "skills_active": { "type": "integer" },
+          "approvals_waiting": { "type": "integer" },
+          "telemetry_seq": { "type": "integer" },
+          "voice": {
+            "type": "object",
+            "properties": {
+              "state": { "type": "string", "enum": ["starting", "listening", "stopped"] },
+              "meeting": { "type": "boolean" },
+              "remote": { "type": "boolean" },
+              "client": { "type": "boolean", "description": "A thin client is connected as the mic." },
+              "port": { "type": "integer" }
+            }
+          }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["goal", "problem"] },
+          "repo": { "type": "string" },
+          "title": { "type": "string" },
+          "spec": { "type": "string" },
+          "status": { "type": "string", "enum": ["draft", "ready", "in_progress", "done", "blocked"] }
+        }
+      },
+      "AddTask": {
+        "type": "object",
+        "required": ["kind", "repo", "title", "spec"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["goal", "problem"] },
+          "repo": { "type": "string" },
+          "title": { "type": "string" },
+          "spec": { "type": "string" },
+          "metric": { "type": "string" },
+          "verify": { "type": "string" },
+          "priority": { "type": "integer" },
+          "ready": { "type": "boolean" }
+        }
+      },
+      "Mode": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": { "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] } }
+      },
       "Event": {
         "type": "object",
         "description": "One SSE `data:` line. Events: run.status, approval.request, approval.responded, run.completed, run.failed, run.cancelled, http.inbound, http.completed, reconciler.phase, board.rpc, pi.progress, attempt.finished, heartbeat.",
@@ -55,15 +128,72 @@
       },
       "Resolve": {
         "type": "object",
-        "required": ["action"],
         "properties": {
-          "action": { "type": "string", "enum": ["approve", "reject"] },
-          "note": { "type": "string" }
+          "approved": { "type": "boolean", "description": "What the cockpit sends." },
+          "action": { "type": "string", "enum": ["approve", "reject"], "description": "The same thing, spelled out." }
         }
       }
     }
   },
   "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness probe; the only route without a token",
+        "security": [],
+        "responses": { "200": { "description": "A Jarvis is here", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } } }
+      }
+    },
+    "/v1/status": {
+      "get": {
+        "summary": "Version, uptime, mode, spend, task counts, voice state",
+        "responses": { "200": { "description": "Everything a probe or `jarvis status` needs", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Status" } } } } }
+      }
+    },
+    "/v1/board": {
+      "get": {
+        "summary": "The full board in one body: state, tasks, attempts, skills, outbox",
+        "description": "What a remote cockpit draws, with no direct SQLite access.",
+        "responses": { "200": { "description": "Board snapshot", "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } } }
+      }
+    },
+    "/v1/tasks": {
+      "get": {
+        "summary": "List tasks, optionally filtered by `?status=`",
+        "responses": { "200": { "description": "Tasks", "content": { "application/json": { "schema": { "type": "object", "properties": { "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" } } }, "additionalProperties": true } } } } }
+      },
+      "post": {
+        "summary": "Queue a goal or a problem (what `jarvis add` calls)",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AddTask" } } } },
+        "responses": { "200": { "description": "The stored task" }, "400": { "description": "Refused (repo not allowed, missing field)" } }
+      }
+    },
+    "/v1/tasks/{task_id}/research": {
+      "post": {
+        "summary": "Run the SoL-Pi hypothesis fan-out on a task",
+        "parameters": [{ "name": "task_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Outcome, summary and produced hypothesis ids" } }
+      }
+    },
+    "/v1/mode": {
+      "post": {
+        "summary": "Switch between ASSIST and AUTONOMOUS",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Mode" } } } },
+        "responses": { "200": { "description": "The new mode and the budget left" }, "400": { "description": "Unknown mode" } }
+      }
+    },
+    "/v1/skills/improve": {
+      "post": {
+        "summary": "Run the skill reflection loop on recent attempts",
+        "responses": { "200": { "description": "Outcome, summary and the skills changed" } }
+      }
+    },
+    "/v1/restart": {
+      "post": {
+        "summary": "Restart this Jarvis on the current checkout (voice included)",
+        "description": "Used after an edit: the supervisor stops this process cleanly and launchd starts the new code.",
+        "responses": { "200": { "description": "Restart scheduled" }, "409": { "description": "Not supervised: nothing to restart it" } }
+      }
+    },
     "/v1/runs": {
       "post": {
         "summary": "Start a Planner run from a spoken request",
@@ -125,6 +255,21 @@
         "parameters": [{ "name": "outbox_id", "in": "path", "required": true, "schema": { "type": "string" } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Resolve" } } } },
         "responses": { "200": { "description": "Resolved" } }
+      }
+    },
+    "/client.py": {
+      "get": {
+        "summary": "The zero-install thin client, with this server's URL and token already filled in",
+        "description": "A plain HTTP download (`curl -fsSL 'http://<host>:8643/client.py?token=<token>' -o /tmp/jarvis-remote.py`), then `uv run /tmp/jarvis-remote.py` on the other Mac.",
+        "responses": { "200": { "description": "text/x-python", "content": { "text/x-python": { "schema": { "type": "string" } } } }, "401": { "description": "Wrong token" } }
+      }
+    },
+    "/ws": {
+      "get": {
+        "summary": "The thin client's mic and speaker (WebSocket upgrade)",
+        "description": "Binary frames are 16-bit mono PCM at 16 kHz both ways. JSON control: `{\"type\":\"hello\",\"rate\":16000}` down on connect, `{\"type\":\"flush\"}` down on an interruption. One client at a time: they share one ear.",
+        "parameters": [{ "name": "token", "in": "query", "required": true, "schema": { "type": "string" } }],
+        "responses": { "101": { "description": "Switched protocols" }, "401": { "description": "Wrong token" }, "404": { "description": "Not a relay path" } }
       }
     }
   }

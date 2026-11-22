@@ -1,39 +1,31 @@
 """
-Where Jarvis keeps its state. One home for every app in this repository: the voice harness, the brain
-daemon (`jarvis_core.brain_home()`), the cockpit and the one-mic lock.
+Where Jarvis keeps its code and runtime state.
 
-The installed Jarvis uses `~/.config/jarvis`; a dev checkout (`uv run jarvis`) uses the checkout's own
-folder, found from the running code and never the current folder. The folder is gitignored in a checkout.
+The repository checkout (`REPO_ROOT`) is the single source of truth and live runtime: editing code
+takes effect immediately on `jarvis restart` with no wheel build or tool reinstall. Runtime state,
+databases (`brain/state.db`, `memory/`), secrets (`.env`, `brain_token`, `remote_token`), logs, and
+models stay in `JARVIS_HOME` (defaulting to `REPO_ROOT`, overridable via `$JARVIS_HOME`) and are
+gitignored so they are never committed.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import secrets
 import shutil
-from importlib.metadata import PackageNotFoundError, distribution
+import subprocess
 from pathlib import Path
 
-PACKAGE = "jarvis-harness"
-# The installed Jarvis keeps its state here; every Jarvis, dev or installed, keeps the one-mic lock here.
-SHARED_HOME = Path("~/.config/jarvis").expanduser()
-# The brain's own home before it moved into this repository; read until `jarvis init` moves it.
+# Machine-wide IPC directory for fixed short paths shared across tools/worktrees (the one-mic lock and Pi's sockets).
+IPC_HOME = Path("~/.config/jarvis").expanduser()
+# Pre-merge standalone Brain state directory; migrated into `JARVIS_HOME/brain` on setup if present.
 LEGACY_BRAIN_HOME = Path("~/.config/superbrain").expanduser()
 BRAIN_DIRNAME = "brain"
 BRAIN_TOKEN_FILE = "brain_token"
 
 
-def install_info() -> dict:
-    """pip's direct_url.json for Jarvis: `vcs_info` for a GitHub install, a file:// `url` for a checkout."""
-    try:
-        return json.loads(distribution(PACKAGE).read_text("direct_url.json") or "{}")
-    except (PackageNotFoundError, ValueError):
-        return {}
-
-
 def workspace_root(start: Path | None = None) -> Path | None:
-    """The checkout that holds this code: the nearest ancestor with a uv workspace pyproject.toml."""
+    """The repository checkout that holds this code: nearest ancestor with a uv workspace `pyproject.toml`."""
     for parent in (start or Path(__file__).resolve()).parents:
         pyproject = parent / "pyproject.toml"
         if not pyproject.is_file():
@@ -47,25 +39,60 @@ def workspace_root(start: Path | None = None) -> Path | None:
     return None
 
 
-def checkout_root(info: dict | None = None) -> Path | None:
-    """The checkout whose code is running (`uv run jarvis`), or None for the installed Jarvis."""
-    info = install_info() if info is None else info
-    if info.get("vcs_info"):
-        return None
-    url = info.get("url", "")
-    if url.startswith("file://"):
-        return Path(url.removeprefix("file://"))
-    return workspace_root()
+REPO_ROOT: Path = workspace_root() or Path(__file__).resolve().parents[4]
 
 
-JARVIS_HOME = checkout_root() or SHARED_HOME
-BRAIN_TOKEN_PATH = JARVIS_HOME / BRAIN_TOKEN_FILE
+def resolve_home() -> Path:
+    """Runtime state home: `$JARVIS_HOME` when explicitly set, otherwise `REPO_ROOT`."""
+    explicit = os.environ.get("JARVIS_HOME", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return REPO_ROOT
+
+
+JARVIS_HOME: Path = resolve_home()
+BRAIN_TOKEN_PATH: Path = JARVIS_HOME / BRAIN_TOKEN_FILE
+
+
+def git_version(repo: Path | None = None) -> str:
+    """Live git branch and short commit SHA of the running codebase (e.g. `master @ 0fbc724` or `+dirty`)."""
+    root = repo or REPO_ROOT
+    try:
+        sha_proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short=7", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2.0,
+        )
+        sha = sha_proc.stdout.strip()
+        if sha_proc.returncode != 0 or not sha:
+            return f"live ({root})"
+        branch_proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2.0,
+        )
+        branch = branch_proc.stdout.strip() or "HEAD"
+        dirty_proc = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2.0,
+        )
+        dirty = "+dirty" if dirty_proc.returncode == 0 and dirty_proc.stdout.strip() else ""
+        return f"{branch} @ {sha}{dirty}"
+    except OSError:
+        return f"live ({root})"
 
 
 def shared_dir(path: Path, *, mode: int = 0o700) -> Path:
-    """Make `path`, tightening the permissions of the shared home; a checkout keeps its own umask."""
+    """Create `path` and restrict permissions (leaving the repo root's own directory mode intact)."""
     path.mkdir(parents=True, exist_ok=True)
-    if path in (SHARED_HOME, JARVIS_HOME) or SHARED_HOME in path.parents:
+    if path != REPO_ROOT:
         try:
             path.chmod(mode)
         except OSError:
@@ -74,66 +101,68 @@ def shared_dir(path: Path, *, mode: int = 0o700) -> Path:
 
 
 def brain_home() -> Path:
-    """
-    The brain daemon's state folder. `BRAIN_HOME` (or `JARVIS_BRAIN_HOME`) wins; otherwise
-    `JARVIS_HOME/brain`, falling back to the old `~/.config/superbrain` until `jarvis init` moves it.
-    """
+    """The brain daemon's state folder: `$BRAIN_HOME` (or `$JARVIS_BRAIN_HOME`), else `JARVIS_HOME/brain`."""
     explicit = os.environ.get("JARVIS_BRAIN_HOME") or os.environ.get("BRAIN_HOME")
     if explicit and explicit.strip():
         return Path(explicit.strip()).expanduser()
-    home = JARVIS_HOME / BRAIN_DIRNAME
-    if home.exists():
-        return home
-    # An installed Jarvis keeps using the pre-merge folder until `jarvis init` moves it; a dev checkout
-    # always uses its own, and attaches to the one daemon on the port commandeered by nobody (see supervisor).
-    if JARVIS_HOME == SHARED_HOME and LEGACY_BRAIN_HOME.is_dir():
-        return LEGACY_BRAIN_HOME
-    return home
+    return JARVIS_HOME / BRAIN_DIRNAME
 
 
 def env_file_value(name: str, *paths: Path) -> str:
-    """A `NAME=value` line from the first file that sets it (a tiny reader: settings are not loaded yet)."""
+    """A `NAME=value` line from the first file that sets it (before full pydantic settings load)."""
     for path in paths or (JARVIS_HOME / ".env",):
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError:
             continue
         for line in lines:
-            key, sep, value = line.partition("=")
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped.removeprefix("export ").strip()
+            key, sep, value = stripped.partition("=")
             if sep and key.strip() == name and value.strip():
                 return value.strip().strip('"').strip("'")
     return ""
 
 
-def brain_token() -> str:
-    """The bearer token the daemon, the voice harness and the cockpit share; made on first use (0600)."""
-    explicit = os.environ.get("BRAIN_API_KEY", "").strip()
-    if not explicit:  # the name before the rename, so a running daemon keeps its key
+def brain_token(home: Path | None = None) -> str:
+    """The bearer token shared by the server, voice harness, cockpit, and thin clients; created on first use (0600)."""
+    base = home or JARVIS_HOME
+    b_home = brain_home() if home is None else (base / BRAIN_DIRNAME)
+    token_path = base / BRAIN_TOKEN_FILE
+
+    explicit = os.environ.get("JARVIS_TOKEN", "").strip() or os.environ.get("BRAIN_API_KEY", "").strip()
+    if not explicit:
         explicit = os.environ.get("SUPERBRAIN_API_KEY", "").strip()
     if not explicit:
-        explicit = env_file_value("BRAIN_API_KEY", JARVIS_HOME / ".env", brain_home() / ".env")
+        explicit = env_file_value("JARVIS_TOKEN", base / ".env")
     if not explicit:
-        explicit = env_file_value("SUPERBRAIN_API_KEY", brain_home() / ".env")
+        explicit = env_file_value("BRAIN_API_KEY", base / ".env", b_home / ".env")
+    if not explicit:
+        explicit = env_file_value("SUPERBRAIN_API_KEY", b_home / ".env")
     if explicit:
         return explicit
-    if BRAIN_TOKEN_PATH.is_file():
-        token = BRAIN_TOKEN_PATH.read_text(encoding="utf-8").strip()
+    if token_path.is_file():
+        token = token_path.read_text(encoding="utf-8").strip()
         if token:
             return token
     token = secrets.token_urlsafe(32)
-    shared_dir(BRAIN_TOKEN_PATH.parent)
-    BRAIN_TOKEN_PATH.write_text(f"{token}\n", encoding="utf-8")
-    BRAIN_TOKEN_PATH.chmod(0o600)
+    shared_dir(token_path.parent)
+    token_path.write_text(f"{token}\n", encoding="utf-8")
+    token_path.chmod(0o600)
     return token
 
 
-def migrate_legacy_brain_home() -> Path | None:
+def migrate_legacy_brain_home(home: Path | None = None) -> Path | None:
     """Move `~/.config/superbrain` into `JARVIS_HOME/brain`; returns the new folder, or None if nothing moved."""
     if not LEGACY_BRAIN_HOME.is_dir():
         return None
-    target = JARVIS_HOME / BRAIN_DIRNAME
+    base = home or JARVIS_HOME
+    target = base / BRAIN_DIRNAME
     if target.exists():
         return None
-    shared_dir(JARVIS_HOME)
+    shared_dir(base)
     shutil.move(str(LEGACY_BRAIN_HOME), str(target))
     return target

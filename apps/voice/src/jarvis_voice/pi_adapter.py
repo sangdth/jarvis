@@ -13,12 +13,14 @@ from typing import Any
 
 from loguru import logger
 
+from jarvis_core.home import IPC_HOME
 from jarvis_voice.agent_adapter import WatchedAgentConfig
-from jarvis_voice.config import SHARED_HOME
 from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
 from jarvis_voice.state import JarvisState
 
-SOCKET_DIR = SHARED_HOME / "pi"  # one folder for a dev and an installed Jarvis, as the extension hardcodes
+# One machine-wide folder, because the Pi extension hardcodes it (`~/.config/jarvis/pi`): a Unix socket path must
+# stay under ~104 bytes on macOS, so the shared IPC dir is both the OS-wide contract and the short-path guarantee.
+SOCKET_DIR = IPC_HOME / "pi"
 EXTENSION = Path(__file__).parent / "defaults" / "pi" / "jarvis.ts"
 PI_EXTENSIONS = Path("~/.pi/agent/extensions").expanduser()
 
