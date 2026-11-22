@@ -170,6 +170,9 @@ class AudioBridge:
         ok, err = self.engine.startAndReturnError_(None)
         if not ok:
             raise SystemExit(f"audio engine could not start: {err}")
+        # Voice processing delivers no mic input until the output has played a reference signal, so
+        # play half a second of silence to prime the echo canceller before any speech arrives.
+        self.play(bytes(SAMPLE_RATE))
         self.player.play()
 
     def stop(self) -> None:
