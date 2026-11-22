@@ -21,13 +21,8 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from jarvis.meet_voice import MeetVoice
-from jarvis.voice_engine import PLAY_AHEAD_SECS, MicConverter, VoiceAudio
+from jarvis.voice_engine import PLAY_AHEAD_SECS, SILENT_MIC_SECS, SILENT_MIC_WARNING, MicConverter, VoiceAudio
 
-SILENT_MIC_SECS = 3.0  # this long after start without real sound means the mic is not reaching Jarvis
-SILENT_MIC_WARNING = (
-    "Mic is silent: macOS voice processing delivers no sound. Set System Settings > Sound > Output to speakers "
-    "or headphones; a Multi-Output or aggregate device stops the mic."
-)
 # Logged when Jarvis can't hear the call: the system audio tap needs macOS 14.2 or later and this permission.
 TAP_FAILED = (
     "Can't hear the call: allow your terminal (or T3 Code) in System Settings > Privacy & Security > "

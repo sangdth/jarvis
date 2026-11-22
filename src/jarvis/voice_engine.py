@@ -17,6 +17,12 @@ import soxr
 PLAY_AHEAD_SECS = 0.08
 # A block this loud means a real mic rather than a dead one (-60 dBFS; a quiet room peaks near -40).
 SILENT_MIC_PEAK = 1e-3
+# This long after start without real sound means the mic is not reaching Jarvis.
+SILENT_MIC_SECS = 3.0
+SILENT_MIC_WARNING = (
+    "Mic is silent: macOS voice processing delivers no sound. Set System Settings > Sound > Output to speakers "
+    "or headphones; a Multi-Output or aggregate device stops the mic."
+)
 
 
 class MicConverter:

@@ -149,31 +149,41 @@ voice again after updating from an older version (`jarvis enroll`): it now recor
 Updated from a version that required enrollment? Your voiceprint stays, but the check is now off until you set
 `MASTER_CHECK=true`; the startup log says so.
 
-### Listen from another Mac (thin client)
+### Talk to Jarvis from another Mac
 ```bash
-jarvis remote        # on the Mac that runs Jarvis and the agents
+jarvis               # on the Mac that runs Jarvis and the agents
 ```
-Every model, agent, key and memory stays there; the other Mac sends its mic and plays the replies. `jarvis remote`
-prints one command to paste on that Mac, which needs nothing but [uv](https://docs.astral.sh/uv/):
+This Mac's own mic and speaker are always on: stand in front of it and talk. Open the thin client on another Mac
+and that Mac becomes the ear instead — you talk there, and it answers there, with no restart and no mode to pick:
 ```bash
 curl -fsSL 'http://<mac-mini>:47210/client.py?token=<token>' -o /tmp/jarvis-remote.py && uv run /tmp/jarvis-remote.py
 ```
-The script comes from the Mac running Jarvis, so it always matches it; uv fetches four small packages (numpy, soxr,
-websockets, pyobjc's AVFoundation) into a cache, no Jarvis and no Pipecat. Ctrl+C stops it.
+That is the command `jarvis` prints, ready to paste; the Mac needs nothing but [uv](https://docs.astral.sh/uv/),
+which fetches four small packages (numpy, soxr, websockets, pyobjc's AVFoundation) into a cache — no Jarvis, no
+Pipecat, no keys. Ctrl+C stops it.
 
-- **Talk over it, and "shut up" still works.** The mic runs through macOS voice processing on the Mac in front of
-  you, so the echo canceller that lets you interrupt Jarvis sits where the speaker is. Its speech plays on that
-  Mac's speakers; an interruption drops what it still had queued.
-- **One listener at a time.** A second Mac is refused while one is connected: they share one ear.
-- **Every connection needs the token.** With `MASTER_CHECK=false` any voice may talk to Jarvis, and the port is on
-  your network. It is made on first use in `~/.config/jarvis/remote_token` (0600); set `REMOTE_TOKEN` in `.env` to
-  pick your own, and `REMOTE_PORT` for the port.
+- **Opening the client takes the ear**, and the terminal says so. **Closing it hands the ear back** to the Mac
+  running Jarvis, which is always listening.
+- **Otherwise whoever speaks wins.** Talk at another Mac while the live ear has heard nothing for a second, and the
+  ear moves there; walk back to the room and talk, and it moves back. `[Ear] relay has the mic now` in the log says
+  which one it is.
+- **The reply comes out where the ear is**: the Mac you just talked to, not both.
+- **Nothing steals the turn while Jarvis speaks**, so a second Mac's mic hearing this one's speaker can't make
+  Jarvis answer its own words.
+- **One client at a time.** A second Mac is refused while one is connected.
+
+`jarvis remote` is the same with no local mic at all, for a Mac mini on a shelf: only the other Mac's mic and
+speaker are in the pipeline.
+
+- **Every connection needs the token**, because with `MASTER_CHECK=false` any voice may talk to Jarvis and the port
+  is on your network. It is made on first use in `~/.config/jarvis/remote_token` (0600); set `REMOTE_TOKEN` in
+  `.env` to pick your own, `REMOTE_PORT` for the port, and `REMOTE_PORT=0` to turn the relay off.
 - **Same Wi-Fi.** Plain HTTP and WebSocket on the LAN. Away from that, put both Macs on Tailscale and paste the
   command with that address: the token rides in the URL, so keep it to yourself.
-- **The master check** compares your voiceprint, recorded with the other Mac's mic, against this one's. It usually
+- **The master check** compares your voiceprint, recorded with this Mac's mic, against the other Mac's. It usually
   still passes; watch the `[Speaker] score=` lines and lower `SPEAKER_THRESHOLD` if your own sentences are dropped.
-- **The screen is the Mac's.** `look_at_screen` captures the front window of the Mac running Jarvis.
-- **Agents, sessions, threads** work as usual: `jarvis remote connect` continues a T3 Code thread, picked there.
+- **The screen is this Mac's.** `look_at_screen` captures the front window of the Mac running Jarvis.
+- **Agents, sessions, threads** work as usual: `jarvis remote connect` or `jarvis connect` continues a T3 Code thread.
 
 ### Continue a T3 Code thread away from the keyboard
 ```bash
@@ -248,6 +258,9 @@ says hello. Profiles live in `~/.config/jarvis/speakers/`; delete a file there t
   `allow Microphone` three seconds later, the terminal there has no Microphone permission. `refused ... (bad token)`
   means the URL is from an older run: paste the command `jarvis remote` prints now. `Client refused (1013)` on the
   other Mac means a client is already connected there.
+- **Jarvis answers on the wrong Mac.** The ear goes where speech was heard while the other mic was quiet, and a
+  client that just connected takes it: `[Ear]` log lines name each move. A noisy room on the idle Mac keeps the ear
+  there; close that client, or raise `SPEECH_PEAK` in `remote_audio.py` so room noise stops counting as a voice.
 
 ### Voice Commands
 - **"Code [task]..." / "Build [feature]..." / "Fix [bug]..."** — Sends the task to your default coding agent.

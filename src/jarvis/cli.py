@@ -21,7 +21,7 @@ from jarvis.config import JARVIS_HOME, PACKAGE, SHARED_HOME, checkout_root, inst
 
 USAGE = """usage: jarvis [command]
   (none)     listen and hand work to the agents
-  remote     listen for a thin client on the network: another Mac's mic and speaker, every model and agent here
+  remote     only another Mac's mic and speaker: no ear on this Mac (`jarvis` alone has both)
   meeting    sit in a call with you (hears the call, speaks into Google Meet through a Chrome extension); also `--meeting`
              after `connect`
   connect    continue the T3 Code thread this runs in (a T3 project script), or pick one from a list

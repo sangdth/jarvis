@@ -12,7 +12,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   `uv tool install --python 3.12` from master, then `jarvis init`); `jarvis update` upgrades it,
   `jarvis --version` names the commit. Dev: `uv run jarvis …` in a checkout runs that checkout (`cli.py`).
   Commands: `jarvis` (listen), `jarvis connect` (continue a T3 thread; as a T3 project script, the thread it runs
-  in), `jarvis connect claude|opencode|pi` (continue a session of that client; for Pi, an open window), `jarvis meeting` (sit in a call; `--meeting` after `connect`), `jarvis remote` (the mic and speaker of another Mac, every model here), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
+  in), `jarvis connect claude|opencode|pi` (continue a session of that client; for Pi, an open window), `jarvis meeting` (sit in a call; `--meeting` after `connect`), `jarvis remote` (only another Mac's mic and speaker, no local ear), `jarvis init` (set up, then enroll), `jarvis enroll` (voiceprint again), `jarvis uninstall`
   (deletes `~/.config/jarvis`, then `uv tool uninstall`; a dev checkout keeps its tool and state). One listens at a time
   (`hold_lock`, `~/.config/jarvis/jarvis.lock`).
 - Needs: OpenCode 2's own service (found in `~/.local/state/opencode/service.json`), or `opencode serve` pinned with
@@ -54,6 +54,7 @@ speech check dropping the sentence, not the conversation model.
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
 | Other Mac: no sound, or not heard    | `remote_audio.py` (token, one client), `defaults/remote/client.py` |
+| Answers on the wrong Mac             | `remote_audio.py` `Ear.offer` (`SPEECH_PEAK`, `HANDOVER_SECS`), `[Ear]` lines |
 | Meeting: Jarvis can't hear the call  | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Meeting: the call can't hear Jarvis  | `meet_voice.py` `MeetVoice`, `defaults/meet/jarvis.js`          |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |

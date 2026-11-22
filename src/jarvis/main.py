@@ -154,11 +154,14 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
         check += f"; meeting guests: {guests}"
     if remote:
         check += "; mic and speaker on another Mac"
-        if settings.master_check:
-            logger.warning(
-                "MASTER_CHECK is on and the mic is another Mac's: the voiceprint was recorded with this one, so your "
-                "sentences may score low. Watch the [Speaker] score= lines; lower SPEAKER_THRESHOLD if they are dropped."
-            )
+    elif settings.remote_port:
+        check += f"; ears: this Mac and another Mac on port {settings.remote_port}"
+    if (remote or settings.remote_port) and settings.master_check and not meeting:
+        logger.warning(
+            "MASTER_CHECK is on and the relay lets another Mac's mic in: the voiceprint was recorded with this one, "
+            "so your sentences there may score low. Watch the [Speaker] score= lines; lower SPEAKER_THRESHOLD if "
+            "they are dropped."
+        )
     # The log is where misses get investigated; it has to say which setup heard them.
     logger.info(f"Hearing {settings.language} with Whisper {settings.whisper_model}, {check}")
 
@@ -212,17 +215,21 @@ async def run_pipecat_harness(connect: str | None = None, *, meeting: bool = Fal
     thread = await pick_connection(orchestrator, connect) if connect else None
 
     # 1. Mic and speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
-    # voice so the user can talk over it on speakers. With `jarvis remote` they belong to another Mac, and the
-    # canceller runs there instead: it has to sit where the speaker does.
-    relay: Any = None  # RemoteVoiceTransport, with `jarvis remote`; kept typed as Any so its import stays lazy
-    if remote:
+    # voice so the user can talk over it on speakers. With the relay on, another Mac's mic and speaker join as a
+    # second ear and `Ear` follows whichever one hears you; with `jarvis remote` that other Mac is the only one.
+    relay: Any = None  # HybridVoiceTransport; Any so the relay's import stays off the local-only path
+    if meeting:
+        transport: BaseTransport = MacVoiceTransport(
+            TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=True
+        )
+    elif remote or settings.remote_port:
         from jarvis.remote_audio import make_transport
 
-        relay = make_transport(settings.remote_port)
+        relay = make_transport(settings.remote_port, local=not remote)
         await relay.start_server()
-        transport: BaseTransport = relay
+        transport = relay
     else:
-        transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
+        transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True))
 
     # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice,
     # known enrolled speakers, or a new speaker being enrolled (or tagging room in meetings).

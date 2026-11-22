@@ -75,9 +75,9 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
-    # `jarvis remote`: the mic and speaker are on another Mac, which runs `defaults/remote/client.py`; the models,
-    # agents and memory stay here. The port is on the LAN, so every connection needs the shared token: this one, or
-    # the one kept in JARVIS_HOME/remote_token (made on first use).
+    # Another Mac's mic and speaker over the relay (`jarvis`): Jarvis's own are always on, and a client that connects
+    # takes the ear (`Ear` in remote_audio.py). The port is on the LAN, so every connection needs the shared token:
+    # this one, or the one kept in JARVIS_HOME/remote_token (made on first use). 0 = relay off.
     remote_port: int = 47210
     remote_token: str = ""
 
