@@ -271,6 +271,56 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "schedule_followup",
+		label: "Schedule a Later Check",
+		description:
+			"Ask the brain to run a short read-only check later (delay >= 5 minutes). Use only when the work truly cannot finish in this turn; the answer reaches the owner through the outbox.",
+		promptSnippet: "Schedule a one-shot follow-up check for later.",
+		parameters: {
+			type: "object",
+			properties: {
+				delay_minutes: { type: "integer", description: "Minutes from now (minimum 5, maximum 20160)" },
+				reason: { type: "string", description: "What to check when the follow-up runs" },
+			},
+			required: ["delay_minutes", "reason"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("schedule_followup", params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(res) }],
+				details: res,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "propose_memory_update",
+		label: "Propose a Memory Update",
+		description:
+			"Improver only: write the small memory index (MEMORY.md) or one repository note (repos/<slug>.md), after checking the claim against traces and live files.",
+		promptSnippet: "Propose one curated memory update from verified evidence.",
+		parameters: {
+			type: "object",
+			properties: {
+				name: { type: "string", description: "'MEMORY.md' or 'repos/<slug>.md'" },
+				content: { type: "string", description: "Full markdown body (MEMORY.md <= 150 lines; repo note <= 80)" },
+				expected_sha256: {
+					type: "string",
+					description: "Current sha256 when updating an existing file; omit only for a new file",
+				},
+			},
+			required: ["name", "content"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("propose_memory_update", params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(res) }],
+				details: res,
+			};
+		},
+	});
+
+	pi.registerTool({
 		name: "research_scout",
 		label: "Run Evidence-Preserving Research Scout",
 		description:

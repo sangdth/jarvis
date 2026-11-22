@@ -48,6 +48,12 @@ class RunRequest:
     approval_cb: ApprovalCallback | None = None
     screenshot: str | None = None
     timeout_seconds: float | None = None
+    # A per-run spend ceiling; None uses the runner's own default.
+    max_cost_usd: float | None = None
+    # Files added with `pi --append-system-prompt` (standing instructions, the memory index).
+    append_system_paths: tuple[Path, ...] = ()
+    # Conversational `pi`: a stable key whose session is kept on disk and resumed next turn.
+    session_key: str | None = None
 
 
 @dataclass
@@ -57,6 +63,7 @@ class RunResult:
     cost_usd: float = 0.0
     session_id: str | None = None  # the thread/session the work went to
     session_title: str | None = None
+    project: str | None = None  # the listed folder a project turn went to, for follow-up turns
     worktree_path: str | None = None
     branch: str = ""
     diagnostic: str | None = None

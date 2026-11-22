@@ -33,16 +33,21 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
 - **State lives in the brain home** (`jarvis_core.brain_home()`, `JARVIS_HOME/brain` by default; `BRAIN_HOME`
   overrides it, and a pre-merge `~/.config/superbrain` is read until `jarvis init` moves it):
   `.env` (shared: `JARVIS_HOME/.env` wins), `state.db` (SQLite WAL, the only writer), `worktrees/<task_id>` (`0700`),
-  `sessions/<task_id>`, `traces/attempt-<id>.json`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created
-  personal skills), and `memory/progress/<task_id>.md` (handoff + deterministic negative-result ledger).
-- **6 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
+  `sessions/<task_id>`, `sessions/chat/<key>` (a resumed conversational `pi` session, pruned by age/count),
+  `traces/attempt-<id>.json`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created personal skills),
+  `INSTRUCTIONS.md` (owner-written, read-only to workers), and `memory/` (`MEMORY.md`, the small injected index;
+  `repos/<slug>.md`; `reported.md`, what the voice has taken; `bookmarks.json`; and `progress/<task_id>.md`, the
+  handoff + verified/negative-result ledger).
+- **7 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
   `child_strategy IN ('all', 'any')`, `runner IN ('pi', 't3', 'claude', 'opencode')` defaulting to `pi`,
-  `thread_id`, `best_metric`, `best_branch`, `best_sha`), `attempts` (append-only run ledger with `thread_id`,
-  `metric_value`, `skills_used`, `diagnostic`, and `reflected`), `threads` (one bound long-lived client thread per
-  repo: `runner`, `thread_id`, `project_id`, `title`, `worktree_path`, `branch`, `last_sequence`), `skills`
-  (versioned personal skills with baseline `sha256`, usage counters, and previous-version rollback snapshot), and
-  `outbox` (queued reports, blockers, and binary approvals), plus the 1-row `system_state` table (`mode`,
-  `daily_budget_usd` defaulting to `$200.00/day`, `last_good_sha`, `upgrade_runs`, `upgrade_failures`). The
+  `thread_id`, `dedupe_key` for idempotent timer/webhook submissions, `best_metric`, `best_branch`, `best_sha`),
+  `attempts` (append-only run ledger with `thread_id`, `metric_value`, `skills_used`, `diagnostic`, and `reflected`),
+  `threads` (one bound long-lived client thread per repo: `runner`, `thread_id`, `project_id`, `title`,
+  `worktree_path`, `branch`, `last_sequence`), `skills` (versioned personal skills with baseline `sha256`, usage
+  counters, and previous-version rollback snapshot), `outbox` (queued reports, blockers, and binary approvals),
+  `timers` (one-shot `followup` or five-field cron `schedule`, `action='task'|'check'`, `next_run_at` in UTC and
+  `timezone` for the cron), plus the 1-row `system_state` table (`mode`, `daily_budget_usd` defaulting to
+  `$200.00/day`, `last_good_sha`, `upgrade_runs`, `upgrade_failures`). The
   reconciler loop runs continuously in both modes, resolving ready `ASSIST` tasks when in `ASSIST` mode and ready
   `AUTONOMOUS` tasks when in `AUTONOMOUS` mode. When the owner gives a new request clearly related to the current
   topic or active tasks, the Planner sets `mode='ASSIST'` and `ready=true`; if unsure when to resolve it, the
@@ -53,14 +58,33 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     command is handled in code first; a pinned `jarvis connect` session bypasses the router; otherwise one cheap
     OpenRouter tool call (thinking off) picks `delegate_project`, `ask_ephemeral_pi`, `list_sessions`,
     `queue_board_task` or `reply_direct`, and a local rule stands in when the router is unavailable.
-  - `EphemeralPiRunner`: one `pi` process in a fresh `0700` temp dir, `read,grep,find,ls,bash`, Seatbelt writes
-    only in that dir, daily-budget kill, and `shutil.rmtree` in `finally` — a question never becomes a session.
+  - `EphemeralPiRunner`: one `pi` process with `read,grep,find,ls,bash`; a question with no `session_key` uses
+    a fresh `0700` temp dir and leaves nothing behind, while a voiced follow-up keeps `sessions/chat/<key>` and
+    resumes the same transcript (pruned by age/count). Seatbelt writes stay in that dir, and both the daily budget
+    and `max_ephemeral_cost_usd` can kill the process.
   - `T3Runner`: one WebSocket (protocol 2) carrying every watched thread; binds a repo to a thread in `threads`;
     starts `t3 serve --mode desktop` on loopback when nothing answers; relays `approval.request` /
     `question.request` verbatim and answers with `runtime-request.respond` (deterministic mapping, no LLM).
   - `ClaudeRunner` / `OpenCodeRunner`: deliberately minimal, lazy one-shot clients, used only when named.
   - Board work stays with the `pi` Builder: isolated worktree, `edit_and_run`, `verify_cmd`, held-out tests and
     self-upgrade rollback are unchanged.
+- **Timers, outbox delivery and durable memory (`schedule.py`, `memory.py`, `db.py`, `reconciler.py`, `server.py`):**
+  - **Timers:** `GET|POST /v1/timers`, `POST /v1/timers/{id}/cancel`; `jarvis remind "..." in 30m`,
+    `jarvis schedule --every "0 8 * * 1-5" ...`, `jarvis timers`. `Reconciler.tick` calls `fire_due_timers`, which
+    atomically marks a due row `firing` and advances a cron schedule to its next slot (a missed slot is skipped,
+    never replayed in a burst). `action='task'` queues a board task under `dedupe_key=timer:<id>:<slot>`;
+    `action='check'` runs a short read-only `pi` turn beside the loop, queues the answer to the outbox, and writes
+    `BOOKMARK <source>=<cursor>` lines to `memory/bookmarks.json` instead of speaking them. A crash between firing
+    and finishing is recovered by `recover_firing_timers`.
+  - **Outbox delivery:** in `ASSIST` mode `BrainDB.queue_outbox` publishes `outbox.queued` on `GET /v1/events`; the
+    voice (`BrainClientAdapter._events_loop`) speaks it and acknowledges `POST /v1/outbox/{id}/spoken`, which writes
+    one line to `memory/reported.md`. In `AUTONOMOUS` mode nothing is spoken until the owner switches back or asks
+    for the brief. A reconnecting voice drains `GET /v1/outbox?status=queued` first.
+  - **Memory:** every worker gets `INSTRUCTIONS.md` and `memory/MEMORY.md` through repeated
+    `--append-system-prompt` (prefix-stable, so prompt caching stays warm). `MEMORY.md` is capped at 150 lines and
+    repo notes at 80; only the offline `Improver` writes them, through `propose_memory_update`, with an
+    `expected_sha256` check. Progress notes record **verified** results as well as failures; the reflection prompt
+    is the "dreaming" pass that corrects stale notes against traces.
 - **SoL-Pi auto-research & harness efficiency (`board.ts` + `reconciler.py` + `skills.py`):**
   - **Action Fusion (`edit_and_run`):** `board.ts` fuses worktree-guarded file mutations (`createEditToolDefinition` /
     `createWriteToolDefinition`) with immediate follow-up `createBashToolDefinition` execution in a single turn
@@ -78,9 +102,10 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
 - **Self-improving skills loop (`skills.py` + `reconciler.py`):**
   - **Evidence:** `board.ts` records `record_skill_load` when a worker reads `skills/<slug>/SKILL.md` and exposes
     `report_diagnostic`; `reconciler.py` writes `traces/attempt-<id>.json` after every attempt.
-  - **Reflection:** Offline `Improver` role receives a 1-line-per-item index of skills and trace files, inspects them on
-    demand via `read`/`grep`, and proposes at most 1 change (`create`, incremental `append`, `update`, or `retire`) via
-    `propose_skill_change`.
+  - **Reflection:** Offline `Improver` role receives a 1-line-per-item index of skills, repo notes and trace files,
+    inspects them on demand via `read`/`grep`, and proposes at most 1 skill change (`create`, incremental `append`,
+    `update`, or `retire`) via `propose_skill_change` plus at most 1 memory change via `propose_memory_update`
+    (checking the claim against the trace first).
   - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; `append`/`update` requires $\ge 1$
     attempt ID plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any
     skill with 2 failures and 0 successes after an update automatically rolls back or retires.

@@ -6,7 +6,7 @@ plus `jarvis restart` is live. The CLI only starts, stops and talks to that proc
 
 - foreground: `jarvis` (local mic), `jarvis remote`, `jarvis meeting`, `jarvis connect [agent]`
 - as a service: `jarvis start | stop | restart | logs`
-- over HTTP: `jarvis status | health | ask | add | board | tasks | mode | research | improve`
+- over HTTP: `jarvis status | health | ask | add | board | tasks | mode | research | improve | timers | remind | schedule`
 - once: `jarvis init | enroll | top`
 
 Everything network-shaped is one HTTP/SSE/WebSocket server on `BRAIN_PORT`, so a thin client on another machine
@@ -59,6 +59,11 @@ over the network (one HTTP/SSE/WebSocket server, one token):
   mode ASSIST|AUTONOMOUS
   research ID     run the hypothesis fan-out on a task
   improve         run the skill reflection loop
+  timers          list follow-ups and schedules (`timers cancel <id>`)
+  remind "text" in 30m
+                  a one-shot check, spoken when it fires (also `at 08:00`)
+  schedule --every "0 8 * * 1-5" --title "Morning" --prompt "check the PRs"
+                  a recurring check; add `--action task` to queue board work instead
   restart --remote  ask the running Jarvis to restart itself
 
 once:
@@ -408,9 +413,18 @@ def dispatch(argv: list[str]) -> None:
         return print(f"[{body.get('outcome')}] {body.get('summary')} (hypotheses={body.get('hypotheses') or []})")
     if cmd == "improve":
         body = call("POST", "/v1/skills/improve", timeout=3600.0)
-        return print(f"[{body.get('outcome')}] {body.get('summary')} (modified={body.get('modified') or []})")
+        return print(
+            f"[{body.get('outcome')}] {body.get('summary')} "
+            f"(modified={body.get('modified') or []} memory={body.get('modified_memory') or []})"
+        )
     if cmd == "add":
         return add_task(rest)
+    if cmd == "timers":
+        return timers_command(rest)
+    if cmd == "remind":
+        return remind_command(rest)
+    if cmd == "schedule":
+        return schedule_command(rest)
     if cmd == "init":
         from jarvis.init import main as init
 
@@ -452,6 +466,77 @@ def local_or_remote(args: list[str]) -> list[str]:
                 flags += ["--connect"]
             break
     return flags
+
+
+def timers_command(args: list[str]) -> None:
+    if args and args[0] == "cancel":
+        if len(args) < 2:
+            sys.exit("usage: jarvis timers cancel <id>")
+        body = call("POST", f"/v1/timers/{args[1]}/cancel")
+        timer = body.get("timer") or {}
+        return print(f"Cancelled {timer.get('id')} ({timer.get('title')}).")
+    body = call("GET", "/v1/timers")
+    rows = body.get("timers") or []
+    if not rows:
+        return print("No timers.")
+    for t in rows:
+        print(
+            f"{t['id']:>11} [{t['kind']}/{t['action']}/{t['status']}] "
+            f"next={t['next_run_at']} ({t['timezone']}): {t['title']}"
+        )
+    return print(f"\n{len(rows)} timer(s).")
+
+
+def _split_when(args: list[str]) -> tuple[str, str, str]:
+    """`text in 30m` or `text at 08:00`, with the flag kept out of the text."""
+    for index, arg in enumerate(args):
+        if arg in ("in", "at") and index + 1 < len(args):
+            text = " ".join(args[:index]).strip()
+            when = " ".join(args[index + 1 :]).strip()
+            if text and when:
+                return arg, text, when
+    sys.exit('usage: jarvis remind "what to check" in 30m')
+
+
+def remind_command(args: list[str]) -> None:
+    flag, text, when = _split_when(args)
+    body = call(
+        "POST",
+        "/v1/timers",
+        json={"in" if flag == "in" else "at": when, "title": text[:80], "prompt": text, "action": "check"},
+    )
+    timer = body.get("timer") or {}
+    print(f"Scheduled {timer.get('id')} for {timer.get('next_run_at')} ({timer.get('timezone')}): {text}")
+
+
+def schedule_command(args: list[str]) -> None:
+    payload: dict[str, Any] = {"action": "check", "mode": "ASSIST"}
+    mapping = {
+        "--every": "every",
+        "--title": "title",
+        "--prompt": "prompt",
+        "--repo": "repo",
+        "--mode": "mode",
+        "--action": "action",
+        "--verify": "verify",
+        "--timezone": "timezone",
+        "--max-cost": "max_cost_usd",
+    }
+    i = 0
+    while i < len(args):
+        key = mapping.get(args[i])
+        if key is None:
+            sys.exit(f"unknown flag {args[i]}\n\n{USAGE}")
+        if i + 1 >= len(args):
+            sys.exit(f"{args[i]} needs a value")
+        payload[key] = args[i + 1]
+        i += 2
+    if not payload.get("every") or not payload.get("title"):
+        sys.exit('usage: jarvis schedule --every "0 8 * * 1-5" --title "Morning" [--prompt ...] [--action task]')
+    payload.setdefault("prompt", payload["title"])
+    body = call("POST", "/v1/timers", json=payload)
+    timer = body.get("timer") or {}
+    print(f"Scheduled {timer.get('id')} ({timer.get('kind')}): next={timer.get('next_run_at')}")
 
 
 def add_task(args: list[str]) -> None:

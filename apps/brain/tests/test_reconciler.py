@@ -52,7 +52,12 @@ async def test_builder_worktree_verify_and_push_to_origin(tmp_path: Path) -> Non
     fake_pi = _write_fake_pi(
         tmp_path / "fake_pi.py",
         """
-import json, pathlib, subprocess
+import json, pathlib, subprocess, sys
+args = sys.argv
+assert "--append-system-prompt" in args, args
+for index, value in enumerate(args):
+    if value == "--append-system-prompt":
+        assert pathlib.Path(args[index + 1]).is_file(), args[index + 1]
 wt = pathlib.Path.cwd()
 (wt / "app.py").write_text("VALUE = 42\\n", encoding="utf-8")
 subprocess.run(["git", "status"], cwd=str(wt), check=True, stdout=subprocess.DEVNULL)

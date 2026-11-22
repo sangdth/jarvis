@@ -194,6 +194,23 @@ ignores `session` and `project`.
    * **`BEEP_ONLY` Mode (triggered by *"Shut up"*, *"Be quiet"*, *"Stop talking"*, *"Hush"*):** Active TTS is immediately cancelled, a low confirmation tone plays, and incoming agent topics are appended to `pending_topics` while playing a short 880Hz sine chime.
    * **Unmute Digest (triggered by *"You can talk"*):** Restores `VOICE` mode, reads out queued questions, then has the LLM retell queued finished turns.
 
+### E. Brain timers, memory and outbox delivery
+1. **Timers (`schedule.py`, `timers` table):** `jarvis remind`, `jarvis schedule`, voice phrasing ("remind me … in 30
+   minutes", "every weekday at 8am …") and `POST /v1/timers` write one row: a one-shot `followup` or a five-field
+   cron `schedule` read in its own IANA zone. `Reconciler.tick` advances a due row atomically (`firing`), creates a
+   board task (`action='task'`) or starts a short read-only `pi` check beside the loop (`action='check'`), and returns
+   a schedule to `active` at its next occurrence. A missed slot is skipped, never replayed in a burst; a crash is
+   recovered after a grace period.
+2. **Memory (`memory.py`):** `INSTRUCTIONS.md` is the owner's, read-only to workers; `memory/MEMORY.md` is a
+   <=150-line index injected into every planner/builder run with `--append-system-prompt`; repository detail lives in
+   `memory/repos/<slug>.md`. Progress notes now record verified results as well as failures. Only the offline
+   Improver writes the two curated files (with `expected_sha256`), and its reflection pass corrects stale notes
+   against the traces.
+3. **Outbox delivery (`server.py`, `brain_client.py`):** in `ASSIST` mode a queued outbox row is published on
+   `GET /v1/events`; the voice speaks it and acknowledges `POST /v1/outbox/{id}/spoken`, which writes one line to
+   `memory/reported.md`. In `AUTONOMOUS` mode nothing is spoken until the owner switches back or asks for the brief.
+   A reconnecting voice drains `GET /v1/outbox?status=queued` first, so a slept Mac does not lose the night's work.
+
 ---
 
 ## 4. Codebase Mapping

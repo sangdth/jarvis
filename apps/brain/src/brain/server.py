@@ -10,13 +10,15 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from aiohttp import web
 from loguru import logger
 
+from brain import memory, schedule
 from brain.config import Settings, settings
-from brain.db import BrainDB
+from brain.db import BrainDB, OutboxRow
 from brain.orchestrator import BrainOrchestrator
 from brain.reconciler import Reconciler
 from brain.runners import ClaudeRunner, EphemeralPiRunner, OpenCodeRunner, Runner, T3Runner
@@ -56,6 +58,18 @@ _IMPROVE_RE = re.compile(
     re.IGNORECASE,
 )
 _RUN_TASK_RE = re.compile(r"\brun\s+((?:SG|PRB)-\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_DURATION_WORDS = r"\d+(?:\.\d+)?\s*(?:seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)"
+_REMIND_RE = re.compile(
+    r"^\s*(?:jarvis[,\s]+)?(?:please\s+)?remind\s+me(?:\s+to)?\s+"
+    r"(?P<body>.+?)\s+(?:in|after)\s+(?P<duration>" + _DURATION_WORDS + r")\s*[.!]?$",
+    re.IGNORECASE,
+)
+_CHECK_IN_RE = re.compile(
+    r"^\s*(?:jarvis[,\s]+)?(?:please\s+)?(?:check(?:\s+back)?|follow\s+up)"
+    r"(?:\s+(?:on|about)\s+(?P<body>.+?))?\s+in\s+"
+    r"(?P<duration>" + _DURATION_WORDS + r")\s*(?:\s+(?:on|about)\s+(?P<body2>.+?))?\s*[.!]?$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -73,6 +87,7 @@ class RunRecord:
     pinned: dict[str, str] | None = None
     session_mode: str | None = None  # "new", or "continuing" (a picked session for this task)
     cwd: str | None = None  # a folder the voice already resolved (project picker)
+    chat_session_key: str | None = None  # the `pi` conversation this voice session continues
     task_handle: asyncio.Task[None] | None = None
     mirror: Callable[[dict[str, Any]], None] | None = None
 
@@ -122,11 +137,14 @@ class BrainServer:
             cfg, db, reconciler, runners=self.runners, last_project=self._last_project
         )
         self._global_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._last_project_by_session: dict[str, str] = {}
         # One pairing code at a time, in memory: a restart clears it, which is what we want.
         self._pair_codes: dict[str, float] = {}
         self._pair_failures: deque[float] = deque(maxlen=PAIR_MAX_FAILURES * 2)
         self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
         self._started_at = started_at if started_at is not None else time.time()
+        memory.ensure_layout(self.cfg.home_dir)
+        self.db.subscribe_outbox(self._on_outbox)
         self.app = web.Application(middlewares=[self._auth_middleware])
         self.app.add_routes(
             [
@@ -153,6 +171,11 @@ class BrainServer:
                 web.post("/v1/runs/{run_id}/stop", self.handle_stop_run),
                 web.post("/v1/ask", self.handle_ask),
                 web.get("/v1/events", self.handle_events),
+                web.get("/v1/outbox", self.handle_outbox_list),
+                web.post("/v1/outbox/{outbox_id}/spoken", self.handle_outbox_spoken),
+                web.get("/v1/timers", self.handle_timers),
+                web.post("/v1/timers", self.handle_add_timer),
+                web.post("/v1/timers/{timer_id}/cancel", self.handle_cancel_timer),
                 web.get("/v1/telemetry/events", self.handle_telemetry_events),
                 web.get("/v1/telemetry/snapshot", self.handle_telemetry_snapshot),
                 web.post("/v1/outbox/{outbox_id}/resolve", self.handle_outbox_resolve),
@@ -225,6 +248,18 @@ class BrainServer:
             oldest_key = next(iter(self._pi_sessions))
             self._pi_sessions.pop(oldest_key, None)
 
+    def _chat_key_for(self, session_id: str, session_mode: str | None) -> str:
+        """The `pi` conversation key behind a voice session; `new` starts a fresh transcript.
+
+        The voice's own `session_id` is stable for its whole run, so the key survives a brain restart. A
+        `new session` bumps a generation suffix stored in memory; after a restart it returns to generation 0.
+        """
+        safe = re.sub(r"[^a-zA-Z0-9_.-]+", "-", session_id)[:40].strip(".-") or "chat"
+        if session_mode == "new":
+            self._pi_sessions[session_id] = uuid.uuid4().hex[:8]
+        generation = self._pi_sessions.get(session_id, "0")
+        return f"{safe}-{generation}"
+
     async def start_background(self) -> None:
         """Start the long-lived runners (T3's socket; the others are lazy)."""
         for runner in self.runners.values():
@@ -242,7 +277,32 @@ class BrainServer:
         await self.orchestrator.close()
 
     def _last_project(self, session_id: str) -> str | None:
-        return None
+        return self._last_project_by_session.get(session_id)
+
+    def _on_outbox(self, row: OutboxRow) -> None:
+        """A new item reached the outbox. Deliver after the writing transaction commits, never inside it."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # a synchronous script/tests: there is no voice to notify
+        loop.call_soon(self._deliver_outbox, row)
+
+    def _deliver_outbox(self, row: OutboxRow) -> None:
+        mode = self.db.get_state().mode
+        payload = {
+            "event": "outbox.queued",
+            "outbox": self._outbox_dict(row),
+            "mode": mode,
+        }
+        self.hub.emit("outbox.queued", outbox_id=row.id, kind=row.kind, mode=mode)
+        if mode == "ASSIST":
+            self._publish_global(payload)
+
+    def _announce_queued_outbox(self) -> None:
+        """Switching back to ASSIST: hand the night's queue to any connected voice now."""
+        for row in self.db.list_outbox(limit=100):
+            if row.status == "queued":
+                self._deliver_outbox(row)
 
     def _publish_global(self, event: dict[str, Any]) -> None:
         for queue in list(self._global_subscribers):
@@ -419,6 +479,28 @@ class BrainServer:
             "created_at": o.created_at,
         }
 
+    def _timer_dict(self, t: Any) -> dict[str, Any]:
+        return {
+            "id": t.id,
+            "kind": t.kind,
+            "action": t.action,
+            "cron_expr": t.cron_expr,
+            "timezone": t.timezone,
+            "next_run_at": t.next_run_at,
+            "repo": t.repo,
+            "mode": t.mode,
+            "title": t.title,
+            "prompt": t.prompt_spec,
+            "verify_cmd": t.verify_cmd,
+            "max_cost_usd": t.max_cost_usd,
+            "created_by": t.created_by,
+            "status": t.status,
+            "task_id": t.task_id,
+            "chain_count": t.chain_count,
+            "created_at": t.created_at,
+            "updated_at": t.updated_at,
+        }
+
     def status_payload(self) -> dict[str, Any]:
         """Everything a probe, `jarvis status`, or a phone needs: version, uptime, mode, spend, counts, voice."""
         st = self.db.get_state()
@@ -441,6 +523,8 @@ class BrainServer:
             "tasks_running": sum(1 for t in tasks if t.status == "in_progress"),
             "skills_active": len(skills),
             "approvals_waiting": sum(1 for o in outbox if o.kind == "approval_request" and o.status == "queued"),
+            "timers_active": sum(1 for t in self.db.list_timers(status="active")),
+            "outbox_queued": sum(1 for o in outbox if o.status == "queued"),
             "telemetry_seq": self.hub.sequence,
             "voice": self._voice_snapshot(),
         }
@@ -564,6 +648,7 @@ class BrainServer:
             )
         except (ValueError, KeyError) as exc:
             return web.json_response({"error": str(exc)}, status=400)
+        self.reconciler.wake()
         return web.json_response({"task": self._task_dict(task)})
 
     async def handle_research(self, request: web.Request) -> web.Response:
@@ -583,12 +668,20 @@ class BrainServer:
         if mode not in ("ASSIST", "AUTONOMOUS"):
             return web.json_response({"error": "mode must be ASSIST or AUTONOMOUS"}, status=400)
         st = self.db.set_mode(mode)  # type: ignore[arg-type]
+        if st.mode == "ASSIST":
+            # The night's quiet queue becomes speakable the moment the owner switches back.
+            self._announce_queued_outbox()
         return web.json_response({"ok": True, "mode": st.mode, "budget_remaining_usd": round(st.budget_remaining_usd, 4)})
 
     async def handle_improve(self, request: web.Request) -> web.Response:
         res = await self.reconciler.run_skill_improver()
         return web.json_response(
-            {"outcome": res.outcome, "summary": res.summary, "modified": list(res.modified_skills or [])}
+            {
+                "outcome": res.outcome,
+                "summary": res.summary,
+                "modified": list(res.modified_skills or []),
+                "modified_memory": list(res.modified_memory or []),
+            }
         )
 
     async def handle_restart(self, request: web.Request) -> web.Response:
@@ -618,6 +711,7 @@ class BrainServer:
         rec = RunRecord(run_id=run_id, session_id=session_id, pinned=pinned,
                         session_mode=str(body.get("session") or "") or None,
                         cwd=str(body.get("cwd") or "") or None)
+        rec.chat_session_key = self._chat_key_for(session_id, rec.session_mode)
         self.runs[run_id] = rec
         if bool(body.get("replace")):
             for other in list(self.runs.values()):
@@ -783,6 +877,15 @@ class BrainServer:
                 approved=approved,
                 source="dashboard",
             )
+        if approved and row.task_id:
+            self.reconciler.wake()
+        if approved and row.task_id is None and row.resume_session_id:
+            # A deferred interactive Planner turn: resume the exact `pi` session that parked itself, without
+            # holding this HTTP response (and the voice) open for the whole turn.
+            self.db.mark_outbox_consumed(row.id)
+            asyncio.create_task(
+                self._resume_approved_outbox(row), name=f"resume-{row.id}"
+            )
         return web.json_response(
             {
                 "ok": True,
@@ -791,6 +894,132 @@ class BrainServer:
                 "task_id": row.task_id,
             }
         )
+
+    async def _resume_approved_outbox(self, row: OutboxRow) -> None:
+        try:
+            resumed = await self.reconciler.run_interactive_planner(
+                user_input="The owner approved your deferred request. Proceed.",
+                run_key=f"ob-{row.id}",
+                resume_session_id=row.resume_session_id,
+            )
+            self.db.queue_outbox(
+                kind="report",
+                summary_spoken=resumed.summary,
+                details={"resumed_from": row.id, "outcome": resumed.outcome},
+            )
+        except Exception as exc:
+            logger.error(f"[Brain] resuming outbox {row.id} failed: {exc!r}")
+            self.db.queue_outbox(
+                kind="report",
+                summary_spoken=f"Resuming the approved turn failed: {exc}",
+                details={"resumed_from": row.id, "reason": "resume_error"},
+            )
+
+    async def handle_outbox_list(self, request: web.Request) -> web.Response:
+        """Queued items for a reconnecting voice; `status=spoken` and the rest are available to scripts."""
+        status = (request.query.get("status") or "queued").strip()
+        valid = {"queued", "spoken", "approved", "rejected"}
+        if status not in valid:
+            return web.json_response({"error": f"status must be one of {sorted(valid)}"}, status=400)
+        try:
+            limit = int(request.query.get("limit", "100"))
+        except ValueError:
+            limit = 100
+        rows = [row for row in self.db.list_outbox(limit=max(1, min(limit, 500))) if row.status == status]
+        return web.json_response({"outbox": [self._outbox_dict(row) for row in rows]})
+
+    async def handle_outbox_spoken(self, request: web.Request) -> web.Response:
+        """The voice took an item. Only after this is it out of the queued list and in `reported.md`."""
+        outbox_id = request.match_info["outbox_id"]
+        before = self.db.get_outbox(outbox_id)
+        row = self.db.mark_outbox_spoken(outbox_id)
+        if row is None:
+            return web.json_response({"error": "Outbox item not found"}, status=404)
+        if before is not None and before.status == "queued":
+            memory.append_reported(
+                self.cfg.home_dir,
+                f"[{row.kind}] {row.summary_spoken}",
+            )
+        return web.json_response({"ok": True, "id": row.id, "status": row.status})
+
+    async def handle_timers(self, request: web.Request) -> web.Response:
+        status = (request.query.get("status") or "").strip()
+        valid = {"active", "firing", "paused", "done"}
+        if status and status not in valid:
+            return web.json_response({"error": f"status must be one of {sorted(valid)}"}, status=400)
+        rows = self.db.list_timers(status=status or None)  # type: ignore[arg-type]
+        return web.json_response({"timers": [self._timer_dict(t) for t in rows]})
+
+    async def handle_add_timer(self, request: web.Request) -> web.Response:
+        """Create a follow-up (`in`/`at`) or a schedule (`every`); the reconciler fires it."""
+        body = await self._read_json_dict(request)
+        every = str(body.get("every") or "").strip()
+        in_text = str(body.get("in") or "").strip()
+        at_text = str(body.get("at") or "").strip()
+        chosen = [value for value in (every, in_text, at_text) if value]
+        if len(chosen) != 1:
+            return web.json_response({"error": "give exactly one of `in`, `at` or `every`"}, status=400)
+        title = str(body.get("title") or "").strip()
+        prompt = str(body.get("prompt") or body.get("spec") or title).strip()
+        if not title or not prompt:
+            return web.json_response({"error": "title and prompt are required"}, status=400)
+        action = str(body.get("action") or "check").strip().lower()
+        if action not in ("task", "check"):
+            return web.json_response({"error": "action must be task or check"}, status=400)
+        mode = str(body.get("mode") or "ASSIST").strip().upper()
+        timezone_name = str(body.get("timezone") or "").strip() or None
+        try:
+            if every:
+                timer = self.db.add_timer(
+                    kind="schedule",
+                    action=action,
+                    title=title,
+                    prompt_spec=prompt,
+                    cron_expr=every,
+                    timezone_name=timezone_name,
+                    repo=str(body.get("repo") or "").strip() or None,
+                    mode=mode,
+                    verify_cmd=str(body.get("verify") or "").strip() or None,
+                    max_cost_usd=(
+                        float(body["max_cost_usd"])
+                        if body.get("max_cost_usd") is not None
+                        else None
+                    ),
+                    created_by="owner",
+                )
+            else:
+                now = datetime.now(timezone.utc)
+                if in_text:
+                    run_at = now + schedule.parse_duration(in_text)
+                else:
+                    run_at = schedule.next_at(at_text, timezone_name, now=now)
+                timer = self.db.add_timer(
+                    kind="followup",
+                    action=action,
+                    title=title,
+                    prompt_spec=prompt,
+                    run_at=run_at,
+                    timezone_name=timezone_name,
+                    repo=str(body.get("repo") or "").strip() or None,
+                    mode=mode,
+                    verify_cmd=str(body.get("verify") or "").strip() or None,
+                    max_cost_usd=(
+                        float(body["max_cost_usd"])
+                        if body.get("max_cost_usd") is not None
+                        else None
+                    ),
+                    created_by="owner",
+                )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        self.reconciler.wake()
+        return web.json_response({"timer": self._timer_dict(timer)})
+
+    async def handle_cancel_timer(self, request: web.Request) -> web.Response:
+        timer = self.db.cancel_timer(request.match_info["timer_id"])
+        if timer is None:
+            return web.json_response({"error": "Timer not found"}, status=404)
+        return web.json_response({"ok": True, "timer": self._timer_dict(timer)})
 
     async def handle_approval(self, request: web.Request) -> web.Response:
         run_id = request.match_info["run_id"]
@@ -863,6 +1092,59 @@ class BrainServer:
         spoken = rec.output or rec.error or "Done."
         return web.json_response({"run_id": run_id, "status": rec.status, "spoken": spoken})
 
+    def _reminder_from_text(self, text: str) -> str | None:
+        """Deterministic reminders and scheduled checks; no model call, no router prompt change."""
+        recurring = schedule.parse_recurring_phrase(text)
+        if recurring is not None:
+            cron, tz_name, body = recurring
+            title = (body or "Scheduled check")[:80]
+            try:
+                timer = self.db.add_timer(
+                    kind="schedule",
+                    action="check",
+                    title=title,
+                    prompt_spec=body or text,
+                    cron_expr=cron,
+                    timezone_name=tz_name,
+                )
+            except ValueError as exc:
+                return f"I couldn't schedule that: {exc}."
+            self.reconciler.wake()
+            when = schedule.parse_utc(timer.next_run_at).astimezone(
+                schedule.resolve_timezone(timer.timezone)[1]
+            )
+            description = schedule.timer_description(
+                kind="schedule", cron_expr=cron, timezone_name=timer.timezone, next_run_at=when
+            )
+            return f"Okay. {description}. I'll {body or 'check'}."
+
+        match = _REMIND_RE.match(text) or _CHECK_IN_RE.match(text)
+        if match is None:
+            return None
+        groups = match.groupdict()
+        body = (groups.get("body") or groups.get("body2") or "").strip(" .")
+        try:
+            delta = schedule.parse_duration(match.group("duration"))
+            run_at = datetime.now(timezone.utc) + delta
+            timer = self.db.add_timer(
+                kind="followup",
+                action="check",
+                title=(body or "Scheduled check")[:80],
+                prompt_spec=body or text.strip(),
+                run_at=run_at,
+            )
+        except ValueError as exc:
+            return f"I couldn't schedule that: {exc}."
+        self.reconciler.wake()
+        local = schedule.parse_utc(timer.next_run_at).astimezone(
+            schedule.resolve_timezone(timer.timezone)[1]
+        )
+        about = f" about {body}" if body else ""
+        return (
+            f"Okay. I'll check back in {schedule.describe_duration(delta)}{about}, "
+            f"at {local.strftime('%H:%M')}."
+        )
+
     async def _execute_run(
         self, rec: RunRecord, user_input: str, *, allow_live_approval: bool = True,
         screenshot: str | None = None,
@@ -917,6 +1199,7 @@ class BrainServer:
             if _ASSIST_RE.search(user_input):
                 st = self.db.set_mode("ASSIST")
                 ready_count = len(self.db.list_tasks(status="ready", mode="ASSIST"))
+                self._announce_queued_outbox()
                 rec.output = (
                     f"Switched to assist mode. {ready_count} ready assist task"
                     f"{'' if ready_count == 1 else 's'} queued, "
@@ -1012,6 +1295,13 @@ class BrainServer:
                     )
                 return
 
+            reminder_reply = self._reminder_from_text(user_input)
+            if reminder_reply:
+                rec.output = reminder_reply
+                rec.status = "completed"
+                rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
+                return
+
             task_match = _RUN_TASK_RE.search(user_input)
             if task_match:
                 target_id = task_match.group(1).upper()
@@ -1051,7 +1341,10 @@ class BrainServer:
                 screenshot=screenshot,
                 session_mode=rec.session_mode,
                 cwd=rec.cwd,
+                chat_session_key=rec.chat_session_key,
             )
+            if result.project:
+                self._last_project_by_session[rec.session_id] = result.project
             if result.outcome == "deferred_approval" and result.question:
                 # Nobody can answer live (an iPhone one-shot): leave it on the board for the owner.
                 outbox = self.db.queue_outbox(

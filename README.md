@@ -196,10 +196,18 @@ on a branch of its own — never merging to master on its own. In `ASSIST` mode 
 jarvis status                             # version, uptime, mode, spend today, tasks, voice
 jarvis tasks                              # the board
 jarvis add --repo jarvis --kind goal --title "..." --spec "..." --ready
+jarvis remind "check the pull requests" in 30m
+jarvis schedule --every "0 8 * * 1-5" --title "Morning PRs" --prompt "check the pull requests"
+jarvis timers                             # follow-ups and schedules (`timers cancel <id>`)
 jarvis mode AUTONOMOUS                    # or ASSIST: pause background work
 jarvis top                                # live cockpit: tasks, attempts, spend, telemetry (cargo build first)
 jarvis restart                            # the 24/7 service, on this checkout
 ```
+
+A scheduled check runs read-only and lands in the outbox: in `ASSIST` mode Jarvis speaks it as soon as it is
+ready, while `AUTONOMOUS` mode keeps it quiet until you switch back or ask for the morning brief. The brain also
+keeps a small memory index and per-repository notes under `JARVIS_HOME/brain/memory/`; the offline reflection
+pass curates them, and every worker reads them before starting.
 
 Everything above is an HTTP call to the one server, so the same commands work from another machine:
 `jarvis status --url http://mac-mini.local:8643`. Both apps share one state: `.env`, `SOUL.md` (its `projects_dir`

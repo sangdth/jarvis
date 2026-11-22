@@ -84,6 +84,21 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   Rust side queries tables by hand, so a column rename still needs a matching change in `apps/tui/src/db.rs`; a
   contract test on each side is what catches it.
 
+- **The brain's memory is files, and only the offline Improver writes the top layer.** `INSTRUCTIONS.md` is the
+  owner's and read-only to workers; `memory/MEMORY.md` is a <=150-line index injected with
+  `--append-system-prompt`; details live in `memory/repos/<slug>.md` (<=80 lines). Only the `--offline` Improver
+  writes those two, with an `expected_sha256` check, and progress notes record verified results as well as
+  failures. Limits: a wrong note can survive until the next reflection pass, and the 150-line cap means some
+  detail is only discoverable by opening a repo note.
+- **Timers skip missed slots and never replay a burst.** A due cron timer advances to the next occurrence in its
+  own IANA zone, and a crash between `firing` and `finish_timer` is recovered after a grace period; a schedule
+  with no next occurrence ends `done`. Limits: an occurrence missed while the Mac is asleep is not delivered
+  retroactively, and a `check` timer's exact crash window can lose or repeat one run.
+- **The voice acknowledges an outbox item when `JarvisState` takes it, not when TTS finishes.** The item leaves
+  `queued` and gets one line in `memory/reported.md` at that point; in `AUTONOMOUS` mode nothing is spoken until
+  the owner switches back or asks for the brief. Limits: a crash between the acknowledgement and the speaker can
+  lose one line (the alternative, repeated overnight speech, is worse).
+
 ## Open risks
 
 Not yet checked against real use:

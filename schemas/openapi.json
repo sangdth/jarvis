@@ -488,6 +488,214 @@
             "type": "boolean"
           }
         }
+      },
+      "OutboxItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval_request",
+              "morning_brief",
+              "blocker",
+              "report"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary_spoken": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "spoken",
+              "approved",
+              "rejected"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        }
+      },
+      "Timer": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "followup",
+              "schedule"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "task",
+              "check"
+            ]
+          },
+          "cron_expr": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "next_run_at": {
+            "type": "string"
+          },
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ASSIST",
+              "AUTONOMOUS"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "verify_cmd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "created_by": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "agent"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "firing",
+              "paused",
+              "done"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "chain_count": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "AddTimer": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "in": {
+            "type": "string",
+            "description": "One-shot delay, e.g. '30m' or '2h'."
+          },
+          "at": {
+            "type": "string",
+            "description": "One-shot time: ISO 8601 or 'HH:MM'."
+          },
+          "every": {
+            "type": "string",
+            "description": "Five-field cron in `timezone`."
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "What to check; defaults to the title."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "task",
+              "check"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ASSIST",
+              "AUTONOMOUS"
+            ]
+          },
+          "verify": {
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "type": "number"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "in"
+            ]
+          },
+          {
+            "required": [
+              "at"
+            ]
+          },
+          {
+            "required": [
+              "every"
+            ]
+          }
+        ]
       }
     }
   },
@@ -998,7 +1206,7 @@
     "/client.py": {
       "get": {
         "summary": "The zero-install thin client, with this server's URL and token already filled in",
-        "description": "Open on purpose: the bootstrap has to arrive before the laptop has a secret, and it carries none — only this server's address. `curl -fsSL 'http://<host>:8640/client.py' -o ~/.local/bin/jarvis-remote.py`, then `uv run ~/.local/bin/jarvis-remote.py --pair <code>`.",
+        "description": "Open on purpose: the bootstrap has to arrive before the laptop has a secret, and it carries none \u2014 only this server's address. `curl -fsSL 'http://<host>:8640/client.py' -o ~/.local/bin/jarvis-remote.py`, then `uv run ~/.local/bin/jarvis-remote.py --pair <code>`.",
         "responses": {
           "200": {
             "description": "text/x-python",
@@ -1141,6 +1349,174 @@
         "responses": {
           "200": {
             "description": "text/event-stream"
+          }
+        }
+      }
+    },
+    "/v1/outbox": {
+      "get": {
+        "summary": "List outbox items, by default what the voice has not taken yet",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "queued",
+                "spoken",
+                "approved",
+                "rejected"
+              ],
+              "default": "queued"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "outbox": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/OutboxItem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/outbox/{outbox_id}/spoken": {
+      "post": {
+        "summary": "Acknowledge that the voice took an outbox item",
+        "parameters": [
+          {
+            "name": "outbox_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/v1/timers": {
+      "get": {
+        "summary": "List follow-ups and schedules",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "firing",
+                "paused",
+                "done"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Timers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "timers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Timer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a follow-up (`in`/`at`) or a schedule (`every`)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTimer"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "timer": {
+                      "$ref": "#/components/schemas/Timer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid timer"
+          }
+        }
+      }
+    },
+    "/v1/timers/{timer_id}/cancel": {
+      "post": {
+        "summary": "Cancel one timer",
+        "parameters": [
+          {
+            "name": "timer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cancelled"
+          },
+          "404": {
+            "description": "Not found"
           }
         }
       }
