@@ -80,6 +80,30 @@ class TestBrainClient(unittest.IsolatedAsyncioTestCase):
         assert self.adapter._pending is None
         self.state.notify_topic.assert_awaited()
 
+    async def test_outbox_report_is_surfaced_and_acknowledged(self) -> None:
+        self.http.post = AsyncMock(return_value=_Response({"ok": True}))
+        await self.adapter._handle_outbox(
+            {"id": "OB-1", "kind": "report", "summary_spoken": "Overnight task finished."}
+        )
+        self.state.notify_topic.assert_awaited()
+        topic = self.state.notify_topic.await_args.args[0]
+        assert topic.summary == "Overnight task finished."
+        assert topic.is_report is True
+        assert self.http.post.await_args.args[0] == "/v1/outbox/OB-1/spoken"
+
+    async def test_outbox_approval_is_answered_through_the_outbox(self) -> None:
+        self.http.post = AsyncMock(return_value=_Response({"ok": True}))
+        await self.adapter._handle_outbox(
+            {"id": "OB-2", "kind": "approval_request", "summary_spoken": "Approve the migration?"}
+        )
+        assert self.adapter._pending_outbox is not None
+        self.http.post.reset_mock()
+        self.http.post = AsyncMock(return_value=_Response({"ok": True}))
+        assert await self.adapter.answer("yes, go ahead")
+        assert self.http.post.await_args.args[0] == "/v1/outbox/OB-2/resolve"
+        assert self.http.post.await_args.kwargs["json"] == {"approved": True}
+        assert self.adapter._pending_outbox is None
+
 
 if __name__ == "__main__":
     unittest.main()

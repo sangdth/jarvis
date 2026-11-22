@@ -58,6 +58,18 @@ class Settings(EnvSettings):
     verify_timeout_seconds: int = 120
     reconcile_interval_seconds: float = 10.0
     lease_seconds: int = 1200
+    # Per-run ceilings: a stuck loop stops at these, long before the daily budget would notice.
+    max_builder_cost_usd: float = 15.0
+    max_planner_cost_usd: float = 2.0
+    max_improver_cost_usd: float = 5.0
+    max_ephemeral_cost_usd: float = 0.50
+    max_scout_cost_usd: float = 0.50
+    check_timeout_seconds: int = 300
+    # A conversational `pi` session is kept here and resumed by id; old ones are pruned.
+    max_chat_sessions: int = 50
+    chat_session_ttl_days: int = 14
+    max_chat_session_mb: int = 50
+    max_agent_followups_per_task: int = 3
 
     # Pi binary and optional per-role model overrides (empty = inherit ~/.pi/agent/settings.json)
     pi_bin: str = str(Path("~/.local/bin/pi").expanduser())
@@ -124,6 +136,30 @@ class Settings(EnvSettings):
     @property
     def notes_dir(self) -> Path:
         return self.home_dir / "memory" / "progress"
+
+    @property
+    def memory_dir(self) -> Path:
+        return self.home_dir / "memory"
+
+    @property
+    def instructions_path(self) -> Path:
+        return self.home_dir / "INSTRUCTIONS.md"
+
+    @property
+    def memory_index_path(self) -> Path:
+        return self.memory_dir / "MEMORY.md"
+
+    @property
+    def reported_path(self) -> Path:
+        return self.memory_dir / "reported.md"
+
+    @property
+    def bookmarks_path(self) -> Path:
+        return self.memory_dir / "bookmarks.json"
+
+    @property
+    def chat_sessions_dir(self) -> Path:
+        return self.sessions_dir / "chat"
 
     @property
     def skills_dir(self) -> Path:

@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from importlib.resources import files
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
+
+from brain import schedule
 
 _METRIC_COMPARATOR_RE = re.compile(r"(?<![-=!<>])(<=|>=|==|<|>)\s*(-?\d+(?:\.\d+)?)")
 
@@ -74,6 +76,9 @@ AttemptOutcome = Literal[
 ]
 OutboxKind = Literal["approval_request", "morning_brief", "blocker", "report"]
 OutboxStatus = Literal["queued", "spoken", "approved", "rejected"]
+TimerKind = Literal["followup", "schedule"]
+TimerAction = Literal["task", "check"]
+TimerStatus = Literal["active", "firing", "paused", "done"]
 
 
 def _utc_now() -> datetime:
@@ -126,6 +131,7 @@ class TaskRow:
     best_metric: float | None = None
     best_branch: str | None = None
     best_sha: str | None = None
+    dedupe_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,30 @@ class OutboxRow:
     created_at: str
 
 
+@dataclass(frozen=True)
+class TimerRow:
+    """A follow-up or a schedule: `next_run_at` is UTC, `timezone` is the zone the cron is read in."""
+
+    id: str
+    kind: TimerKind
+    action: TimerAction
+    cron_expr: str | None
+    timezone: str
+    next_run_at: str
+    repo: str | None
+    mode: Mode
+    title: str
+    prompt_spec: str
+    verify_cmd: str | None
+    max_cost_usd: float | None
+    created_by: str
+    status: TimerStatus
+    task_id: str | None
+    chain_count: int
+    created_at: str
+    updated_at: str
+
+
 class BrainDB:
     """Thread-safe SQLite WAL state store for Brain."""
 
@@ -208,6 +238,7 @@ class BrainDB:
         self.db_path = db_path
         self.allowed_repos = {r.strip().strip("/") for r in allowed_repos if r.strip().strip("/")}
         self._lock = threading.RLock()
+        self._outbox_subscribers: list[Callable[[OutboxRow], None]] = []
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.db_path.parent, 0o700)
@@ -268,6 +299,14 @@ class BrainDB:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN runner TEXT NOT NULL DEFAULT 'pi'")
         if "thread_id" not in task_cols:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN thread_id TEXT")
+        if "dedupe_key" not in task_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN dedupe_key TEXT")
+        if "status" in task_cols:
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS tasks_dedupe_active "
+                "ON tasks(dedupe_key) WHERE dedupe_key IS NOT NULL "
+                "AND status IN ('draft', 'ready', 'in_progress')"
+            )
 
         cols = {
             str(r["name"])
@@ -505,6 +544,7 @@ class BrainDB:
         child_strategy: ChildStrategy | None = None,
         runner: RunnerName | str | None = None,
         thread_id: str | None = None,
+        dedupe_key: str | None = None,
         ready: bool | None = None,
     ) -> TaskRow:
         cleaned_repo = self.validate_repo(repo)
@@ -521,10 +561,21 @@ class BrainDB:
             raise ValueError(f"Invalid child_strategy: {child_strategy!r}")
         cleaned_metric = metric_target.strip() if metric_target and metric_target.strip() else None
         cleaned_verify = verify_cmd.strip() if verify_cmd and verify_cmd.strip() else None
+        cleaned_dedupe = dedupe_key.strip() if dedupe_key and dedupe_key.strip() else None
         if kind == "goal" and not cleaned_metric:
             raise ValueError("Goals require a non-empty metric_target.")
 
         with self._lock, self._conn:
+            if cleaned_dedupe is not None and not task_id:
+                active = self._conn.execute(
+                    """
+                    SELECT * FROM tasks
+                    WHERE dedupe_key = ? AND status IN ('draft', 'ready', 'in_progress')
+                    """,
+                    (cleaned_dedupe,),
+                ).fetchone()
+                if active is not None:
+                    return self._row_to_task(active)
             state = self.get_state()
             resolved_id = (task_id or "").strip() or self._next_task_id(kind)
             existing = self._conn.execute(
@@ -577,42 +628,64 @@ class BrainDB:
                 if normalized_runner is not None
                 else (str(existing["runner"]) if existing is not None and "runner" in existing.keys() else "pi")  # type: ignore[assignment]
             )
+            resolved_dedupe = (
+                cleaned_dedupe
+                if cleaned_dedupe is not None
+                else (
+                    existing["dedupe_key"]
+                    if existing is not None and "dedupe_key" in existing.keys()
+                    else None
+                )
+            )
             now = _iso(_utc_now())
             if existing is None:
-                self._conn.execute(
-                    """
-                    INSERT INTO tasks (
-                        id, parent_id, kind, mode, repo, title, spec, metric_target,
-                        verify_cmd, status, priority, strike_count, child_strategy,
-                        runner, thread_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        resolved_id,
-                        parent_id,
-                        kind,
-                        resolved_mode,
-                        cleaned_repo,
-                        title.strip(),
-                        spec.strip(),
-                        cleaned_metric,
-                        cleaned_verify,
-                        status,
-                        int(priority),
-                        resolved_strategy,
-                        resolved_runner,
-                        thread_id,
-                        now,
-                        now,
-                    ),
-                )
+                try:
+                    self._conn.execute(
+                        """
+                        INSERT INTO tasks (
+                            id, parent_id, kind, mode, repo, title, spec, metric_target,
+                            verify_cmd, status, priority, strike_count, child_strategy,
+                            runner, thread_id, dedupe_key, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            resolved_id,
+                            parent_id,
+                            kind,
+                            resolved_mode,
+                            cleaned_repo,
+                            title.strip(),
+                            spec.strip(),
+                            cleaned_metric,
+                            cleaned_verify,
+                            status,
+                            int(priority),
+                            resolved_strategy,
+                            resolved_runner,
+                            thread_id,
+                            resolved_dedupe,
+                            now,
+                            now,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    active = self._conn.execute(
+                        """
+                        SELECT * FROM tasks
+                        WHERE dedupe_key = ? AND status IN ('draft', 'ready', 'in_progress')
+                        """,
+                        (resolved_dedupe,),
+                    ).fetchone()
+                    if active is None:
+                        raise
+                    return self._row_to_task(active)
             else:
                 self._conn.execute(
                     """
                     UPDATE tasks
                     SET parent_id = ?, kind = ?, mode = ?, repo = ?, title = ?, spec = ?,
                         metric_target = ?, verify_cmd = ?, status = ?, priority = ?,
-                        child_strategy = ?, runner = ?, thread_id = ?, updated_at = ?
+                        child_strategy = ?, runner = ?, thread_id = ?, dedupe_key = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -629,6 +702,7 @@ class BrainDB:
                         resolved_strategy,
                         resolved_runner,
                         thread_id if thread_id is not None else existing["thread_id"],
+                        resolved_dedupe,
                         now,
                         resolved_id,
                     ),
@@ -727,6 +801,215 @@ class BrainDB:
     def clear_thread_binding(self, repo: str) -> None:
         with self._lock, self._conn:
             self._conn.execute("DELETE FROM threads WHERE repo = ?", (repo.strip().strip("/"),))
+
+    # ------------------------------------------------------------------ timers
+
+    def add_timer(
+        self,
+        *,
+        kind: TimerKind | str,
+        title: str,
+        prompt_spec: str,
+        action: TimerAction | str = "check",
+        cron_expr: str | None = None,
+        run_at: datetime | None = None,
+        timezone_name: str | None = None,
+        repo: str | None = None,
+        mode: Mode | str = "ASSIST",
+        verify_cmd: str | None = None,
+        max_cost_usd: float | None = None,
+        created_by: str = "owner",
+        task_id: str | None = None,
+        chain_count: int = 0,
+    ) -> TimerRow:
+        """Create a due-time row. A schedule needs `cron_expr`; a follow-up needs `run_at`."""
+        kind_value = str(kind).strip().lower()
+        if kind_value not in ("followup", "schedule"):
+            raise ValueError(f"Invalid timer kind: {kind!r}")
+        action_value = str(action).strip().lower()
+        if action_value not in ("task", "check"):
+            raise ValueError(f"Invalid timer action: {action!r}")
+        mode_value = str(mode).strip().upper()
+        if mode_value not in ("ASSIST", "AUTONOMOUS"):
+            raise ValueError(f"Invalid timer mode: {mode!r}")
+        if created_by not in ("owner", "agent"):
+            raise ValueError(f"Invalid timer creator: {created_by!r}")
+        cleaned_title = " ".join(str(title).split())
+        cleaned_prompt = str(prompt_spec).strip()
+        if not cleaned_title or not cleaned_prompt:
+            raise ValueError("a timer needs a title and a prompt")
+        cleaned_repo = self.validate_repo(repo) if repo else None
+        cleaned_verify = verify_cmd.strip() if verify_cmd and verify_cmd.strip() else None
+        tz_name, _ = schedule.resolve_timezone(timezone_name)
+
+        if kind_value == "schedule":
+            if not cron_expr or not cron_expr.strip():
+                raise ValueError("a schedule needs a cron expression")
+            next_run = schedule.next_occurrence(cron_expr, tz_name)
+        else:
+            if run_at is None:
+                raise ValueError("a follow-up needs a run time")
+            next_run = run_at if run_at.tzinfo else run_at.replace(tzinfo=timezone.utc)
+            next_run = next_run.astimezone(timezone.utc)
+        now = _iso(_utc_now())
+        timer_id = f"TM-{uuid.uuid4().hex[:8]}"
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO timers (
+                    id, kind, action, cron_expr, timezone, next_run_at, repo, mode, title,
+                    prompt_spec, verify_cmd, max_cost_usd, created_by, status, task_id,
+                    chain_count, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+                """,
+                (
+                    timer_id,
+                    kind_value,
+                    action_value,
+                    (cron_expr or "").strip() or None,
+                    tz_name,
+                    schedule.iso_utc(next_run),
+                    cleaned_repo,
+                    mode_value,
+                    cleaned_title,
+                    cleaned_prompt,
+                    cleaned_verify,
+                    float(max_cost_usd) if max_cost_usd is not None else None,
+                    created_by,
+                    task_id,
+                    int(chain_count),
+                    now,
+                    now,
+                ),
+            )
+            row = self._conn.execute("SELECT * FROM timers WHERE id = ?", (timer_id,)).fetchone()
+            assert row is not None
+            return self._row_to_timer(row)
+
+    def list_timers(self, status: TimerStatus | None = None) -> list[TimerRow]:
+        with self._lock:
+            if status is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM timers ORDER BY next_run_at ASC, created_at ASC"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM timers WHERE status = ? ORDER BY next_run_at ASC",
+                    (status,),
+                ).fetchall()
+            return [self._row_to_timer(r) for r in rows]
+
+    def get_timer(self, timer_id: str) -> TimerRow:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM timers WHERE id = ?", (timer_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"Timer {timer_id!r} not found")
+            return self._row_to_timer(row)
+
+    def cancel_timer(self, timer_id: str) -> TimerRow | None:
+        with self._lock, self._conn:
+            row = self._conn.execute("SELECT * FROM timers WHERE id = ?", (timer_id,)).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "UPDATE timers SET status = 'done', updated_at = ? WHERE id = ?",
+                (_iso(_utc_now()), timer_id),
+            )
+            updated = self._conn.execute("SELECT * FROM timers WHERE id = ?", (timer_id,)).fetchone()
+            assert updated is not None
+            return self._row_to_timer(updated)
+
+    def fire_due_timers(self, now: datetime | None = None) -> list[TimerRow]:
+        """Atomically mark due timers `firing` and advance schedules to their next slot.
+
+        The caller must finish each timer (`finish_timer`) after acting on it. A schedule that has no next
+        occurrence, and a one-shot follow-up, end `done` once their work is done.
+        """
+        moment = now or _utc_now()
+        now_iso = _iso(moment)
+        fired: list[TimerRow] = []
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM timers
+                WHERE status = 'active' AND next_run_at <= ?
+                ORDER BY next_run_at ASC, created_at ASC
+                """,
+                (now_iso,),
+            ).fetchall()
+            for row in rows:
+                timer = self._row_to_timer(row)
+                if timer.kind == "schedule" and timer.cron_expr:
+                    try:
+                        nxt = schedule.next_occurrence(
+                            timer.cron_expr, timer.timezone, after=moment
+                        )
+                    except ValueError:
+                        self._conn.execute(
+                            "UPDATE timers SET status = 'done', updated_at = ? WHERE id = ?",
+                            (now_iso, timer.id),
+                        )
+                        fired.append(timer)
+                        continue
+                    self._conn.execute(
+                        "UPDATE timers SET status = 'firing', next_run_at = ?, updated_at = ? WHERE id = ?",
+                        (schedule.iso_utc(nxt), now_iso, timer.id),
+                    )
+                else:
+                    self._conn.execute(
+                        "UPDATE timers SET status = 'firing', updated_at = ? WHERE id = ?",
+                        (now_iso, timer.id),
+                    )
+                fired.append(timer)
+        return fired
+
+    def finish_timer(self, timer_id: str, *, keep_active: bool = True) -> TimerRow | None:
+        """After a fired timer has acted: a schedule goes back to `active`, a follow-up to `done`."""
+        with self._lock, self._conn:
+            row = self._conn.execute("SELECT * FROM timers WHERE id = ?", (timer_id,)).fetchone()
+            if row is None:
+                return None
+            timer = self._row_to_timer(row)
+            if timer.status == "done":
+                status = "done"
+            else:
+                status = "active" if (timer.kind == "schedule" and keep_active) else "done"
+            self._conn.execute(
+                "UPDATE timers SET status = ?, updated_at = ? WHERE id = ?",
+                (status, _iso(_utc_now()), timer_id),
+            )
+            updated = self._conn.execute("SELECT * FROM timers WHERE id = ?", (timer_id,)).fetchone()
+            assert updated is not None
+            return self._row_to_timer(updated)
+
+    def recover_firing_timers(self, *, max_age_seconds: int = 1800) -> list[str]:
+        """A crash between firing and finishing leaves `firing`; after a grace period, retry the timer."""
+        cutoff = _iso(_utc_now() - timedelta(seconds=max_age_seconds))
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id FROM timers WHERE status = 'firing' AND updated_at < ?",
+                (cutoff,),
+            ).fetchall()
+            ids = [str(r["id"]) for r in rows]
+            for timer_id in ids:
+                self._conn.execute(
+                    "UPDATE timers SET status = 'active', updated_at = ? WHERE id = ?",
+                    (_iso(_utc_now()), timer_id),
+                )
+            return ids
+
+    def count_agent_followups(self, task_id: str | None) -> int:
+        with self._lock:
+            if task_id is None:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM timers WHERE task_id IS NULL AND created_by = 'agent'"
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM timers WHERE task_id = ? AND created_by = 'agent'",
+                    (task_id,),
+                ).fetchone()
+            return int(row["cnt"]) if row is not None else 0
 
     def reap_stale_leases(self, now: datetime | None = None) -> list[str]:
         now_dt = now or _utc_now()
@@ -830,6 +1113,7 @@ class BrainDB:
         skills_used: list[str] | None = None,
         diagnostic: str | None = None,
         thread_id: str | None = None,
+        notify_owner: bool = True,
     ) -> TaskRow:
         now_iso = _iso(_utc_now())
         with self._lock, self._conn:
@@ -850,6 +1134,7 @@ class BrainDB:
                 metric_value=metric_value,
                 skills_used=skills_used,
                 diagnostic=diagnostic,
+                notify_owner=notify_owner,
                 now_iso=now_iso,
             )
 
@@ -871,6 +1156,7 @@ class BrainDB:
         skills_used: list[str] | None = None,
         diagnostic: str | None = None,
         thread_id: str | None = None,
+        notify_owner: bool = True,
     ) -> TaskRow:
         task = self.get_task(task_id)
         dedup_skills = list(dict.fromkeys(s.strip() for s in (skills_used or []) if s.strip()))
@@ -918,21 +1204,22 @@ class BrainDB:
                 best_branch = git_branch
                 best_sha = git_sha
             metric_suffix = f" (metric={metric_value})" if metric_value is not None else ""
-            self._queue_outbox_locked(
-                kind="report",
-                task_id=task_id,
-                summary_spoken=(
-                    f"Completed {task_id} ({task.title}) on branch "
-                    f"{git_branch or f'brain/{task_id}'}{metric_suffix}."
-                ),
-                details={
-                    "git_branch": git_branch,
-                    "git_sha": git_sha,
-                    "metric_value": metric_value,
-                    "summary": summary,
-                },
-                now_iso=now_iso,
-            )
+            if notify_owner:
+                self._queue_outbox_locked(
+                    kind="report",
+                    task_id=task_id,
+                    summary_spoken=(
+                        f"Completed {task_id} ({task.title}) on branch "
+                        f"{git_branch or f'brain/{task_id}'}{metric_suffix}."
+                    ),
+                    details={
+                        "git_branch": git_branch,
+                        "git_sha": git_sha,
+                        "metric_value": metric_value,
+                        "summary": summary,
+                    },
+                    now_iso=now_iso,
+                )
         elif outcome == "decomposed":
             pending_children = self._conn.execute(
                 "SELECT COUNT(*) AS cnt FROM tasks WHERE parent_id = ? AND status != 'done'",
@@ -951,13 +1238,14 @@ class BrainDB:
             strikes = task.strike_count + 1
             if strikes >= 3:
                 new_status = "blocked"
-                self._queue_outbox_locked(
-                    kind="blocker",
-                    task_id=task_id,
-                    summary_spoken=f"Task {task_id} ({task.title}) is blocked after 3 failed attempts.",
-                    details={"summary": summary, "verify_output": verify_output},
-                    now_iso=now_iso,
-                )
+                if notify_owner:
+                    self._queue_outbox_locked(
+                        kind="blocker",
+                        task_id=task_id,
+                        summary_spoken=f"Task {task_id} ({task.title}) is blocked after 3 failed attempts.",
+                        details={"summary": summary, "verify_output": verify_output},
+                        now_iso=now_iso,
+                    )
             else:
                 new_status = "ready"
 
@@ -1224,6 +1512,17 @@ class BrainDB:
                     )
         return rolled_back
 
+    def subscribe_outbox(self, callback: Callable[[OutboxRow], None]) -> None:
+        """Called for every newly queued outbox row; the server turns it into a voice event."""
+        self._outbox_subscribers.append(callback)
+
+    def _notify_outbox(self, row: OutboxRow) -> None:
+        for callback in list(self._outbox_subscribers):
+            try:
+                callback(row)
+            except Exception:
+                pass  # a subscriber must never fail the write that queued the item
+
     def queue_outbox(
         self,
         *,
@@ -1271,7 +1570,28 @@ class BrainDB:
         )
         row = self._conn.execute("SELECT * FROM outbox WHERE id = ?", (outbox_id,)).fetchone()
         assert row is not None
-        return self._row_to_outbox(row)
+        outbox_row = self._row_to_outbox(row)
+        self._notify_outbox(outbox_row)
+        return outbox_row
+
+    def get_outbox(self, outbox_id: str) -> OutboxRow | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM outbox WHERE id = ?", (outbox_id,)).fetchone()
+            return self._row_to_outbox(row) if row is not None else None
+
+    def mark_outbox_spoken(self, outbox_id: str) -> OutboxRow | None:
+        """The voice took the item; only a still-queued row changes, so a late ack cannot undo an approval."""
+        with self._lock, self._conn:
+            row = self._conn.execute("SELECT * FROM outbox WHERE id = ?", (outbox_id,)).fetchone()
+            if row is None:
+                return None
+            if row["status"] == "queued":
+                self._conn.execute(
+                    "UPDATE outbox SET status = 'spoken' WHERE id = ?", (outbox_id,)
+                )
+            updated = self._conn.execute("SELECT * FROM outbox WHERE id = ?", (outbox_id,)).fetchone()
+            assert updated is not None
+            return self._row_to_outbox(updated)
 
     def list_outbox(self, limit: int = 200) -> list[OutboxRow]:
         """Queued approvals first, then newest: the order the cockpit draws."""
@@ -1401,6 +1721,7 @@ class BrainDB:
             ),
             best_branch=row["best_branch"] if "best_branch" in keys else None,
             best_sha=row["best_sha"] if "best_sha" in keys else None,
+            dedupe_key=row["dedupe_key"] if "dedupe_key" in keys else None,
         )
 
     @staticmethod
@@ -1447,6 +1768,34 @@ class BrainDB:
             worktree_path=row["worktree_path"] if "worktree_path" in row.keys() else None,
             branch=str(row["branch"] or ""),
             last_sequence=int(raw_sequence) if raw_sequence is not None else None,
+            updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _row_to_timer(row: sqlite3.Row) -> TimerRow:
+        keys = set(row.keys())
+        return TimerRow(
+            id=str(row["id"]),
+            kind=row["kind"],
+            action=row["action"] if "action" in keys else "check",
+            cron_expr=row["cron_expr"] if "cron_expr" in keys else None,
+            timezone=str(row["timezone"] or "UTC"),
+            next_run_at=str(row["next_run_at"]),
+            repo=row["repo"] if "repo" in keys else None,
+            mode=row["mode"] if "mode" in keys and row["mode"] in ("ASSIST", "AUTONOMOUS") else "ASSIST",
+            title=str(row["title"]),
+            prompt_spec=str(row["prompt_spec"]),
+            verify_cmd=row["verify_cmd"] if "verify_cmd" in keys else None,
+            max_cost_usd=(
+                float(row["max_cost_usd"])
+                if "max_cost_usd" in keys and row["max_cost_usd"] is not None
+                else None
+            ),
+            created_by=str(row["created_by"] or "owner"),
+            status=row["status"] if "status" in keys else "active",
+            task_id=row["task_id"] if "task_id" in keys else None,
+            chain_count=int(row["chain_count"]) if "chain_count" in keys else 0,
+            created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
 

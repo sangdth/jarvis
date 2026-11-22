@@ -36,6 +36,7 @@ class PlannerOrchestrator:
         screenshot: str | None = None,
         session_mode: str | None = None,
         cwd: str | None = None,
+        chat_session_key: str | None = None,
     ) -> RunResult:
         async def bool_cb(spoken: str, details: str, session: str | None) -> bool | None:
             if approval_cb is None:

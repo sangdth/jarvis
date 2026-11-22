@@ -274,6 +274,11 @@ if "--offline" in sys.argv:
         "evidence_attempt_ids": [1, 2],
     })
     assert res["ok"] is True, res
+    mem = rpc("propose_memory_update", {
+        "name": "repos/demo.md",
+        "content": "# demo\\n- Verified: `VALUE = 42` in `app.py`.\\n",
+    })
+    assert mem["ok"] is True, mem
     print(json.dumps({"role": "assistant", "content": "Created skill demo-value-rule.", "cost_usd": 0.03}), flush=True)
 else:
     # Running as Builder role
@@ -316,6 +321,9 @@ else:
         assert len(active) == 1
         assert active[0].slug == "demo-value-rule"
         assert all(a.reflected for a in db.list_attempts())
+        assert (cfg.home_dir / "memory" / "repos" / "demo.md").read_text(encoding="utf-8").startswith(
+            "# demo"
+        )
 
         # Subsequent builder task receives `--skill` and records skill usage
         t3 = db.upsert_task(

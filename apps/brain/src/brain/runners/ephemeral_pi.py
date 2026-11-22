@@ -1,8 +1,9 @@
-"""One-shot `pi` answers: small, self-contained questions that should leave nothing behind.
+"""One-shot `pi` answers, and the small conversation session behind a follow-up question.
 
-The worker gets a fresh `0700` temp directory as its whole state (session JSONL included), may read the
-repository and the network but write only in that directory, and is killed at the timeout or when the daily
-budget runs out. The temp directory is deleted in `finally`, so a question never becomes a session.
+A standalone question runs in a fresh `0700` temp directory and leaves nothing behind. When the caller
+supplies a `session_key`, the session lives under `sessions/chat/<key>` instead, so the next turn resumes the
+same `pi` transcript (with `pi`'s own compaction) rather than starting cold. Old chat sessions are pruned by
+age and count; a board worker never uses this path.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import tempfile
@@ -25,6 +27,7 @@ from brain.sandbox import wrap_ephemeral
 TOOLS = "read,grep,find,ls,bash"
 # Words that make an answer worth streaming while it is written; the rest of the JSON event is machinery.
 _STREAM_PREVIEW = 240
+_SAFE_KEY_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 
 
 def _assistant_text(event: dict[str, Any]) -> str | None:
@@ -59,34 +62,80 @@ def _event_cost(event: dict[str, Any]) -> float:
 
 
 class EphemeralPiRunner:
-    """Answers a question with one `pi` process and destroys its session when the answer is in."""
+    """Answers a question with one `pi` process; a chat session is kept only when the caller asks for one."""
 
     id = "ephemeral"
 
     def __init__(self, cfg: Settings, db: BrainDB) -> None:
         self.cfg = cfg
         self.db = db
+        self._active: dict[str, asyncio.subprocess.Process] = {}
 
     async def start(self) -> None:  # nothing to keep alive
         return None
 
     async def stop(self) -> None:
-        return None
+        for proc in list(self._active.values()):
+            self._terminate(proc)
 
     async def answer(self, session_id: str, answer: str) -> bool:
         return False  # a one-shot turn has no question to answer
 
     async def interrupt(self, run_id: str) -> bool:
-        return False
+        proc = self._active.get(run_id)
+        if proc is None or proc.returncode is not None:
+            return False
+        self._terminate(proc, signal.SIGTERM)
+        return True
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[Any]:
-        return []  # nothing survives, so there is nothing to list
+        return []  # a chat session has no picker; the voice just keeps its own key
+
+    @staticmethod
+    def _chat_key(raw: str) -> str:
+        cleaned = _SAFE_KEY_RE.sub("-", raw.strip())[:64].strip(".-")
+        return cleaned or "chat"
+
+    def _chat_session_dir(self, key: str) -> Path:
+        path = self.cfg.chat_sessions_dir / key
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path, 0o700)
+        return path
+
+    def _prune_chat_sessions(self) -> None:
+        """Keep the newest N chats and drop anything past the TTL; cheap enough to run after each turn."""
+        root = self.cfg.chat_sessions_dir
+        if not root.is_dir():
+            return
+        cutoff = time.time() - max(1, self.cfg.chat_session_ttl_days) * 86400
+        sessions = sorted(
+            (p for p in root.iterdir() if p.is_dir()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for index, folder in enumerate(sessions):
+            try:
+                too_old = folder.stat().st_mtime < cutoff
+                too_big = (
+                    sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+                    > max(1, self.cfg.max_chat_session_mb) * 1024 * 1024
+                )
+            except OSError:
+                continue
+            if index >= max(1, self.cfg.max_chat_sessions) or too_old or too_big:
+                shutil.rmtree(folder, ignore_errors=True)
 
     async def run(self, request: RunRequest, emit: EventCallback) -> RunResult:
         timeout = request.timeout_seconds or float(self.cfg.ephemeral_timeout_seconds)
         started = time.monotonic()
-        tmp_dir = Path(tempfile.mkdtemp(prefix="brain-ephemeral-"))
-        tmp_dir.chmod(0o700)
+        session_key = self._chat_key(request.session_key) if request.session_key else None
+        persisted = session_key is not None
+        if persisted:
+            assert session_key is not None
+            work_dir = self._chat_session_dir(session_key)
+        else:
+            work_dir = Path(tempfile.mkdtemp(prefix="brain-ephemeral-"))
+            work_dir.chmod(0o700)
         try:
             cmd = [
                 self.cfg.pi_bin,
@@ -99,26 +148,36 @@ class EphemeralPiRunner:
                 "--no-mcp",
                 "--no-extensions",
                 "--session-dir",
-                str(tmp_dir),
+                str(work_dir),
                 "-t",
                 TOOLS,
             ]
+            if persisted:
+                cmd.extend(["--session-id", session_key or ""])
             model = (self.cfg.ephemeral_model or self.cfg.planner_model).strip()
             if model:
                 cmd.extend(["--model", model])
+            for path in request.append_system_paths:
+                if path.is_file():
+                    cmd.extend(["--append-system-prompt", str(path)])
             cmd.extend(["--", request.prompt])
             cmd = wrap_ephemeral(
                 cmd,
-                work_dir=tmp_dir,
+                work_dir=work_dir,
                 home_dir=self.cfg.home_dir,
                 enabled=self.cfg.sandbox_enabled,
             )
-            env = self._env(tmp_dir)
+            env = self._env(work_dir)
 
             state = self.db.get_state()
             budget_left = max(0.0, state.daily_budget_usd - state.spent_today_usd)
             if budget_left <= 0:
                 return RunResult(outcome="errored", summary="Daily budget reached; no one-shot answer was run.")
+            run_cap = (
+                float(request.max_cost_usd)
+                if request.max_cost_usd is not None
+                else float(self.cfg.max_ephemeral_cost_usd)
+            )
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -128,11 +187,13 @@ class EphemeralPiRunner:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
+            self._active[request.run_id] = proc
             assert proc.stdout is not None
             cost = 0.0
             last_text = ""
             timed_out = False
             over_budget = False
+            over_cap = False
             try:
                 while True:
                     remaining = timeout - (time.monotonic() - started)
@@ -167,6 +228,10 @@ class EphemeralPiRunner:
                         over_budget = True
                         self._terminate(proc)
                         break
+                    if run_cap > 0 and cost > run_cap:
+                        over_cap = True
+                        self._terminate(proc)
+                        break
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
@@ -174,6 +239,7 @@ class EphemeralPiRunner:
                     await proc.wait()
                 stderr = (await proc.stderr.read()).decode("utf-8", errors="replace").strip() if proc.stderr else ""
             finally:
+                self._active.pop(request.run_id, None)
                 if proc.returncode is None:
                     self._terminate(proc, signal.SIGKILL)
                     await proc.wait()
@@ -192,6 +258,12 @@ class EphemeralPiRunner:
                     summary="One-shot answer stopped: daily budget exceeded.",
                     cost_usd=cost,
                 )
+            if over_cap:
+                return RunResult(
+                    outcome="errored",
+                    summary=f"One-shot answer stopped: per-run cost cap ${run_cap:.2f} exceeded.",
+                    cost_usd=cost,
+                )
             if proc.returncode != 0:
                 return RunResult(
                     outcome="errored",
@@ -200,7 +272,10 @@ class EphemeralPiRunner:
                 )
             return RunResult(outcome="pushed", summary=last_text or "Done.", cost_usd=cost)
         finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            if persisted:
+                self._prune_chat_sessions()
+            else:
+                shutil.rmtree(work_dir, ignore_errors=True)
 
     def _env(self, tmp_dir: Path) -> dict[str, str]:
         env = dict(os.environ)

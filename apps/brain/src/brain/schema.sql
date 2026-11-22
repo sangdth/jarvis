@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- which runner executes this task: the pi Builder (default), or a coding client the brain drives
     runner TEXT NOT NULL DEFAULT 'pi',
     thread_id TEXT,
+    -- idempotency for timer/webhook/voice submissions; one active row per key
+    dedupe_key TEXT,
     best_metric REAL,
     best_branch TEXT,
     best_sha TEXT,
@@ -101,4 +103,28 @@ CREATE TABLE IF NOT EXISTS outbox (
     details_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'spoken', 'approved', 'rejected')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Follow-ups and schedules. A due timer creates a board task (`action='task'`) or runs a read-only check
+-- (`action='check'`) whose answer goes to the outbox. `next_run_at` is UTC; `timezone` is the IANA zone the
+-- cron expression is read in, so a morning check stays at 08:00 across daylight-saving changes.
+CREATE TABLE IF NOT EXISTS timers (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('followup', 'schedule')),
+    action TEXT NOT NULL DEFAULT 'check' CHECK (action IN ('task', 'check')),
+    cron_expr TEXT,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    next_run_at TEXT NOT NULL,
+    repo TEXT,
+    mode TEXT NOT NULL DEFAULT 'ASSIST' CHECK (mode IN ('ASSIST', 'AUTONOMOUS')),
+    title TEXT NOT NULL,
+    prompt_spec TEXT NOT NULL,
+    verify_cmd TEXT,
+    max_cost_usd REAL,
+    created_by TEXT NOT NULL DEFAULT 'owner' CHECK (created_by IN ('owner', 'agent')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'firing', 'paused', 'done')),
+    task_id TEXT REFERENCES tasks(id),
+    chain_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );

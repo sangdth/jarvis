@@ -39,15 +39,17 @@ class ForegroundTest(unittest.TestCase):
     def test_connect_names_what_to_connect_to(self) -> None:
         for argv, target in ((["connect"], "t3"), (["connect", "pi"], "pi"),
                              (["connect", "claude"], "claude"), (["serve", "--connect=opencode"], "opencode")):
-            self._run(argv).assert_awaited_once_with(connect=target, meeting=False, remote=False)
+            self._run(argv).assert_awaited_once_with(connect=target, meeting=False)
 
     def test_meeting_flag_and_subcommand_enable_meeting_mode(self) -> None:
         for argv, target in ((["meeting"], None), (["--meeting"], None), (["meeting", "connect"], "t3"),
                              (["connect", "pi", "--meeting"], "pi")):
-            self._run(argv).assert_awaited_once_with(connect=target, meeting=True, remote=False)
+            self._run(argv).assert_awaited_once_with(connect=target, meeting=True)
 
-    def test_remote_subcommand_listens_for_a_relay_client(self) -> None:
-        self._run(["remote"]).assert_awaited_once_with(connect=None, meeting=False, remote=True)
+    def test_the_old_remote_word_is_a_no_op(self) -> None:
+        # The thin client is always served, so `jarvis remote` just listens with this Mac's audio (and a paired Mac's).
+        for argv in (["remote"], ["--remote"], ["serve", "--remote"]):
+            self._run(argv).assert_awaited_once_with(connect=None, meeting=False)
 
     def test_a_checkout_without_its_env_stops_before_listening(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch.object(cli.sys, "argv", ["jarvis"]), \
@@ -57,10 +59,9 @@ class ForegroundTest(unittest.TestCase):
         self.assertIn("No .env", str(stopped.exception))
         lock.assert_not_called()
 
-    def test_remote_and_meeting_together_are_refused(self) -> None:
-        with patch.object(cli.sys, "argv", ["jarvis", "remote", "meeting"]), self.assertRaises(SystemExit) as stopped:
-            cli.main()
-        self.assertIn("do not go together", str(stopped.exception))
+    def test_remote_and_meeting_now_go_together(self) -> None:
+        # A meeting's call audio is this Mac's, so the old refusal would have blocked driving it from a paired Mac.
+        self._run(["remote", "meeting"]).assert_awaited_once_with(connect=None, meeting=True)
 
 
 class UsageTest(unittest.TestCase):
@@ -122,10 +123,10 @@ class ServiceTest(unittest.TestCase):
                 patch.object(cli, "write_plist") as write, patch.object(cli, "launchd_loaded", return_value=True), \
                 patch.object(cli, "launchd_kick") as kick, patch.object(cli, "run_cockpit") as top, \
                 patch.object(cli.sys, "platform", "darwin"), patch("builtins.print"):
-            cli.service_restart(["--remote"])
+            cli.service_restart(["--meeting"])
         sync.assert_called_once_with()
         build.assert_called_once_with()
-        write.assert_called_once_with(["--remote"])
+        write.assert_called_once_with(["--meeting"])
         kick.assert_called_once_with()
         top.assert_called_once_with([])
 
@@ -134,23 +135,34 @@ class ServiceTest(unittest.TestCase):
             plist = Path(tmp) / "p.plist"
             plist.write_text(
                 "<array><string>/x/python</string><string>-m</string><string>jarvis.cli</string>"
+                "<string>serve</string><string>--meeting</string><string>--connect</string><string>pi</string></array>"
+            )
+            with patch.object(cli, "PLIST_PATH", plist):
+                self.assertEqual(cli.plist_serve_args(), ["--meeting", "--connect", "pi"])
+
+    def test_the_old_remote_flag_is_dropped_from_an_installed_plist(self) -> None:
+        # It was its own mode; the thin client is always served now, so `jarvis restart` cleans the plist as it goes.
+        with tempfile.TemporaryDirectory() as tmp:
+            plist = Path(tmp) / "p.plist"
+            plist.write_text(
+                "<array><string>/x/python</string><string>-m</string><string>jarvis.cli</string>"
                 "<string>serve</string><string>--remote</string><string>--meeting</string></array>"
             )
             with patch.object(cli, "PLIST_PATH", plist):
-                self.assertEqual(cli.plist_serve_args(), ["--remote", "--meeting"])
+                self.assertEqual(cli.plist_serve_args(), ["--meeting"])
 
-    def test_a_missing_plist_starts_in_remote_mode(self) -> None:
+    def test_a_missing_plist_starts_without_a_mode_flag(self) -> None:
         with patch.object(cli, "PLIST_PATH", Path("/tmp/nope-not-here.plist")):
-            self.assertEqual(cli.plist_serve_args(), ["--remote"])
+            self.assertEqual(cli.plist_serve_args(), [])
 
     def test_launch_agent_runs_this_checkout(self) -> None:
         from brain.cli import build_launchd_plist
 
-        plist = build_launchd_plist(["--remote"])
+        plist = build_launchd_plist([])
         self.assertIn("-m", plist)
         self.assertIn("jarvis.cli", plist)
         self.assertIn("<string>serve</string>", plist)
-        self.assertIn("<string>--remote</string>", plist)
+        self.assertNotIn("<string>--remote</string>", plist)
         self.assertIn("WorkingDirectory", plist)
 
 

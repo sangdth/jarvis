@@ -10,18 +10,29 @@ import asyncio
 import ctypes
 import os
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from loguru import logger
-from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, StartFrame, TTSAudioRawFrame
+from pipecat.frames.frames import (
+    InputAudioRawFrame,
+    InterruptionFrame,
+    OutputAudioRawFrame,
+    StartFrame,
+    TTSAudioRawFrame,
+)
 from pipecat.processors.frame_processor import FrameProcessor, FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
+from jarvis_voice.config import settings
 from jarvis_voice.meet_voice import MeetVoice
+from jarvis_voice.remote_audio import LOCAL, RELAY, Ear
 from jarvis_voice.voice_engine import PLAY_AHEAD_SECS, MicConverter, VoiceAudio
+
+if TYPE_CHECKING:
+    from jarvis_voice.remote_audio import RelayHub
 
 SILENT_MIC_SECS = 3.0  # this long after start without real sound means the mic is not reaching Jarvis
 SILENT_MIC_WARNING = (
@@ -200,100 +211,267 @@ MacVoiceAudio = VoiceAudio
 
 
 class MacVoiceInputTransport(BaseInputTransport):
-    def __init__(self, audio: MacVoiceAudio, params: TransportParams) -> None:
+    """This Mac's mic or a paired Mac's, whichever `Ear` says is live: one stream, one pipeline."""
+
+    def __init__(
+        self,
+        audio: MacVoiceAudio | None,
+        params: TransportParams,
+        *,
+        hub: "RelayHub | None" = None,
+        ear: Ear | None = None,
+    ) -> None:
         super().__init__(params)
         self._audio = audio
+        self._hub = hub
+        self._ear = ear or Ear(local=audio is not None)
         self._mic: MicConverter | None = None
         self._silence_check: asyncio.Task | None = None
+        self._remote_pump: asyncio.Task | None = None
 
     # Same signature as Pipecat's FrameProcessor.setup, which narrows BaseObject.setup the same way.
     async def setup(self, setup: FrameProcessorSetup) -> None:  # type: ignore[override]
         await super().setup(setup)
-        self._mic = MicConverter(self.sample_rate)
-        self._audio.on_mic(self._on_mic)
+        if self._audio is not None:
+            try:
+                self._mic = MicConverter(self.sample_rate)
+                self._audio.on_mic(self._on_mic)
+            except Exception as exc:
+                # Losing the local mic must not take the pipeline down: a paired Mac's mic still works.
+                self._mic = None
+                logger.error(f"This Mac's mic could not be opened ({exc!r}); a paired Mac's is used when it connects.")
 
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
-        self._audio.start()
-        self._silence_check = self.create_task(self._warn_if_silent())
+        if self._audio is not None:
+            self._audio.start()
+            self._silence_check = self.create_task(self._warn_if_silent())
+        if self._hub is not None:
+            self._remote_pump = self.create_task(self._pump_remote())
         await self.set_transport_ready(frame)
 
     async def cleanup(self) -> None:
         await super().cleanup()
-        if self._silence_check:
-            await self.cancel_task(self._silence_check)
-        self._audio.stop()
+        for task in (self._silence_check, self._remote_pump):
+            if task:
+                await self.cancel_task(task)
+        self._silence_check = self._remote_pump = None
+        if self._audio is not None:
+            self._audio.stop()
+
+    @property
+    def _remote(self) -> bool:
+        return self._ear.active == RELAY
 
     async def _warn_if_silent(self) -> None:
         # The tap gets no blocks at all when voice processing fails, so this is a timer, not a check on each block.
         await asyncio.sleep(SILENT_MIC_SECS)
+        if self._remote:
+            return  # the paired Mac's mic is the one in use, and the relay logs a silent client itself
         if self._mic is not None and not self._mic.heard:
             logger.error(SILENT_MIC_WARNING)
+
+    async def _pump_remote(self) -> None:
+        """The paired Mac's mic, as this pipeline's input; in a meeting the call's audio is mixed in here too."""
+        assert self._hub is not None
+        while True:
+            pcm = await self._hub.mic_queue.get()
+            audio = self._audio
+            if audio is not None and audio.bridge is not None:
+                pcm = audio.bridge.mix_buffer.mix(pcm)  # the call, on the host where the tap runs
+            if pcm and self._ear.accept(RELAY, pcm):
+                await self.push_audio_frame(
+                    InputAudioRawFrame(audio=pcm, sample_rate=self.sample_rate, num_channels=1)
+                )
 
     def _on_mic(self, samples: np.ndarray, rate: int) -> None:  # audio thread
         mic = self._mic  # set in setup, before the tap is installed
         if mic is None:
             return
         audio = mic.convert(samples, rate)
-        if self._audio.bridge is not None:
+        if self._audio is not None and self._audio.bridge is not None:
             audio = self._audio.bridge.mix_buffer.mix(audio)
         if audio:
-            frame = InputAudioRawFrame(audio=audio, sample_rate=mic.out_rate, num_channels=1)
-            asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), self.get_event_loop())
+            self.get_event_loop().call_soon_threadsafe(self._offer_local, audio)
+
+    def _offer_local(self, pcm: bytes) -> None:  # event loop
+        if self._ear.accept(LOCAL, pcm):
+            asyncio.create_task(
+                self.push_audio_frame(
+                    InputAudioRawFrame(audio=pcm, sample_rate=self.sample_rate, num_channels=1)
+                )
+            )
 
 
 class MacVoiceOutputTransport(BaseOutputTransport):
-    def __init__(self, audio: MacVoiceAudio, params: TransportParams) -> None:
+    """Speech to this Mac's speaker or the paired Mac's, whichever `Ear` says is live."""
+
+    def __init__(
+        self,
+        audio: MacVoiceAudio | None,
+        params: TransportParams,
+        *,
+        hub: "RelayHub | None" = None,
+        ear: Ear | None = None,
+    ) -> None:
         super().__init__(params)
         self._audio = audio
+        self._hub = hub
+        self._ear = ear or Ear(local=audio is not None)
         self._until = 0.0  # loop time when everything queued so far has played
 
     async def setup(self, setup: FrameProcessorSetup) -> None:  # type: ignore[override]  # see the input side
         await super().setup(setup)
-        self._audio.connect_player(self.sample_rate)
+        if self._audio is not None:
+            self._audio.connect_player(self.sample_rate)
 
     async def start(self, frame: StartFrame) -> None:
         await super().start(frame)
-        self._audio.start()
-        if self._audio.meet_voice is not None:
-            await self._audio.meet_voice.start()
+        if self._audio is not None:
+            self._audio.start()
+            if self._audio.meet_voice is not None:
+                await self._audio.meet_voice.start()
         await self.set_transport_ready(frame)
 
     async def cleanup(self) -> None:
         await super().cleanup()
-        if self._audio.meet_voice is not None:
+        if self._audio is not None and self._audio.meet_voice is not None:
             await self._audio.meet_voice.stop()
+
+    @property
+    def _remote(self) -> bool:
+        return self._ear.active == RELAY and self._hub is not None and self._hub.client is not None
+
+    def handoff(self) -> None:
+        """The mic and speaker just changed Macs: what was queued for the old one no longer holds the next frame."""
+        self._until = 0.0
+
+    async def process_frame(self, frame: Any, direction: Any) -> None:
+        if isinstance(frame, InterruptionFrame):
+            await self._interrupt()
+        await super().process_frame(frame, direction)
+
+    async def _interrupt(self) -> None:
+        """The user talked over Jarvis: what is still queued on the Mac that is speaking is no longer wanted."""
+        self._until = 0.0
+        if self._hub is not None:
+            await self._hub.flush()
+        if self._audio is not None:
+            self._audio.flush()
 
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # The player queues instantly; waiting here paces the output like a blocking speaker write, so an
         # interruption drops the audio Pipecat still holds instead of letting everything already queued play out.
         now = asyncio.get_running_loop().time()
-        self._until = max(self._until, now) + self._audio.play(frame.audio, speech=isinstance(frame, TTSAudioRawFrame))
+        speech = isinstance(frame, TTSAudioRawFrame)
+        audio = self._audio
+        if self._remote:
+            assert self._hub is not None
+            seconds = await self._hub.send_audio(frame.audio, sample_rate=frame.sample_rate)
+            if audio is not None and audio.meet_voice is not None and speech:
+                audio.meet_voice.send(frame.audio)  # the call still hears Jarvis when the mic is another Mac's
+        elif audio is not None:
+            seconds = audio.play(frame.audio, speech=speech)
+        else:
+            # No local speaker and no paired Mac yet: keep the pace as if there were, so the pipeline never stalls.
+            seconds = len(frame.audio) / 2 / max(1, frame.sample_rate)
+        self._ear.spoke(seconds)
+        self._until = max(self._until, now) + seconds
         await asyncio.sleep(max(0.0, self._until - now - PLAY_AHEAD_SECS))
         return True
 
 
 class MacVoiceTransport(BaseTransport):
-    """Local mic and speaker, like Pipecat's LocalAudioTransport, but with Apple's echo canceller in the path."""
+    """
+    The mic and speaker, like Pipecat's LocalAudioTransport, but with Apple's echo canceller in the path.
 
-    def __init__(self, params: TransportParams, *, meeting: bool = False) -> None:
+    They are this Mac's unless a paired Mac is connected as the thin client (`hub`): that one owns both while it is
+    connected, and hands them back when it goes. With no local audio hardware (a Mac mini with no mic), `has_local_audio`
+    is False and Jarvis keeps quiet until a paired Mac connects.
+    """
+
+    def __init__(
+        self,
+        params: TransportParams,
+        *,
+        meeting: bool = False,
+        hub: "RelayHub | None" = None,
+        ear: Ear | None = None,
+    ) -> None:
         super().__init__()
         self._params = params
-        self._audio = MacVoiceAudio(
-            bridge=MeetingAudioBridge() if meeting else None,  # hears the call
-            meet_voice=MeetVoice() if meeting else None,  # speaks into it
-        )
+        self._hub = hub
+        self._audio: MacVoiceAudio | None = None
+        try:
+            self._audio = MacVoiceAudio(
+                bridge=MeetingAudioBridge() if meeting else None,  # hears the call
+                meet_voice=MeetVoice() if meeting else None,  # speaks into it
+            )
+            if not self._audio.has_mic_input():
+                raise RuntimeError("this Mac has no microphone input")
+            logger.info("Mic and speaker run through macOS voice processing (echo cancellation).")
+        except Exception as exc:
+            # A Mac mini has no mic: voice processing can't start, and a paired Mac is the only ear there is.
+            logger.warning(
+                f"No local mic or speaker ({exc!r}); Jarvis hears and speaks through a paired Mac when one connects."
+            )
+            if self._audio is not None:
+                self._audio.stop()
+            self._audio = None
+        # The relay owns the ear when one is passed in (a paired Mac's audio and this Mac's feed the same one).
+        self._ear = ear or Ear(local=self.has_local_audio)
+        self._ear.set_local(self.has_local_audio)
+        self._ear.on_switch = self._ear_switched
         self._input: MacVoiceInputTransport | None = None
         self._output: MacVoiceOutputTransport | None = None
-        logger.info("Mic and speaker run through macOS voice processing (echo cancellation).")
+        if hub is not None:
+            hub.on_attach.append(self._remote_attached)
+            hub.on_detach.append(self._remote_detached)
+
+    @property
+    def has_local_audio(self) -> bool:
+        return self._audio is not None
+
+    def _ear_switched(self, old: str, new: str) -> None:
+        """The live mic and speaker moved: stop what the old one queued and tell the paired Mac where it is."""
+        if self._output is not None:
+            self._output.handoff()
+        if old == LOCAL and self._audio is not None:
+            self._audio.flush()
+        if self._hub is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            if old == RELAY:
+                loop.create_task(self._hub.flush())
+            loop.create_task(self._hub.send_ear(new == RELAY))
+
+    def _remote_attached(self) -> None:
+        """A paired Mac took the mic and speaker: stop talking here at once, and start its pacing fresh."""
+        if self._output is not None:
+            self._output.handoff()
+        if self._audio is not None:
+            self._audio.flush()
+            if settings.master_check:
+                logger.warning(
+                    "MASTER_CHECK is on and the mic is a paired Mac's now: the voiceprint was recorded with this "
+                    "Mac's, so your sentences may score low. Watch the [Speaker] score= lines; lower "
+                    "SPEAKER_THRESHOLD if they are dropped."
+                )
+
+    def _remote_detached(self) -> None:
+        if self._output is not None:
+            self._output.handoff()
 
     def input(self) -> FrameProcessor:
         if not self._input:
-            self._input = MacVoiceInputTransport(self._audio, self._params)
+            self._input = MacVoiceInputTransport(self._audio, self._params, hub=self._hub, ear=self._ear)
         return self._input
+
     def output(self) -> FrameProcessor:
         if not self._output:
-            self._output = MacVoiceOutputTransport(self._audio, self._params)
+            self._output = MacVoiceOutputTransport(self._audio, self._params, hub=self._hub, ear=self._ear)
         return self._output
 
     async def set_meeting(self, on: bool) -> None:
@@ -305,6 +483,9 @@ class MacVoiceTransport(BaseTransport):
         meeting mode still works.
         """
         audio = self._audio
+        if audio is None:
+            logger.warning("Meeting mode needs this Mac's audio hardware to hear the call; it is not available here.")
+            return
         if on:
             if audio.bridge is None:
                 audio.bridge = MeetingAudioBridge()

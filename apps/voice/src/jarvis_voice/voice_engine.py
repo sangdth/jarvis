@@ -66,11 +66,22 @@ class VoiceAudio:
         self.bridge = bridge  # hears the call, in a meeting
         self.meet_voice = meet_voice  # speaks into it
 
+    def has_mic_input(self) -> bool:
+        """Whether this Mac has an input voice processing can tap: a Mac mini with no mic reports none."""
+        try:
+            fmt = self.engine.inputNode().outputFormatForBus_(0)
+            return int(fmt.sampleRate()) > 0 and int(fmt.channelCount()) > 0
+        except Exception:
+            return False
+
     def on_mic(self, callback: Callable[[np.ndarray, int], None]) -> None:
         """Call `callback(samples, rate)` from the audio thread with each block of the processed mic."""
         mic = self.engine.inputNode()
         fmt = mic.outputFormatForBus_(0)  # several identical channels with voice processing on; channel 0 is enough
         rate = int(fmt.sampleRate())
+        # A Mac with no input device reports 0 Hz and no channels; `installTapOnBus` would crash on that block size.
+        if rate <= 0 or int(fmt.channelCount()) <= 0:
+            raise RuntimeError("this Mac has no microphone input for voice processing")
 
         def tap(buffer, when) -> None:  # an Objective-C void block: it must return None
             n = buffer.frameLength()

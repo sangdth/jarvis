@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 from loguru import logger
 
+from brain import memory
 from brain.config import Settings
 from brain.db import BrainDB, TaskRow
 from brain.reconciler import Reconciler
@@ -180,6 +181,7 @@ class BrainOrchestrator:
         screenshot: str | None = None,
         session_mode: str | None = None,
         cwd: str | None = None,
+        chat_session_key: str | None = None,
     ) -> RunResult:
         label, _ = self._projects()
         projects = list_projects()
@@ -209,7 +211,7 @@ class BrainOrchestrator:
         return await self._dispatch(
             choice, run_id=run_id, user_input=user_input, session_id=session_id,
             pinned=pinned, approval_cb=approval_cb, emit=emit, screenshot=screenshot,
-            session_mode=session_mode, cwd=cwd,
+            session_mode=session_mode, cwd=cwd, chat_session_key=chat_session_key,
         )
 
     async def _choose(self, prompt: str, user_input: str) -> dict[str, Any] | None:
@@ -273,6 +275,7 @@ class BrainOrchestrator:
         screenshot: str | None,
         session_mode: str | None = None,
         cwd: str | None = None,
+        chat_session_key: str | None = None,
     ) -> RunResult:
         name = choice.get("name")
         args = choice.get("arguments") or {}
@@ -293,8 +296,15 @@ class BrainOrchestrator:
             )
             return await self._run(
                 "ephemeral",
-                RunRequest(run_id=run_id, prompt=prompt, cwd=self.cfg.home_dir,
-                           timeout_seconds=float(self.cfg.ephemeral_timeout_seconds)),
+                RunRequest(
+                    run_id=run_id,
+                    prompt=prompt,
+                    cwd=self.cfg.home_dir,
+                    timeout_seconds=float(self.cfg.ephemeral_timeout_seconds),
+                    max_cost_usd=self.cfg.max_ephemeral_cost_usd,
+                    append_system_paths=tuple(memory.addendum_paths(self.cfg.home_dir)),
+                    session_key=chat_session_key,
+                ),
                 emit,
             )
         # delegate_project (the default for anything else)
@@ -324,7 +334,10 @@ class BrainOrchestrator:
             pinned_session_id=pinned.get("session_id") if pinned else None,
             approval_cb=approval_cb,
         )
-        return await self._run(runner_id, request, emit)
+        result = await self._run(runner_id, request, emit)
+        if result.outcome not in ("errored", "timed_out"):
+            result.project = project or (cwd_path.name if cwd_path is not None else None)
+        return result
 
     async def _run(self, runner_id: str, request: RunRequest, emit: EventEmitter) -> RunResult:
         runner = self.runners.get(runner_id)

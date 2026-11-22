@@ -10,17 +10,20 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
+from brain import memory, schedule
 from brain.config import SELF_REPOS, Settings, settings
 from brain.db import (
     AttemptOutcome,
     BrainDB,
     TaskRow,
+    TimerRow,
     WorkerRole,
     check_metric_target,
     has_metric_comparator,
@@ -48,13 +51,14 @@ from brain.upgrade import GitState, classify_git_state
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 
 PLANNER_TOOLS = (
-    "read,grep,find,ls,research_scout,upsert_task,report_diagnostic,defer_for_approval"
+    "read,grep,find,ls,research_scout,upsert_task,report_diagnostic,defer_for_approval,"
+    "schedule_followup"
 )
 BUILDER_TOOLS = (
     "read,edit,write,edit_and_run,bash,grep,find,ls,research_scout,"
-    "record_note,report_diagnostic,defer_for_approval"
+    "record_note,report_diagnostic,defer_for_approval,schedule_followup"
 )
-IMPROVER_TOOLS = "read,grep,find,ls,research_scout,propose_skill_change"
+IMPROVER_TOOLS = "read,grep,find,ls,propose_skill_change,propose_memory_update"
 SCOUT_TOOLS = "read,grep,find,ls"
 _METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
 _METRIC_CMD_RE = re.compile(r"\bMETRIC\b", re.IGNORECASE)
@@ -158,6 +162,7 @@ class PiRunResult:
     skills_used: list[str] | None = None
     diagnostic: str | None = None
     modified_skills: list[str] | None = None
+    modified_memory: list[str] | None = None
 
 
 def extract_event_cost(event: dict[str, Any]) -> float:
@@ -219,10 +224,15 @@ class Reconciler:
         self.cfg.notes_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.skills_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.traces_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        memory.ensure_layout(self.cfg.home_dir)
         sync_skills_on_disk(self.db, self.cfg.skills_dir)
         self._board_ext_path = self._install_board_extension()
         self._loop_task: asyncio.Task[None] | None = None
         self._active_procs: dict[str, asyncio.subprocess.Process] = {}
+        self._wake = asyncio.Event()
+        self._timer_tasks: set[asyncio.Task[None]] = set()
+        self._check_runner: Any | None = None
+        self.db.recover_firing_timers(max_age_seconds=max(1800, self.cfg.max_run_seconds * 2))
 
     def _repo_dir(self, repo: str) -> Path:
         """The checkout a task works on: this repository for self tasks, else `projects_dir/<repo>`."""
@@ -253,6 +263,13 @@ class Reconciler:
                 await self._loop_task
             except asyncio.CancelledError:
                 pass
+        for task in list(self._timer_tasks):
+            task.cancel()
+        if self._timer_tasks:
+            await asyncio.gather(*list(self._timer_tasks), return_exceptions=True)
+        self._timer_tasks.clear()
+        if self._check_runner is not None:
+            await self._check_runner.stop()
         for proc in list(self._active_procs.values()):
             _terminate_proc_group(proc, signal.SIGTERM)
 
@@ -296,11 +313,23 @@ class Reconciler:
                 raise
             except Exception as exc:
                 logger.error(f"[Reconciler] tick error: {exc!r}")
-            await asyncio.sleep(self.cfg.reconcile_interval_seconds)
+            try:
+                await asyncio.wait_for(
+                    self._wake.wait(), timeout=self.cfg.reconcile_interval_seconds
+                )
+            except asyncio.TimeoutError:
+                pass
+            self._wake.clear()
+
+    def wake(self) -> None:
+        """A new task, timer or approval landed: claim it now instead of waiting for the next poll."""
+        self._wake.set()
 
     async def tick(self) -> TaskRow | None:
         """Executes one deterministic reconciler cycle for the active mode (ASSIST or AUTONOMOUS)."""
         self.db.reap_stale_leases()
+        self.db.recover_firing_timers(max_age_seconds=max(1800, self.cfg.max_run_seconds * 2))
+        await self._fire_timers()
         state = self.db.get_state()
         if state.spent_today_usd >= state.daily_budget_usd:
             self._set_phase("budget_paused", spent_usd=state.spent_today_usd)
@@ -333,6 +362,132 @@ class Reconciler:
             self.on_restart_requested()
         return finished
 
+    async def _fire_timers(self) -> None:
+        """Act on due timers: create a board task, or start a short check whose answer goes to the outbox."""
+        for timer in self.db.fire_due_timers():
+            if timer.action == "task":
+                try:
+                    repo = timer.repo or "jarvis"
+                    self.db.upsert_task(
+                        kind="goal",
+                        repo=repo,
+                        title=timer.title,
+                        spec=timer.prompt_spec,
+                        metric_target="The verify_cmd passes",
+                        verify_cmd=timer.verify_cmd,
+                        mode=timer.mode,
+                        runner="pi",
+                        dedupe_key=f"timer:{timer.id}:{timer.next_run_at}",
+                        ready=True,
+                    )
+                    self.db.finish_timer(timer.id)
+                except Exception as exc:
+                    logger.error(f"[Reconciler] timer {timer.id} could not queue a task: {exc!r}")
+                    self.db.queue_outbox(
+                        kind="report",
+                        task_id=timer.task_id,
+                        summary_spoken=f"Scheduled task {timer.title!r} could not be queued: {exc}",
+                        details={"timer_id": timer.id, "reason": "timer_error"},
+                    )
+                    self.db.finish_timer(timer.id)
+                continue
+            # A check is a short worker turn: run it beside the loop so a user task never waits behind it.
+            task = asyncio.create_task(self._timer_check_job(timer), name=f"timer-{timer.id}")
+            self._timer_tasks.add(task)
+            task.add_done_callback(self._timer_tasks.discard)
+
+    async def _timer_check_job(self, timer: TimerRow) -> None:
+        try:
+            await self._run_timer_check(timer)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(f"[Reconciler] timer {timer.id} failed: {exc!r}")
+            self.db.queue_outbox(
+                kind="report",
+                task_id=timer.task_id,
+                summary_spoken=f"Scheduled check {timer.title!r} failed: {exc}",
+                details={"timer_id": timer.id, "reason": "timer_error"},
+            )
+        finally:
+            self.db.finish_timer(timer.id)
+
+    async def wait_for_timer_checks(self) -> None:
+        """Tests and shutdown: let every started check finish (or be cancelled)."""
+        while self._timer_tasks:
+            await asyncio.gather(*list(self._timer_tasks), return_exceptions=True)
+
+    async def _run_timer_check(self, timer: TimerRow) -> None:
+        """A read-only, short `pi` turn for a due check; the summary is spoken through the outbox."""
+        from brain.runners.base import RunRequest
+        from brain.runners.ephemeral_pi import EphemeralPiRunner
+
+        _, zone = schedule.resolve_timezone(timer.timezone)
+        local_now = datetime.now(zone).strftime("%A %Y-%m-%d %H:%M %Z")
+        repo_dir = self._repo_dir(timer.repo) if timer.repo else self.cfg.home_dir
+        cwd = repo_dir if repo_dir.is_dir() else self.cfg.home_dir
+        notes = memory.repos_dir(self.cfg.home_dir) / f"{memory.repo_slug(timer.repo)}.md" if timer.repo else None
+        prompt = (
+            "You are Brain's scheduled check, answering the owner aloud.\n"
+            f"Current local time: {local_now}. Never call today yesterday.\n"
+            f"Check: {timer.title}\n"
+            f"Instructions: {timer.prompt_spec}\n"
+            f"Known facts about this source or repository:\n"
+            f"{notes.read_text(encoding='utf-8') if notes and notes.is_file() else '(none)'}\n"
+            f"Bookmarks (read the source from its saved cursor, never a fixed time window):\n"
+            f"{memory.render_bookmarks(self.cfg.home_dir)}\n\n"
+            f"Recently reported to the owner:\n{memory.recent_reported(self.cfg.home_dir)}\n\n"
+            "Use read/grep/find/ls and bash (curl, gh) when needed. If a source cannot be read, say it "
+            "plainly; never report a failed read as 'nothing new'. Before repeating an item that is still "
+            "open, re-check its live state and say 'still waiting, day N'; drop an item that was resolved. "
+            "Reply in one or two short sentences that can be spoken aloud, with no preamble and no file "
+            "paths.\n"
+            "After a successful read, end with one line per source, exactly "
+            "`BOOKMARK <source>=<newest cursor>` (for example `BOOKMARK gh-prs:jarvis=2026-11-22T08:00:00Z`). "
+            "That line is machinery, not part of the spoken answer; omit it for a source you could not read."
+        )
+        if self._check_runner is None:
+            self._check_runner = EphemeralPiRunner(self.cfg, self.db)
+        runner = self._check_runner
+
+        async def _emit(_event: dict[str, Any]) -> None:
+            return None
+
+        result = await runner.run(
+            RunRequest(
+                run_id=f"timer-{timer.id}",
+                prompt=prompt,
+                cwd=cwd,
+                timeout_seconds=float(self.cfg.check_timeout_seconds),
+                max_cost_usd=timer.max_cost_usd or self.cfg.max_ephemeral_cost_usd,
+                append_system_paths=tuple(memory.addendum_paths(self.cfg.home_dir)),
+            ),
+            _emit,
+        )
+        spoken_lines: list[str] = []
+        for line in result.summary.splitlines():
+            bookmark = re.match(r"^\s*BOOKMARK\s+(\S+?)\s*=\s*(.+?)\s*$", line, re.IGNORECASE)
+            if bookmark:
+                try:
+                    memory.write_bookmark(self.cfg.home_dir, bookmark.group(1), bookmark.group(2))
+                except ValueError:
+                    pass
+                continue
+            spoken_lines.append(line)
+        spoken = " ".join(part.strip() for part in spoken_lines if part.strip()).strip()
+        if result.outcome != "pushed" or not spoken:
+            spoken = f"Scheduled check {timer.title!r} could not finish: {result.summary}"
+        self.db.queue_outbox(
+            kind="report",
+            task_id=timer.task_id,
+            summary_spoken=spoken[:600],
+            details={
+                "timer_id": timer.id,
+                "outcome": result.outcome,
+                "cost_usd": result.cost_usd,
+            },
+        )
+
     async def execute_claimed_task(
         self,
         task: TaskRow,
@@ -341,11 +496,17 @@ class Reconciler:
         resume_session_id: str | None = None,
         approval_cb: ApprovalCallback | None = None,
     ) -> TaskRow:
+        notify_owner = not (run_key or "").startswith(("run-", "ask-"))
+
+        def done(**kwargs: Any) -> TaskRow:
+            # A voice-initiated run already tells the owner what happened; only background work needs the outbox.
+            return self.db.finish_attempt(notify_owner=notify_owner, **kwargs)
+
         role: WorkerRole = "builder" if task.verify_cmd else "planner"
         self._set_phase("prepare", task_id=task.id, role=role)
         repo_dir = self._repo_dir(task.repo)
         if not (repo_dir / ".git").exists():
-            return self.db.finish_attempt(
+            return done(
                 task_id=task.id,
                 role=role,
                 summary=f"Repository {task.repo!r} not found at {repo_dir}",
@@ -372,7 +533,7 @@ class Reconciler:
             await self._git_fetch(repo_dir)
             if await self._git_rc(repo_dir, "cat-file", "-e", f"{pinned_sha}^{{commit}}") == 0:
                 applied = await self._apply_self_upgrade(repo_dir, pinned_sha, task.id)
-                finished_task = self.db.finish_attempt(
+                finished_task = done(
                     task_id=task.id,
                     role="builder",
                     summary=(
@@ -408,7 +569,7 @@ class Reconciler:
                 outcome: AttemptOutcome = (
                     "decomposed" if pi_res.outcome == "pushed" else pi_res.outcome
                 )
-                finished_task = self.db.finish_attempt(
+                finished_task = done(
                     task_id=task.id,
                     role="planner",
                     summary=pi_res.summary,
@@ -432,7 +593,7 @@ class Reconciler:
                 return finished_task
             except Exception as exc:
                 logger.error(f"[Reconciler] planner task {task.id} failed: {exc!r}")
-                finished_task = self.db.finish_attempt(
+                finished_task = done(
                     task_id=task.id,
                     role="planner",
                     summary=f"Planner execution error: {exc}",
@@ -456,7 +617,7 @@ class Reconciler:
                     await self._report_self_upgrade_divergence(
                         repo_dir, task.id, verified_sha="", phase="prepare"
                     )
-                    finished_task = self.db.finish_attempt(
+                    finished_task = done(
                         task_id=task.id,
                         role="builder",
                         summary=(
@@ -488,7 +649,7 @@ class Reconciler:
             )
             diff_stat = await self._worktree_diff_stat(worktree_dir, base_sha)
             if pi_res.outcome != "pushed":
-                finished_task = self.db.finish_attempt(
+                finished_task = done(
                     task_id=task.id,
                     role="builder",
                     summary=pi_res.summary,
@@ -511,7 +672,7 @@ class Reconciler:
             if task.kind == "problem":
                 deleted_tests = await self._find_deleted_tests(worktree_dir, base_sha)
                 if deleted_tests:
-                    finished_task = self.db.finish_attempt(
+                    finished_task = done(
                         task_id=task.id,
                         role="builder",
                         summary=pi_res.summary,
@@ -579,7 +740,7 @@ class Reconciler:
                         details={"held_out_output": baseline_out},
                     )
             if not verified:
-                finished_task = self.db.finish_attempt(
+                finished_task = done(
                     task_id=task.id,
                     role="builder",
                     summary=pi_res.summary,
@@ -637,7 +798,7 @@ class Reconciler:
                                     "summary": pi_res.summary,
                                 },
                             )
-                        finished_task = self.db.finish_attempt(
+                        finished_task = done(
                             task_id=task.id,
                             role="builder",
                             summary=f"Awaiting owner approval for protected files: {', '.join(touched_protected)}",
@@ -656,7 +817,7 @@ class Reconciler:
             just_upgraded_self = False
             if task.repo in SELF_REPOS:
                 if not await self._apply_self_upgrade(repo_dir, git_sha, task.id):
-                    finished_task = self.db.finish_attempt(
+                    finished_task = done(
                         task_id=task.id,
                         role="builder",
                         summary=(
@@ -680,7 +841,7 @@ class Reconciler:
                     )
                     return finished_task
                 just_upgraded_self = True
-            finished_task = self.db.finish_attempt(
+            finished_task = done(
                 task_id=task.id,
                 role="builder",
                 summary=pi_res.summary,
@@ -704,7 +865,7 @@ class Reconciler:
             return finished_task
         except Exception as exc:
             logger.error(f"[Reconciler] builder task {task.id} failed: {exc!r}")
-            finished_task = self.db.finish_attempt(
+            finished_task = done(
                 task_id=task.id,
                 role="builder",
                 summary=f"Builder execution error: {exc}",
@@ -814,9 +975,15 @@ class Reconciler:
             f"{s.description} | path={self.cfg.skills_dir / s.slug / 'SKILL.md'}"
             for s in active_skills
         ]
+        memory_index = memory.memory_index(self.cfg.home_dir)
+        memory_sha = memory.file_sha(self.cfg.memory_index_path) or ""
+        repo_notes = [
+            f"- {path.name} sha256={memory.file_sha(path) or ''} path={path}"
+            for path in memory.repo_note_files(self.cfg.home_dir)
+        ]
         prompt = (
-            "You are Brain Skill Improver. Use `read` and `grep` to inspect the trace files "
-            "and skill files indexed below before deciding whether to propose an improvement.\n"
+            "You are Brain Skill Improver and memory curator. Use `read` and `grep` to inspect the trace "
+            "files, skill files, standing instructions and memory index below before deciding anything.\n"
             "Rules:\n"
             "- Creating a new skill (`action='create'`) requires >= 2 independent attempt IDs showing "
             "the same recurring procedure or pitfall.\n"
@@ -825,8 +992,18 @@ class Reconciler:
             "only when refactoring conflicting lines.\n"
             f"- If active skills == {self.cfg.max_personal_skills}, creating a skill requires "
             "`retire_slug` and `retire_reason`.\n"
-            "- Propose at most ONE change via `propose_skill_change`, or abstain if the evidence "
-            "does not justify a change.\n\n"
+            "- Propose at most ONE skill change via `propose_skill_change`, or abstain.\n"
+            "- You may also propose at most ONE memory change via `propose_memory_update`:\n"
+            "  - `name='MEMORY.md'` is the small index loaded into every run (150 lines max). Keep only "
+            "standing facts, verified commands, and pointers; push repository detail into "
+            "`repos/<slug>.md` (80 lines max).\n"
+            "  - Before trusting an old note, check it against the trace and the live files; correct or "
+            "drop a note that is wrong, and never turn a guess into a rule.\n"
+            "  - Pass `expected_sha256` from the index below when updating an existing file.\n"
+            "  - Never store secrets, raw diffs, or anything already visible from a single search.\n\n"
+            f"Owner instructions: {self.cfg.instructions_path}\n"
+            f"Memory index (sha256={memory_sha}):\n{memory_index}\n\n"
+            f"Repo notes ({len(repo_notes)}):\n{chr(10).join(repo_notes) or '(none)'}\n\n"
             f"Active skills ({len(active_skills)}/{self.cfg.max_personal_skills}):\n"
             f"{chr(10).join(skill_index_lines) or '(none)'}\n\n"
             f"Unreflected attempt traces ({len(unreflected)}):\n"
@@ -929,7 +1106,11 @@ class Reconciler:
             f"(or 2-3 competing auto-research hypothesis tasks when exploring an optimization or uncertain root cause) "
             f"using `upsert_task` with `parent_id={task.id!r}`, each with a deterministic `verify_cmd` "
             f"(which may print `METRIC: <float>` for quantitative goals), `metric_target`, and `ready=true`. "
-            f"Use `research_scout` first when you need byte-verified codebase evidence.\nSpec: {task.spec}"
+            f"Use `research_scout` first when you need byte-verified codebase evidence. "
+            f"Use `schedule_followup` only for a check that cannot run now (delay >= 5 minutes); "
+            f"at most {self.cfg.max_agent_followups_per_task} follow-ups per task. "
+            f"Current local time: {datetime.now().astimezone().strftime('%A %Y-%m-%d %H:%M %Z')}.\n"
+            f"Spec: {task.spec}"
         )
 
     def _build_builder_prompt(self, task: TaskRow, worktree_dir: Path) -> str:
@@ -949,6 +1130,7 @@ class Reconciler:
         )
         return (
             f"Task {task.id} ({task.kind}): {task.title}\n"
+            f"Current local time: {datetime.now().astimezone().strftime('%A %Y-%m-%d %H:%M %Z')}.\n"
             f"Worktree: {worktree_dir}\n"
             f"Spec: {task.spec}\n"
             f"Metric target: {task.metric_target or '(pass verification)'}\n"
@@ -958,6 +1140,8 @@ class Reconciler:
             f"{anti_repeat}"
             "Prefer `research_scout` to delegate read-only reconnaissance with byte-verified quotes, "
             "and `edit_and_run` (Action Fusion) to fuse file edits with immediate test execution in one turn. "
+            "Record verified facts as well as failures with `record_note`, and use `schedule_followup` "
+            "only when a check truly cannot run in this turn. "
             "Implement the minimal complete fix or feature inside this worktree, verify it, and "
             "summarize your changes in one sentence."
         )
@@ -987,15 +1171,22 @@ class Reconciler:
         skills_loaded: list[str] = []
         diagnostics: list[str] = []
         modified_skills: list[str] = []
+        modified_memory: list[str] = []
         stream_state = _PiStreamState(session_id=resume_session_id)
         extra_scout_cost = 0.0
         timed_out = False
         budget_exceeded = False
+        cap_hit = False
         start_monotonic = time.monotonic()
         initial_state = self.db.get_state()
+        per_run_cap = {
+            "builder": self.cfg.max_builder_cost_usd,
+            "planner": self.cfg.max_planner_cost_usd,
+            "improver": self.cfg.max_improver_cost_usd,
+        }.get(role, self.cfg.max_planner_cost_usd)
 
         async def handle_rpc(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            nonlocal deferred_flag, extra_scout_cost, budget_exceeded
+            nonlocal deferred_flag, extra_scout_cost, budget_exceeded, cap_hit
             try:
                 line = await reader.readline()
                 if not line:
@@ -1073,17 +1264,20 @@ class Reconciler:
                         paths=focus_paths,
                         run_key=f"{run_key}:scout:{uuid.uuid4().hex[:8]}",
                         timeout_seconds=min(120.0, remaining_secs),
-                        budget_limit_usd=budget_left,
+                        budget_limit_usd=min(budget_left, self.cfg.max_scout_cost_usd),
                     )
                     extra_scout_cost += scout_cost
-                    if (
-                        scout_over_budget
-                        or initial_state.spent_today_usd
+                    spent_now = (
+                        initial_state.spent_today_usd
                         + stream_state.total_cost
                         + extra_scout_cost
-                        > initial_state.daily_budget_usd
-                    ):
-                        budget_exceeded = True
+                    )
+                    daily_hit = spent_now > initial_state.daily_budget_usd
+                    if daily_hit or scout_over_budget:
+                        if scout_over_budget and not daily_hit:
+                            cap_hit = True
+                        else:
+                            budget_exceeded = True
                         proc_ref = self._active_procs.get(run_key)
                         if proc_ref is not None:
                             _terminate_proc_group(proc_ref, signal.SIGTERM)
@@ -1134,6 +1328,64 @@ class Reconciler:
                             "sha256": skill_row.sha256,
                         },
                     }
+                elif method == "propose_memory_update":
+                    if role != "improver":
+                        raise ValueError("propose_memory_update is only permitted for the improver role.")
+                    if modified_memory:
+                        raise ValueError("Updates are scoped to one memory change per reflection run.")
+                    name = str(params.get("name") or "").strip()
+                    content = str(params.get("content") or "")
+                    expected = (
+                        str(params["expected_sha256"])
+                        if params.get("expected_sha256") is not None
+                        else None
+                    )
+                    written, new_sha = memory.write_memory_file(
+                        self.cfg.home_dir, name, content, expected_sha256=expected
+                    )
+                    modified_memory.append(written)
+                    resp = {
+                        "ok": True,
+                        "result": {"name": written, "sha256": new_sha},
+                    }
+                elif method == "schedule_followup":
+                    if role not in ("planner", "builder"):
+                        raise ValueError("schedule_followup is only permitted for planner or builder roles.")
+                    when = str(params.get("delay_minutes") or "").strip()
+                    if not when:
+                        raise ValueError("schedule_followup needs delay_minutes")
+                    try:
+                        delay = int(float(when))
+                    except ValueError as exc:
+                        raise ValueError(f"Invalid delay_minutes: {when!r}") from exc
+                    if delay < 5:
+                        raise ValueError("a follow-up must wait at least 5 minutes")
+                    if delay > 60 * 24 * 14:
+                        raise ValueError("a follow-up may wait at most 14 days")
+                    task_ref = task.id if task else None
+                    if self.db.count_agent_followups(task_ref) >= self.cfg.max_agent_followups_per_task:
+                        raise ValueError(
+                            f"task {task_ref!r} already has "
+                            f"{self.cfg.max_agent_followups_per_task} agent follow-ups"
+                        )
+                    reason = str(params.get("reason") or "").strip() or "Check the earlier work again."
+                    run_at = datetime.now().astimezone() + timedelta(minutes=delay)
+                    timer = self.db.add_timer(
+                        kind="followup",
+                        action="check",
+                        title=f"Follow up on {task_ref or 'the earlier work'}",
+                        prompt_spec=reason,
+                        run_at=run_at,
+                        repo=task.repo if task else None,
+                        mode="ASSIST",
+                        created_by="agent",
+                        task_id=task_ref,
+                        max_cost_usd=self.cfg.max_ephemeral_cost_usd,
+                    )
+                    resp = {
+                        "ok": True,
+                        "result": {"timer_id": timer.id, "next_run_at": timer.next_run_at},
+                    }
                 elif method == "defer_for_approval":
                     summary_spoken = str(params["summary_spoken"])
                     details = str(params.get("details") or "")
@@ -1172,6 +1424,10 @@ class Reconciler:
                 detail = str(result.get("id") or "")
             elif method == "propose_skill_change":
                 detail = f"{result.get('slug')} v{result.get('version')}"
+            elif method == "propose_memory_update":
+                detail = str(result.get("name") or "")
+            elif method == "schedule_followup":
+                detail = str(result.get("timer_id") or "")
             elif method == "defer_for_approval":
                 detail = "deferred" if result.get("deferred") else str(result.get("approved"))
             elif method == "record_skill_load":
@@ -1230,6 +1486,9 @@ class Reconciler:
             cmd.append("--offline")
         if resume_session_id:
             cmd.extend(["--session", resume_session_id])
+        if role in ("planner", "builder", "improver"):
+            for path in memory.addendum_paths(self.cfg.home_dir):
+                cmd.extend(["--append-system-prompt", str(path)])
         cmd.extend(["--", prompt])
 
         sandbox_target = worktree_dir if (role == "builder" and worktree_dir is not None) else session_dir
@@ -1246,11 +1505,24 @@ class Reconciler:
         env = self._build_sandbox_env(session_dir)
         env["BRAIN_RPC_SOCK"] = str(sock_path)
         env["BRAIN_SKILLS_DIR"] = str(self.cfg.skills_dir.resolve())
+        env["BRAIN_MEMORY_DIR"] = str(self.cfg.memory_dir.resolve())
+        env["BRAIN_INSTRUCTIONS_PATH"] = str(self.cfg.instructions_path.resolve())
         if worktree_dir is not None:
             env["BRAIN_WORKTREE_DIR"] = str(worktree_dir.resolve())
         if task is not None:
             env["BRAIN_TASK_ID"] = task.id
             env["BRAIN_TASK_KIND"] = task.kind
+
+        def over_budget() -> bool:
+            nonlocal budget_exceeded, cap_hit
+            spent = initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
+            if spent > initial_state.daily_budget_usd:
+                budget_exceeded = True
+                return True
+            if per_run_cap > 0 and stream_state.total_cost + extra_scout_cost > per_run_cap:
+                cap_hit = True
+                return True
+            return False
 
         returncode, stderr_text, timed_out, stream_over_budget = await self._stream_pi_proc(
             cmd=cmd,
@@ -1260,10 +1532,7 @@ class Reconciler:
             stream_state=stream_state,
             timeout_seconds=float(self.cfg.max_run_seconds),
             start_monotonic=start_monotonic,
-            over_budget_fn=lambda: (
-                initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
-                > initial_state.daily_budget_usd
-            ),
+            over_budget_fn=over_budget,
             cleanup_cb=self._make_rpc_cleanup(server, sock_path),
             progress_meta={
                 "run_key": run_key,
@@ -1271,7 +1540,8 @@ class Reconciler:
                 "task_id": task.id if task else None,
             },
         )
-        budget_exceeded = budget_exceeded or stream_over_budget
+        if not cap_hit:
+            budget_exceeded = budget_exceeded or stream_over_budget
         self._set_phase("pi_finished", task_id=task.id if task else None, role=role)
 
         total_cost = stream_state.total_cost + extra_scout_cost
@@ -1291,6 +1561,7 @@ class Reconciler:
                 skills_used=skills_loaded,
                 diagnostic=diag_joined,
                 modified_skills=modified_skills,
+                modified_memory=modified_memory,
             )
         if timed_out:
             return PiRunResult(
@@ -1303,6 +1574,7 @@ class Reconciler:
                 skills_used=skills_loaded,
                 diagnostic=diag_joined,
                 modified_skills=modified_skills,
+                modified_memory=modified_memory,
             )
         if budget_exceeded:
             return PiRunResult(
@@ -1315,6 +1587,20 @@ class Reconciler:
                 skills_used=skills_loaded,
                 diagnostic=diag_joined,
                 modified_skills=modified_skills,
+                modified_memory=modified_memory,
+            )
+        if cap_hit:
+            return PiRunResult(
+                outcome="errored",
+                summary=f"Run stopped: per-run cost cap (${per_run_cap:.2f}) exceeded.",
+                cost_usd=total_cost,
+                session_id=session_id,
+                session_jsonl_path=session_jsonl_path,
+                upserted_task_ids=upserted_ids,
+                skills_used=skills_loaded,
+                diagnostic=diag_joined,
+                modified_skills=modified_skills,
+                modified_memory=modified_memory,
             )
         if returncode != 0:
             return PiRunResult(
@@ -1327,6 +1613,7 @@ class Reconciler:
                 skills_used=skills_loaded,
                 diagnostic=diag_joined,
                 modified_skills=modified_skills,
+                modified_memory=modified_memory,
             )
         return PiRunResult(
             outcome="pushed",
@@ -1338,6 +1625,7 @@ class Reconciler:
             skills_used=skills_loaded,
             diagnostic=diag_joined,
             modified_skills=modified_skills,
+            modified_memory=modified_memory,
         )
 
     @staticmethod
@@ -1635,6 +1923,21 @@ class Reconciler:
                 f"- Summary: {latest.summary}\n"
                 f"- Touched: {touched}\n"
                 f"- Failure: {excerpt}\n"
+            )
+            note_path = self.cfg.notes_dir / f"{task_id}.md"
+            with note_path.open("a", encoding="utf-8") as f:
+                f.write(entry)
+            os.chmod(note_path, 0o600)
+        elif latest.outcome in ("pushed", "decomposed"):
+            # A memory that records only failures throws away verified facts and working commands
+            # (Anthropic's CL-Bench study measured a large loss from that rule). Keep both.
+            excerpt = (latest.verify_output or "").strip()[-300:]
+            metric = f", metric={latest.metric_value}" if latest.metric_value is not None else ""
+            entry = (
+                f"\n### Verified — Attempt #{latest.id} ({latest.outcome})\n"
+                f"- Summary: {latest.summary}\n"
+                f"- Branch: {latest.git_branch or '(none)'}{metric}\n"
+                f"- Verified by: {excerpt or '(no verify output recorded)'}\n"
             )
             note_path = self.cfg.notes_dir / f"{task_id}.md"
             with note_path.open("a", encoding="utf-8") as f:

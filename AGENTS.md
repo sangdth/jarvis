@@ -13,10 +13,11 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   (`site/install.sh`: uv, clone into `~/Projects/jarvis`, `uv sync`, a thin `~/.local/bin/jarvis` shim into that
   `.venv`, then `jarvis init`). The checkout *is* the runtime: an edit plus `jarvis restart` is live, and so is
   `git pull` plus `jarvis restart`. `jarvis --version` names the running branch and commit (`+dirty` when edited).
-  Commands: `jarvis` (listen here), `jarvis serve [--remote|--meeting|--connect X]` (the same, spelled out),
-  `jarvis start|stop|restart|logs` (the 24/7 launchd service on this checkout), `jarvis remote` (another Mac's mic
-  and speaker), `jarvis meeting` (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
-  project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve`
+  Commands: `jarvis` (this Mac's mic and speaker, or a paired Mac's when it connects), `jarvis serve [--meeting|--connect X]`
+  (the same, spelled out), `jarvis start|stop|restart|logs` (the 24/7 launchd service on this checkout), `jarvis pair`
+  (one code, then another Mac's mic and speaker take over while connected: `jarvis remote` is gone), `jarvis meeting`
+  (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
+  project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve|timers|remind|schedule`
   (HTTP calls to the running server, `--url` for another machine), `jarvis top`, `jarvis init`, `jarvis enroll`.
   One listens at a time (`hold_lock`, `~/.config/jarvis/jarvis.lock`, which stays machine-wide so two checkouts
   cannot share one mic).
@@ -67,8 +68,11 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`        |
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`               |
 | Brain runs nothing overnight         | `apps/brain/src/brain/reconciler.py`, `DEFAULT_MODE`    |
-| Brain spends too much, or stops      | `db.py` budget breaker, `DAILY_BUDGET_USD`                      |
+| Brain spends too much, or stops      | `db.py` budget breaker, `config.py` `max_*_cost_usd`, `reconciler.py` `_run_pi` |
 | Cockpit shows nothing / no data      | `apps/tui/src/db.rs`, `telemetry.py`, `jarvis top`              |
+| A reminder or scheduled check never fires | `schedule.py`, `db.py` `fire_due_timers`, `reconciler.py` `_fire_timers` |
+| Work finished but Jarvis said nothing | `server.py` `_deliver_outbox`, `brain_client.py` `_events_loop` |
+| A worker repeats itself or forgets a verified fact | `memory.py`, `reconciler.py` `_finalize_attempt_artifacts`, `run_skill_improver` |
 | `jarvis` starts a second brain       | `src/jarvis/supervisor.py` (`listening`, `BRAIN_URL`)      |
 | Answer or stop hits the wrong agent  | `brain_server.py` `pending_approval_future`, each runner `interrupt` |
 | A correction runs as a second task   | `agent_tools.py` `send` (`replace`), `server.py` `handle_create_run` |
@@ -82,8 +86,8 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Mic, Whisper, interruptions          | `main.py` pipeline, `voice_gates.py`                            |
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
-| Other Mac: no sound, or not heard    | `remote_audio.py` (token, one client), `defaults/remote/client.py` |
-| Answers on the wrong Mac             | `remote_audio.py` `Ear.offer` (`SPEECH_PEAK`, `HANDOVER_SECS`), `[Ear]` lines |
+| Other Mac: no sound, or not heard    | `remote_audio.py` (token, one client), `mac_audio.py` (handoff), `defaults/remote/client.py` |
+| Answers on the wrong Mac             | `remote_audio.py` `Ear.accept` (`SPEECH_PEAK`, `HANDOVER_SECS`), `[Ear]` lines |
 | Meeting: Jarvis can't hear the call  | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Meeting: the call can't hear Jarvis  | `meet_voice.py` `MeetVoice`, `defaults/meet/jarvis.js`          |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |
@@ -171,7 +175,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
   make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.
 - **All user state lives in `JARVIS_HOME`** (`packages/jarvis-core/src/jarvis_core/home.py`): `.env`, `agents.json`,
-  `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the relay token (`remote_token`, made by `jarvis remote`),
+  `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the relay token (`remote_token`, when `REMOTE_TOKEN` pins one),
   the brain's own state in `brain/` (board, worktrees, sessions, traces, skills, progress notes), and the token the
   three apps share (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env` wins over it). The installed `jarvis` uses
   `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's
@@ -190,6 +194,11 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Approvals and questions never go through an LLM.** Agent questions and approval requests are spoken as they
   are; only finished turns (`AgentTopic.is_report`) go to the conversation model, as a system message that calls
   no tool. This keeps the model from approving anything on its own.
+- **Timers and outbox delivery are code, not prompt.** A schedule is a five-field cron read in its own zone, and
+  a due row is advanced atomically before any worker runs (`fire_due_timers`); a missed slot is skipped, never
+  replayed in a burst. In `ASSIST` mode a queued outbox item is published to the voice as it lands; in
+  `AUTONOMOUS` mode it stays quiet until the owner switches back or asks for the brief. The voice acknowledges it
+  (`POST /v1/outbox/{id}/spoken`) before it enters `memory/reported.md`, so the brain never re-reports it.
 - **Jarvis speaks as one assistant.** Replies and retold turns say "I pushed it", "I'm searching", never which
   agent does the work, unless the user asks. A retold turn is the outcome against the user's request in about ten
   words; a turn that asks the user to decide (a plan, options) gets one phrase per heading, at most four, then its

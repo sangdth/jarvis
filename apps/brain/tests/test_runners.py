@@ -161,6 +161,87 @@ async def test_ephemeral_runner_answers_spends_and_leaves_nothing(
         db.close()
 
 
+async def test_ephemeral_chat_session_is_resumed_across_turns(tmp_path: Path) -> None:
+    script = tmp_path / "fake_pi_chat.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json, pathlib, sys
+args = sys.argv
+session_dir = pathlib.Path(args[args.index("--session-dir") + 1])
+session_id = args[args.index("--session-id") + 1] if "--session-id" in args else ""
+(session_dir / "calls.txt").write_text(
+    (session_dir / "calls.txt").read_text() + session_id + "\\n"
+    if (session_dir / "calls.txt").exists()
+    else session_id + "\\n"
+)
+print(json.dumps({"type": "session", "id": "sess-chat"}), flush=True)
+print(json.dumps({"type": "message_end",
+                  "message": {"role": "assistant", "content": "noted"},
+                  "cost_usd": 0.01}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    cfg = _cfg(tmp_path, pi_bin=str(script))
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+
+    async def emit(event: dict[str, Any]) -> None:
+        return None
+
+    try:
+        runner = EphemeralPiRunner(cfg, db)
+        first = await runner.run(
+            RunRequest(run_id="c1", prompt="first", cwd=cfg.home_dir, session_key="chat-1"), emit
+        )
+        second = await runner.run(
+            RunRequest(run_id="c2", prompt="second", cwd=cfg.home_dir, session_key="chat-1"), emit
+        )
+        assert first.outcome == second.outcome == "pushed"
+        session_dir = cfg.chat_sessions_dir / "chat-1"
+        assert session_dir.is_dir()
+        assert (session_dir / "calls.txt").read_text().splitlines() == ["chat-1", "chat-1"]
+
+        fresh = await runner.run(
+            RunRequest(run_id="c3", prompt="no chat", cwd=cfg.home_dir), emit
+        )
+        assert fresh.outcome == "pushed"
+    finally:
+        db.close()
+
+
+async def test_ephemeral_runner_stops_at_the_per_run_cost_cap(tmp_path: Path) -> None:
+    script = tmp_path / "fake_pi_expensive_answer.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json, time
+print(json.dumps({"type": "session", "id": "sess-cap"}), flush=True)
+print(json.dumps({"type": "message_end",
+                  "message": {"role": "assistant", "content": "expensive"},
+                  "cost_usd": 5.0}), flush=True)
+time.sleep(10)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    cfg = _cfg(tmp_path, pi_bin=str(script))
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+
+    async def emit(event: dict[str, Any]) -> None:
+        return None
+
+    try:
+        runner = EphemeralPiRunner(cfg, db)
+        result = await runner.run(
+            RunRequest(run_id="cap", prompt="answer", cwd=cfg.home_dir, max_cost_usd=1.0),
+            emit,
+        )
+        assert result.outcome == "errored"
+        assert "cost cap" in result.summary
+        assert abs(db.get_state().spent_today_usd - 5.0) < 1e-9
+    finally:
+        db.close()
+
+
 class FakeT3Runner:
     id = "t3"
 
@@ -215,7 +296,8 @@ class DirectOrchestrator:
 
     async def route(self, *, run_id: str, user_input: str, session_id: str, pinned: Any,
                     approval_cb: Any, emit: Any, screenshot: str | None = None,
-                    session_mode: str | None = None, cwd: str | None = None) -> RunResult:
+                    session_mode: str | None = None, cwd: str | None = None,
+                    chat_session_key: str | None = None) -> RunResult:
         return await self.runner.run(
             RunRequest(run_id=run_id, prompt=user_input, approval_cb=approval_cb,
                        pinned_session_id=(pinned or {}).get("session_id")),

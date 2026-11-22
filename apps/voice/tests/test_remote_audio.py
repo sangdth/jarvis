@@ -12,16 +12,25 @@ from websockets.exceptions import InvalidStatus
 
 from jarvis_voice import remote_audio
 from jarvis_voice.remote_audio import (
-    LOCAL,
-    RELAY,
     SAMPLE_RATE,
-    Ear,
-    EarInputTransport,
-    EarOutputTransport,
     RelayHub,
+    RemoteVoiceOutputTransport,
     RemoteVoiceTransport,
     relay_token,
 )
+
+
+class FakeConnection:
+    """A relay client's socket, recording what Jarvis sends it."""
+
+    def __init__(self) -> None:
+        self.sent: list[bytes | str] = []
+
+    async def send_bytes(self, message: bytes) -> None:
+        self.sent.append(message)
+
+    async def send_text(self, message: str) -> None:
+        self.sent.append(message)
 
 
 def frame(peak: float, samples: int = 320) -> bytes:
@@ -43,102 +52,109 @@ class FakeClock:
         return self.now
 
 
-class FakeConnection:
-    """A relay client's socket, recording what Jarvis sends it."""
-
-    def __init__(self) -> None:
-        self.sent: list[bytes | str] = []
-
-    async def send_bytes(self, message: bytes) -> None:
-        self.sent.append(message)
-
-    async def send_text(self, message: str) -> None:
-        self.sent.append(message)
-
-
 class TestEar(unittest.IsolatedAsyncioTestCase):
     """Whoever speaks wins, with the rules that make that stable in a real room."""
 
     def setUp(self) -> None:
+        from jarvis_voice.remote_audio import Ear
+
         self.clock = FakeClock()
         self.patch = mock.patch.object(remote_audio, "time", self.clock)
         self.patch.start()
         self.addCleanup(self.patch.stop)
-        self.ear = Ear()
+        self.ear = Ear(local=True)
 
     def test_the_mac_it_runs_on_listens_first(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL
+
         self.assertEqual(self.ear.active, LOCAL)
         self.assertTrue(self.ear.local)
 
-    async def test_the_active_ear_forwards_silence_too(self) -> None:
-        # Voice detection needs the quiet frames: without them a sentence never ends.
-        self.assertTrue(self.ear.offer(LOCAL, silence()))
-        self.assertTrue(self.ear.offer(LOCAL, frame(0.2)))
-        self.assertEqual(self.ear.frames.qsize(), 2)
+    def test_the_active_ear_accepts_silence_too(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL
 
-    async def test_the_quiet_mic_is_dropped_not_buffered(self) -> None:
+        # Voice detection needs the quiet frames: without them a sentence never ends.
+        self.assertTrue(self.ear.accept(LOCAL, silence()))
+        self.assertTrue(self.ear.accept(LOCAL, frame(0.2)))
+
+    def test_the_quiet_mic_is_dropped(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY
+
         self.ear.set_online(RELAY, True)  # connects: takes the ear
         self.ear._switch(LOCAL)  # ... and you are talking here, so this Mac has it back
-        self.assertFalse(self.ear.offer(RELAY, silence()))
-        self.assertEqual(self.ear.frames.qsize(), 0)
+        self.assertFalse(self.ear.accept(RELAY, silence()))
 
-    async def test_a_client_that_connects_takes_the_ear_at_once(self) -> None:
-        self.ear.offer(LOCAL, frame(0.3))  # you were talking here a moment ago
+    def test_a_client_that_connects_takes_the_ear_at_once(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY
+
+        self.ear.accept(LOCAL, frame(0.3))  # you were talking here a moment ago
         self.ear.set_online(RELAY, True)
         self.assertEqual(self.ear.active, RELAY)
 
-    async def test_speech_on_the_quiet_mic_takes_the_ear_after_a_silence(self) -> None:
+    def test_speech_on_the_quiet_mic_takes_the_ear_after_a_silence(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY
+
         self.ear.set_online(RELAY, True)  # a client is connected ...
         self.ear._switch(LOCAL)  # ... but you are at this Mac, talking here
         self.clock.now += 10
-        self.ear.offer(LOCAL, frame(0.3))
+        self.ear.accept(LOCAL, frame(0.3))
         for _ in range(remote_audio.SWITCH_FRAMES):
-            self.assertFalse(self.ear.offer(RELAY, frame(0.2)))  # not yet: this Mac is hearing you too
+            self.assertFalse(self.ear.accept(RELAY, frame(0.2)))  # not yet: this Mac is hearing you too
         self.assertEqual(self.ear.active, LOCAL)
         self.clock.now += remote_audio.HANDOVER_SECS  # you walked away and it went quiet here
-        self.assertTrue(self.ear.offer(RELAY, frame(0.2)))
+        self.assertTrue(self.ear.accept(RELAY, frame(0.2)))
         self.assertEqual(self.ear.active, RELAY)
 
-    async def test_one_click_does_not_take_the_ear(self) -> None:
+    def test_one_click_does_not_take_the_ear(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY
+
         self.ear.set_online(RELAY, True)
         self.ear._switch(LOCAL)  # pretend the relay is quiet for a while
         self.clock.now += 10
         for _ in range(remote_audio.SWITCH_FRAMES - 1):
-            self.ear.offer(RELAY, frame(0.5))
-        self.ear.offer(RELAY, silence())  # the click ends
-        self.ear.offer(RELAY, frame(0.5))  # and a new one starts: still not a voice
+            self.ear.accept(RELAY, frame(0.5))
+        self.ear.accept(RELAY, silence())  # the click ends
+        self.ear.accept(RELAY, frame(0.5))  # and a new one starts: still not a voice
         self.assertEqual(self.ear.active, LOCAL)
 
-    async def test_nothing_takes_the_turn_while_jarvis_speaks(self) -> None:
+    def test_nothing_takes_the_turn_while_jarvis_speaks(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY
+
         self.ear.set_online(RELAY, True)
         self.ear._switch(LOCAL)
         self.clock.now += 10
         self.ear.spoke(2.0)  # a long reply, playing here
         for _ in range(remote_audio.SWITCH_FRAMES):
-            self.assertFalse(self.ear.offer(RELAY, frame(0.4)))  # the other Mac hears this speaker
+            self.assertFalse(self.ear.accept(RELAY, frame(0.4)))  # the other Mac hears this speaker
         self.assertEqual(self.ear.active, LOCAL)
         self.clock.now += 3.0  # reply over, plus the grace period
         for _ in range(remote_audio.SWITCH_FRAMES):
-            self.ear.offer(RELAY, frame(0.4))
+            self.ear.accept(RELAY, frame(0.4))
         self.assertEqual(self.ear.active, RELAY)
 
-    async def test_a_client_that_leaves_gives_the_ear_back(self) -> None:
+    def test_a_client_that_leaves_gives_the_ear_back(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY
+
         self.ear.set_online(RELAY, True)
         self.assertEqual(self.ear.active, RELAY)
         self.ear.set_online(RELAY, False)
         self.assertEqual(self.ear.active, LOCAL)
 
-    async def test_a_switch_tells_the_transport(self) -> None:
+    def test_a_switch_tells_the_transport(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY
+
         moved: list[tuple[str, str]] = []
         self.ear.on_switch = lambda old, new: moved.append((old, new))
         self.ear.set_online(RELAY, True)
         self.assertEqual(moved, [(LOCAL, RELAY)])
 
-    async def test_relay_only_has_no_local_ear(self) -> None:
+    def test_relay_only_has_no_local_ear(self) -> None:
+        from jarvis_voice.remote_audio import LOCAL, RELAY, Ear
+
         ear = Ear(local=False)
         self.assertEqual(ear.active, RELAY)
         self.assertFalse(ear.local)
-        self.assertFalse(ear.offer(LOCAL, frame(0.5)))  # nothing to hear this Mac's mic with
+        self.assertFalse(ear.accept(LOCAL, frame(0.5)))  # nothing to hear this Mac's mic with
 
 
 class TestRelayHub(unittest.IsolatedAsyncioTestCase):
@@ -162,6 +178,20 @@ class TestRelayHub(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.hub.client)
         self.assertFalse(self.hub.connected.is_set())
 
+    def test_mic_audio_drops_the_oldest_block_rather_than_falling_behind(self) -> None:
+        for n in range(remote_audio.MIC_QUEUE_BLOCKS + 2):
+            self.hub.push_mic(bytes([n]))
+        self.assertEqual(self.hub.mic_queue.qsize(), remote_audio.MIC_QUEUE_BLOCKS)
+        self.assertEqual(self.hub.dropped_mic, 2)
+        self.assertEqual(self.hub.mic_queue.get_nowait(), bytes([2]))  # the first two went
+
+    def test_a_new_client_is_not_heard_through_the_last_ones_leftovers(self) -> None:
+        first = FakeConnection()
+        self.hub.attach(first)
+        self.hub.push_mic(b"old")
+        self.hub.detach(first)  # what the previous client left is no longer wanted
+        self.assertEqual(self.hub.mic_queue.qsize(), 0)
+
     async def test_audio_with_no_client_is_dropped_but_still_timed(self) -> None:
         pcm = bytes(SAMPLE_RATE // 2)  # 0.25 s of 16-bit mono
         self.assertAlmostEqual(await self.hub.send_audio(pcm), 0.25, places=3)
@@ -173,10 +203,16 @@ class TestRelayHub(unittest.IsolatedAsyncioTestCase):
         pcm = bytes(SAMPLE_RATE * 2 // 10)  # 0.1 s of 16-bit mono
         self.assertAlmostEqual(await self.hub.send_audio(pcm), 0.1, places=3)
         await self.hub.flush()
+        self.assertEqual(client.sent, [pcm, json.dumps({"type": "flush"})])
+
+    async def test_the_ear_moves_are_sent_to_the_client(self) -> None:
+        client = FakeConnection()
+        self.hub.attach(client)
         await self.hub.send_ear(True)
+        await self.hub.send_ear(False)
         self.assertEqual(
             client.sent,
-            [pcm, json.dumps({"type": "flush"}), json.dumps({"type": "ear", "active": True})],
+            [json.dumps({"type": "ear", "active": True}), json.dumps({"type": "ear", "active": False})],
         )
 
     async def test_wait_for_client_returns_when_one_connects(self) -> None:
@@ -198,103 +234,78 @@ class TestRelayHub(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.hub.client)  # gone, so the next Mac can take the mic
 
 
-class FakeAudio:
-    """The local engine, stood in for by a recorder."""
+class TestRelayHandoff(unittest.IsolatedAsyncioTestCase):
+    """The local mic and speaker hand over while a paired Mac is connected, and get a clean stream back after."""
 
-    def __init__(self) -> None:
-        self.played: list[bytes] = []
-        self.flushes = 0
-        self.bridge = None
+    def test_attach_and_detach_run_the_handoff_callbacks(self) -> None:
+        hub = RelayHub()
+        events: list[str] = []
+        hub.on_attach.append(lambda: events.append("attach"))
+        hub.on_detach.append(lambda: events.append("detach"))
 
-    def play(self, pcm: bytes, *, speech: bool = True) -> float:
-        self.played.append(pcm)
-        return len(pcm) / 2 / SAMPLE_RATE
+        client = FakeConnection()
+        self.assertTrue(hub.attach(client))
+        self.assertFalse(hub.attach(FakeConnection()))  # a refused one is no handoff
+        hub.detach(client)
+        self.assertEqual(events, ["attach", "detach"])
 
-    def flush(self) -> None:
-        self.flushes += 1
+    def test_a_failing_handoff_callback_does_not_refuse_the_client(self) -> None:
+        hub = RelayHub()
 
+        def broken() -> None:
+            raise RuntimeError("the speaker would not stop")
 
-class TestEarOutput(unittest.IsolatedAsyncioTestCase):
-    def _transport(self, *, local: bool = True) -> tuple[EarOutputTransport, Ear, FakeAudio | None, FakeConnection]:
-        ear = Ear(local=local)
+        hub.on_attach.append(broken)
+        client = FakeConnection()
+        with mock.patch.object(remote_audio.logger, "warning") as warning:
+            self.assertTrue(hub.attach(client))
+        self.assertIs(hub.client, client)
+        self.assertTrue(any("hand over" in str(call) for call in warning.call_args_list))
+
+    async def test_local_speech_is_resampled_to_the_clients_rate(self) -> None:
+        # This Mac speaks at 24 kHz; the thin client plays 16 kHz, and scripts already on paired Macs expect that.
         hub = RelayHub()
         client = FakeConnection()
-        hub.attach(client)  # connected, whether or not it has the ear: that is `set_online`'s job
-        audio = FakeAudio() if local else None
-        params = TransportParams(audio_out_enabled=True, audio_out_sample_rate=SAMPLE_RATE)
-        return EarOutputTransport(ear, audio, hub, params), ear, audio, client
+        hub.attach(client)
+        pcm = bytes(24000 * 2 // 10)  # 0.1 s of 16-bit mono at 24 kHz
 
-    async def test_speech_goes_to_this_macs_speaker_while_it_has_the_ear(self) -> None:
-        transport, ear, audio, _ = self._transport()
+        self.assertAlmostEqual(await hub.send_audio(pcm, sample_rate=24000), 0.1, places=3)
+        sent = client.sent[0]
+        self.assertIsInstance(sent, bytes)
+        self.assertAlmostEqual(len(sent) / 2 / SAMPLE_RATE, 0.1, delta=0.01)  # the same 0.1 s, at 16 kHz
+
+    async def test_an_interruption_drops_the_resampler_along_with_the_client_queue(self) -> None:
+        hub = RelayHub()
+        hub.attach(FakeConnection())
+        await hub.send_audio(bytes(24000 * 2 // 10), sample_rate=24000)
+        self.assertIsNotNone(hub._resampler)
+        await hub.flush()
+        self.assertIsNone(hub._resampler)  # the tail it held belonged to the sentence that was cut off
+
+
+class TestOutputTransport(unittest.IsolatedAsyncioTestCase):
+    def _transport(self) -> tuple[RemoteVoiceOutputTransport, FakeConnection]:
+        hub = RelayHub()
+        client = FakeConnection()
+        hub.attach(client)
+        params = TransportParams(audio_out_enabled=True, audio_out_sample_rate=SAMPLE_RATE)
+        return RemoteVoiceOutputTransport(hub, params), client
+
+    async def test_speech_goes_over_whole_and_paced(self) -> None:
+        transport, client = self._transport()
         pcm = bytes(SAMPLE_RATE * 2 // 10)  # 0.1 s
         with mock.patch.object(remote_audio.asyncio, "sleep", new=mock.AsyncMock()) as sleep:
-            self.assertTrue(await transport.write_audio_frame(
-                OutputAudioRawFrame(audio=pcm, sample_rate=SAMPLE_RATE, num_channels=1)))
-        self.assertEqual(audio.played, [pcm])
-        sleep.assert_awaited_once()  # paced, like a blocking speaker write
-        self.assertGreater(ear._speech_end, 0.0)  # recorded as Jarvis speaking, so no mic steals the turn
-
-    async def test_speech_goes_over_the_relay_when_that_mac_has_the_ear(self) -> None:
-        transport, ear, audio, client = self._transport()
-        ear.set_online(RELAY, True)
-        pcm = bytes(640)
-        with mock.patch.object(remote_audio.asyncio, "sleep", new=mock.AsyncMock()):
-            await transport.write_audio_frame(OutputAudioRawFrame(audio=pcm, sample_rate=SAMPLE_RATE, num_channels=1))
+            self.assertTrue(await transport.write_audio_frame(OutputAudioRawFrame(audio=pcm, sample_rate=SAMPLE_RATE,
+                                                                                  num_channels=1)))
         self.assertEqual(client.sent, [pcm])
-        self.assertEqual(audio.played, [])
+        sleep.assert_awaited_once()  # paced, like a blocking speaker write
 
-    async def test_an_interruption_flushes_wherever_the_sound_was_queued(self) -> None:
-        transport, ear, audio, client = self._transport()
-        ear.set_online(RELAY, True)
+    async def test_an_interruption_flushes_what_the_other_mac_queued(self) -> None:
+        transport, client = self._transport()
         transport._until = 99.0  # as if a long reply were playing
         await transport._interrupt()
-        self.assertEqual(transport._until, 0.0)
-        self.assertIn(json.dumps({"type": "flush"}), client.sent)
-        self.assertEqual(audio.flushes, 1)  # the local player is cleared too: the ear may come back
-
-    async def test_relay_only_plays_nothing_when_the_client_is_gone(self) -> None:
-        transport, ear, audio, client = self._transport(local=False)
-        await transport._hub.flush()  # a live client, so this is not the "no client" path
-        transport._hub.client = None  # dropped between frames
-        with mock.patch.object(remote_audio.asyncio, "sleep", new=mock.AsyncMock()):
-            self.assertTrue(await transport.write_audio_frame(
-                OutputAudioRawFrame(audio=bytes(640), sample_rate=SAMPLE_RATE, num_channels=1)))
-        self.assertIsNone(audio)
-
-
-class TestEarInput(unittest.IsolatedAsyncioTestCase):
-    """The active ear's frames, through a real pipeline: the base input queue, the VAD passthrough, the works."""
-
-    async def test_the_ears_frames_reach_the_pipeline(self) -> None:
-        from pipecat.frames.frames import EndFrame, InputAudioRawFrame
-        from pipecat.pipeline.pipeline import Pipeline
-        from pipecat.pipeline.runner import PipelineRunner
-        from pipecat.pipeline.task import PipelineTask
-        from pipecat.processors.frame_processor import FrameProcessor
-
-        heard: list[bytes] = []
-
-        class Sink(FrameProcessor):
-            async def process_frame(self, frame, direction):
-                await super().process_frame(frame, direction)
-                if isinstance(frame, InputAudioRawFrame):
-                    heard.append(frame.audio)
-                await self.push_frame(frame, direction)
-
-        ear = Ear(local=False)  # no local engine needed: the frames come from the relay
-        params = TransportParams(audio_in_enabled=True, audio_in_sample_rate=SAMPLE_RATE)
-        pipeline = Pipeline([EarInputTransport(ear, None, params), Sink()])
-        task = PipelineTask(pipeline)
-        run = asyncio.create_task(PipelineRunner().run(task))
-        try:
-            await asyncio.sleep(0.2)  # the StartFrame, and the working queue the input opens
-            pcm = frame(0.2)
-            self.assertTrue(ear.offer(RELAY, pcm))
-            await asyncio.sleep(0.2)
-        finally:
-            await task.queue_frame(EndFrame())
-            await asyncio.wait_for(run, 5)
-        self.assertEqual(heard, [pcm])
+        self.assertEqual(client.sent, [json.dumps({"type": "flush"})])
+        self.assertEqual(transport._until, 0.0)  # the next frame is not held back by the old timing
 
 
 class TestRelayServer(unittest.IsolatedAsyncioTestCase):
@@ -346,11 +357,10 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
     async def test_a_client_speaks_and_is_heard(self) -> None:
         async with connect(self.url(f"/ws?token={self.TOKEN}")) as ws:
             self.assertEqual(json.loads(await ws.recv()), {"type": "hello", "rate": SAMPLE_RATE})
-            ear = json.loads(await asyncio.wait_for(ws.recv(), 1))
-            self.assertEqual(ear, {"type": "ear", "active": True})  # relay-only: it is the ear already
+            self.assertEqual(json.loads(await asyncio.wait_for(ws.recv(), 1)), {"type": "ear", "active": True})
             pcm = np.array([100, -100], dtype=np.int16).tobytes()
             await ws.send(pcm)
-            self.assertEqual(await asyncio.wait_for(self.transport.ear.frames.get(), 1), pcm)
+            self.assertEqual(await asyncio.wait_for(self.transport.hub.mic_queue.get(), 1), pcm)
             self.assertGreater(self.transport.hub.received, 0)
             await self.transport.hub.send_audio(pcm)
             self.assertEqual(await asyncio.wait_for(ws.recv(), 1), pcm)

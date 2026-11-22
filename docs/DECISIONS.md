@@ -22,19 +22,29 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   answered. A server pinned with `OPENCODE_SERVER_PASSWORD` or a custom `url` is taken as one folder's, unfiltered.
 - **One memory.** The brain runs in the same process as the voice, so what you tell Jarvis and what the board
   learned share one home; there is no second assistant with its own memory any more.
-- **`jarvis remote` cancels echo on the other Mac, not here.** With the mic and speaker over the network, the voice
-  processing has to span the machine that plays the sound and the machine that hears it; it can't, so the client
-  runs it and sends already-cancelled audio. Limits: echo cancellation is only as good as that Mac's speaker/mic
-  pair, and anything that bypasses the client (another app on the Mac mini playing sound) is not cancelled.
+- **One ear, one mouth: a paired Mac takes them over, and there is no `jarvis remote` mode.** The relay routes are
+  mounted on every run, because a mode made the common case (a Mac mini that only ever hears a laptop) a manual
+  step, and left a paired laptop unable to connect to an already-running Jarvis. `MacVoiceTransport` holds the
+  `RelayHub`: on attach it flushes this Mac's speaker, drops its mic frames and sends speech over the socket; on
+  detach it takes both back. Limits: a mid-sentence handoff cuts that sentence, and meeting-mode call audio
+  (`MeetingAudioBridge`) still comes from the host Mac, so guests are heard only while a client is not connected —
+  a remote client is one ear, and the two sources are never mixed onto it.
+- **Echo is cancelled on the Mac that speaks, and the relayed stream is resampled.** With the mic and speaker over
+  the network, voice processing has to span the machine that plays the sound and the machine that hears it; it can't,
+  so the client runs it and sends already-cancelled audio. Limits: echo cancellation is only as good as that Mac's
+  speaker/mic pair, and anything that bypasses the client (another app on the Mac mini playing sound) is not
+  cancelled. The pipeline's local output is 24 kHz and the thin client's wire format is 16 kHz, so `RelayHub`
+  resamples on the way out rather than lowering the local speaker's quality or breaking clients already paired.
 - **The relay port trusts a token, not the network.** It is plain HTTP and WebSocket with one shared secret
   (`REMOTE_TOKEN`, else `~/.config/jarvis/remote_token`). Anyone who reads the token, or the URL it rides in, can
   talk to Jarvis: with `MASTER_CHECK=false` that means run tasks. Keep it to your own network or a VPN, set your own
   token to re-pair, and delete the file to cut every client off.
 - **One relay client at a time.** A second Mac is refused (1013) while one holds the mic; Jarvis has one ear.
   Connecting a new client after a drop does not replay what was said meanwhile.
-- **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so with
-  `jarvis remote` the scores compare that voiceprint with another Mac's mic. Usually close enough; the
-  `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling through the relay is not built.
+- **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so while a
+  paired Mac is the mic the scores compare that voiceprint with that Mac's mic; the relay logs the warning when it
+  connects. Usually close enough; the `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling
+  through the relay is not built.
 
 - **The brain moved into this repository and was renamed.** Superbrain became `apps/brain` (package `brain`) with its
   full history via `git subtree`; the Rust cockpit came out to `apps/tui` and the two histories join at one merge.
@@ -83,6 +93,21 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `/ws` relay). Limits: the
   Rust side queries tables by hand, so a column rename still needs a matching change in `apps/tui/src/db.rs`; a
   contract test on each side is what catches it.
+
+- **The brain's memory is files, and only the offline Improver writes the top layer.** `INSTRUCTIONS.md` is the
+  owner's and read-only to workers; `memory/MEMORY.md` is a <=150-line index injected with
+  `--append-system-prompt`; details live in `memory/repos/<slug>.md` (<=80 lines). Only the `--offline` Improver
+  writes those two, with an `expected_sha256` check, and progress notes record verified results as well as
+  failures. Limits: a wrong note can survive until the next reflection pass, and the 150-line cap means some
+  detail is only discoverable by opening a repo note.
+- **Timers skip missed slots and never replay a burst.** A due cron timer advances to the next occurrence in its
+  own IANA zone, and a crash between `firing` and `finish_timer` is recovered after a grace period; a schedule
+  with no next occurrence ends `done`. Limits: an occurrence missed while the Mac is asleep is not delivered
+  retroactively, and a `check` timer's exact crash window can lose or repeat one run.
+- **The voice acknowledges an outbox item when `JarvisState` takes it, not when TTS finishes.** The item leaves
+  `queued` and gets one line in `memory/reported.md` at that point; in `AUTONOMOUS` mode nothing is spoken until
+  the owner switches back or asks for the brief. Limits: a crash between the acknowledgement and the speaker can
+  lose one line (the alternative, repeated overnight speech, is worse).
 
 ## Open risks
 

@@ -4,9 +4,9 @@ The `jarvis` command: a thin launcher for the one process that runs this checkou
 There is no build, wheel or tool install between the code and what runs: the repository *is* the runtime. An edit
 plus `jarvis restart` is live. The CLI only starts, stops and talks to that process:
 
-- foreground: `jarvis` (local mic), `jarvis remote`, `jarvis meeting`, `jarvis connect [agent]`
+- foreground: `jarvis` (this Mac's mic and speaker, or a paired Mac's), `jarvis meeting`, `jarvis connect [agent]`
 - as a service: `jarvis start | stop | restart | logs`
-- over HTTP: `jarvis status | health | ask | add | board | tasks | mode | research | improve`
+- over HTTP: `jarvis status | health | ask | add | board | tasks | mode | research | improve | timers | remind | schedule`
 - once: `jarvis init | enroll | top`
 
 Everything network-shaped is one HTTP/SSE/WebSocket server on `BRAIN_PORT`, so a thin client on another machine
@@ -35,11 +35,14 @@ PLIST_PATH = Path(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist").expanduser()
 USAGE = """usage: jarvis [command]
 
 foreground (a terminal holds it open):
-  (none)          listen with this Mac's mic and speaker
-  remote          listen for a thin client: another Mac's mic and speaker, every model and agent here
+  (none)          listen with this Mac's mic and speaker, or a paired Mac's when it connects
   meeting         sit in a call with you (hears the call, speaks into Google Meet)
   connect [X]     continue the T3 thread this runs in, or a session of claude | opencode | pi
-  serve [flags]   the same stack, spelled out (`--remote`, `--meeting`, `--connect X`)
+  serve [flags]   the same stack, spelled out (`--meeting`, `--connect X`)
+
+a paired Mac (no install, no mode to start):
+  jarvis pair     show a one-time code; that Mac runs the thin client and owns the mic and speaker while connected
+  jarvis devices  list them (`devices revoke <id>` cuts one off)
 
 as a service (launchd keeps it up, 24/7):
   start [flags]   install/refresh the LaunchAgent and start it; keeps the mode it already had
@@ -48,10 +51,8 @@ as a service (launchd keeps it up, 24/7):
   logs            tail the daemon's log
 
 over the network (one HTTP/SSE/WebSocket server, one token):
-  health          is a Jarvis answering here? (`--url http://<mac-mini>:8640` for another machine)
+  health          is a Jarvis answering here? (`--url http://<mac-mini>:8643` for another machine)
   status          version, uptime, mode, spend, tasks, voice
-  pair            show a one-time code so another Mac connects with its own secret (`--name`)
-  devices         the paired devices (`devices revoke <id>` revokes one)
   ask "text"      one-shot request, answer printed
   board           the full board as JSON
   tasks           list the tasks
@@ -59,7 +60,11 @@ over the network (one HTTP/SSE/WebSocket server, one token):
   mode ASSIST|AUTONOMOUS
   research ID     run the hypothesis fan-out on a task
   improve         run the skill reflection loop
-  restart --remote  ask the running Jarvis to restart itself
+  timers          list follow-ups and schedules (`timers cancel <id>`)
+  remind "text" in 30m
+                  a one-shot check, spoken when it fires (also `at 08:00`)
+  schedule --every "0 8 * * 1-5" --title "Morning" --prompt "check the PRs"
+                  a recurring check; add `--action task` to queue board work instead
 
 once:
   top             open the cockpit (the Rust TUI, built from this checkout)
@@ -135,11 +140,26 @@ def plist_serve_args() -> list[str]:
     try:
         text = PLIST_PATH.read_text(encoding="utf-8")
     except OSError:
-        return ["--remote"]  # a Mac mini server with no one at the mic
+        return []  # a fresh install: the mic and speaker are this Mac's, and a paired Mac's when it connects
     if "<string>serve</string>" not in text:
-        return ["--remote"]
+        return []
     tail = text.split("<string>serve</string>", 1)[1].split("</array>", 1)[0]
-    return [flag for flag in re.findall(r"<string>(.*?)</string>", tail) if flag.startswith("--")]
+    values = re.findall(r"<string>(.*?)</string>", tail)
+    flags: list[str] = []
+    i = 0
+    while i < len(values):
+        arg = values[i]
+        # `--remote` was its own mode once; the thin client is always served now, so an old plist is cleaned up here.
+        if arg == "--remote":
+            i += 1
+            continue
+        if arg.startswith("--"):
+            flags.append(arg)
+            if arg == "--connect" and i + 1 < len(values) and not values[i + 1].startswith("--"):
+                flags.append(values[i + 1])  # the agent name, not a flag
+                i += 1
+        i += 1
+    return flags
 
 
 def write_plist(serve_args: list[str]) -> None:
@@ -303,6 +323,7 @@ def pair_device(args: list[str]) -> None:
     print(f"  curl -fsSL 'http://{host}/client.py' -o ~/.local/bin/jarvis-remote.py")
     print(f"  uv run ~/.local/bin/jarvis-remote.py --pair {code}{named}")
     print("\nThat Mac keeps its own secret; `jarvis devices revoke <id>` ends it without touching the others.")
+    print("While it runs, it is Jarvis's mic and speaker; nothing else has to be started here and nothing restarted.")
 
 
 def list_devices(args: list[str]) -> None:
@@ -346,8 +367,12 @@ def print_status(url: str = "") -> None:
           f"${s.get('daily_budget_usd', 0):.2f}")
     print(f"  tasks     {s.get('tasks')} ({s.get('tasks_ready')} ready, {s.get('tasks_running')} running)")
     print(f"  skills    {s.get('skills_active')} active    approvals waiting: {s.get('approvals_waiting')}")
-    print(f"  voice     {voice.get('state', 'unknown')}"
-          + (f" (relay client connected on port {voice.get('port')})" if voice.get("client") else ""))
+    voice_line = f"  voice     {voice.get('state', 'unknown')}"
+    if voice.get("client"):
+        voice_line += f" (a paired Mac is the mic and speaker, port {voice.get('port')})"
+    elif voice.get("local_audio") is False:
+        voice_line += f" (no local mic; waiting for a paired Mac on port {voice.get('port')})"
+    print(voice_line)
 
 
 def dispatch(argv: list[str]) -> None:
@@ -408,9 +433,18 @@ def dispatch(argv: list[str]) -> None:
         return print(f"[{body.get('outcome')}] {body.get('summary')} (hypotheses={body.get('hypotheses') or []})")
     if cmd == "improve":
         body = call("POST", "/v1/skills/improve", timeout=3600.0)
-        return print(f"[{body.get('outcome')}] {body.get('summary')} (modified={body.get('modified') or []})")
+        return print(
+            f"[{body.get('outcome')}] {body.get('summary')} "
+            f"(modified={body.get('modified') or []} memory={body.get('modified_memory') or []})"
+        )
     if cmd == "add":
         return add_task(rest)
+    if cmd == "timers":
+        return timers_command(rest)
+    if cmd == "remind":
+        return remind_command(rest)
+    if cmd == "schedule":
+        return schedule_command(rest)
     if cmd == "init":
         from jarvis.init import main as init
 
@@ -420,7 +454,7 @@ def dispatch(argv: list[str]) -> None:
 
         return enroll()
 
-    # Foreground modes, with the flags allowed in any order: `jarvis remote connect`, `jarvis --meeting`.
+    # Foreground flags, in any order: `jarvis --meeting`, `jarvis connect pi`, `jarvis --remote` (an old no-op).
     return run_foreground(argv)
 
 
@@ -440,8 +474,6 @@ def _take(args: list[str], flag: str) -> str:
 def local_or_remote(args: list[str]) -> list[str]:
     """`serve` flags from the command line, normalized to what the LaunchAgent will store."""
     flags: list[str] = []
-    if "--remote" in args or "remote" in args:
-        flags.append("--remote")
     if "--meeting" in args or "meeting" in args:
         flags.append("--meeting")
     for i, arg in enumerate(args):
@@ -452,6 +484,77 @@ def local_or_remote(args: list[str]) -> list[str]:
                 flags += ["--connect"]
             break
     return flags
+
+
+def timers_command(args: list[str]) -> None:
+    if args and args[0] == "cancel":
+        if len(args) < 2:
+            sys.exit("usage: jarvis timers cancel <id>")
+        body = call("POST", f"/v1/timers/{args[1]}/cancel")
+        timer = body.get("timer") or {}
+        return print(f"Cancelled {timer.get('id')} ({timer.get('title')}).")
+    body = call("GET", "/v1/timers")
+    rows = body.get("timers") or []
+    if not rows:
+        return print("No timers.")
+    for t in rows:
+        print(
+            f"{t['id']:>11} [{t['kind']}/{t['action']}/{t['status']}] "
+            f"next={t['next_run_at']} ({t['timezone']}): {t['title']}"
+        )
+    return print(f"\n{len(rows)} timer(s).")
+
+
+def _split_when(args: list[str]) -> tuple[str, str, str]:
+    """`text in 30m` or `text at 08:00`, with the flag kept out of the text."""
+    for index, arg in enumerate(args):
+        if arg in ("in", "at") and index + 1 < len(args):
+            text = " ".join(args[:index]).strip()
+            when = " ".join(args[index + 1 :]).strip()
+            if text and when:
+                return arg, text, when
+    sys.exit('usage: jarvis remind "what to check" in 30m')
+
+
+def remind_command(args: list[str]) -> None:
+    flag, text, when = _split_when(args)
+    body = call(
+        "POST",
+        "/v1/timers",
+        json={"in" if flag == "in" else "at": when, "title": text[:80], "prompt": text, "action": "check"},
+    )
+    timer = body.get("timer") or {}
+    print(f"Scheduled {timer.get('id')} for {timer.get('next_run_at')} ({timer.get('timezone')}): {text}")
+
+
+def schedule_command(args: list[str]) -> None:
+    payload: dict[str, Any] = {"action": "check", "mode": "ASSIST"}
+    mapping = {
+        "--every": "every",
+        "--title": "title",
+        "--prompt": "prompt",
+        "--repo": "repo",
+        "--mode": "mode",
+        "--action": "action",
+        "--verify": "verify",
+        "--timezone": "timezone",
+        "--max-cost": "max_cost_usd",
+    }
+    i = 0
+    while i < len(args):
+        key = mapping.get(args[i])
+        if key is None:
+            sys.exit(f"unknown flag {args[i]}\n\n{USAGE}")
+        if i + 1 >= len(args):
+            sys.exit(f"{args[i]} needs a value")
+        payload[key] = args[i + 1]
+        i += 2
+    if not payload.get("every") or not payload.get("title"):
+        sys.exit('usage: jarvis schedule --every "0 8 * * 1-5" --title "Morning" [--prompt ...] [--action task]')
+    payload.setdefault("prompt", payload["title"])
+    body = call("POST", "/v1/timers", json=payload)
+    timer = body.get("timer") or {}
+    print(f"Scheduled {timer.get('id')} ({timer.get('kind')}): next={timer.get('next_run_at')}")
 
 
 def add_task(args: list[str]) -> None:
@@ -491,17 +594,16 @@ def add_task(args: list[str]) -> None:
 # --------------------------------------------------------------------------------------------------------------
 # Foreground: the same stack, held by a terminal
 # --------------------------------------------------------------------------------------------------------------
-FLAG_ALIASES = {"meeting": "meeting", "--meeting": "meeting", "remote": "remote", "--remote": "remote"}
+# `remote` and `--remote` were a mode of their own; the thin client is always served now. The words are still
+# accepted, and do nothing, so an installed LaunchAgent or shell history from before keeps working.
+DEPRECATED_FLAGS = {"remote", "--remote"}
 
 
-def parse_foreground(argv: list[str]) -> tuple[bool, bool, str | None]:
-    """`(remote, meeting, connect)` from any order of the flags and the `connect` subcommand."""
-    kinds = {FLAG_ALIASES[a] for a in argv if a in FLAG_ALIASES}
-    if len(kinds) > 1:
-        sys.exit("`remote` and `meeting` do not go together (the call is this Mac's).")
-    remote, meeting = "remote" in kinds, "meeting" in kinds
+def parse_foreground(argv: list[str]) -> tuple[bool, str | None]:
+    """`(meeting, connect)` from any order of the flags and the `connect` subcommand."""
+    meeting = any(a in ("meeting", "--meeting") for a in argv)
 
-    words = [a for a in argv if a not in FLAG_ALIASES]
+    words = [a for a in argv if a not in DEPRECATED_FLAGS and a not in ("meeting", "--meeting")]
     connect: str | None = None
     if words and words[0] in ("serve", "connect"):
         sub, words = words[0], words[1:]
@@ -512,11 +614,11 @@ def parse_foreground(argv: list[str]) -> tuple[bool, bool, str | None]:
         connect = flag.split("=", 1)[1] if "=" in flag else (words.pop(0) if words else "t3")
     if words:
         sys.exit(USAGE)
-    return remote, meeting, connect
+    return meeting, connect
 
 
 def run_foreground(argv: list[str] | None = None) -> None:
-    remote, meeting, connect = parse_foreground(list(argv or []))
+    meeting, connect = parse_foreground(list(argv or []))
     from jarvis.supervisor import prepare_environment
 
     prepare_environment()
@@ -528,7 +630,7 @@ def run_foreground(argv: list[str] | None = None) -> None:
     from jarvis.supervisor import start_all
 
     try:
-        asyncio.run(start_all(connect=connect, meeting=meeting, remote=remote))
+        asyncio.run(start_all(connect=connect, meeting=meeting))
     except KeyboardInterrupt:
         logger.info("Jarvis stopped.")
         sys.exit(0)

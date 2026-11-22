@@ -115,16 +115,15 @@ async def run_pipecat_harness(
     connect: str | None = None,
     *,
     meeting: bool = False,
-    remote: bool = False,
     relay: Any = None,
     status: dict[str, Any] | None = None,
 ) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers.
 
     `relay` is the already-built `RemoteVoiceTransport` when the shared Jarvis server owns its routes; without it,
-    `remote=True` builds one and listens on its own (the voice without the brain). With `RELAY_EARS=true` the
-    supervisor passes a local+relay transport even though `remote` is false. `status`, when given, is kept
-    up to date for the server's `/v1/status` answer.
+    one is built and it listens on its own (the voice without the brain). Either way a paired Mac's mic and speaker
+    are always served, and take over from this Mac's while connected. `status`, when given, is kept up to date for
+    the server's `/v1/status` answer.
     """
     live = status if status is not None else {}
     from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
@@ -143,7 +142,7 @@ async def run_pipecat_harness(
         LLMUserAggregatorParams,
     )
     from pipecat.transcriptions.language import Language
-    from pipecat.transports.base_transport import BaseTransport, TransportParams
+    from pipecat.transports.base_transport import TransportParams
     from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
 
     from jarvis_voice.cleanup import TranscriptCleaner
@@ -168,16 +167,6 @@ async def run_pipecat_harness(
     if meeting:
         guests = settings.meeting_guests if settings.master_check else "allow (everyone counts as the master)"
         check += f"; meeting guests: {guests}"
-    if remote:
-        check += "; mic and speaker on another Mac"
-    elif settings.relay_ears and not meeting:
-        check += "; ears: this Mac and another Mac"
-    if (remote or settings.relay_ears) and settings.master_check and not meeting:
-        logger.warning(
-            "MASTER_CHECK is on and the relay lets another Mac's mic in: the voiceprint was recorded with this one, "
-            "so your sentences there may score low. Watch the [Speaker] score= lines; lower SPEAKER_THRESHOLD if "
-            "they are dropped."
-        )
     # The log is where misses get investigated; it has to say which setup heard them.
     logger.info(f"Hearing {settings.language} with Whisper {settings.whisper_model}, {check}")
 
@@ -240,22 +229,31 @@ async def run_pipecat_harness(
     thread = await pick_connection(orchestrator, connect) if connect else None
 
     # 1. Mic and speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
-    # voice so the user can talk over it on speakers. With remote audio they belong to another Mac, and the
-    # canceller runs there instead: it has to sit where the speaker does. With RELAY_EARS both are present and
-    # `Ear` follows whichever Mac hears you.
-    relay_is_standalone = False
-    if remote and relay is None:
-        from jarvis_voice.remote_audio import make_transport
+    # voice so the user can talk over it on speakers. A paired Mac's mic and speaker are served on the same host and
+    # port and own both while connected, so no mode has to be chosen up front; that canceller runs on that Mac instead,
+    # where its speaker is. With no local audio hardware, Jarvis waits for a paired Mac.
+    from jarvis_voice.remote_audio import make_transport
 
+    relay_is_standalone = False
+    if relay is None:
         relay = make_transport()
-        await relay.start_server()
-        relay_is_standalone = True
-    if relay is not None:
-        transport: BaseTransport = relay
-    else:
-        transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
-        # "Meeting mode on" by voice starts hearing the call and speaking into it, without a restart.
-        state.on_meeting = transport.set_meeting
+        try:
+            await relay.start_server()
+            relay_is_standalone = True
+        except OSError as exc:
+            logger.warning(
+                f"The thin client's port is taken ({exc!r}); this Jarvis uses its own mic and speaker and serves no "
+                "paired Mac."
+            )
+            relay = None
+    transport: MacVoiceTransport = MacVoiceTransport(
+        TransportParams(audio_in_enabled=True, audio_out_enabled=True),
+        meeting=meeting,
+        hub=relay.hub if relay is not None else None,
+        ear=relay.ear if relay is not None else None,
+    )
+    # "Meeting mode on" by voice starts hearing the call and speaking into it, without a restart.
+    state.on_meeting = transport.set_meeting
 
     # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice,
     # known enrolled speakers, or a new speaker being enrolled (or tagging room in meetings).
@@ -387,14 +385,15 @@ async def run_pipecat_harness(
 
     @task.event_handler("on_pipeline_started")
     async def greet(task: PipelineTask, frame) -> None:
-        if remote:
-            # The other Mac may be asleep or still starting: a greeting spoken now would play to an empty room.
+        if not transport.has_local_audio:
+            # No mic or speaker on this Mac (a headless Mac mini): a greeting spoken now would play to an empty room.
             task.create_task(greet_when_connected())
             return
         await greet_now()
 
     async def greet_when_connected() -> None:
-        await relay.wait_for_client()  # the other Mac may connect well after this Mac is ready
+        if relay is not None:
+            await relay.wait_for_client()  # the paired Mac may connect well after this Mac is ready
         await greet_now()
 
     async def greet_now() -> None:
@@ -422,6 +421,7 @@ async def run_pipecat_harness(
         )
 
     # Start background coding agent watchers (Claude Code, OpenCode)
+    live["local_audio"] = transport.has_local_audio
     await orchestrator.start_all()
     live["state"] = "listening"
     logger.info("Jarvis is listening (no wake word required). Say 'Shut up' to mute to beep-only mode.")

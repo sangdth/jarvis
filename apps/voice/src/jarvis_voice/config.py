@@ -47,14 +47,12 @@ class Settings(EnvSettings):
     elevenlabs_api_key: str = ""
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
 
-    # `jarvis remote`: the mic and speaker are on another Mac, which runs `defaults/remote/client.py`; the models,
-    # agents and memory stay here. Its two routes live on the one Jarvis HTTP app, so the port is the brain's
-    # (`BRAIN_PORT`) and the token is the brain token, unless `REMOTE_PORT` / `REMOTE_TOKEN` pin something else.
+    # A paired Mac's mic and speaker (the thin client, `defaults/remote/client.py`): the models, agents and memory
+    # stay here. Always served, on the one Jarvis HTTP app, so the port is the brain's (`BRAIN_PORT`) and the token
+    # is the brain token, unless `REMOTE_PORT` / `REMOTE_TOKEN` pin something else. While a client is connected the
+    # ear follows whichever Mac hears you; this Mac's hardware takes it back when the client goes.
     remote_port: int = 0  # 0 = the same port as the HTTP/SSE/WS gateway (`BRAIN_PORT`)
     remote_token: str = ""
-    # Both ears: keep this Mac's mic and speaker and add another Mac's over the relay, handing the ear to whichever
-    # one hears you (`Ear` in remote_audio.py). Off by default: only `jarvis remote` starts the relay.
-    relay_ears: bool = False
 
     # The brain (this repository's `apps/brain`): the always-on daemon `jarvis` supervises, with the voice in
     # the same process. Its HTTP/SSE/WS gateway is the only network surface Jarvis exposes.

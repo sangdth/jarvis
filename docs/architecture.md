@@ -98,14 +98,18 @@ flowchart LR
 ### B. "No Wake Word"
 Without a wake word, two local filtering stages prevent false triggers and API cost blowups:
 0. **Echo cancellation:** `MacVoiceTransport` (`mac_audio.py`) replaces Pipecat's PyAudio transport. One `AVAudioEngine` with macOS voice processing on owns both the mic tap and the speaker player, because Apple cancels only the echo of what plays through the same engine. The mic arrives as float32 at 48 kHz and is resampled to 16 kHz; playback is paced to real time with about 80 ms queued, so an interruption cuts Jarvis off. `jarvis enroll` records through the same engine, so the voiceprint matches what Jarvis hears. Research and numbers: `docs/research/echo-cancellation.md`.
-   With `jarvis remote` the mic and speaker are another Mac's: `RemoteVoiceTransport` (`remote_audio.py`) serves
-   `/ws` and `/client.py` on the same HTTP server as everything else, and the socket carries 16-bit mono PCM at
-   16 kHz both ways. The *client* runs the same `AVAudioEngine` voice processing (`defaults/remote/client.py`) —
-   the canceller has to sit where the speaker is, or Jarvis hears itself and barge-in dies. The heavy half never
-   moves: Whisper, the speech check, the agents and memory all stay on the Mac running Jarvis. Output is paced
-   exactly like the local transport, and an `InterruptionFrame` sends a `flush` so the other Mac drops what it
-   still had queued. The port is on the network, so every connection carries the shared token (`brain_token`, or
-   `remote_token` / `REMOTE_TOKEN`) and only one client at a time, since they share one ear.
+   A paired Mac's mic and speaker reach Jarvis on the same HTTP server as everything else: `RelayHub` and
+   `RemoteVoiceTransport` (`remote_audio.py`) serve `/ws` and `/client.py`, and the socket carries 16-bit mono PCM
+   at 16 kHz both ways (local speech is 24 kHz and resampled for it). The *client* runs the same `AVAudioEngine`
+   voice processing (`defaults/remote/client.py`) — the canceller has to sit where the speaker is, or Jarvis hears
+   itself and barge-in dies. The heavy half never moves: Whisper, the speech check, the agents and memory all stay
+   on the Mac running Jarvis. The routes are **always mounted**; `MacVoiceTransport` holds a `RelayHub` and shares
+   an `Ear` with it: a client that connects takes the mic and speaker, speaking on either Mac moves the ear to that
+   one, and this Mac takes it back when the client goes. With no local audio hardware (a headless Mac mini), the transport starts without one,
+   `has_local_audio` is false, and Jarvis waits for a client before greeting. Output is paced exactly like the local
+   transport, and an `InterruptionFrame` sends a `flush` so the other Mac drops what it still had queued. The port
+   is on the network, so every connection carries the shared token (`brain_token`, or `remote_token` /
+   `REMOTE_TOKEN`) or a paired device's secret, and only one client at a time, since they share one ear.
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
 2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/whisper-large-v3-turbo`) transcribes speech locally on the Apple GPU at $0 cost. With `MASTER_CHECK=true` (on by default; `jarvis enroll` records the voiceprint, `MASTER_CHECK=false` turns the check off), in the same step a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker embedding (3D-Speaker ERes2Net, about 100 ms, run alongside Whisper) compares the whole sentence with the enrolled voiceprint (`JARVIS_HOME/owner_voice.npy`); below `SPEAKER_THRESHOLD` the sentence is dropped, unless it is a mute or unmute phrase, or `jarvis meeting` tags it `[Room]`. Turns come only from sentences that pass both checks: the user aggregator runs on Pipecat's `ExternalUserTurnStrategies`, and `JarvisIntentGate` wraps each passed sentence in proposed start/stop frames, so background voices never interrupt Jarvis or hold a turn open. Voice detection still cuts Whisper's sentences: with `SMART_TURN=true` (default) a 0.2 s pause asks Pipecat's Smart Turn v3 (local ONNX, about 50 ms) whether the voice sounds finished; if not, `SpeakerVerifiedWhisperSTT` keeps the sentence open until the user goes on or 1.5 s of silence pass, so Whisper and the voice check get it whole; a sentence held past 30 s (`MAX_HELD_SECS`, a TV that never sounds done) goes on as it is. With `SMART_TURN=false` every 0.6 s pause ends a sentence, and one Whisper ends with "..." or a dash waits up to 2 s after the user's next silence and joins what they say next, once (`HOLD_SECS`). Research: `docs/research/speaker-verification.md`. Each answered turn logs `[Latency]` lines (Pipecat's `UserBotLatencyObserver`, `enable_metrics` on; `latency.py` skips cycles with no released user turn) and `[Intent] ... ms` for the speech check, which Pipecat counts inside transcription. With `SAVE_SEGMENTS=N`, every segment Whisper gets (even one it returns no text for) is saved as a WAV in `JARVIS_HOME/clips` (folder 0700, files 0600, newest N kept) and named on its `[Speaker] score=` log line, to re-run Whisper and the voice check on real misses; off by default. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to Laya's `jarvis-intent` (`POST $LAYA_BASE_URL/v1/systemone`, one `choice` question, fine-tuned for Jarvis, about 90 ms), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`. The OpenRouter decision model `typesafe/jev-1.14` (`FILTER_MODEL`, `POST /api/alpha/decisions`, about 230 ms) gets the same question at the same time; its answer is used only when Laya fails or passes `LAYA_TIMEOUT_SECS`, and both answers go to `feedback/intent.jsonl` for retraining. A sentence that passes goes to `TranscriptCleaner` (`cleanup.py`, `TRANSCRIPT_CLEANUP`) before the `[Room]` / `[Speaker: ...]` / `[Meeting transcript:` labels are added: one OpenRouter call (`CLEANUP_MODEL`, thinking off, 1.5 s cap) fixes punctuation, drops fillers and resolves a slip fixed in the same sentence, and keeps an opening "No, sorry," so a correction still replaces the running task. Sentences of eight words or fewer skip it unless they hold a filler or a `CLEANUP_CUES` phrase; the speech check and its feedback log keep the words as heard; `[Cleanup] ... ms` logs the time.
 
@@ -194,6 +198,23 @@ ignores `session` and `project`.
    * **`BEEP_ONLY` Mode (triggered by *"Shut up"*, *"Be quiet"*, *"Stop talking"*, *"Hush"*):** Active TTS is immediately cancelled, a low confirmation tone plays, and incoming agent topics are appended to `pending_topics` while playing a short 880Hz sine chime.
    * **Unmute Digest (triggered by *"You can talk"*):** Restores `VOICE` mode, reads out queued questions, then has the LLM retell queued finished turns.
 
+### E. Brain timers, memory and outbox delivery
+1. **Timers (`schedule.py`, `timers` table):** `jarvis remind`, `jarvis schedule`, voice phrasing ("remind me … in 30
+   minutes", "every weekday at 8am …") and `POST /v1/timers` write one row: a one-shot `followup` or a five-field
+   cron `schedule` read in its own IANA zone. `Reconciler.tick` advances a due row atomically (`firing`), creates a
+   board task (`action='task'`) or starts a short read-only `pi` check beside the loop (`action='check'`), and returns
+   a schedule to `active` at its next occurrence. A missed slot is skipped, never replayed in a burst; a crash is
+   recovered after a grace period.
+2. **Memory (`memory.py`):** `INSTRUCTIONS.md` is the owner's, read-only to workers; `memory/MEMORY.md` is a
+   <=150-line index injected into every planner/builder run with `--append-system-prompt`; repository detail lives in
+   `memory/repos/<slug>.md`. Progress notes now record verified results as well as failures. Only the offline
+   Improver writes the two curated files (with `expected_sha256`), and its reflection pass corrects stale notes
+   against the traces.
+3. **Outbox delivery (`server.py`, `brain_client.py`):** in `ASSIST` mode a queued outbox row is published on
+   `GET /v1/events`; the voice speaks it and acknowledges `POST /v1/outbox/{id}/spoken`, which writes one line to
+   `memory/reported.md`. In `AUTONOMOUS` mode nothing is spoken until the owner switches back or asks for the brief.
+   A reconnecting voice drains `GET /v1/outbox?status=queued` first, so a slept Mac does not lose the night's work.
+
 ---
 
 ## 4. Codebase Mapping
@@ -211,9 +232,9 @@ The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voi
 | `soul.py`             | `SOUL.md` read and write                                                   |
 | `system_prompts.py`   | `SYSTEM.md`: optional `## Name` sections that replace shipped prompts      |
 | `init.py`             | `jarvis init`: copies the defaults, makes the brain folder and token, writes `SOUL.md` |
-| `mac_audio.py`        | `MacVoiceTransport`: mic and speaker through macOS voice processing        |
+| `mac_audio.py`        | `MacVoiceTransport`: mic and speaker through macOS voice processing, handed to a paired Mac while it is connected |
 | `voice_engine.py`     | `VoiceAudio`, `MicConverter`: that engine, without Pipecat (enroll, client) |
-| `remote_audio.py`     | `RemoteVoiceTransport`: `jarvis remote`, the mic of another Mac over WS     |
+| `remote_audio.py`     | `RelayHub` + `RemoteVoiceTransport`: a paired Mac's mic and speaker over WS, always served |
 | `defaults/remote/`    | `client.py`: what runs on that Mac; nothing but a mic, a resampler, a player |
 | `voice_gates.py`      | `SpeakerVerifiedWhisperSTT`, `JarvisIntentGate`                            |
 | `speaker.py`          | sherpa-onnx speaker embeddings, voiceprint load and save, model download   |
