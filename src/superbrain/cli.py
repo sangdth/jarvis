@@ -14,6 +14,7 @@ from superbrain.config import settings
 from superbrain.db import BrainDB
 from superbrain.reconciler import Reconciler
 from superbrain.server import BrainServer
+from superbrain.telemetry import TelemetryHub
 
 
 def build_launchd_plist() -> str:
@@ -136,9 +137,10 @@ async def _serve_async() -> None:
         daily_budget_usd=settings.daily_budget_usd,
     )
     stop_event = asyncio.Event()
-    reconciler = Reconciler(db, settings, on_restart_requested=stop_event.set)
+    hub = TelemetryHub()
+    reconciler = Reconciler(db, settings, on_restart_requested=stop_event.set, hub=hub)
     try:
-        server = BrainServer(db, reconciler, settings)
+        server = BrainServer(db, reconciler, settings, hub=hub)
         reconciler.start()
 
         runner = web.AppRunner(server.app)
@@ -166,7 +168,30 @@ async def _serve_async() -> None:
         db.close()
 
 
+def run_dashboard(extra_args: list[str]) -> int:
+    """Launches the Rust Ratatui dashboard (`tui/`) for a fullscreen 24/7 cockpit."""
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        repo_root / "tui" / "target" / "release" / "sb-top",
+        repo_root / "tui" / "target" / "debug" / "sb-top",
+    ]
+    binary = next((c for c in candidates if c.is_file()), None)
+    if binary is None:
+        print("superbrain top: dashboard binary is not built yet.", file=sys.stderr)
+        print(f"  cd {repo_root / 'tui'} && cargo build --release", file=sys.stderr)
+        return 1
+    try:
+        return subprocess.call([str(binary), *extra_args])
+    except KeyboardInterrupt:
+        return 130
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    # `top` owns its own CLI flags, so dispatch before argparse can claim them.
+    if raw_args and raw_args[0] == "top":
+        return run_dashboard(raw_args[1:])
+
     parser = argparse.ArgumentParser(prog="superbrain")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -174,6 +199,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="Show system state, tasks, and active personal skills")
     sub.add_parser("improve", help="Run the self-improving skill reflection loop on recent attempts")
     sub.add_parser("self-check", help="Run smoke canary verification on this checkout")
+
+    top_p = sub.add_parser(
+        "top",
+        help="Run the fullscreen Ratatui dashboard (tui/)",
+        add_help=False,
+    )
+    top_p.add_argument("top_args", nargs=argparse.REMAINDER)
 
     res_p = sub.add_parser(
         "research",
@@ -201,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "self-check":
         return run_self_check()
+    if args.cmd == "top":
+        return run_dashboard(list(args.top_args or []))
 
     if args.cmd == "launchd":
         plist_text = build_launchd_plist()

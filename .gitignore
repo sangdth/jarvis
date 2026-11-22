@@ -17,3 +17,6 @@ traces/
 skills/
 ext/
 logs/
+
+# Rust dashboard (tui/)
+tui/target/

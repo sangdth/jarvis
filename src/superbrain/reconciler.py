@@ -35,6 +35,14 @@ from superbrain.skills import (
     validate_evidence_receipt,
     write_attempt_trace,
 )
+from superbrain.telemetry import (
+    EVENT_ATTEMPT_FINISHED,
+    EVENT_BOARD_RPC,
+    EVENT_PI_PROGRESS,
+    EVENT_RECONCILER_PHASE,
+    TelemetryHub,
+    preview,
+)
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 
@@ -187,11 +195,14 @@ class Reconciler:
         db: BrainDB,
         cfg: Settings = settings,
         on_restart_requested: Callable[[], None] | None = None,
+        hub: TelemetryHub | None = None,
     ) -> None:
         self.db = db
         self.cfg = cfg
         self.on_restart_requested = on_restart_requested
+        self.hub = hub if hub is not None else TelemetryHub()
         self.restart_pending: bool = False
+        self._last_phase: str | None = None
         self.cfg.worktrees_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.notes_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -237,6 +248,30 @@ class Reconciler:
                 aborted = True
         return aborted
 
+    def _set_phase(self, phase: str, *, force: bool = False, **extra: Any) -> None:
+        """Publishes a reconciler phase transition (de-duplicated unless `force=True`)."""
+        key = "|".join(
+            [
+                phase,
+                str(extra.get("task_id") or ""),
+                str(extra.get("role") or ""),
+                str(extra.get("run_key") or ""),
+            ]
+        )
+        if key == self._last_phase and not force:
+            return
+        self._last_phase = key
+        self.hub.emit(EVENT_RECONCILER_PHASE, phase=phase, **extra)
+
+    def _emit_attempt(self, task_id: str, role: str, outcome: str, **extra: Any) -> None:
+        self.hub.emit(
+            EVENT_ATTEMPT_FINISHED,
+            task_id=task_id,
+            role=role,
+            outcome=outcome,
+            **extra,
+        )
+
     async def _run_loop(self) -> None:
         while True:
             try:
@@ -252,13 +287,16 @@ class Reconciler:
         self.db.reap_stale_leases()
         state = self.db.get_state()
         if state.mode != "AUTONOMOUS":
+            self._set_phase("assist_idle", mode=state.mode)
             return None
         if state.spent_today_usd >= state.daily_budget_usd:
+            self._set_phase("budget_paused", spent_usd=state.spent_today_usd)
             logger.warning("[Reconciler] Daily budget reached; pausing autonomous claiming.")
             return None
 
         task = self.db.claim_next_task(lease_seconds=self.cfg.lease_seconds)
         if task is None:
+            self._set_phase("idle")
             unreflected = self.db.list_unreflected_attempts()
             should_reflect = len(unreflected) >= 2 or any(
                 a.outcome in ("failed_verify", "errored", "timed_out") or bool(a.diagnostic)
@@ -268,6 +306,7 @@ class Reconciler:
                 await self.run_skill_improver()
             return None
 
+        self._set_phase("claimed", task_id=task.id, role="builder" if task.verify_cmd else "planner")
         finished = await self.execute_claimed_task(task)
         if self.restart_pending and self.on_restart_requested is not None:
             self.on_restart_requested()
@@ -282,6 +321,7 @@ class Reconciler:
         approval_cb: ApprovalCallback | None = None,
     ) -> TaskRow:
         role: WorkerRole = "builder" if task.verify_cmd else "planner"
+        self._set_phase("prepare", task_id=task.id, role=role)
         repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
         if not (repo_dir / ".git").exists():
             return self.db.finish_attempt(
@@ -450,6 +490,7 @@ class Reconciler:
                 effective_verify_cmd = (
                     f"({task.verify_cmd}) && ({self.cfg.self_upgrade_verify_cmd})"
                 )
+            self._set_phase("verifying", task_id=task.id, role="builder")
             verified, verify_output = await self._run_verify(
                 worktree_dir, session_dir, effective_verify_cmd
             )
@@ -520,6 +561,7 @@ class Reconciler:
                     finished_task = self.db.get_task(finished_task.id)
                 return finished_task
 
+            self._set_phase("pushing", task_id=task.id, role="builder")
             git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
             if task.repo == "superbrain":
                 touched_protected = await self._find_modified_protected_files(
@@ -673,6 +715,7 @@ class Reconciler:
 
         session_dir = self.cfg.sessions_dir / "improver"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._set_phase("skill_improver")
         attempt_index_lines: list[str] = []
         for a in unreflected:
             trace_file = self.cfg.traces_dir / f"attempt-{a.id}.json"
@@ -738,6 +781,7 @@ class Reconciler:
         cwd = repo_dir if repo_dir.is_dir() else self.cfg.home_dir
         session_dir = self.cfg.sessions_dir / f"{task.id}-research"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._set_phase("auto_research", task_id=task.id, role="planner")
 
         attempts = self.db.list_attempts(task.id)
         oracle_lines: list[str] = []
@@ -851,6 +895,12 @@ class Reconciler:
         resume_session_id: str | None = None,
         approval_cb: ApprovalCallback | None = None,
     ) -> PiRunResult:
+        self._set_phase(
+            "pi_running",
+            task_id=task.id if task else None,
+            role=role,
+            run_key=run_key,
+        )
         sock_path = Path(f"/tmp/sb-{uuid.uuid4().hex[:12]}.sock")
         deferred_flag = False
         upserted_ids: list[str] = []
@@ -1025,6 +1075,34 @@ class Reconciler:
                     resp = {"ok": False, "error": f"Unknown RPC method: {method}"}
             except Exception as exc:
                 resp = {"ok": False, "error": str(exc)}
+            result_obj = resp.get("result")
+            result: dict[str, Any] = result_obj if isinstance(result_obj, dict) else {}
+            detail = ""
+            if method == "research_scout":
+                detail = (
+                    f"{result.get('verified_count', 0)} verified / "
+                    f"{result.get('rejected_count', 0)} rejected"
+                )
+            elif method == "upsert_task":
+                detail = str(result.get("id") or "")
+            elif method == "propose_skill_change":
+                detail = f"{result.get('slug')} v{result.get('version')}"
+            elif method == "defer_for_approval":
+                detail = "deferred" if result.get("deferred") else str(result.get("approved"))
+            elif method == "record_skill_load":
+                detail = str(result.get("loaded") or "")
+            elif method == "record_note":
+                detail = str(result.get("saved") or "")
+            self.hub.emit(
+                EVENT_BOARD_RPC,
+                run_key=run_key,
+                task_id=task.id if task else None,
+                role=role,
+                method=str(method),
+                ok=bool(resp.get("ok")),
+                detail=detail,
+                error=preview(str(resp.get("error"))) if resp.get("error") else None,
+            )
             writer.write((json.dumps(resp) + "\n").encode("utf-8"))
             await writer.drain()
             writer.close()
@@ -1102,8 +1180,14 @@ class Reconciler:
                 > initial_state.daily_budget_usd
             ),
             cleanup_cb=self._make_rpc_cleanup(server, sock_path),
+            progress_meta={
+                "run_key": run_key,
+                "role": role,
+                "task_id": task.id if task else None,
+            },
         )
         budget_exceeded = budget_exceeded or stream_over_budget
+        self._set_phase("pi_finished", task_id=task.id if task else None, role=role)
 
         total_cost = stream_state.total_cost + extra_scout_cost
         last_text = stream_state.last_text
@@ -1194,10 +1278,13 @@ class Reconciler:
         start_monotonic: float,
         over_budget_fn: Callable[[], bool],
         cleanup_cb: Callable[[], Awaitable[None]] | None = None,
+        progress_meta: dict[str, Any] | None = None,
     ) -> tuple[int, str, bool, bool]:
         """Spawns a `pi` process in its own process group and streams JSON lines with live timeout/budget kill."""
         timed_out = False
         over_budget = False
+        last_progress_emit = 0.0
+        meta = progress_meta or {}
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(cwd),
@@ -1226,6 +1313,19 @@ class Reconciler:
                 if not raw_line:
                     break
                 stream_state.feed_line(raw_line.decode("utf-8", errors="replace").strip())
+                now_monotonic = time.monotonic()
+                if now_monotonic - last_progress_emit >= 0.5:
+                    last_progress_emit = now_monotonic
+                    self.hub.emit(
+                        EVENT_PI_PROGRESS,
+                        run_key=meta.get("run_key", run_key),
+                        role=meta.get("role"),
+                        task_id=meta.get("task_id"),
+                        session_id=stream_state.session_id,
+                        cost_usd=round(stream_state.total_cost, 4),
+                        elapsed_s=round(now_monotonic - start_monotonic, 1),
+                        last_text_preview=preview(stream_state.last_text, 200),
+                    )
                 if over_budget_fn():
                     over_budget = True
                     _terminate_proc_group(proc, signal.SIGTERM)
@@ -1432,6 +1532,16 @@ class Reconciler:
             return
         latest = attempts[-1]
         write_attempt_trace(self.cfg.traces_dir, latest, diff_stat=diff_stat)
+        self._emit_attempt(
+            task_id,
+            role=latest.role,
+            outcome=latest.outcome,
+            attempt_id=latest.id,
+            cost_usd=latest.cost_usd,
+            metric_value=latest.metric_value,
+            git_branch=latest.git_branch,
+            summary=preview(latest.summary),
+        )
         if latest.outcome in ("failed_verify", "timed_out", "errored"):
             excerpt = (latest.verify_output or latest.summary or "").strip()[-500:]
             touched = diff_stat or "(no file changes)"

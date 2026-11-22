@@ -13,8 +13,10 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
 - Run SoL-Pi auto-research hypothesis fan-out: `uv run superbrain research <task_id>`
 - Run self-improving skill reflection: `uv run superbrain improve`
 - Generate Mac mini `launchd` plist: `uv run superbrain launchd`
+- Fullscreen Ratatui cockpit: `uv run superbrain top` (build once: `cd tui && cargo build --release`)
 - Lint & types: `uv run ruff check src tests` and `uv run mypy`
 - Tests: `uv run pytest`
+- Dashboard checks: `cd tui && cargo test && cargo clippy -- -D warnings`
 
 ## Architecture & Rules
 
@@ -86,3 +88,14 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
     `POST /v1/runs/{id}/stop` with Bearer token auth (`SUPERBRAIN_API_KEY`).
   - Serves `POST /v1/ask` (`{"input": "..."}` -> `{"spoken": "..."}`) for the iPhone Shortcut / Action Button over
     Tailscale.
+- **Fullscreen cockpit (`tui/` + `telemetry.py`):**
+  - `TelemetryHub` is a dependency-free in-memory ring buffer (500 events) that fans out transient events
+    (`http.inbound`, `run.status`, `approval.*`, `reconciler.phase`, `board.rpc`, `pi.progress`,
+    `attempt.finished`, `heartbeat`) to SSE subscribers via `GET /v1/telemetry/events`; publishing can never fail a
+    worker run.
+  - `tui/` (`sb-top`, Rust + Ratatui, launched with `uv run superbrain top`) reads `state.db` **read-only** on its own
+    connection, tails `sessions/**/*.jsonl` by byte offset, and reconnects to the SSE stream automatically, so the
+    dashboard survives daemon restarts and never blocks WAL writers.
+  - Operator actions from the dashboard are ordinary authenticated API calls: `POST /v1/outbox/{id}/resolve`
+    (approve/reject queued outbox items), `POST /v1/ask` (mode toggle, free-form instruction), and
+    `POST /v1/runs/{id}/stop`. The dashboard has no write path into `state.db` or `worktrees/`.
