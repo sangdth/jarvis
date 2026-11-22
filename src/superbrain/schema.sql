@@ -4,7 +4,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS system_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     mode TEXT NOT NULL DEFAULT 'ASSIST' CHECK (mode IN ('ASSIST', 'AUTONOMOUS')),
-    daily_budget_usd REAL NOT NULL DEFAULT 20.0,
+    daily_budget_usd REAL NOT NULL DEFAULT 200.0,
     spent_today_usd REAL NOT NULL DEFAULT 0.0,
     spend_date TEXT NOT NULL,
     last_good_sha TEXT,
@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'ready', 'in_progress', 'done', 'blocked')),
     priority INTEGER NOT NULL DEFAULT 50,
     strike_count INTEGER NOT NULL DEFAULT 0,
+    child_strategy TEXT NOT NULL DEFAULT 'all' CHECK (child_strategy IN ('all', 'any')),
+    best_metric REAL,
+    best_branch TEXT,
+    best_sha TEXT,
     lease_until TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -44,6 +48,7 @@ CREATE TABLE IF NOT EXISTS attempts (
         outcome IN ('pushed', 'decomposed', 'failed_verify', 'deferred_approval', 'timed_out', 'errored', 'reaped')
     ),
     verify_output TEXT,
+    metric_value REAL,
     skills_used TEXT NOT NULL DEFAULT '[]',
     diagnostic TEXT,
     reflected INTEGER NOT NULL DEFAULT 0,

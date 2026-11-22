@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import time
 import uuid
@@ -16,27 +17,115 @@ from typing import Any, Awaitable, Callable
 from loguru import logger
 
 from superbrain.config import Settings, settings
-from superbrain.db import AttemptOutcome, BrainDB, TaskRow, WorkerRole
+from superbrain.db import (
+    AttemptOutcome,
+    BrainDB,
+    TaskRow,
+    WorkerRole,
+    check_metric_target,
+    has_metric_comparator,
+)
 from superbrain.sandbox import wrap_with_sandbox
 from superbrain.skills import (
     SkillProposal,
     apply_skill_proposal,
+    inspect_attempt_trajectory,
     record_skill_outcome,
     sync_skills_on_disk,
+    validate_evidence_receipt,
     write_attempt_trace,
 )
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 
-PLANNER_TOOLS = "read,grep,find,ls,upsert_task,report_diagnostic,defer_for_approval"
-BUILDER_TOOLS = "read,edit,write,bash,grep,find,ls,record_note,report_diagnostic,defer_for_approval"
-IMPROVER_TOOLS = "read,grep,find,ls,propose_skill_change"
+PLANNER_TOOLS = (
+    "read,grep,find,ls,research_scout,upsert_task,report_diagnostic,defer_for_approval"
+)
+BUILDER_TOOLS = (
+    "read,edit,write,edit_and_run,bash,grep,find,ls,research_scout,"
+    "record_note,report_diagnostic,defer_for_approval"
+)
+IMPROVER_TOOLS = "read,grep,find,ls,research_scout,propose_skill_change"
+SCOUT_TOOLS = "read,grep,find,ls"
+_METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
+_METRIC_CMD_RE = re.compile(r"\bMETRIC\b", re.IGNORECASE)
 PROTECTED_SELF_PATHS = {
     "pyproject.toml",
     "src/superbrain/config.py",
     "src/superbrain/sandbox.py",
     "src/superbrain/defaults/pi/board.ts",
 }
+
+
+def extract_metric_value(output: str | None) -> float | None:
+    """Extracts the last `METRIC: <float>` or `METRIC=<float>` reported by `verify_cmd`."""
+    if not output:
+        return None
+    matches = _METRIC_LINE_RE.findall(output)
+    return float(matches[-1]) if matches else None
+
+
+def _terminate_proc_group(
+    proc: asyncio.subprocess.Process, sig: signal.Signals = signal.SIGTERM
+) -> None:
+    """Signals the entire subprocess group (`start_new_session=True`) so child runners cannot linger."""
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        return
+    except OSError:
+        if sig == signal.SIGKILL:
+            proc.kill()
+        else:
+            proc.terminate()
+
+
+def _clean_untracked_tool_caches(worktree_dir: Path) -> None:
+    for cache_name in (".pytest_cache", ".mypy_cache", ".ruff_cache"):
+        cache_path = worktree_dir / cache_name
+        if cache_path.is_dir() and not cache_path.is_symlink():
+            shutil.rmtree(cache_path, ignore_errors=True)
+
+
+@dataclass
+class _PiStreamState:
+    session_id: str | None = None
+    last_text: str = ""
+    completed_cost: float = 0.0
+    streaming_cost: float = 0.0
+
+    @property
+    def total_cost(self) -> float:
+        return self.completed_cost + self.streaming_cost
+
+    def feed_line(self, line_str: str) -> None:
+        if not line_str:
+            return
+        try:
+            event = json.loads(line_str)
+        except json.JSONDecodeError:
+            self.last_text = line_str
+            return
+        if not isinstance(event, dict):
+            return
+        if event.get("type") == "session" and isinstance(event.get("id"), str):
+            self.session_id = event["id"]
+        elif isinstance(event.get("session_id"), str):
+            self.session_id = event["session_id"]
+        elif isinstance(event.get("sessionId"), str):
+            self.session_id = event["sessionId"]
+        text = extract_assistant_text(event)
+        if text:
+            self.last_text = text
+        ev_cost = extract_event_cost(event)
+        if ev_cost > 0:
+            if event.get("type") == "message_update":
+                self.streaming_cost = max(self.streaming_cost, ev_cost)
+            else:
+                self.completed_cost += ev_cost
+                self.streaming_cost = 0.0
 
 
 @dataclass
@@ -138,15 +227,15 @@ class Reconciler:
             except asyncio.CancelledError:
                 pass
         for proc in list(self._active_procs.values()):
-            if proc.returncode is None:
-                proc.terminate()
+            _terminate_proc_group(proc, signal.SIGTERM)
 
     def abort_run(self, run_key: str) -> bool:
-        proc = self._active_procs.get(run_key)
-        if proc and proc.returncode is None:
-            proc.terminate()
-            return True
-        return False
+        aborted = False
+        for key, proc in list(self._active_procs.items()):
+            if (key == run_key or key.startswith(f"{run_key}:scout:")) and proc.returncode is None:
+                _terminate_proc_group(proc, signal.SIGTERM)
+                aborted = True
+        return aborted
 
     async def _run_loop(self) -> None:
         while True:
@@ -193,7 +282,6 @@ class Reconciler:
         approval_cb: ApprovalCallback | None = None,
     ) -> TaskRow:
         role: WorkerRole = "builder" if task.verify_cmd else "planner"
-        effective_resume_id = resume_session_id or self.db.get_approved_resume_session(task.id)
         repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
         if not (repo_dir / ".git").exists():
             return self.db.finish_attempt(
@@ -202,6 +290,37 @@ class Reconciler:
                 summary=f"Repository {task.repo!r} not found at {repo_dir}",
                 outcome="errored",
             )
+
+        approved_ob = self.db.get_unconsumed_approved_outbox(task.id)
+        approved_details: dict[str, Any] = {}
+        if approved_ob is not None:
+            try:
+                approved_details = json.loads(approved_ob.details_json or "{}")
+            except Exception:
+                approved_details = {}
+            self.db.mark_outbox_consumed(approved_ob.id)
+
+        effective_resume_id = resume_session_id or (
+            approved_ob.resume_session_id if approved_ob is not None else None
+        )
+
+        # Fast-path for owner-approved protected self-upgrades: apply the exact pinned `approved_sha`
+        # verified on the prior attempt instead of re-running Builder with guardrails disabled.
+        pinned_sha = str(approved_details.get("approved_sha") or "").strip()
+        if role == "builder" and task.repo == "superbrain" and pinned_sha:
+            await self._git_fetch(repo_dir)
+            if await self._git_rc(repo_dir, "cat-file", "-e", f"{pinned_sha}^{{commit}}") == 0:
+                await self._apply_self_upgrade(repo_dir, pinned_sha, task.id)
+                finished_task = self.db.finish_attempt(
+                    task_id=task.id,
+                    role="builder",
+                    summary="Applied owner-approved protected self-upgrade.",
+                    outcome="pushed",
+                    git_branch=f"brain/{task.id}",
+                    git_sha=pinned_sha,
+                )
+                self._finalize_attempt_artifacts(task.id)
+                return finished_task
 
         session_dir = self.cfg.sessions_dir / task.id
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -262,7 +381,12 @@ class Reconciler:
         branch_name = f"brain/{task.id}"
         try:
             await self._git_fetch(repo_dir)
-            base_sha = await self._prepare_worktree(repo_dir, worktree_dir, branch_name)
+            base_sha = await self._prepare_worktree(
+                repo_dir,
+                worktree_dir,
+                branch_name,
+                prefer_local_head=(task.repo == "superbrain"),
+            )
             prompt = self._build_builder_prompt(task, worktree_dir)
             pi_res = await self._run_pi(
                 role="builder",
@@ -329,12 +453,43 @@ class Reconciler:
             verified, verify_output = await self._run_verify(
                 worktree_dir, session_dir, effective_verify_cmd
             )
-            if verified and task.repo == "superbrain" and not self.db.has_approved_outbox(task.id):
+            metric_val = extract_metric_value(verify_output)
+            requires_metric_line = bool(_METRIC_CMD_RE.search(effective_verify_cmd))
+            if not requires_metric_line and task.parent_id:
+                parent_row = self.db.get_task(task.parent_id)
+                requires_metric_line = parent_row.child_strategy == "any" and has_metric_comparator(
+                    parent_row.metric_target or task.metric_target
+                )
+            if verified and requires_metric_line and metric_val is None:
+                verified = False
+                verify_output = (
+                    f"{verify_output}\n"
+                    "Expected METRIC: <number> in verify_cmd output, but none was found."
+                ).strip()
+            elif (
+                verified
+                and metric_val is not None
+                and not check_metric_target(task.metric_target, metric_val)
+            ):
+                verified = False
+                verify_output = (
+                    f"{verify_output}\n"
+                    f"Metric {metric_val} did not satisfy metric_target {task.metric_target!r}"
+                ).strip()
+            if verified and task.repo == "superbrain":
                 verified, baseline_out = await self._run_held_out_baseline_tests(
                     repo_dir, worktree_dir, session_dir
                 )
                 if not verified:
-                    verify_output = f"Held-out baseline tests failed:\n{baseline_out}"
+                    verify_output = (
+                        "Held-out baseline tests failed (details sealed to prevent overfitting)."
+                    )
+                    self.db.queue_outbox(
+                        kind="report",
+                        task_id=task.id,
+                        summary_spoken=f"Task {task.id} failed held-out baseline tests.",
+                        details={"held_out_output": baseline_out},
+                    )
             if not verified:
                 finished_task = self.db.finish_attempt(
                     task_id=task.id,
@@ -346,6 +501,7 @@ class Reconciler:
                     session_jsonl_path=pi_res.session_jsonl_path,
                     git_branch=branch_name,
                     verify_output=verify_output,
+                    metric_value=metric_val,
                     skills_used=pi_res.skills_used,
                     diagnostic=pi_res.diagnostic,
                 )
@@ -354,13 +510,22 @@ class Reconciler:
                     self.db, self.cfg.skills_dir, pi_res.skills_used or [], succeeded=False
                 )
                 await self._check_post_upgrade_health(succeeded=False)
+                if (
+                    self.cfg.auto_research_after_strikes > 0
+                    and finished_task.strike_count == self.cfg.auto_research_after_strikes
+                    and finished_task.parent_id is None
+                    and not any(t.parent_id == finished_task.id for t in self.db.list_tasks())
+                ):
+                    await self.run_auto_research(finished_task.id)
+                    finished_task = self.db.get_task(finished_task.id)
                 return finished_task
 
+            git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
             if task.repo == "superbrain":
                 touched_protected = await self._find_modified_protected_files(
                     worktree_dir, base_sha
                 )
-                if touched_protected and not self.db.has_approved_outbox(task.id):
+                if touched_protected:
                     prompt_spoken = (
                         f"Approve Superbrain self-upgrade modifying protected files "
                         f"({', '.join(touched_protected)})?"
@@ -377,7 +542,11 @@ class Reconciler:
                                 task_id=task.id,
                                 resume_session_id=pi_res.session_id,
                                 summary_spoken=prompt_spoken,
-                                details={"files": touched_protected, "summary": pi_res.summary},
+                                details={
+                                    "files": touched_protected,
+                                    "approved_sha": git_sha,
+                                    "summary": pi_res.summary,
+                                },
                             )
                         finished_task = self.db.finish_attempt(
                             task_id=task.id,
@@ -388,13 +557,13 @@ class Reconciler:
                             pi_session_id=pi_res.session_id,
                             session_jsonl_path=pi_res.session_jsonl_path,
                             git_branch=branch_name,
+                            git_sha=git_sha,
                             skills_used=pi_res.skills_used,
                             diagnostic=pi_res.diagnostic,
                         )
                         self._finalize_attempt_artifacts(task.id, diff_stat=diff_stat)
                         return finished_task
 
-            git_sha = await self._commit_and_push(worktree_dir, branch_name, task)
             just_upgraded_self = False
             if task.repo == "superbrain":
                 await self._apply_self_upgrade(repo_dir, git_sha, task.id)
@@ -410,6 +579,7 @@ class Reconciler:
                 git_branch=branch_name,
                 git_sha=git_sha,
                 verify_output=verify_output,
+                metric_value=metric_val,
                 skills_used=pi_res.skills_used,
                 diagnostic=pi_res.diagnostic,
             )
@@ -554,17 +724,95 @@ class Reconciler:
             self.db.mark_attempts_reflected([a.id for a in unreflected])
         return res
 
+    async def run_auto_research(self, task_id: str, *, run_key: str | None = None) -> PiRunResult:
+        """
+        Runs a SoL-Pi style Auto-Research Loop (Oracle Analysis + Breadth-First Hypothesis Fan-Out)
+        for `task_id`: inspects past attempt trajectories and notes, optionally runs `research_scout`
+        for byte-verified evidence, and fans out 2-3 competing child hypothesis tasks (`SG-<id>.1`,
+        `SG-<id>.2`, ...) evaluated under the parent's verification and metric gates.
+        """
+        task = self.db.get_task(task_id)
+        if task.status == "in_progress":
+            raise ValueError(f"Cannot run auto-research while task {task.id!r} is in_progress.")
+        repo_dir = (self.cfg.projects_dir / self.db.validate_repo(task.repo)).resolve()
+        cwd = repo_dir if repo_dir.is_dir() else self.cfg.home_dir
+        session_dir = self.cfg.sessions_dir / f"{task.id}-research"
+        session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        attempts = self.db.list_attempts(task.id)
+        oracle_lines: list[str] = []
+        for a in attempts[-3:]:
+            rec = inspect_attempt_trajectory(a)
+            oracle = rec.get("oracle") or {}
+            oracle_lines.append(
+                f"- Attempt #{a.id} ({a.outcome}, metric={a.metric_value}): {a.summary} | "
+                f"turns={oracle.get('assistant_turns', 0)} "
+                f"edit->bash={oracle.get('adjacent_edit_bash_pairs', 0)} "
+                f"repeated_err_tools={oracle.get('repeated_error_tools', [])} | "
+                f"verify={(a.verify_output or '')[:300]}"
+            )
+        note_file = self.cfg.notes_dir / f"{task.id}.md"
+        notes = note_file.read_text(encoding="utf-8") if note_file.exists() else ""
+
+        prompt = (
+            f"You are Superbrain Auto-Research Planner (SoL-Pi Oracle + Breadth-First Hypothesis Search).\n"
+            f"Target task: {task.id} [{task.kind}] in repo {task.repo!r}: {task.title}\n"
+            f"Spec: {task.spec}\n"
+            f"Metric target: {task.metric_target or 'pass verify_cmd'}\n"
+            f"Verification command: {task.verify_cmd or '(to be defined per child hypothesis)'}\n"
+            f"Oracle trajectory analysis:\n{chr(10).join(oracle_lines) or '(no prior attempts)'}\n"
+            f"Negative-result ledger:\n{notes or '(none)'}\n\n"
+            "Instructions:\n"
+            "1. Use `research_scout` if needed to gather byte-verified quotes from the repository.\n"
+            "2. Instead of repeating a failed single-lineage approach, fan out 2-3 distinct competing "
+            f"hypothesis child tasks via `upsert_task` with `parent_id={task.id!r}`, `repo={task.repo!r}`, "
+            "a concrete hypothesis in `spec`, a deterministic `verify_cmd` (printing `METRIC: <number>` "
+            "when optimizing a numeric metric), `metric_target`, and `ready=true`.\n"
+            "3. Summarize the competing hypotheses in 1-2 sentences."
+        )
+        res = await self._run_pi(
+            role="planner",
+            cwd=cwd,
+            worktree_dir=None,
+            session_dir=session_dir,
+            task=task,
+            prompt=prompt,
+            run_key=run_key or f"research-{task.id}",
+        )
+        if res.cost_usd > 0:
+            self.db.add_spend(res.cost_usd)
+        child_ids = [uid for uid in (res.upserted_task_ids or []) if uid != task.id]
+        if child_ids:
+            latest = self.db.get_task(task.id)
+            self.db.upsert_task(
+                task_id=latest.id,
+                parent_id=latest.parent_id,
+                kind=latest.kind,
+                repo=latest.repo,
+                title=latest.title,
+                spec=latest.spec,
+                metric_target=latest.metric_target,
+                verify_cmd=latest.verify_cmd,
+                priority=latest.priority,
+                child_strategy="any",
+                ready=False,
+            )
+        return res
+
     def _build_planner_prompt(self, task: TaskRow) -> str:
         return (
             f"Decompose task {task.id} ({task.title}) in repo {task.repo!r} into 1-3 atomic child tasks "
-            f"using `upsert_task` with `parent_id={task.id!r}`, each with a deterministic `verify_cmd` and "
-            f"`metric_target`, and `ready=true`.\nSpec: {task.spec}"
+            f"(or 2-3 competing auto-research hypothesis tasks when exploring an optimization or uncertain root cause) "
+            f"using `upsert_task` with `parent_id={task.id!r}`, each with a deterministic `verify_cmd` "
+            f"(which may print `METRIC: <float>` for quantitative goals), `metric_target`, and `ready=true`. "
+            f"Use `research_scout` first when you need byte-verified codebase evidence.\nSpec: {task.spec}"
         )
 
     def _build_builder_prompt(self, task: TaskRow, worktree_dir: Path) -> str:
         attempts = self.db.list_attempts(task.id)
         history = "\n".join(
-            f"- Attempt {a.id} ({a.outcome}): {a.summary} | verify_output: {(a.verify_output or '')[:400]}"
+            f"- Attempt {a.id} ({a.outcome}, metric={a.metric_value}): "
+            f"{a.summary} | verify_output: {(a.verify_output or '')[:400]}"
             for a in attempts[-3:]
         )
         note_file = self.cfg.notes_dir / f"{task.id}.md"
@@ -579,10 +827,13 @@ class Reconciler:
             f"Task {task.id} ({task.kind}): {task.title}\n"
             f"Worktree: {worktree_dir}\n"
             f"Spec: {task.spec}\n"
+            f"Metric target: {task.metric_target or '(pass verification)'}\n"
             f"Verification gate (`verify_cmd`): {task.verify_cmd}\n"
             f"Previous attempts:\n{history or '(none)'}\n"
             f"Progress & negative-result notes:\n{notes or '(none)'}\n\n"
             f"{anti_repeat}"
+            "Prefer `research_scout` to delegate read-only reconnaissance with byte-verified quotes, "
+            "and `edit_and_run` (Action Fusion) to fuse file edits with immediate test execution in one turn. "
             "Implement the minimal complete fix or feature inside this worktree, verify it, and "
             "summarize your changes in one sentence."
         )
@@ -606,9 +857,15 @@ class Reconciler:
         skills_loaded: list[str] = []
         diagnostics: list[str] = []
         modified_skills: list[str] = []
+        stream_state = _PiStreamState(session_id=resume_session_id)
+        extra_scout_cost = 0.0
+        timed_out = False
+        budget_exceeded = False
+        start_monotonic = time.monotonic()
+        initial_state = self.db.get_state()
 
         async def handle_rpc(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            nonlocal deferred_flag
+            nonlocal deferred_flag, extra_scout_cost, budget_exceeded
             try:
                 line = await reader.readline()
                 if not line:
@@ -629,6 +886,7 @@ class Reconciler:
                         metric_target=params.get("metric_target"),
                         verify_cmd=params.get("verify_cmd"),
                         priority=int(params.get("priority", 50)),
+                        child_strategy=params.get("child_strategy"),
                         ready=params.get("ready"),
                     )
                     upserted_ids.append(t.id)
@@ -652,6 +910,50 @@ class Reconciler:
                     if diag_text:
                         diagnostics.append(diag_text)
                     resp = {"ok": True, "result": {"recorded": True}}
+                elif method == "research_scout":
+                    question = str(params.get("question") or "").strip()
+                    if not question:
+                        raise ValueError("research_scout requires a non-empty question.")
+                    spent_so_far = (
+                        initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
+                    )
+                    budget_left = initial_state.daily_budget_usd - spent_so_far
+                    if budget_left <= 0:
+                        budget_exceeded = True
+                        raise ValueError("Daily budget reached; research_scout skipped.")
+                    raw_paths = params.get("paths")
+                    focus_paths = (
+                        [str(p).strip() for p in raw_paths if str(p).strip()]
+                        if isinstance(raw_paths, list)
+                        else []
+                    )
+                    scout_root = worktree_dir if worktree_dir is not None else cwd
+                    remaining_secs = max(
+                        1.0, self.cfg.max_run_seconds - (time.monotonic() - start_monotonic)
+                    )
+                    scout_text, scout_cost, scout_over_budget = await self._run_research_scout(
+                        root_dir=scout_root,
+                        session_dir=session_dir,
+                        question=question,
+                        paths=focus_paths,
+                        run_key=f"{run_key}:scout:{uuid.uuid4().hex[:8]}",
+                        timeout_seconds=min(120.0, remaining_secs),
+                        budget_limit_usd=budget_left,
+                    )
+                    extra_scout_cost += scout_cost
+                    if (
+                        scout_over_budget
+                        or initial_state.spent_today_usd
+                        + stream_state.total_cost
+                        + extra_scout_cost
+                        > initial_state.daily_budget_usd
+                    ):
+                        budget_exceeded = True
+                        proc_ref = self._active_procs.get(run_key)
+                        if proc_ref is not None:
+                            _terminate_proc_group(proc_ref, signal.SIGTERM)
+                    receipt = validate_evidence_receipt(scout_root, scout_text)
+                    resp = {"ok": True, "result": receipt}
                 elif method == "propose_skill_change":
                     if role != "improver":
                         raise ValueError("propose_skill_change is only permitted for the improver role.")
@@ -754,11 +1056,11 @@ class Reconciler:
             str(self._board_ext_path),
             "--session-dir",
             str(session_dir),
-            "--model",
-            model,
             "-t",
             tools,
         ]
+        if model.strip():
+            cmd.extend(["--model", model.strip()])
         if role in ("planner", "builder") and self.db.list_skills(status="active"):
             cmd.extend(["--skill", str(self.cfg.skills_dir)])
         if role == "improver":
@@ -767,15 +1069,16 @@ class Reconciler:
             cmd.extend(["--session", resume_session_id])
         cmd.extend(["--", prompt])
 
-        if role == "builder" and worktree_dir is not None:
-            cmd = wrap_with_sandbox(
-                cmd,
-                worktree_dir=worktree_dir,
-                session_dir=session_dir,
-                notes_dir=self.cfg.notes_dir,
-                home_dir=self.cfg.home_dir,
-                enabled=self.cfg.sandbox_enabled,
-            )
+        sandbox_target = worktree_dir if (role == "builder" and worktree_dir is not None) else session_dir
+        cmd = wrap_with_sandbox(
+            cmd,
+            worktree_dir=sandbox_target,
+            session_dir=session_dir,
+            notes_dir=self.cfg.notes_dir,
+            home_dir=self.cfg.home_dir,
+            allow_read_traces=(role == "improver"),
+            enabled=self.cfg.sandbox_enabled,
+        )
 
         env = self._build_sandbox_env(session_dir)
         env["SUPERBRAIN_RPC_SOCK"] = str(sock_path)
@@ -786,88 +1089,25 @@ class Reconciler:
             env["SUPERBRAIN_TASK_ID"] = task.id
             env["SUPERBRAIN_TASK_KIND"] = task.kind
 
-        last_text = ""
-        session_id = resume_session_id
-        completed_cost = 0.0
-        streaming_cost = 0.0
-        total_cost = 0.0
-        timed_out = False
-        budget_exceeded = False
-        start_monotonic = time.monotonic()
-        initial_state = self.db.get_state()
+        returncode, stderr_text, timed_out, stream_over_budget = await self._stream_pi_proc(
+            cmd=cmd,
+            cwd=cwd,
+            env=env,
+            run_key=run_key,
+            stream_state=stream_state,
+            timeout_seconds=float(self.cfg.max_run_seconds),
+            start_monotonic=start_monotonic,
+            over_budget_fn=lambda: (
+                initial_state.spent_today_usd + stream_state.total_cost + extra_scout_cost
+                > initial_state.daily_budget_usd
+            ),
+            cleanup_cb=self._make_rpc_cleanup(server, sock_path),
+        )
+        budget_exceeded = budget_exceeded or stream_over_budget
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(cwd),
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            self._active_procs[run_key] = proc
-            assert proc.stdout is not None
-
-            while True:
-                remaining = self.cfg.max_run_seconds - (time.monotonic() - start_monotonic)
-                if remaining <= 0:
-                    timed_out = True
-                    proc.terminate()
-                    break
-                try:
-                    raw_line = await asyncio.wait_for(
-                        proc.stdout.readline(), timeout=min(5.0, max(0.1, remaining))
-                    )
-                except asyncio.TimeoutError:
-                    if proc.returncode is not None:
-                        break
-                    continue
-                if not raw_line:
-                    break
-                line_str = raw_line.decode("utf-8", errors="replace").strip()
-                if not line_str:
-                    continue
-                try:
-                    event = json.loads(line_str)
-                except json.JSONDecodeError:
-                    last_text = line_str
-                    continue
-                if isinstance(event, dict):
-                    if event.get("type") == "session" and isinstance(event.get("id"), str):
-                        session_id = event["id"]
-                    elif isinstance(event.get("session_id"), str):
-                        session_id = event["session_id"]
-                    elif isinstance(event.get("sessionId"), str):
-                        session_id = event["sessionId"]
-                    text = extract_assistant_text(event)
-                    if text:
-                        last_text = text
-                    ev_cost = extract_event_cost(event)
-                    if ev_cost > 0:
-                        if event.get("type") == "message_update":
-                            streaming_cost = max(streaming_cost, ev_cost)
-                        else:
-                            completed_cost += ev_cost
-                            streaming_cost = 0.0
-                        total_cost = completed_cost + streaming_cost
-                        if initial_state.spent_today_usd + total_cost > initial_state.daily_budget_usd:
-                            budget_exceeded = True
-                            proc.terminate()
-                            break
-
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-
-            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
-        finally:
-            self._active_procs.pop(run_key, None)
-            server.close()
-            await server.wait_closed()
-            sock_path.unlink(missing_ok=True)
-
+        total_cost = stream_state.total_cost + extra_scout_cost
+        last_text = stream_state.last_text
+        session_id = stream_state.session_id
         session_jsonl_path = self._find_session_jsonl(session_dir, session_id)
         diag_joined = "; ".join(diagnostics) if diagnostics else None
 
@@ -907,10 +1147,10 @@ class Reconciler:
                 diagnostic=diag_joined,
                 modified_skills=modified_skills,
             )
-        if proc.returncode != 0:
+        if returncode != 0:
             return PiRunResult(
                 outcome="errored",
-                summary=stderr_text or last_text or f"pi exited with code {proc.returncode}",
+                summary=stderr_text or last_text or f"pi exited with code {returncode}",
                 cost_usd=total_cost,
                 session_id=session_id,
                 session_jsonl_path=session_jsonl_path,
@@ -930,6 +1170,154 @@ class Reconciler:
             diagnostic=diag_joined,
             modified_skills=modified_skills,
         )
+
+    @staticmethod
+    def _make_rpc_cleanup(
+        server: asyncio.AbstractServer, sock_path: Path
+    ) -> Callable[[], Awaitable[None]]:
+        async def _cleanup() -> None:
+            server.close()
+            await server.wait_closed()
+            sock_path.unlink(missing_ok=True)
+
+        return _cleanup
+
+    async def _stream_pi_proc(
+        self,
+        *,
+        cmd: list[str],
+        cwd: Path,
+        env: dict[str, str],
+        run_key: str,
+        stream_state: _PiStreamState,
+        timeout_seconds: float,
+        start_monotonic: float,
+        over_budget_fn: Callable[[], bool],
+        cleanup_cb: Callable[[], Awaitable[None]] | None = None,
+    ) -> tuple[int, str, bool, bool]:
+        """Spawns a `pi` process in its own process group and streams JSON lines with live timeout/budget kill."""
+        timed_out = False
+        over_budget = False
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(cwd),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        self._active_procs[run_key] = proc
+        assert proc.stdout is not None
+        try:
+            while True:
+                remaining = timeout_seconds - (time.monotonic() - start_monotonic)
+                if remaining <= 0:
+                    timed_out = True
+                    _terminate_proc_group(proc, signal.SIGTERM)
+                    break
+                try:
+                    raw_line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=min(5.0, max(0.1, remaining))
+                    )
+                except asyncio.TimeoutError:
+                    if proc.returncode is not None:
+                        break
+                    continue
+                if not raw_line:
+                    break
+                stream_state.feed_line(raw_line.decode("utf-8", errors="replace").strip())
+                if over_budget_fn():
+                    over_budget = True
+                    _terminate_proc_group(proc, signal.SIGTERM)
+                    break
+
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                _terminate_proc_group(proc, signal.SIGKILL)
+                await proc.wait()
+
+            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            return proc.returncode or 0, stderr_text, timed_out, over_budget
+        finally:
+            self._active_procs.pop(run_key, None)
+            if cleanup_cb is not None:
+                await cleanup_cb()
+
+    async def _run_research_scout(
+        self,
+        *,
+        root_dir: Path,
+        session_dir: Path,
+        question: str,
+        paths: list[str],
+        run_key: str,
+        timeout_seconds: float,
+        budget_limit_usd: float,
+    ) -> tuple[str, float, bool]:
+        """
+        Spawns a Seatbelt-sandboxed read-only `pi` scout subprocess to answer `question` with exact
+        quotes copied byte-for-byte from files under `root_dir`, streaming output against both
+        `timeout_seconds` and `budget_limit_usd`.
+        """
+        focus_hint = f"\nFocus paths: {', '.join(paths)}" if paths else ""
+        scout_prompt = (
+            "You are a read-only Evidence-Preserving Research Scout.\n"
+            f"Question: {question}{focus_hint}\n"
+            "Inspect the codebase using read/grep/find/ls and return ONE JSON object only (no markdown fences):\n"
+            '{"summary": "<1-2 sentence answer>", "uncertain": false, '
+            '"evidence": [{"file": "<relative/path>", '
+            '"quote": "<exact contiguous lines copied byte-for-byte from file>"}]}\n'
+            "Every `quote` MUST appear byte-for-byte in `file`."
+        )
+        scout_session_dir = session_dir / "scout"
+        scout_session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        raw_cmd = [
+            self.cfg.pi_bin,
+            "-p",
+            "--mode",
+            "json",
+            "--no-approve",
+            "--no-skills",
+            "--no-prompt-templates",
+            "--no-mcp",
+            "--no-extensions",
+            "--no-session",
+            "-t",
+            SCOUT_TOOLS,
+        ]
+        if self.cfg.scout_model.strip():
+            raw_cmd.extend(["--model", self.cfg.scout_model.strip()])
+        raw_cmd.extend(["--", scout_prompt])
+        cmd = wrap_with_sandbox(
+            raw_cmd,
+            worktree_dir=root_dir,
+            session_dir=scout_session_dir,
+            notes_dir=self.cfg.notes_dir,
+            home_dir=self.cfg.home_dir,
+            enabled=self.cfg.sandbox_enabled,
+        )
+        env = self._build_sandbox_env(scout_session_dir)
+        env["SUPERBRAIN_RESEARCH_SCOUT"] = "1"
+        scout_state = _PiStreamState()
+        _, _, timed_out, over_budget = await self._stream_pi_proc(
+            cmd=cmd,
+            cwd=root_dir,
+            env=env,
+            run_key=run_key,
+            stream_state=scout_state,
+            timeout_seconds=timeout_seconds,
+            start_monotonic=time.monotonic(),
+            over_budget_fn=lambda: scout_state.total_cost > budget_limit_usd,
+        )
+        if timed_out:
+            return (
+                '{"summary": "Scout timed out", "uncertain": true, "evidence": []}',
+                scout_state.total_cost,
+                over_budget,
+            )
+        return scout_state.last_text, scout_state.total_cost, over_budget
 
     @staticmethod
     def _find_session_jsonl(session_dir: Path, session_id: str | None) -> str | None:
@@ -956,34 +1344,58 @@ class Reconciler:
         env["UV_CACHE_DIR"] = str(cache_dir / "uv")
         return env
 
-    async def _run_verify(
-        self, worktree_dir: Path, session_dir: Path, verify_cmd: str
+    async def _run_sandboxed_cmd(
+        self,
+        raw_cmd: list[str],
+        *,
+        worktree_dir: Path,
+        session_dir: Path,
+        label: str,
+        extra_pythonpath: list[str] | None = None,
     ) -> tuple[bool, str]:
         cmd = wrap_with_sandbox(
-            ["/bin/sh", "-c", verify_cmd],
+            raw_cmd,
             worktree_dir=worktree_dir,
             session_dir=session_dir,
             notes_dir=self.cfg.notes_dir,
             home_dir=self.cfg.home_dir,
             enabled=self.cfg.sandbox_enabled,
         )
+        env = self._build_sandbox_env(session_dir)
+        if extra_pythonpath:
+            py_parts = list(extra_pythonpath)
+            if env.get("PYTHONPATH"):
+                py_parts.append(env["PYTHONPATH"])
+            env["PYTHONPATH"] = os.pathsep.join(py_parts)
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(worktree_dir),
-            env=self._build_sandbox_env(session_dir),
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
         try:
             out_bytes, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=self.cfg.verify_timeout_seconds
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            _terminate_proc_group(proc, signal.SIGKILL)
             await proc.wait()
-            return False, f"verify_cmd timed out after {self.cfg.verify_timeout_seconds}s"
+            return False, f"{label} timed out after {self.cfg.verify_timeout_seconds}s"
         output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
         return proc.returncode == 0, output
+
+    async def _run_verify(
+        self, worktree_dir: Path, session_dir: Path, verify_cmd: str
+    ) -> tuple[bool, str]:
+        return await self._run_sandboxed_cmd(
+            ["/bin/sh", "-c", verify_cmd],
+            worktree_dir=worktree_dir,
+            session_dir=session_dir,
+            label="verify_cmd",
+        )
 
     async def _run_held_out_baseline_tests(
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path
@@ -995,42 +1407,18 @@ class Reconciler:
         baseline_tests = repo_dir / "tests"
         if not baseline_tests.is_dir() or not any(baseline_tests.glob("test_*.py")):
             return True, ""
-
-        cmd = wrap_with_sandbox(
+        return await self._run_sandboxed_cmd(
             [sys.executable, "-m", "pytest", "-q", str(baseline_tests)],
             worktree_dir=worktree_dir,
             session_dir=session_dir,
-            notes_dir=self.cfg.notes_dir,
-            home_dir=self.cfg.home_dir,
-            enabled=self.cfg.sandbox_enabled,
+            label="Held-out baseline tests",
+            extra_pythonpath=[str(worktree_dir / "src"), str(worktree_dir)],
         )
-        env = self._build_sandbox_env(session_dir)
-        py_parts = [str(worktree_dir / "src"), str(worktree_dir)]
-        if env.get("PYTHONPATH"):
-            py_parts.append(env["PYTHONPATH"])
-        env["PYTHONPATH"] = os.pathsep.join(py_parts)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(worktree_dir),
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            out_bytes, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=self.cfg.verify_timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return False, f"Held-out baseline tests timed out after {self.cfg.verify_timeout_seconds}s"
-        output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
-        return proc.returncode == 0, output
 
     async def _worktree_diff_stat(self, worktree_dir: Path, base_sha: str) -> str:
         if not worktree_dir.exists():
             return ""
+        _clean_untracked_tool_caches(worktree_dir)
         await self._git_out(worktree_dir, "add", "-A", check=False)
         return (
             await self._git_out(
@@ -1076,6 +1464,11 @@ class Reconciler:
                     check=False,
                 )
             await self._git_out(repo_dir, "reset", "--hard", rollback_sha, check=False)
+            remotes = await self._git_out(repo_dir, "remote", check=False)
+            if "origin" in remotes.splitlines():
+                await self._git_out(
+                    repo_dir, "push", "origin", "HEAD:master", "--force-with-lease", check=False
+                )
         self.db.queue_outbox(
             kind="report",
             summary_spoken=(
@@ -1143,6 +1536,29 @@ class Reconciler:
                 check=False,
             )
         await self._git_out(repo_dir, "reset", "--hard", verified_sha)
+        dep_diff = (
+            await self._git_out(
+                repo_dir,
+                "diff",
+                "--name-only",
+                old_head,
+                verified_sha,
+                "--",
+                "pyproject.toml",
+                "uv.lock",
+                check=False,
+            )
+        ).strip()
+        uv_exe = shutil.which("uv")
+        if dep_diff and uv_exe:
+            sync_proc = await asyncio.create_subprocess_exec(
+                uv_exe,
+                "sync",
+                cwd=str(repo_dir),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await sync_proc.wait()
         remotes = await self._git_out(repo_dir, "remote", check=False)
         if "origin" in remotes.splitlines():
             await self._git_out(repo_dir, "push", "origin", "HEAD:master", check=False)
@@ -1154,12 +1570,18 @@ class Reconciler:
             await self._git_out(repo_dir, "fetch", "origin", "--prune", check=False)
 
     async def _prepare_worktree(
-        self, repo_dir: Path, worktree_dir: Path, branch_name: str
+        self,
+        repo_dir: Path,
+        worktree_dir: Path,
+        branch_name: str,
+        *,
+        prefer_local_head: bool = False,
     ) -> str:
         if worktree_dir.exists():
             await self._cleanup_worktree(repo_dir, worktree_dir)
         has_origin_master = (
-            await self._git_rc(repo_dir, "rev-parse", "--verify", "origin/master") == 0
+            not prefer_local_head
+            and await self._git_rc(repo_dir, "rev-parse", "--verify", "origin/master") == 0
         )
         base_ref = "origin/master" if has_origin_master else "HEAD"
         await self._git_out(
@@ -1171,6 +1593,7 @@ class Reconciler:
     async def _commit_and_push(
         self, worktree_dir: Path, branch_name: str, task: TaskRow
     ) -> str:
+        _clean_untracked_tool_caches(worktree_dir)
         await self._git_out(worktree_dir, "add", "-A")
         if await self._git_rc(worktree_dir, "diff", "--cached", "--quiet") != 0:
             await self._git_out(

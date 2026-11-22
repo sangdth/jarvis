@@ -318,6 +318,8 @@ print(json.dumps({"role": "assistant", "content": "Hacked tests", "cost_usd": 0.
         attempts = db.list_attempts(task.id)
         assert attempts[0].outcome == "failed_verify"
         assert "Held-out baseline tests failed" in (attempts[0].verify_output or "")
+        assert "sealed" in (attempts[0].verify_output or "")
+        assert "test_flag_is_bool" not in (attempts[0].verify_output or "")
         assert (repo_dir / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = False\n"
     finally:
         await reconciler.stop()
@@ -408,6 +410,124 @@ print(json.dumps({"role": "assistant", "content": "Done", "cost_usd": 0.01}), fl
         assert restart_count == 2
         reports, _ = db.drain_digest()
         assert any("Automatically rolled back Superbrain" in r.summary_spoken for r in reports)
+
+        # Next superbrain worktree branches from rolled-back HEAD, NOT the broken upgrade
+        db.upsert_task(
+            task_id="SG-2",
+            kind="goal",
+            repo="superbrain",
+            title="Check clean base after rollback",
+            spec="No-op check",
+            metric_target="FAST_ENGINE False",
+            verify_cmd="true",
+            ready=False,
+        )
+        wt_check = cfg.worktrees_dir / "SG-2"
+        await reconciler._prepare_worktree(
+            repo_dir, wt_check, "brain/SG-2", prefer_local_head=True
+        )
+        assert (wt_check / "brain_mod.py").read_text(encoding="utf-8") == "FAST_ENGINE = False\n"
+        await reconciler._cleanup_worktree(repo_dir, wt_check)
+    finally:
+        await reconciler.stop()
+        db.close()
+
+
+def test_last_good_sha_clears_once_post_upgrade_probation_succeeds(tmp_path: Path) -> None:
+    db = BrainDB(tmp_path / "state.db", allowed_repos={"superbrain", "demo"})
+    try:
+        db.set_last_good_sha("deadbeef1234")
+        assert db.get_state().last_good_sha == "deadbeef1234"
+        assert db.record_post_upgrade_outcome(succeeded=True) is None
+        # Cleared after probation succeeds so future restarts never rewind to an old commit
+        assert db.get_state().last_good_sha is None
+    finally:
+        db.close()
+
+
+async def test_approved_self_upgrade_pins_exact_sha_and_does_not_grant_blanket_bypass(
+    tmp_path: Path,
+) -> None:
+    projects_dir, repo_dir, _ = await _init_superbrain_repo(tmp_path)
+    (repo_dir / "src" / "superbrain" / "config.py").write_text("# orig config\n", encoding="utf-8")
+    for cmd in [["git", "add", "."], ["git", "commit", "-m", "add config"], ["git", "push"]]:
+        p = await asyncio.create_subprocess_exec(*cmd, cwd=str(repo_dir))
+        await p.wait()
+
+    home_dir = tmp_path / "home"
+    marker = home_dir / "sessions" / "SG-1" / "invocations.txt"
+    fake_pi = tmp_path / "fake_pi_two_stage.py"
+    fake_pi.write_text(
+        f"""#!/usr/bin/env python3
+import json, pathlib
+
+m = pathlib.Path({str(marker)!r})
+count = int(m.read_text()) + 1 if m.exists() else 1
+m.write_text(str(count))
+
+wt = pathlib.Path.cwd()
+if count == 1:
+    (wt / "src" / "superbrain" / "sandbox.py").write_text("# approved sandbox edit\\n", encoding="utf-8")
+else:
+    # Second unapproved edit to a DIFFERENT protected file (`config.py`)
+    (wt / "src" / "superbrain" / "config.py").write_text("# unapproved config edit\\n", encoding="utf-8")
+print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd": 0.01}}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(fake_pi.stat().st_mode | stat.S_IEXEC)
+
+    cfg = Settings(
+        home_dir=home_dir,
+        projects_dir=projects_dir,
+        pi_bin=str(fake_pi),
+        default_mode="AUTONOMOUS",
+        self_upgrade_verify_cmd="true",
+        sandbox_enabled=True,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
+    reconciler = Reconciler(db, cfg)
+    try:
+        t = db.upsert_task(
+            kind="goal",
+            repo="superbrain",
+            title="Touch protected file",
+            spec="Edit sandbox",
+            metric_target="passes",
+            verify_cmd="true",
+            ready=True,
+        )
+        await reconciler.tick()
+        assert int(marker.read_text()) == 1
+        _, ob = db.drain_digest()
+        assert ob is not None
+        db.resolve_approval(ob.id, approved=True)
+
+        # Approving OB-1 applies the exact pinned SHA directly without calling fake_pi again!
+        finished = await reconciler.tick()
+        assert finished is not None and finished.status == "done"
+        assert int(marker.read_text()) == 1
+        assert (repo_dir / "src" / "superbrain" / "sandbox.py").read_text(
+            encoding="utf-8"
+        ) == "# approved sandbox edit\n"
+
+        # If SG-1 is later re-queued, the consumed approval does NOT grant a blanket bypass for config.py!
+        db.upsert_task(
+            task_id=t.id,
+            kind="goal",
+            repo="superbrain",
+            title="Second edit on same task",
+            spec="Edit config",
+            metric_target="passes",
+            verify_cmd="true",
+            ready=True,
+        )
+        reconciler.restart_pending = False
+        again = await reconciler.tick()
+        assert again is not None and again.status == "draft"
+        assert (repo_dir / "src" / "superbrain" / "config.py").read_text(
+            encoding="utf-8"
+        ) == "# orig config\n"
     finally:
         await reconciler.stop()
         db.close()

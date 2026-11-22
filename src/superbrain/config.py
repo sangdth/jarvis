@@ -29,20 +29,22 @@ class Settings(BaseSettings):
     projects_dir: Path = Path("~/Projects").expanduser()
 
     # Budget & execution limits
-    daily_budget_usd: float = 20.0
+    daily_budget_usd: float = 200.0
     max_run_seconds: int = 900
     verify_timeout_seconds: int = 120
     reconcile_interval_seconds: float = 10.0
     lease_seconds: int = 1200
 
-    # Pi binary and models
+    # Pi binary and optional per-role model overrides (empty = inherit ~/.pi/agent/settings.json)
     pi_bin: str = "/Users/sang/.local/bin/pi"
-    planner_model: str = "sonnet:medium"
-    builder_model: str = "sonnet:high"
-    improver_model: str = "sonnet:medium"
+    planner_model: str = ""
+    builder_model: str = ""
+    improver_model: str = ""
+    scout_model: str = ""
     default_mode: Literal["ASSIST", "AUTONOMOUS"] = "ASSIST"
     sandbox_enabled: bool = True
     max_personal_skills: int = 10
+    auto_research_after_strikes: int = 0
     self_upgrade_verify_cmd: str = (
         "uv run ruff check src tests && uv run mypy && uv run pytest && uv run superbrain self-check"
     )

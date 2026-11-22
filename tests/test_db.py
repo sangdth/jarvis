@@ -11,6 +11,7 @@ from superbrain.db import BrainDB
 def test_allowed_repos_blocks_hamahakki_and_traversal(tmp_path: Path) -> None:
     db = BrainDB(tmp_path / "state.db", allowed_repos={"jarvis"})
     try:
+        assert db.get_state().daily_budget_usd == 200.0
         with pytest.raises(ValueError, match="not in ALLOWED_REPOS"):
             db.upsert_task(
                 kind="problem",
@@ -199,3 +200,50 @@ def test_in_progress_guard_and_parent_goal_completion(tmp_path: Path) -> None:
         assert db.get_task(parent.id).status == "done"
     finally:
         db.close()
+
+
+def test_cli_add_status_and_launchd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from superbrain import cli
+
+    test_cfg = cli.settings.model_copy(
+        update={
+            "home_dir": tmp_path / "home",
+            "projects_dir": tmp_path / "Projects",
+            "allowed_repos": "jarvis",
+        }
+    )
+    monkeypatch.setattr(cli, "settings", test_cfg)
+
+    assert (
+        cli.main(
+            [
+                "add",
+                "--kind",
+                "problem",
+                "--repo",
+                "jarvis",
+                "--title",
+                "CLI bug",
+                "--spec",
+                "Stacktrace",
+                "--verify",
+                "pytest",
+                "--ready",
+            ]
+        )
+        == 0
+    )
+    assert "PRB-1" in capsys.readouterr().out
+
+    assert cli.main(["status"]) == 0
+    status_out = capsys.readouterr().out
+    assert "PRB-1" in status_out
+    assert "$200.00" in status_out
+
+    assert cli.main(["launchd"]) == 0
+    plist_out = capsys.readouterr().out
+    assert "com.sangdth.superbrain" in plist_out

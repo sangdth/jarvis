@@ -10,6 +10,7 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
 - Run daemon: `uv run superbrain serve`
 - Check status / tasks: `uv run superbrain status`
 - Add or update a task: `uv run superbrain add --repo <repo> --kind goal|problem --title "..." --spec "..."`
+- Run SoL-Pi auto-research hypothesis fan-out: `uv run superbrain research <task_id>`
 - Run self-improving skill reflection: `uv run superbrain improve`
 - Generate Mac mini `launchd` plist: `uv run superbrain launchd`
 - Lint & types: `uv run ruff check src tests` and `uv run mypy`
@@ -22,10 +23,25 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
   `worktrees/<task_id>` (`0700`), `sessions/<task_id>`, `traces/attempt-<id>.json` (per-attempt trajectory digests),
   `skills/<slug>/SKILL.md` (capped at 10 active auto-created personal skills), and `memory/progress/<task_id>.md`
   (handoff + deterministic negative-result ledger).
-- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`), `attempts` (append-only run ledger with
-  `skills_used`, `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline `sha256`, usage
-  counters, and previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary approvals), plus
-  the 1-row `system_state` table (`mode`, budget, `last_good_sha`, `upgrade_runs`, `upgrade_failures`).
+- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `child_strategy IN ('all', 'any')`,
+  `best_metric`, `best_branch`, `best_sha`), `attempts` (append-only run ledger with `metric_value`, `skills_used`,
+  `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline `sha256`, usage counters, and
+  previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary approvals), plus the 1-row
+  `system_state` table (`mode`, `daily_budget_usd` defaulting to `$200.00/day`, `last_good_sha`, `upgrade_runs`,
+  `upgrade_failures`).
+- **SoL-Pi auto-research & harness efficiency (`board.ts` + `reconciler.py` + `skills.py`):**
+  - **Action Fusion (`edit_and_run`):** `board.ts` fuses worktree-guarded file mutations (`createEditToolDefinition` /
+    `createWriteToolDefinition`) with immediate follow-up `createBashToolDefinition` execution in a single turn
+    (`[then_run:succeeded|failed|skipped]`).
+  - **Evidence-Preserving Research Scout (`research_scout`):** Delegates read-only reconnaissance to a Seatbelt-sandboxed
+    `scout_model` worker (`-t read,grep,find,ls`), streams spend against `daily_budget_usd`, and verifies every returned
+    `{file, quote}` byte-for-byte on disk (`sol_pi_evidence_receipt_v1`).
+  - **Oracle + BFS Hypothesis Tournament (`run_auto_research`):** Computes Oracle trajectory signals (`assistant_turns`,
+    `adjacent_edit_bash_pairs`, `repeated_error_tools`), fans out competing hypotheses (`child_strategy='any'`), parses
+    `METRIC: <float>` against `metric_target` comparators (`<=`, `<`, `>=`, `>`, `==`), tracks `best_metric`/`best_branch`,
+    and closes remaining `'any'` sibling hypotheses once the quantitative target is met.
+  - **Sealed held-out evaluation:** Held-out baseline failure output on `repo='superbrain'` is sealed from worker-visible
+    `verify_output` and progress notes to prevent test overfitting, while preserved in owner `outbox` details.
 - **Self-improving skills loop (`skills.py` + `reconciler.py`):**
   - **Evidence:** `board.ts` records `record_skill_load` when a worker reads `~/.config/superbrain/skills/<slug>/SKILL.md`
     and exposes `report_diagnostic`; `reconciler.py` writes `traces/attempt-<id>.json` after every attempt.
@@ -42,23 +58,26 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
     `superbrain self-check` canary) **plus** the pre-edit baseline `~/Projects/superbrain/tests` held-out suite against
     the candidate worktree before `~/Projects/superbrain` is updated.
   - Edits touching `pyproject.toml`, `src/superbrain/config.py`, `src/superbrain/sandbox.py`,
-    `src/superbrain/defaults/pi/board.ts`, or modifying/deleting existing files under `tests/` require owner approval.
-    Verified upgrades record `last_good_sha` in `system_state`, update `~/Projects/superbrain`, flush the spoken
-    response, and trigger a clean shutdown for `launchd` respawn; if the first 2 post-upgrade task attempts fail with 0
-    successes, Superbrain automatically rolls `~/Projects/superbrain` back to `last_good_sha` and restarts.
+    `src/superbrain/defaults/pi/board.ts`, or modifying/deleting existing files under `tests/` pin the verified
+    `approved_sha` on `origin/brain/<task_id>` and require owner approval before that exact commit is applied.
+    Verified upgrades record `last_good_sha` in `system_state`, update `~/Projects/superbrain` (running `uv sync` if
+    dependencies changed), flush the spoken response, and trigger a clean shutdown for `launchd` respawn; probation
+    clears `last_good_sha` once post-upgrade runs succeed, or rolls `~/Projects/superbrain` and `origin/master` back to
+    `last_good_sha` after 2 consecutive failures.
 - **Strict repo allowlist (`ALLOWED_REPOS`):** `db.py` and `reconciler.py` refuse any `repo` not explicitly listed in
   `ALLOWED_REPOS` (comma-separated relative paths under `PROJECTS_DIR`, e.g. `jarvis,HuggerHustle/platform-v2`).
   Unlisted repos such as `hamahakki` are never touched.
 - **GitHub (`origin`) is the handoff boundary between MacBook and Mac mini:**
   - Before every `Planner` or `Builder` run, `reconciler.py` runs `git -C <repo> fetch origin --prune` and creates a
-    worktree from `origin/master`.
+    worktree from `origin/master` (or local `HEAD` for `repo='superbrain'`).
   - When a `Builder` passes `verify_cmd`, `reconciler.py` pushes `origin/brain/<task_id>` and never auto-merges into
     `master`.
 - **Worktree & OS sandbox confinement (`sandbox.py` + `defaults/pi/board.ts`):**
-  - `board.ts` resolves every `edit` / `write` target via `realpathSync` and blocks writes outside
-    `SUPERBRAIN_WORKTREE_DIR`; on `problem` tasks, deleting test files under `tests/` is blocked.
-  - On macOS, `reconciler.py` wraps `Builder` runs in `sandbox-exec -f <profile.sb>` so `bash` commands cannot write
-    outside the task's worktree, session directory, or `/tmp`.
+  - `board.ts` resolves every `edit` / `write` / `edit_and_run` target via `realpathSync`, blocks writes outside
+    `SUPERBRAIN_WORKTREE_DIR`, blocks `git push` from workers, and blocks modifying/deleting tests on `problem` tasks.
+  - On macOS, `reconciler.py` wraps `Planner`, `Builder`, `Improver`, and `Scout` runs in `sandbox-exec` so workers
+    cannot write outside their allowed directories or read `~/.ssh`, `.env`, `state.db*`, or sealed `traces/` (except
+    `Improver`, which reads `traces/`).
 - **`pi 1.5.0` tool flag rule:** Passing `-t` sets `allowedToolNames` for both built-in and extension tools, so each
   role passes a single `-t` allowlist that explicitly includes its `board.ts` tool names (`upsert_task`,
   `record_note`, `defer_for_approval`).

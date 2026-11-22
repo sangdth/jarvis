@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -12,9 +13,52 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any, Literal
 
+_METRIC_COMPARATOR_RE = re.compile(r"(?<![-=!<>])(<=|>=|==|<|>)\s*(-?\d+(?:\.\d+)?)")
+
+
+def has_metric_comparator(metric_target: str | None) -> bool:
+    return bool(metric_target and _METRIC_COMPARATOR_RE.search(metric_target))
+
+
+def check_metric_target(metric_target: str | None, metric_value: float | None) -> bool:
+    """Evaluates whether `metric_value` satisfies a quantitative comparator in `metric_target`."""
+    if not metric_target or metric_value is None:
+        return True
+    match = _METRIC_COMPARATOR_RE.search(metric_target)
+    if not match:
+        return True
+    op, raw_val = match.group(1), float(match.group(2))
+    if op == "<":
+        return metric_value < raw_val
+    if op == "<=":
+        return metric_value <= raw_val
+    if op == ">":
+        return metric_value > raw_val
+    if op == ">=":
+        return metric_value >= raw_val
+    return abs(metric_value - raw_val) < 1e-9
+
+
+def is_better_metric(
+    metric_target: str | None, candidate: float, incumbent: float | None
+) -> bool:
+    """Returns True when `candidate` strictly improves over `incumbent` given `metric_target` direction."""
+    if incumbent is None:
+        return True
+    target_text = (metric_target or "").lower()
+    match = _METRIC_COMPARATOR_RE.search(target_text)
+    if match:
+        minimize = match.group(1) in ("<", "<=")
+    else:
+        minimize = any(
+            k in target_text for k in ("min", "latency", "ms", "cycle", "cost", "error", "loss")
+        )
+    return candidate < incumbent if minimize else candidate > incumbent
+
 Mode = Literal["ASSIST", "AUTONOMOUS"]
 TaskKind = Literal["goal", "problem"]
 TaskStatus = Literal["draft", "ready", "in_progress", "done", "blocked"]
+ChildStrategy = Literal["all", "any"]
 WorkerRole = Literal["planner", "builder", "improver"]
 SkillStatus = Literal["active", "retired"]
 AttemptOutcome = Literal[
@@ -73,6 +117,10 @@ class TaskRow:
     lease_until: str | None
     created_at: str
     updated_at: str
+    child_strategy: ChildStrategy = "all"
+    best_metric: float | None = None
+    best_branch: str | None = None
+    best_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +137,7 @@ class AttemptRow:
     outcome: AttemptOutcome
     verify_output: str | None
     created_at: str
+    metric_value: float | None = None
     skills_used: tuple[str, ...] = field(default_factory=tuple)
     diagnostic: str | None = None
     reflected: bool = False
@@ -133,7 +182,7 @@ class BrainDB:
         db_path: Path,
         allowed_repos: set[str],
         default_mode: Mode = "ASSIST",
-        daily_budget_usd: float = 20.0,
+        daily_budget_usd: float = 200.0,
     ) -> None:
         self.db_path = db_path
         self.allowed_repos = {r.strip().strip("/") for r in allowed_repos if r.strip().strip("/")}
@@ -176,10 +225,27 @@ class BrainDB:
                 "ALTER TABLE system_state ADD COLUMN upgrade_failures INTEGER NOT NULL DEFAULT 0"
             )
 
+        task_cols = {
+            str(r["name"])
+            for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "child_strategy" not in task_cols:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN child_strategy TEXT NOT NULL DEFAULT 'all'"
+            )
+        if "best_metric" not in task_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN best_metric REAL")
+        if "best_branch" not in task_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN best_branch TEXT")
+        if "best_sha" not in task_cols:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN best_sha TEXT")
+
         cols = {
             str(r["name"])
             for r in self._conn.execute("PRAGMA table_info(attempts)").fetchall()
         }
+        if "metric_value" not in cols:
+            self._conn.execute("ALTER TABLE attempts ADD COLUMN metric_value REAL")
         if "skills_used" not in cols:
             self._conn.execute("ALTER TABLE attempts ADD COLUMN skills_used TEXT NOT NULL DEFAULT '[]'")
         if "diagnostic" not in cols:
@@ -241,11 +307,25 @@ class BrainDB:
             )
         return self.get_state()
 
+    def clear_last_good_sha(self) -> SystemState:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE system_state
+                SET last_good_sha = NULL, upgrade_runs = 0, upgrade_failures = 0, updated_at = ?
+                WHERE id = 1
+                """,
+                (_iso(_utc_now()),),
+            )
+        return self.get_state()
+
     def record_post_upgrade_outcome(self, *, succeeded: bool) -> str | None:
         """
         Tracks runtime health of the active Superbrain self-upgrade. If the first 2 task attempts
         after a self-upgrade fail with 0 successes, clears probation and returns `last_good_sha`
-        for automatic git rollback + daemon restart.
+        for automatic git rollback + daemon restart. Once a post-upgrade attempt succeeds (or the
+        2-attempt window passes without 2/2 failures), clears `last_good_sha` so unrelated future
+        restarts never roll back to an old commit.
         """
         with self._lock, self._conn:
             st = self.get_state()
@@ -265,6 +345,16 @@ class BrainDB:
                     (now,),
                 )
                 return rollback_sha
+            if succeeded or runs >= 2:
+                self._conn.execute(
+                    """
+                    UPDATE system_state
+                    SET last_good_sha = NULL, upgrade_runs = 0, upgrade_failures = 0, updated_at = ?
+                    WHERE id = 1
+                    """,
+                    (now,),
+                )
+                return None
             self._conn.execute(
                 """
                 UPDATE system_state
@@ -324,11 +414,14 @@ class BrainDB:
         metric_target: str | None = None,
         verify_cmd: str | None = None,
         priority: int = 50,
+        child_strategy: ChildStrategy | None = None,
         ready: bool | None = None,
     ) -> TaskRow:
         cleaned_repo = self.validate_repo(repo)
         if kind not in ("goal", "problem"):
             raise ValueError(f"Invalid task kind: {kind!r}")
+        if child_strategy is not None and child_strategy not in ("all", "any"):
+            raise ValueError(f"Invalid child_strategy: {child_strategy!r}")
         cleaned_metric = metric_target.strip() if metric_target and metric_target.strip() else None
         cleaned_verify = verify_cmd.strip() if verify_cmd and verify_cmd.strip() else None
         if kind == "goal" and not cleaned_metric:
@@ -354,14 +447,20 @@ class BrainDB:
             else:
                 status = "ready" if state.mode == "AUTONOMOUS" else "draft"
 
+            resolved_strategy: ChildStrategy = (
+                child_strategy
+                if child_strategy is not None
+                else (existing["child_strategy"] if existing is not None else "all")
+            )
             now = _iso(_utc_now())
             if existing is None:
                 self._conn.execute(
                     """
                     INSERT INTO tasks (
                         id, parent_id, kind, repo, title, spec, metric_target,
-                        verify_cmd, status, priority, strike_count, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                        verify_cmd, status, priority, strike_count, child_strategy,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -374,6 +473,7 @@ class BrainDB:
                         cleaned_verify,
                         status,
                         int(priority),
+                        resolved_strategy,
                         now,
                         now,
                     ),
@@ -383,7 +483,8 @@ class BrainDB:
                     """
                     UPDATE tasks
                     SET parent_id = ?, kind = ?, repo = ?, title = ?, spec = ?,
-                        metric_target = ?, verify_cmd = ?, status = ?, priority = ?, updated_at = ?
+                        metric_target = ?, verify_cmd = ?, status = ?, priority = ?,
+                        child_strategy = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -396,6 +497,7 @@ class BrainDB:
                         cleaned_verify if verify_cmd is not None else existing["verify_cmd"],
                         status,
                         int(priority),
+                        resolved_strategy,
                         now,
                         resolved_id,
                     ),
@@ -512,6 +614,7 @@ class BrainDB:
         git_branch: str | None = None,
         git_sha: str | None = None,
         verify_output: str | None = None,
+        metric_value: float | None = None,
         skills_used: list[str] | None = None,
         diagnostic: str | None = None,
     ) -> TaskRow:
@@ -530,6 +633,7 @@ class BrainDB:
                 git_branch=git_branch,
                 git_sha=git_sha,
                 verify_output=verify_output,
+                metric_value=metric_value,
                 skills_used=skills_used,
                 diagnostic=diagnostic,
                 now_iso=now_iso,
@@ -549,6 +653,7 @@ class BrainDB:
         git_branch: str | None = None,
         git_sha: str | None = None,
         verify_output: str | None = None,
+        metric_value: float | None = None,
         skills_used: list[str] | None = None,
         diagnostic: str | None = None,
     ) -> TaskRow:
@@ -559,8 +664,8 @@ class BrainDB:
             INSERT INTO attempts (
                 task_id, role, pi_session_id, session_jsonl_path, summary,
                 git_branch, git_sha, cost_usd, outcome, verify_output,
-                skills_used, diagnostic, reflected, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                metric_value, skills_used, diagnostic, reflected, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
             (
                 task_id,
@@ -573,20 +678,43 @@ class BrainDB:
                 float(cost_usd),
                 outcome,
                 verify_output,
+                float(metric_value) if metric_value is not None else None,
                 json.dumps(dedup_skills),
                 diagnostic.strip() if diagnostic and diagnostic.strip() else None,
                 now_iso,
             ),
         )
 
+        best_metric = task.best_metric
+        best_branch = task.best_branch
+        best_sha = task.best_sha
+
         if outcome == "pushed":
             new_status: TaskStatus = "done"
             strikes = task.strike_count
+            if metric_value is not None and is_better_metric(
+                task.metric_target, metric_value, best_metric
+            ):
+                best_metric = float(metric_value)
+                best_branch = git_branch or best_branch
+                best_sha = git_sha or best_sha
+            elif best_branch is None and git_branch:
+                best_branch = git_branch
+                best_sha = git_sha
+            metric_suffix = f" (metric={metric_value})" if metric_value is not None else ""
             self._queue_outbox_locked(
                 kind="report",
                 task_id=task_id,
-                summary_spoken=f"Completed {task_id} ({task.title}) on branch {git_branch or f'brain/{task_id}'}.",
-                details={"git_branch": git_branch, "git_sha": git_sha, "summary": summary},
+                summary_spoken=(
+                    f"Completed {task_id} ({task.title}) on branch "
+                    f"{git_branch or f'brain/{task_id}'}{metric_suffix}."
+                ),
+                details={
+                    "git_branch": git_branch,
+                    "git_sha": git_sha,
+                    "metric_value": metric_value,
+                    "summary": summary,
+                },
                 now_iso=now_iso,
             )
         elif outcome == "decomposed":
@@ -620,20 +748,92 @@ class BrainDB:
         self._conn.execute(
             """
             UPDATE tasks
-            SET status = ?, strike_count = ?, lease_until = NULL, updated_at = ?
+            SET status = ?, strike_count = ?, best_metric = ?, best_branch = ?, best_sha = ?,
+                lease_until = NULL, updated_at = ?
             WHERE id = ?
             """,
-            (new_status, strikes, now_iso, task_id),
+            (new_status, strikes, best_metric, best_branch, best_sha, now_iso, task_id),
         )
-        if outcome == "pushed" and task.parent_id:
-            rem = self._conn.execute(
-                "SELECT COUNT(*) AS cnt FROM tasks WHERE parent_id = ? AND status != 'done'",
-                (task.parent_id,),
-            ).fetchone()
-            if rem is not None and int(rem["cnt"]) == 0:
+        if task.parent_id:
+            parent = self.get_task(task.parent_id)
+            parent_target = parent.metric_target or task.metric_target
+            p_metric = parent.best_metric
+            p_branch = parent.best_branch
+            p_sha = parent.best_sha
+            if outcome == "pushed":
+                if metric_value is not None and is_better_metric(
+                    parent_target, metric_value, p_metric
+                ):
+                    p_metric = float(metric_value)
+                    p_branch = git_branch or p_branch
+                    p_sha = git_sha or p_sha
+                elif p_branch is None and git_branch:
+                    p_branch = git_branch
+                    p_sha = git_sha
+
+            if parent.child_strategy == "any":
+                met_target = outcome == "pushed" and (
+                    (metric_value is not None and check_metric_target(parent_target, metric_value))
+                    if has_metric_comparator(parent_target)
+                    else True
+                )
+                if met_target:
+                    self._conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'done', updated_at = ?
+                        WHERE parent_id = ? AND status IN ('draft', 'ready')
+                        """,
+                        (now_iso, task.parent_id),
+                    )
+                    self._conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = 'done', best_metric = ?, best_branch = ?, best_sha = ?,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (p_metric, p_branch, p_sha, now_iso, task.parent_id),
+                    )
+                else:
+                    active_or_done = self._conn.execute(
+                        """
+                        SELECT COUNT(*) AS cnt FROM tasks
+                        WHERE parent_id = ? AND status != 'blocked'
+                        """,
+                        (task.parent_id,),
+                    ).fetchone()
+                    all_blocked = active_or_done is not None and int(active_or_done["cnt"]) == 0
+                    self._conn.execute(
+                        """
+                        UPDATE tasks
+                        SET status = CASE WHEN ? THEN 'blocked' ELSE status END,
+                            best_metric = ?, best_branch = ?, best_sha = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            1 if all_blocked else 0,
+                            p_metric,
+                            p_branch,
+                            p_sha,
+                            now_iso,
+                            task.parent_id,
+                        ),
+                    )
+            elif outcome == "pushed":
+                rem = self._conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM tasks WHERE parent_id = ? AND status != 'done'",
+                    (task.parent_id,),
+                ).fetchone()
+                parent_done = rem is not None and int(rem["cnt"]) == 0
                 self._conn.execute(
-                    "UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ? AND verify_cmd IS NULL",
-                    (now_iso, task.parent_id),
+                    """
+                    UPDATE tasks
+                    SET status = CASE WHEN ? AND verify_cmd IS NULL THEN 'done' ELSE status END,
+                        best_metric = ?, best_branch = ?, best_sha = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (1 if parent_done else 0, p_metric, p_branch, p_sha, now_iso, task.parent_id),
                 )
         return self.get_task(task_id)
 
@@ -894,33 +1094,45 @@ class BrainDB:
             assert updated is not None
             return self._row_to_outbox(updated)
 
-    def get_approved_resume_session(self, task_id: str) -> str | None:
+    def get_unconsumed_approved_outbox(self, task_id: str) -> OutboxRow | None:
         with self._lock:
-            row = self._conn.execute(
+            rows = self._conn.execute(
                 """
-                SELECT resume_session_id FROM outbox
+                SELECT * FROM outbox
                 WHERE task_id = ? AND kind = 'approval_request' AND status = 'approved'
-                  AND resume_session_id IS NOT NULL
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY created_at DESC
                 """,
                 (task_id,),
-            ).fetchone()
-            return str(row["resume_session_id"]) if row and row["resume_session_id"] else None
+            ).fetchall()
+            for row in rows:
+                try:
+                    details = json.loads(row["details_json"] or "{}")
+                except Exception:
+                    details = {}
+                if not details.get("consumed"):
+                    return self._row_to_outbox(row)
+            return None
 
-    def has_approved_outbox(self, task_id: str) -> bool:
-        with self._lock:
+    def mark_outbox_consumed(self, outbox_id: str) -> None:
+        with self._lock, self._conn:
             row = self._conn.execute(
-                """
-                SELECT 1 FROM outbox
-                WHERE task_id = ? AND kind = 'approval_request' AND status = 'approved'
-                LIMIT 1
-                """,
-                (task_id,),
+                "SELECT details_json FROM outbox WHERE id = ?", (outbox_id,)
             ).fetchone()
-            return row is not None
+            if row is None:
+                return
+            try:
+                details = json.loads(row["details_json"] or "{}")
+            except Exception:
+                details = {}
+            details["consumed"] = True
+            self._conn.execute(
+                "UPDATE outbox SET details_json = ? WHERE id = ?",
+                (json.dumps(details), outbox_id),
+            )
 
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> TaskRow:
+        keys = set(row.keys())
         return TaskRow(
             id=str(row["id"]),
             parent_id=row["parent_id"],
@@ -936,11 +1148,24 @@ class BrainDB:
             lease_until=row["lease_until"],
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            child_strategy=(
+                row["child_strategy"]
+                if "child_strategy" in keys and row["child_strategy"] in ("all", "any")
+                else "all"
+            ),
+            best_metric=(
+                float(row["best_metric"])
+                if "best_metric" in keys and row["best_metric"] is not None
+                else None
+            ),
+            best_branch=row["best_branch"] if "best_branch" in keys else None,
+            best_sha=row["best_sha"] if "best_sha" in keys else None,
         )
 
     @staticmethod
     def _row_to_attempt(row: sqlite3.Row) -> AttemptRow:
-        raw_skills = row["skills_used"] if "skills_used" in row.keys() else "[]"
+        keys = set(row.keys())
+        raw_skills = row["skills_used"] if "skills_used" in keys else "[]"
         try:
             parsed_skills = tuple(str(x) for x in json.loads(raw_skills or "[]"))
         except Exception:
@@ -958,9 +1183,14 @@ class BrainDB:
             outcome=row["outcome"],
             verify_output=row["verify_output"],
             created_at=str(row["created_at"]),
+            metric_value=(
+                float(row["metric_value"])
+                if "metric_value" in keys and row["metric_value"] is not None
+                else None
+            ),
             skills_used=parsed_skills,
-            diagnostic=row["diagnostic"] if "diagnostic" in row.keys() else None,
-            reflected=bool(row["reflected"]) if "reflected" in row.keys() else False,
+            diagnostic=row["diagnostic"] if "diagnostic" in keys else None,
+            reflected=bool(row["reflected"]) if "reflected" in keys else False,
         )
 
     @staticmethod
