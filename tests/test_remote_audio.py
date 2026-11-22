@@ -261,6 +261,41 @@ class TestClientScript(unittest.IsolatedAsyncioTestCase):
             line for line in source.splitlines() if line.startswith(("import ", "from "))
         ))
 
+    async def test_it_builds_its_mic_resampler_only_once_the_rate_is_known(self) -> None:
+        """soxr 1.0 refuses a 0 Hz stream, so a placeholder at startup would crash the client before the mic starts."""
+        client = self._load()
+        bridge = self._bridge(client)
+        self.assertIsNone(bridge._mic)  # the rate is the mic's own, unknown until on_mic installs the tap
+        pcm = bridge._to_pcm(np.array([0.5, -0.5], dtype=np.float32))
+        self.assertEqual(np.frombuffer(pcm, dtype=np.int16).tolist(), [16383, -16383])
+
+    async def test_it_resamples_a_mic_at_another_rate(self) -> None:
+        client = self._load()
+        bridge = self._bridge(client)
+
+        class FakeResampler:
+            chunks = 0
+
+            def resample_chunk(self, samples):
+                self.chunks += 1
+                return samples[:1]
+
+        resampler = FakeResampler()
+        bridge._mic = resampler  # what on_mic builds for a 48 kHz mic
+        bridge._to_pcm(np.zeros(480, dtype=np.float32))
+        self.assertEqual(resampler.chunks, 1)
+
+    def _bridge(self, client):
+        """An AudioBridge over a stubbed AVFoundation: real pyobjc audio would need a mic and a speaker."""
+        engine = mock.MagicMock()
+        av = mock.MagicMock()
+        av.AVAudioEngine.alloc.return_value.init.return_value = engine
+        engine.inputNode.return_value.setVoiceProcessingEnabled_error_.return_value = (True, None)
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        with mock.patch.dict("sys.modules", {"AVFoundation": av}):
+            return client.AudioBridge(asyncio.Queue(maxsize=client.BLOCKS), loop)
+
 
 class TestToken(unittest.TestCase):
     def test_the_token_is_made_once_and_kept_private(self) -> None:

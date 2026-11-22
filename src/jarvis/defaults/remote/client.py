@@ -64,15 +64,15 @@ class AudioBridge:
         self.player = AVFoundation.AVAudioPlayerNode.alloc().init()
         self.engine.attachNode_(self.player)
         self.engine.connect_to_format_(self.player, self.engine.mainMixerNode(), self._format)
-        self._mic = soxr.ResampleStream(0, SAMPLE_RATE, 1, dtype="float32")  # rebuilt when the rate is known
-        self._mic_rate = 0
+        # Built in on_mic, once the mic's own rate is known: soxr refuses a stream at 0 Hz, and this Mac's mic is
+        # usually 48 kHz, so the resampler cannot be a placeholder here.
+        self._mic: soxr.ResampleStream | None = None
 
     def on_mic(self) -> None:
         mic = self.engine.inputNode()
         fmt = mic.outputFormatForBus_(0)
         rate = int(fmt.sampleRate())
-        self._mic_rate = rate
-        self._mic = soxr.ResampleStream(rate, SAMPLE_RATE, 1, dtype="float32")
+        self._mic = soxr.ResampleStream(rate, SAMPLE_RATE, 1, dtype="float32") if rate != SAMPLE_RATE else None
 
         def tap(buffer, when) -> None:  # an Objective-C void block: it must return None
             n = buffer.frameLength()
@@ -84,7 +84,7 @@ class AudioBridge:
         mic.installTapOnBus_bufferSize_format_block_(0, max(1, rate // 50), fmt, tap)  # asks for 20 ms blocks
 
     def _to_pcm(self, samples: np.ndarray) -> bytes:
-        out = self._mic.resample_chunk(samples) if self._mic_rate != SAMPLE_RATE else samples
+        out = samples if self._mic is None else self._mic.resample_chunk(samples)
         return (np.clip(out, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
     def _push(self, pcm: bytes) -> None:
