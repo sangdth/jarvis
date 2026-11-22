@@ -8,6 +8,8 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
 
 - Install / sync: `uv sync`
 - Run daemon: `uv run superbrain serve`
+- Update checkout to `origin/master` and restart the daemon: `uv run superbrain upgrade` (`--check` read-only,
+  `--stash`, `--no-restart`, `--fetch` with `--check`)
 - Check status / tasks: `uv run superbrain status`
 - Add or update a task: `uv run superbrain add --repo <repo> --kind goal|problem --title "..." --spec "..."`
 - Run SoL-Pi auto-research hypothesis fan-out: `uv run superbrain research <task_id>`
@@ -56,6 +58,11 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
 - **Self-upgrading codebase (`repo = 'superbrain'`):**
   - `"superbrain"` is always in `allowed_repo_set`. When the owner asks to upgrade Superbrain or fix a Superbrain bug,
     Planner queues a `ready=true` task for `repo='superbrain'` and `server.py` executes it immediately.
+  - **Divergence-safe base:** before a `repo='superbrain'` worktree is prepared, `reconciler.py` fetches and classifies
+    local `HEAD` vs `origin/master` with the pure `upgrade.classify_git_state` helper
+    (`UpToDate | FastForward | LocalAhead | Diverged`). The worktree is based on `origin/master` unless local `HEAD`
+    has genuinely unpublished commits ahead of it; a diverged checkout is refused with a `blocker` outbox item rather
+    than resetting anything backwards.
   - Every `repo='superbrain'` build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, and
     `superbrain self-check` canary) **plus** the pre-edit baseline `~/Projects/superbrain/tests` held-out suite against
     the candidate worktree before `~/Projects/superbrain` is updated.
@@ -66,12 +73,22 @@ Shortcut). Plan: `docs/super-brain-plan.md`.
     dependencies changed), flush the spoken response, and trigger a clean shutdown for `launchd` respawn; probation
     clears `last_good_sha` once post-upgrade runs succeed, or rolls `~/Projects/superbrain` and `origin/master` back to
     `last_good_sha` after 2 consecutive failures.
+  - **Loud divergence handling:** `_apply_self_upgrade` refuses a diverged checkout (blocker outbox) and refuses a
+    candidate that is not a descendant of the current `origin/master`; a rejected final `git push origin HEAD:master`
+    is logged as an error and queued as a `report` outbox item instead of being silently ignored. `--force` is never
+    used.
+  - **Owner upgrade command (`upgrade.py`):** `uv run superbrain upgrade` records `last_good_sha`, fetches
+    `origin`, refuses a dirty tree unless `--stash`, does `git merge --ff-only origin/master`, runs `uv sync` only if
+    `pyproject.toml`/`uv.lock` changed, and restarts via `launchctl kickstart -k gui/<uid>/com.sangdth.superbrain`
+    when the agent is loaded; `--check` reports without mutating, `--no-restart` stops after the update, and
+    divergence prints a backup/rebase remedy without forcing.
 - **Strict repo allowlist (`ALLOWED_REPOS`):** `db.py` and `reconciler.py` refuse any `repo` not explicitly listed in
   `ALLOWED_REPOS` (comma-separated relative paths under `PROJECTS_DIR`, e.g. `jarvis,HuggerHustle/platform-v2`).
   Unlisted repos such as `hamahakki` are never touched.
 - **GitHub (`origin`) is the handoff boundary between MacBook and Mac mini:**
   - Before every `Planner` or `Builder` run, `reconciler.py` runs `git -C <repo> fetch origin --prune` and creates a
-    worktree from `origin/master` (or local `HEAD` for `repo='superbrain'`).
+    worktree from `origin/master`; for `repo='superbrain'` the base is local `HEAD` only when it is genuinely ahead
+    of `origin/master` (see the divergence-safe base rule above).
   - When a `Builder` passes `verify_cmd`, `reconciler.py` pushes `origin/brain/<task_id>` and never auto-merges into
     `master`.
 - **Worktree & OS sandbox confinement (`sandbox.py` + `defaults/pi/board.ts`):**
