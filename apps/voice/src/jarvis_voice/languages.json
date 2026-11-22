@@ -40,7 +40,9 @@
     ],
     "enroll_ask_name": "What should I call you?",
     "enroll_done": "Nice to meet you, {name}! I'll remember your voice.",
-    "speaker_greeting": "Hi {name}! Good to hear you again."
+    "speaker_greeting": "Hi {name}! Good to hear you again.",
+    "meeting_on": "Meeting mode on. Anyone may add a comment; only you can start, stop or approve work.",
+    "meeting_off": "Meeting mode off. Back to hearing only you."
   },
   "vi": {
     "system": "The user speaks English or Vietnamese, often mixed. Reply in the language of their last sentence. Agents only read English: write every tool argument (`task`, `answer`) in English, translating the user's words, and keep project folder names exactly as listed.",
@@ -83,6 +85,8 @@
     ],
     "enroll_ask_name": "Mình nên gọi bạn là gì nhỉ?",
     "enroll_done": "Rất vui được gặp {name}! Mình sẽ nhớ giọng của bạn.",
-    "speaker_greeting": "Chào {name}! Rất vui được nghe lại giọng của bạn."
+    "speaker_greeting": "Chào {name}! Rất vui được nghe lại giọng của bạn.",
+    "meeting_on": "Đã bật chế độ họp. Mọi người có thể ghi chú; chỉ bạn mới được giao việc, dừng hay duyệt.",
+    "meeting_off": "Đã tắt chế độ họp. Mình chỉ nghe mình bạn thôi."
   }
 }

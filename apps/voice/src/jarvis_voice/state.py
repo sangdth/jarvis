@@ -17,9 +17,16 @@ class JarvisMode(str, Enum):
 class UserIntent(str, Enum):
     MUTE = "MUTE"
     UNMUTE = "UNMUTE"
+    MEETING_ON = "MEETING_ON"
+    MEETING_OFF = "MEETING_OFF"
     ADDRESSED_TO_JARVIS = "ADDRESSED_TO_JARVIS"
     INTRODUCTION = "INTRODUCTION"
     IGNORE_BACKGROUND = "IGNORE_BACKGROUND"
+
+
+# Decided by a local pattern before any model call, so the speech check is never asked about them (they stay out of
+# `INTENT_QUESTION`): a mode switch must be instant and must work offline and while muted.
+LOCAL_ONLY_INTENTS = frozenset({UserIntent.MEETING_ON, UserIntent.MEETING_OFF})
 
 
 @dataclass
@@ -55,7 +62,7 @@ _WHISPER_FILLERS = {"okay", "ok", "thank you", "thanks", "thank you for watching
 
 
 def classify_fast_command(transcript: str) -> UserIntent | None:
-    """Deterministic zero-latency check for 'shut up' / 'you can talk' commands."""
+    """Deterministic zero-latency check for 'shut up' / 'you can talk' / 'meeting mode on|off'."""
     cleaned = transcript.strip()
     if not cleaned or cleaned.lower().strip(" .!?,") in _WHISPER_FILLERS:
         return UserIntent.IGNORE_BACKGROUND
@@ -64,7 +71,30 @@ def classify_fast_command(transcript: str) -> UserIntent | None:
         return UserIntent.UNMUTE
     if _MUTE_PATTERNS.search(cleaned):
         return UserIntent.MUTE
+    # Off before on, so "meeting mode off" never reads as a switch into it.
+    if _MEETING_OFF_PATTERNS.search(cleaned):
+        return UserIntent.MEETING_OFF
+    if _MEETING_ON_PATTERNS.search(cleaned):
+        return UserIntent.MEETING_ON
     return None
+
+
+# "Meeting mode on, Jarvis." Spoken commands only: they name the mode, so "start the meeting" or "join the call"
+# stay ordinary requests for the conversation model. The owner alone may change it (checked in JarvisIntentGate).
+_MEETING_ON_PATTERNS = re.compile(
+    r"\b(meeting\s+mode\s+(on|enabled|active)"
+    r"|(turn|switch|put|go|get)\s+(on|to|in|into)\s+(the\s+)?meeting\s+mode"
+    r"|(start|begin|enter|enable)\s+(the\s+)?meeting\s+mode"
+    r"|bật\s+chế\s+độ\s+họp)\b",
+    re.IGNORECASE,
+)
+_MEETING_OFF_PATTERNS = re.compile(
+    r"\b(meeting\s+mode\s+(off|disabled|inactive)"
+    r"|(turn|switch|put)\s+(off|out\s+of)\s+(the\s+)?meeting\s+mode"
+    r"|(stop|end|exit|leave|disable)\s+(the\s+)?meeting\s+mode"
+    r"|tắt\s+chế\s+độ\s+họp)\b",
+    re.IGNORECASE,
+)
 
 
 # "That wasn't for you": Jarvis took room talk as a turn. Only short sentences count, so "it's not you, it's the
@@ -106,6 +136,10 @@ class JarvisState:
         on_beep: Callable[[bytes], Awaitable[None]] | None = None,
         on_interrupt: Callable[[], Awaitable[None]] | None = None,
         on_report: Callable[[str], Awaitable[None]] | None = None,
+        on_notice: Callable[[str], Awaitable[None]] | None = None,
+        on_meeting: Callable[[bool], Awaitable[None]] | None = None,
+        *,
+        meeting: bool = False,
     ) -> None:
         self.mode: JarvisMode = JarvisMode.VOICE
         self.pending_topics: list[AgentTopic] = []
@@ -115,12 +149,32 @@ class JarvisState:
         self.room_turn = False
         # Who is speaking this turn (`User`, `Room`, `Speaker: David`), so a meeting comment is filed under a name.
         self.current_speaker = "User"
+        # Meeting mode, toggled by `jarvis meeting` or by voice ("meeting mode on"). One source of truth: the
+        # gate, the STT and the meeting tools all read this, so a toggle takes effect on the next sentence.
+        self.meeting = meeting
         # True after the master's INTRODUCTION intent while Jarvis is enrolling a new speaker's voice.
         self.enrolling = False
         self.on_speak = on_speak
         self.on_beep = on_beep
         self.on_interrupt = on_interrupt
         self.on_report = on_report
+        # Tells the conversation model something without speaking and without starting a turn (a mode change).
+        self.on_notice = on_notice
+        # Moves the meeting audio (hearing the call, speaking into it) when the mode changes, where that applies.
+        self.on_meeting = on_meeting
+
+    async def set_meeting(self, on: bool) -> None:
+        """Enter or leave meeting mode; the audio side follows, the rules go in through `notify` at the call site."""
+        if self.meeting == on:
+            return
+        self.meeting = on
+        if self.on_meeting is not None:
+            await self.on_meeting(on)
+
+    async def notify(self, text: str) -> None:
+        """Put a system note in front of the conversation model now, without speaking and without running a turn."""
+        if self.on_notice is not None:
+            await self.on_notice(text)
 
     async def set_mute(self) -> None:
         """Triggered when user says 'Shut up' or 'Be quiet'."""

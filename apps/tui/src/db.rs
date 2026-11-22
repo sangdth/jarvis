@@ -64,9 +64,7 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id, parent_id, kind, repo, title, spec, metric_target, verify_cmd, status, \
-         priority, strike_count, child_strategy, best_metric, best_branch, best_sha, \
-         lease_until, created_at, updated_at FROM tasks ORDER BY priority ASC, created_at ASC",
+        "SELECT * FROM tasks ORDER BY priority ASC, created_at ASC",
     )?;
     snap.tasks = stmt
         .query_map([], |row| {
@@ -74,6 +72,11 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
                 id: row.get("id")?,
                 parent_id: opt_str(row, "parent_id"),
                 kind: row.get("kind")?,
+                mode: row
+                    .get::<_, Option<String>>("mode")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "AUTONOMOUS".to_string()),
                 repo: row.get("repo")?,
                 title: row.get("title")?,
                 spec: row.get("spec")?,

@@ -333,7 +333,7 @@ def dispatch(argv: list[str]) -> None:
         if not rows:
             return print("No tasks.")
         for t in rows:
-            print(f"{t['id']:>8} [{t['kind']}/{t['status']}] repo={t['repo']}: {t['title']}")
+            print(f"{t['id']:>8} [{t['kind']}/{t.get('mode', 'AUTONOMOUS')}/{t['status']}] repo={t['repo']}: {t['title']}")
         return print(f"\n{len(rows)} task(s).")
     if cmd == "ask":
         text = " ".join(rest).strip()
@@ -404,6 +404,7 @@ def add_task(args: list[str]) -> None:
     mapping = {
         "--repo": "repo",
         "--kind": "kind",
+        "--mode": "mode",
         "--title": "title",
         "--spec": "spec",
         "--metric": "metric",

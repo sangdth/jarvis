@@ -42,6 +42,38 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         smart_turn.start()
         self.addCleanup(smart_turn.stop)
 
+    async def test_meeting_mode_toggles_by_voice(self) -> None:
+        """`meeting mode on` is a fast, local command: state flips, the notice goes to the model, the audio follows."""
+        state = JarvisState(on_speak=AsyncMock(), on_notice=AsyncMock(), on_meeting=AsyncMock())
+        gate = JarvisIntentGate(state, self.filter)
+        await gate._set_meeting_mode(True, is_owner=True)
+        self.assertTrue(state.meeting)
+        state.on_meeting.assert_awaited_once_with(True)
+        self.assertIn("Meeting mode is now ON", state.on_notice.await_args.args[0])
+        state.on_speak.assert_awaited_once()
+        await gate._set_meeting_mode(False, is_owner=True)
+        self.assertFalse(state.meeting)
+        state.on_meeting.assert_awaited_with(False)
+        self.assertIn("now OFF", state.on_notice.await_args.args[0])
+
+    async def test_meeting_mode_already_on_only_confirms(self) -> None:
+        state = JarvisState(on_speak=AsyncMock(), on_notice=AsyncMock(), on_meeting=AsyncMock())
+        gate = JarvisIntentGate(state, self.filter, meeting=True)
+        await gate._set_meeting_mode(True, is_owner=True)
+        state.on_meeting.assert_not_awaited()  # nothing to change
+        state.on_notice.assert_not_awaited()  # and no second copy of the rules
+        state.on_speak.assert_awaited_once()
+
+    async def test_only_the_master_changes_meeting_mode(self) -> None:
+        from jarvis_voice.config import settings
+
+        state = JarvisState(on_speak=AsyncMock(), on_notice=AsyncMock())
+        gate = JarvisIntentGate(state, self.filter)
+        with patch.object(settings, "master_check", True):
+            await gate._set_meeting_mode(True, is_owner=False)
+        self.assertFalse(state.meeting)
+        state.on_speak.assert_not_awaited()
+
     async def test_other_frames_pass_through(self) -> None:
         frame = TextFrame(text="hi")
         await self.gate.process_frame(frame, FrameDirection.DOWNSTREAM)
@@ -278,14 +310,17 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
     async def test_cleanup_runs_after_the_check_and_before_the_speaker_labels(self) -> None:
         cleaner = MagicMock(clean=AsyncMock(side_effect=lambda t, **_: t.replace("forty two", "42")))
         down = FrameDirection.DOWNSTREAM
-        for gate, frame, expected in (
-            (JarvisIntentGate(self.state, self.filter, cleaner=cleaner), heard("make it forty two"), "make it 42"),
+        # One gate per state: meeting mode lives on the state, so two gates must not share one.
+        for meeting, frame, expected in (
+            (False, heard("make it forty two"), "make it 42"),
             (
-                JarvisIntentGate(self.state, self.filter, meeting=True, cleaner=cleaner),
+                True,
                 TranscriptionFrame(text="Jarvis, make it forty two", user_id="room", timestamp="0"),
                 "[Room]: Jarvis, make it 42",
             ),
         ):
+            gate = JarvisIntentGate(JarvisState(), self.filter, meeting=meeting, cleaner=cleaner)
+            gate._enable_direct_mode = True
             gate.push_frame = AsyncMock()
             await gate.process_frame(frame, down)
             pushed = [c.args[0].text for c in gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)]

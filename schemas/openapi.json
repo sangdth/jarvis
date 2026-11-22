@@ -95,6 +95,7 @@
         "properties": {
           "id": { "type": "string" },
           "kind": { "type": "string", "enum": ["goal", "problem"] },
+          "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] },
           "repo": { "type": "string" },
           "title": { "type": "string" },
           "spec": { "type": "string" },
@@ -107,6 +108,7 @@
         "properties": {
           "id": { "type": "string" },
           "kind": { "type": "string", "enum": ["goal", "problem"] },
+          "mode": { "type": "string", "enum": ["ASSIST", "AUTONOMOUS"] },
           "repo": { "type": "string" },
           "title": { "type": "string" },
           "spec": { "type": "string" },

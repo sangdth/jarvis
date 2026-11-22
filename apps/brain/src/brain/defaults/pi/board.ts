@@ -124,6 +124,12 @@ export default function (pi: ExtensionAPI) {
 				id: { type: "string", description: "Optional existing task ID (e.g. SG-1 or PRB-1)" },
 				parent_id: { type: "string", description: "Optional parent goal ID" },
 				kind: { type: "string", enum: ["goal", "problem"] },
+				mode: {
+					type: "string",
+					enum: ["ASSIST", "AUTONOMOUS"],
+					description:
+						"'ASSIST' for tasks related to the current topic or active tasks resolved in ASSIST mode; 'AUTONOMOUS' for tasks resolved in AUTONOMOUS mode",
+				},
 				repo: { type: "string", description: "Relative repo path under ~/Projects (must be in ALLOWED_REPOS)" },
 				title: { type: "string" },
 				spec: { type: "string", description: "Hypothesis for a goal, or symptom/stacktrace for a problem" },

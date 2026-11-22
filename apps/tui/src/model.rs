@@ -35,6 +35,7 @@ pub struct Task {
     pub id: String,
     pub parent_id: Option<String>,
     pub kind: String,
+    pub mode: String,
     pub repo: String,
     pub title: String,
     pub spec: String,

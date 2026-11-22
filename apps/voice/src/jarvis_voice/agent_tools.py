@@ -17,11 +17,11 @@ from jarvis_voice.sessions import CodingSessionAdapter, match_sessions
 from jarvis_voice.t3_adapter import resolve_project
 
 
-def agent_tools(meeting: bool = False) -> list:
+def agent_tools() -> list:
     """The tools the conversation model can call (also used by scripts/bench_routing.py).
 
-    `meeting=True` (`jarvis meeting`) adds the two comment tools: anyone in the room may leave a note, but a note is
-    only ever written to the day's meeting file, never turned into work.
+    The two comment tools are always listed but refuse outside meeting mode (`JarvisState.meeting`): meeting mode can
+    be toggled by voice mid-run, and a tool that appears and disappears would leave the model with a stale schema.
     """
     from pipecat.adapters.llm.schemas.tools_schema import FunctionSchema
 
@@ -129,8 +129,7 @@ def agent_tools(meeting: bool = False) -> list:
             required=["question"],
         ),
     ]
-    tools += comment_tools() if meeting else []
-    return tools
+    return tools + comment_tools()
 
 
 def comment_tools() -> list:
@@ -167,9 +166,7 @@ def comment_tools() -> list:
     ]
 
 
-def agent_tool_handlers(
-    orchestrator: AgentOrchestrator, meeting: bool = False
-) -> dict[str, Callable[[Any], Awaitable[None]]]:
+def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[Any], Awaitable[None]]]:
     """Handlers for agent_tools(). Pipecat 1.x calls each with one FunctionCallParams (arguments, result_callback)."""
 
     def handler(
@@ -320,6 +317,9 @@ def agent_tool_handlers(
 
     async def add_comment(params: Any) -> None:
         """A meeting note: anyone may add one, and it only ever reaches the day's notes file."""
+        if not orchestrator.state.meeting:
+            await params.result_callback({"status": "not_in_meeting"})
+            return
         try:
             path, count = meeting_notes.append_comment(
                 str(params.arguments.get("comment") or ""),
@@ -332,6 +332,9 @@ def agent_tool_handlers(
         await params.result_callback({"status": "comment_saved", "count": count})
 
     async def read_comments(params: Any) -> None:
+        if not orchestrator.state.meeting:
+            await params.result_callback({"status": "not_in_meeting"})
+            return
         notes = meeting_notes.read_comments()
         await params.result_callback({"status": "read", "comments": notes} if notes else {"status": "no_comments"})
 
@@ -352,8 +355,8 @@ def agent_tool_handlers(
         "stop_agent": handler(stop, "stopped", "failed", orchestrator.find_busy, owner_only=True),
         "list_sessions": sessions,
         "look_at_screen": look,
+        # Both are open to the whole room; they refuse themselves outside meeting mode.
+        "add_comment": add_comment,
+        "read_comments": read_comments,
     }
-    if meeting:
-        # Both are open to the whole room: a comment is a note, not a command.
-        handlers |= {"add_comment": add_comment, "read_comments": read_comments}
     return handlers

@@ -251,3 +251,68 @@ print(json.dumps({"role": "assistant", "content": "Deleted test", "cost_usd": 0.
     finally:
         await reconciler.stop()
         db.close()
+
+
+async def test_reconciler_tick_resolves_assist_in_assist_mode_and_autonomous_in_autonomous_mode(
+    tmp_path: Path,
+) -> None:
+    projects_dir, _ = await _init_repo_with_origin(tmp_path, "demo")
+    fake_pi = _write_fake_pi(
+        tmp_path / "fake_pi_modes.py",
+        """
+import json, pathlib
+wt = pathlib.Path.cwd()
+(wt / "app.py").write_text("VALUE = 99\\n", encoding="utf-8")
+print(json.dumps({"role": "assistant", "content": "Updated app.py", "cost_usd": 0.05}), flush=True)
+""",
+    )
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=projects_dir,
+        allowed_repos="demo",
+        pi_bin=str(fake_pi),
+        default_mode="ASSIST",
+        sandbox_enabled=True,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="ASSIST")
+    reconciler = Reconciler(db, cfg)
+    try:
+        auto_task = db.upsert_task(
+            kind="problem",
+            mode="AUTONOMOUS",
+            repo="demo",
+            title="Overnight task",
+            spec="Wait for autonomous mode",
+            verify_cmd="python3 -c 'import app; assert app.VALUE == 99'",
+            ready=True,
+        )
+        assist_task = db.upsert_task(
+            kind="problem",
+            mode="ASSIST",
+            repo="demo",
+            title="Current topic assist task",
+            spec="Resolve right away in ASSIST mode",
+            verify_cmd="python3 -c 'import app; assert app.VALUE == 99'",
+            ready=True,
+        )
+
+        # In ASSIST mode, tick() resolves the ASSIST ticket and leaves the AUTONOMOUS ticket ready
+        first = await reconciler.tick()
+        assert first is not None
+        assert first.id == assist_task.id
+        assert first.status == "done"
+        assert db.get_task(auto_task.id).status == "ready"
+
+        # Next tick in ASSIST mode finds no more ready ASSIST tasks
+        assert await reconciler.tick() is None
+        assert db.get_task(auto_task.id).status == "ready"
+
+        # Switching to AUTONOMOUS mode lets tick() resolve the AUTONOMOUS ticket
+        db.set_mode("AUTONOMOUS")
+        second = await reconciler.tick()
+        assert second is not None
+        assert second.id == auto_task.id
+        assert second.status == "done"
+    finally:
+        await reconciler.stop()
+        db.close()

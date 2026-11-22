@@ -248,3 +248,59 @@ def test_cli_add_status_and_launchd(
     plist_out = capsys.readouterr().out
     assert "com.sangdth.jarvis" in plist_out
     assert "jarvis.cli" in plist_out  # the LaunchAgent runs the one command, which starts the brain
+
+
+def test_task_mode_inheritance_and_mode_filtered_claiming(tmp_path: Path) -> None:
+    db = BrainDB(tmp_path / "state.db", allowed_repos={"jarvis", "demo"}, default_mode="ASSIST")
+    try:
+        assist_parent = db.upsert_task(
+            kind="goal",
+            mode="ASSIST",
+            repo="jarvis",
+            title="Assist parent",
+            spec="Related to active topic",
+            metric_target="pytest passes",
+            ready=True,
+        )
+        assert assist_parent.mode == "ASSIST"
+
+        # Child inherits parent's ASSIST mode even if system_state switches to AUTONOMOUS
+        db.set_mode("AUTONOMOUS")
+        assist_child = db.upsert_task(
+            task_id="SG-1.1",
+            parent_id=assist_parent.id,
+            kind="goal",
+            repo="jarvis",
+            title="Assist child",
+            spec="Step 1",
+            metric_target="pytest passes",
+            verify_cmd="pytest",
+            ready=True,
+        )
+        assert assist_child.mode == "ASSIST"
+
+        auto_task = db.upsert_task(
+            kind="problem",
+            mode="AUTONOMOUS",
+            repo="demo",
+            title="Overnight cleanup",
+            spec="Resolve overnight",
+            verify_cmd="pytest",
+            ready=True,
+        )
+        assert auto_task.mode == "AUTONOMOUS"
+
+        assert [t.id for t in db.list_tasks(mode="ASSIST")] == ["SG-1", "SG-1.1"]
+        assert [t.id for t in db.list_tasks(mode="AUTONOMOUS")] == ["PRB-1"]
+
+        # In ASSIST mode, claim_next_task(mode="ASSIST") only claims ASSIST tasks
+        claimed_assist = db.claim_next_task(mode="ASSIST")
+        assert claimed_assist is not None and claimed_assist.id == "SG-1"
+        db.finish_attempt(task_id="SG-1", role="planner", summary="Decomposed", outcome="decomposed")
+
+        # In AUTONOMOUS mode, claim_next_task(mode="AUTONOMOUS") only claims AUTONOMOUS tasks
+        claimed_auto = db.claim_next_task(mode="AUTONOMOUS")
+        assert claimed_auto is not None and claimed_auto.id == "PRB-1"
+        assert db.claim_next_task(mode="AUTONOMOUS") is None
+    finally:
+        db.close()

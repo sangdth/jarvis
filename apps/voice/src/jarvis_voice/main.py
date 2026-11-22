@@ -213,11 +213,20 @@ async def run_pipecat_harness(
         if "task" in task_ref:
             await task_ref["task"].queue_frame(InterruptionFrame())
 
+    async def on_notice(text: str) -> None:
+        """A mode note for the conversation model: no speech, and no new turn started."""
+        if "task" in task_ref:
+            await task_ref["task"].queue_frame(
+                LLMMessagesAppendFrame(messages=[{"role": "system", "content": text}], run_llm=False)
+            )
+
     state = JarvisState(
         on_speak=on_speak,
         on_beep=on_beep,
         on_interrupt=on_interrupt,
         on_report=on_report if settings.openrouter_api_key else None,  # no LLM offline: last line only
+        on_notice=on_notice,
+        meeting=meeting,  # from then on `state.meeting` follows the voice ("meeting mode on")
     )
     soul = load_soul()
     orchestrator = AgentOrchestrator(state=state, personality=soul.personality)
@@ -238,6 +247,8 @@ async def run_pipecat_harness(
         transport: BaseTransport = relay
     else:
         transport = MacVoiceTransport(TransportParams(audio_in_enabled=True, audio_out_enabled=True), meeting=meeting)
+        # "Meeting mode on" by voice starts hearing the call and speaking into it, without a restart.
+        state.on_meeting = transport.set_meeting
 
     # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice,
     # known enrolled speakers, or a new speaker being enrolled (or tagging room in meetings).
@@ -290,10 +301,10 @@ async def run_pipecat_harness(
         logger.warning("No OPENROUTER_API_KEY configured; running in offline mode.")
         llm = None
 
-    tools = agent_tools(meeting=meeting)
+    tools = agent_tools()
 
     if llm is not None:
-        for name, handler in agent_tool_handlers(orchestrator, meeting=meeting).items():
+        for name, handler in agent_tool_handlers(orchestrator).items():
             llm.register_function(name, handler)
 
     context = LLMContext(tools=tools)

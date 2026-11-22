@@ -291,8 +291,30 @@ class MacVoiceTransport(BaseTransport):
         if not self._input:
             self._input = MacVoiceInputTransport(self._audio, self._params)
         return self._input
-
     def output(self) -> FrameProcessor:
         if not self._output:
             self._output = MacVoiceOutputTransport(self._audio, self._params)
         return self._output
+
+    async def set_meeting(self, on: bool) -> None:
+        """
+        "Meeting mode on" / "meeting mode off" by voice, without rebuilding the transport.
+
+        On: start hearing the call (system audio tap) and speaking into it (the Meet extension's socket). Off: stop
+        both. Each half is best effort — a denied Screen & System Audio permission logs a warning and the rest of
+        meeting mode still works.
+        """
+        audio = self._audio
+        if on:
+            if audio.bridge is None:
+                audio.bridge = MeetingAudioBridge()
+                audio.bridge.start()
+            if audio.meet_voice is None:
+                audio.meet_voice = MeetVoice()
+                audio.meet_voice.rate = getattr(self._output, "sample_rate", 0) or 16000
+                await audio.meet_voice.start()
+            return
+        if audio.bridge is not None:
+            audio.bridge.stop()
+        if audio.meet_voice is not None:
+            await audio.meet_voice.stop()

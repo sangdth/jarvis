@@ -1,9 +1,13 @@
+import asyncio
 import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
+from unittest import mock
+from unittest.mock import MagicMock
 
 from jarvis_voice import agent_tools, meeting_notes
+from jarvis_voice.state import JarvisState
 
 
 class MeetingNotesTest(unittest.TestCase):
@@ -62,18 +66,40 @@ class CommentToolsTest(unittest.TestCase):
     def _names(self, tools) -> list[str]:
         return [getattr(tool, "name", "") for tool in tools]
 
-    def test_the_comment_tools_exist_only_in_a_meeting(self) -> None:
-        self.assertNotIn("add_comment", self._names(agent_tools.agent_tools()))
-        self.assertNotIn("read_comments", self._names(agent_tools.agent_tools()))
-        meeting = self._names(agent_tools.agent_tools(meeting=True))
-        self.assertIn("add_comment", meeting)
-        self.assertIn("read_comments", meeting)
-        self.assertIn("send_agent_task", meeting)  # the meeting tools are additive, not a mode switch
+    def test_the_comment_tools_are_always_listed(self) -> None:
+        # Meeting mode is toggled by voice, so the schema must not appear and disappear mid-run.
+        names = self._names(agent_tools.agent_tools())
+        self.assertIn("add_comment", names)
+        self.assertIn("read_comments", names)
+        self.assertIn("send_agent_task", names)
 
     def test_the_comment_schema_asks_for_the_note_only(self) -> None:
         tool = next(t for t in agent_tools.comment_tools() if t.name == "add_comment")
         self.assertEqual(tool.required, ["comment"])
         self.assertNotIn("agent_id", tool.properties)
+
+    def test_a_comment_outside_meeting_mode_is_refused(self) -> None:
+        class Params:
+            def __init__(self, args):
+                self.arguments = args
+                self.result = None
+
+            async def result_callback(self, value):
+                self.result = value
+
+        orchestrator = MagicMock()
+        orchestrator.state = JarvisState()  # not in a meeting
+        handlers = agent_tools.agent_tool_handlers(orchestrator)
+
+        params = Params({"comment": "hello"})
+        asyncio.run(handlers["add_comment"](params))
+        self.assertEqual(params.result, {"status": "not_in_meeting"})
+
+        orchestrator.state.meeting = True
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(meeting_notes, "NOTES_DIR", Path(tmp)):
+            params = Params({"comment": "hello"})
+            asyncio.run(handlers["add_comment"](params))
+        self.assertEqual(params.result["status"], "comment_saved")
 
 
 if __name__ == "__main__":

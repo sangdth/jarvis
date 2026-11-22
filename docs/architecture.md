@@ -207,7 +207,7 @@ The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voi
 | `enroll.py`           | `jarvis enroll`: records the owner's voiceprint, sets `MASTER_CHECK=true`  |
 | `executive_filter.py` | `ExecutiveFilter`: decision model, `INTENT_QUESTION`                       |
 | `cleanup.py`          | `TranscriptCleaner`: tidies a passed sentence before the model reads it    |
-| `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`), mute and unmute patterns, beep synth |
+| `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`, meeting mode), fast commands, beep synth |
 | `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval  |
 | `sessions.py`         | `CodingSessionAdapter` (list, pick, new session), `match_sessions`         |
 | `claude_adapter.py`   | `ClaudeCodeAdapter`: Claude Code through the Agent SDK                     |

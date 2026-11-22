@@ -37,7 +37,7 @@ from pipecat.utils.time import time_now_iso8601
 from jarvis_voice.cleanup import TranscriptCleaner
 from jarvis_voice.config import JARVIS_HOME, WHISPER_MODELS, settings
 from jarvis_voice.executive_filter import ExecutiveFilter
-from jarvis_voice.prompts import LANGUAGES, MEETING_TRANSCRIPT
+from jarvis_voice.prompts import LANGUAGES, MEETING_TRANSCRIPT, meeting_mode
 from jarvis_voice.speaker import (
     SpeakerEmbedder,
     SpeakerRegistry,
@@ -230,10 +230,12 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         saved = f" ({clip.name})" if clip else ""
         if clip and not any(isinstance(f, TranscriptionFrame) for f in frames):
             logger.info(f"[Speaker] {heard} no text{saved}")  # Whisper heard noise or nothing
+        # Read live: "meeting mode on" by voice changes the tagging from the next sentence, mid-run.
+        meeting = self._state.meeting if self._state is not None else self._meeting
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
                 known = profile is not None and profile.enrolled and profile.name is not None
-                if self._meeting:
+                if meeting:
                     if owner:
                         role = "owner"
                     elif known and profile is not None and profile.name:
@@ -316,7 +318,9 @@ class JarvisIntentGate(FrameProcessor):
         self.cleaner = cleaner  # None: sentences go on as Whisper heard them
         # What Jarvis said last (the conversation model's last reply), for answers to its own questions.
         self._last_said = last_said
-        self._meeting = meeting
+        # `jarvis meeting` at startup; from then on `state.meeting` is the one source of truth (voice can toggle it).
+        if meeting:
+            state.meeting = True
         self.registry = registry if registry is not None else SpeakerRegistry(folder=None)
         self._enrollment: _Enrollment | None = None
         self._meeting_log: list[str] = []
@@ -454,6 +458,37 @@ class JarvisIntentGate(FrameProcessor):
             del self._meeting_log[: len(self._meeting_log) - MEETING_LOG_LIMIT]
         logger.info(f"[Meeting] buffered ({speaker}): {transcript!r}")
 
+    async def _set_meeting_mode(self, on: bool, *, is_owner: bool) -> None:
+        """
+        "Meeting mode on" / "meeting mode off", by voice.
+
+        Only the master may change it: with the master check on, a guest asking would otherwise be able to turn the
+        room-tagging off and speak as the user. The rules are handed to the conversation model as a system note, so
+        the change holds from the next turn without restarting the pipeline.
+        """
+        if settings.master_check and not is_owner:
+            logger.info("[Meeting] ignored a guest asking to change meeting mode.")
+            return
+        line = LANGUAGES[settings.language]["meeting_on" if on else "meeting_off"]
+        if self.state.meeting == on:
+            if self.state.on_speak:
+                await self.state.on_speak(line)  # already there: just confirm, no second rule injection
+            return
+        await self.state.set_meeting(on)
+        self._meeting_log.clear()
+        self.state.room_turn = False
+        if on:
+            await self.state.notify(
+                "Meeting mode is now ON.\n" + meeting_mode(True, guests=settings.master_check).strip()
+            )
+        else:
+            await self.state.notify(
+                "Meeting mode is now OFF. Only the user is speaking again; no one is tagged [Room] or a guest."
+            )
+        logger.info(f"[Meeting] mode {'on' if on else 'off'} (by voice)")
+        if self.state.on_speak:
+            await self.state.on_speak(line)
+
     def _resolve_profile(self, user_id: str) -> VoiceProfile | None:
         if user_id in ("owner", "u", "", "room"):
             return None
@@ -540,9 +575,14 @@ class JarvisIntentGate(FrameProcessor):
         # The same label in both modes, so memory skips a guest's words ([Speaker: David]) like it skips [Room].
         speaker = "User" if is_owner else (f"Speaker: {profile.name}" if profile and profile.name else "Room")
 
+        # "Meeting mode on / off": deterministic, no model call, and it works while muted (it is about who is heard).
+        if fast in (UserIntent.MEETING_ON, UserIntent.MEETING_OFF):
+            await self._set_meeting_mode(fast is UserIntent.MEETING_ON, is_owner=is_owner)
+            return
+
         # While muted only "you can talk" matters; skip the paid LLM call for everything else.
         if self.state.mode == JarvisMode.BEEP_ONLY and fast not in (UserIntent.MUTE, UserIntent.UNMUTE):
-            if self._meeting:
+            if self.state.meeting:
                 self._buffer_meeting(speaker, transcript)
             return
 
@@ -577,7 +617,7 @@ class JarvisIntentGate(FrameProcessor):
         # In a meeting only the user may answer Jarvis without naming it, and only when Jarvis left a question open:
         # a plain statement ("Added to your calendar.") must not let subsequent talk bypass buffering.
         if (
-            self._meeting
+            self.state.meeting
             and fast is None
             and not is_not_for_jarvis(transcript)
             and (not open_question or not is_owner)
@@ -621,7 +661,7 @@ class JarvisIntentGate(FrameProcessor):
                 return
 
         if intent == UserIntent.IGNORE_BACKGROUND:
-            if self._meeting:
+            if self.state.meeting:
                 self._buffer_meeting(speaker, transcript)
             else:
                 logger.debug(f"Ignored self-talk / unaddressed speech: {transcript!r}")
@@ -650,7 +690,7 @@ class JarvisIntentGate(FrameProcessor):
             if self.state.on_speak:
                 await self.state.on_speak(LANGUAGES[settings.language]["speaker_greeting"].format(name=profile.name))
 
-        if self._meeting:
+        if self.state.meeting:
             history = "\n".join(self._meeting_log)
             self._meeting_log.clear()
             prefix = f"{MEETING_TRANSCRIPT}\n{history}]\n" if history else ""

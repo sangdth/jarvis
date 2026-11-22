@@ -32,6 +32,8 @@ class LanguageText(TypedDict):
     greeting: str
     connected: str  # {title}, {project}
     meeting: str
+    meeting_on: str  # "meeting mode on", by voice
+    meeting_off: str  # "meeting mode off", by voice
     waiting: list[str]  # no agent name: Jarvis speaks as one assistant
     enroll: list[str]  # `jarvis enroll`: lines read aloud for the voiceprint
     enroll_check: list[str]  # read after it, unseen, to measure the score and suggest SPEAKER_THRESHOLD
@@ -149,6 +151,7 @@ def system_prompt(
         + agent_roster(orchestrator)
         + connected_thread(thread)
         + meeting_mode(meeting, guests=guests)
+        + "\n\nMeeting mode can be switched by voice (\"meeting mode on\", \"meeting mode off\"): say so when asked."
     )
 
 

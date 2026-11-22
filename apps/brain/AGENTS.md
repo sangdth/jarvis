@@ -35,13 +35,16 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `.env` (shared: `JARVIS_HOME/.env` wins), `state.db` (SQLite WAL, the only writer), `worktrees/<task_id>` (`0700`),
   `sessions/<task_id>`, `traces/attempt-<id>.json`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created
   personal skills), and `memory/progress/<task_id>.md` (handoff + deterministic negative-result ledger).
-- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `child_strategy IN ('all', 'any')`,
-  `best_metric`, `best_branch`, `best_sha`), `attempts` (append-only run ledger with `metric_value`, `skills_used`,
-  `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline `sha256`, usage counters, and
-  previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary approvals), plus the 1-row
-  `system_state` table (`mode`, `daily_budget_usd` defaulting to `$200.00/day`, `last_good_sha`, `upgrade_runs`,
-  `upgrade_failures`). The cockpit reads these directly, read-only: a column it draws must not change shape without
-  `apps/tui/src/db.rs`.
+- **4 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
+  `child_strategy IN ('all', 'any')`, `best_metric`, `best_branch`, `best_sha`), `attempts` (append-only run ledger
+  with `metric_value`, `skills_used`, `diagnostic`, and `reflected`), `skills` (versioned personal skills with baseline
+  `sha256`, usage counters, and previous-version rollback snapshot), and `outbox` (queued reports, blockers, and binary
+  approvals), plus the 1-row `system_state` table (`mode`, `daily_budget_usd` defaulting to `$200.00/day`,
+  `last_good_sha`, `upgrade_runs`, `upgrade_failures`). The reconciler loop runs continuously in both modes, resolving
+  ready `ASSIST` tasks when in `ASSIST` mode and ready `AUTONOMOUS` tasks when in `AUTONOMOUS` mode. When the owner
+  gives a new request clearly related to the current topic or active tasks, the Planner sets `mode='ASSIST'` and
+  `ready=true`; if unsure when to resolve it, the Planner asks the owner first. The cockpit reads these tables
+  directly, read-only: a column it draws must not change shape without `apps/tui/src/db.rs`.
 - **SoL-Pi auto-research & harness efficiency (`board.ts` + `reconciler.py` + `skills.py`):**
   - **Action Fusion (`edit_and_run`):** `board.ts` fuses worktree-guarded file mutations (`createEditToolDefinition` /
     `createWriteToolDefinition`) with immediate follow-up `createBashToolDefinition` execution in a single turn

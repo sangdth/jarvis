@@ -298,6 +298,10 @@ Jarvis asks you before it starts that work (`MEETING_GUESTS=ask`, the default); 
 once. Either way only your voice can answer an agent's question, approve, stop or replace a task. Off: Jarvis can't
 tell voices apart, so everyone counts as you.
 
+**Meeting mode can be switched by voice, mid-session:** "meeting mode on" enters it (guests are tagged, comments
+work, the call audio tap starts) and "meeting mode off" leaves it, without restarting Jarvis. Only you can switch it
+when the master check is on. `jarvis meeting` at startup is just the same thing from the command line.
+
 **Anyone may add a comment**, and that is the one thing a guest can do freely: "Jarvis, note that we're going with
 Postgres." It goes to today's notes file with who said it and when —
 `JARVIS_HOME/meeting/2026-11-22.md` — Jarvis acknowledges it in a few words, and nothing runs, nothing is approved,
@@ -338,6 +342,9 @@ says hello. Profiles live in `JARVIS_HOME/speakers/`; delete a file there to for
 - **"No, I meant..."** — Replaces a task an agent is still working on, instead of starting a second one.
 - **Talking over Jarvis** — Cuts its reply off. With the master check on, only your voice does this.
 - **Vietnamese** — Set `LANGUAGE=vi` and speak Vietnamese, with English words mixed in; Jarvis answers in Vietnamese and still briefs agents in English. Agent questions and approvals are read out in English.
+- **"Meeting mode on" / "Meeting mode off"** — enter or leave meeting mode by voice, without restarting Jarvis.
+  In meeting mode other voices are tagged `[Room]`, may ask questions and add comments, and only you can start,
+  approve or stop work. Only your voice can switch it.
 - **"Shut up"** / **"Be quiet"** / **"Stop talking"** / **"Hush"** / **"Im đi"** / **"Im lặng"** — Immediately stops TTS playback and switches Jarvis into `BEEP_ONLY` mode. When a coding agent hits a blocker or needs a decision, Jarvis plays a short chime and queues the topic silently.
 - **"You can talk"** / **"Nói được rồi"** — Switches Jarvis back to `VOICE` mode and immediately reads a concise, jargon-free digest of everything queued while muted.
 

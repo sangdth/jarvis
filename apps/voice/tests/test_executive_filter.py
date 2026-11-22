@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 from jarvis_voice.executive_filter import ExecutiveFilter
-from jarvis_voice.state import UserIntent
+from jarvis_voice.state import LOCAL_ONLY_INTENTS, UserIntent
 
 
 def online_filter() -> ExecutiveFilter:
@@ -31,7 +31,11 @@ class TestExecutiveFilter(unittest.IsolatedAsyncioTestCase):
         body = post.call_args.kwargs["json"]
         self.assertEqual(body["model"], filt.model)
         self.assertEqual(body["state"], {"document": "Use Postgres", "jarvis_last_said": "Postgres or SQLite?"})
-        self.assertEqual(set(body["questions"]["intent"]["criteria"]), {i.value for i in UserIntent})
+        # Every intent the speech check may pick is a criterion; the fast local commands are decided without it.
+        self.assertEqual(
+            set(body["questions"]["intent"]["criteria"]),
+            {i.value for i in UserIntent} - {i.value for i in LOCAL_ONLY_INTENTS},
+        )
 
     async def test_classifier_failure_ignores_speech(self) -> None:
         filt = online_filter()

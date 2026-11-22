@@ -52,7 +52,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         let selected = row_idx == app.sel_tasks && focused;
         let indent = "  ".repeat(*depth);
         let marker = if selected { "▌" } else { " " };
-        let mut suffix = format!("  {}", task.repo);
+        let mode_tag = if task.mode.is_empty() || task.mode == "AUTONOMOUS" {
+            "AUTO"
+        } else {
+            &task.mode
+        };
+        let mut suffix = format!("  {} · {}", task.repo, mode_tag);
         if task.strike_count > 0 {
             suffix.push_str(&format!(" · strike {}/3", task.strike_count));
         }
@@ -112,7 +117,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled(format!("{} ", task.id), theme::bold(theme::CYAN)),
         Span::styled(
-            format!("[{}] {}", task.kind, task.status),
+            format!("[{}/{}] {}", task.kind, if task.mode.is_empty() { "AUTONOMOUS" } else { &task.mode }, task.status),
             theme::status_style(&task.status),
         ),
         Span::styled(format!("  {}", task.title), theme::fg(theme::TEXT)),
@@ -198,7 +203,15 @@ pub fn task_modal_lines(app: &App, task_id: &str) -> Vec<Line<'static>> {
         Span::styled(task.title.clone(), theme::bold(theme::TEXT)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("{} · {} · ", task.kind, task.status), theme::status_style(&task.status)),
+        Span::styled(
+            format!(
+                "{} · {} · {} · ",
+                task.kind,
+                if task.mode.is_empty() { "AUTONOMOUS" } else { &task.mode },
+                task.status
+            ),
+            theme::status_style(&task.status),
+        ),
         Span::styled(format!("repo={} · priority={}", task.repo, task.priority), theme::dim()),
     ]));
     if let Some(parent) = &task.parent_id {

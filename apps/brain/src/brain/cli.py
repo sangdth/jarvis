@@ -220,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     add_p = sub.add_parser("add", help="Add or update a task on the board")
     add_p.add_argument("--id", dest="task_id", default=None)
     add_p.add_argument("--kind", choices=["goal", "problem"], required=True)
+    add_p.add_argument("--mode", choices=["ASSIST", "AUTONOMOUS"], default=None)
     add_p.add_argument("--repo", required=True)
     add_p.add_argument("--title", required=True)
     add_p.add_argument("--spec", required=True)
@@ -285,7 +286,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             for t in db.list_tasks():
                 best_info = f", best={t.best_metric}@{t.best_branch}" if t.best_metric is not None else ""
-                print(f"  {t.id} [{t.kind}/{t.status}] (strikes={t.strike_count}, repo={t.repo}{best_info}): {t.title}")
+                print(
+                    f"  {t.id} [{t.kind}/{t.mode}/{t.status}] "
+                    f"(strikes={t.strike_count}, repo={t.repo}{best_info}): {t.title}"
+                )
             for s in active_skills:
                 print(
                     f"  [skill:{s.slug} v{s.version}] loads={s.loads_since_update} "
@@ -306,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
             t = db.upsert_task(
                 task_id=args.task_id,
                 kind=args.kind,
+                mode=args.mode,
                 repo=args.repo,
                 title=args.title,
                 spec=args.spec,
@@ -314,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                 priority=args.priority,
                 ready=True if args.ready else None,
             )
-            print(f"Upserted {t.id} ({t.status}) in {t.repo}: {t.title}")
+            print(f"Upserted {t.id} ({t.mode}/{t.status}) in {t.repo}: {t.title}")
             return 0
     finally:
         db.close()

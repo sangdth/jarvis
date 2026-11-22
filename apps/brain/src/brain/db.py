@@ -117,6 +117,7 @@ class TaskRow:
     lease_until: str | None
     created_at: str
     updated_at: str
+    mode: Mode = "AUTONOMOUS"
     child_strategy: ChildStrategy = "all"
     best_metric: float | None = None
     best_branch: str | None = None
@@ -229,6 +230,10 @@ class BrainDB:
             str(r["name"])
             for r in self._conn.execute("PRAGMA table_info(tasks)").fetchall()
         }
+        if "mode" not in task_cols:
+            self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'AUTONOMOUS'"
+            )
         if "child_strategy" not in task_cols:
             self._conn.execute(
                 "ALTER TABLE tasks ADD COLUMN child_strategy TEXT NOT NULL DEFAULT 'all'"
@@ -411,6 +416,7 @@ class BrainDB:
         spec: str,
         task_id: str | None = None,
         parent_id: str | None = None,
+        mode: Mode | str | None = None,
         metric_target: str | None = None,
         verify_cmd: str | None = None,
         priority: int = 50,
@@ -420,6 +426,12 @@ class BrainDB:
         cleaned_repo = self.validate_repo(repo)
         if kind not in ("goal", "problem"):
             raise ValueError(f"Invalid task kind: {kind!r}")
+        normalized_mode: Mode | None = None
+        if mode is not None and str(mode).strip():
+            upper_mode = str(mode).strip().upper()
+            if upper_mode not in ("ASSIST", "AUTONOMOUS"):
+                raise ValueError(f"Invalid task mode: {mode!r}")
+            normalized_mode = upper_mode  # type: ignore[assignment]
         if child_strategy is not None and child_strategy not in ("all", "any"):
             raise ValueError(f"Invalid child_strategy: {child_strategy!r}")
         cleaned_metric = metric_target.strip() if metric_target and metric_target.strip() else None
@@ -433,6 +445,29 @@ class BrainDB:
             existing = self._conn.execute(
                 "SELECT * FROM tasks WHERE id = ?", (resolved_id,)
             ).fetchone()
+
+            if normalized_mode is not None:
+                resolved_mode: Mode = normalized_mode
+            elif (
+                existing is not None
+                and "mode" in existing.keys()
+                and existing["mode"] in ("ASSIST", "AUTONOMOUS")
+            ):
+                resolved_mode = existing["mode"]
+            elif parent_id:
+                parent_row = self._conn.execute(
+                    "SELECT mode FROM tasks WHERE id = ?", (parent_id,)
+                ).fetchone()
+                if (
+                    parent_row is not None
+                    and "mode" in parent_row.keys()
+                    and parent_row["mode"] in ("ASSIST", "AUTONOMOUS")
+                ):
+                    resolved_mode = parent_row["mode"]
+                else:
+                    resolved_mode = state.mode
+            else:
+                resolved_mode = state.mode
 
             if existing is not None and existing["status"] == "in_progress":
                 if ready is not None:
@@ -457,15 +492,16 @@ class BrainDB:
                 self._conn.execute(
                     """
                     INSERT INTO tasks (
-                        id, parent_id, kind, repo, title, spec, metric_target,
+                        id, parent_id, kind, mode, repo, title, spec, metric_target,
                         verify_cmd, status, priority, strike_count, child_strategy,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                     """,
                     (
                         resolved_id,
                         parent_id,
                         kind,
+                        resolved_mode,
                         cleaned_repo,
                         title.strip(),
                         spec.strip(),
@@ -482,7 +518,7 @@ class BrainDB:
                 self._conn.execute(
                     """
                     UPDATE tasks
-                    SET parent_id = ?, kind = ?, repo = ?, title = ?, spec = ?,
+                    SET parent_id = ?, kind = ?, mode = ?, repo = ?, title = ?, spec = ?,
                         metric_target = ?, verify_cmd = ?, status = ?, priority = ?,
                         child_strategy = ?, updated_at = ?
                     WHERE id = ?
@@ -490,6 +526,7 @@ class BrainDB:
                     (
                         parent_id if parent_id is not None else existing["parent_id"],
                         kind,
+                        resolved_mode,
                         cleaned_repo,
                         title.strip(),
                         spec.strip(),
@@ -511,17 +548,23 @@ class BrainDB:
                 raise KeyError(f"Task {task_id!r} not found")
             return self._row_to_task(row)
 
-    def list_tasks(self, status: TaskStatus | None = None) -> list[TaskRow]:
+    def list_tasks(
+        self, status: TaskStatus | None = None, mode: Mode | None = None
+    ) -> list[TaskRow]:
         with self._lock:
+            clauses: list[str] = []
+            params: list[Any] = []
             if status:
-                rows = self._conn.execute(
-                    "SELECT * FROM tasks WHERE status = ? ORDER BY priority ASC, created_at ASC",
-                    (status,),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT * FROM tasks ORDER BY priority ASC, created_at ASC"
-                ).fetchall()
+                clauses.append("status = ?")
+                params.append(status)
+            if mode:
+                clauses.append("mode = ?")
+                params.append(mode)
+            where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+            rows = self._conn.execute(
+                f"SELECT * FROM tasks {where}ORDER BY priority ASC, created_at ASC",
+                tuple(params),
+            ).fetchall()
             return [self._row_to_task(r) for r in rows]
 
     def reap_stale_leases(self, now: datetime | None = None) -> list[str]:
@@ -551,7 +594,12 @@ class BrainDB:
         return reaped
 
     def claim_next_task(
-        self, *, lease_seconds: int = 1200, task_id: str | None = None, now: datetime | None = None
+        self,
+        *,
+        lease_seconds: int = 1200,
+        task_id: str | None = None,
+        mode: Mode | None = None,
+        now: datetime | None = None,
     ) -> TaskRow | None:
         now_dt = now or _utc_now()
         now_iso = _iso(now_dt)
@@ -575,17 +623,20 @@ class BrainDB:
                 ):
                     return None
             else:
+                mode_clause = "AND mode = ? " if mode is not None else ""
+                mode_params: tuple[Any, ...] = (mode,) if mode is not None else ()
                 row = self._conn.execute(
-                    """
+                    f"""
                     SELECT * FROM tasks
                     WHERE status = 'ready'
-                      AND strike_count < 3
+                      {mode_clause}AND strike_count < 3
                       AND repo NOT IN (SELECT repo FROM tasks WHERE status = 'in_progress')
                     ORDER BY CASE WHEN kind = 'problem' THEN 0 ELSE 1 END ASC,
                              priority ASC,
                              created_at ASC
                     LIMIT 1
-                    """
+                    """,
+                    mode_params,
                 ).fetchone()
                 if row is None:
                     return None
@@ -1162,6 +1213,11 @@ class BrainDB:
             lease_until=row["lease_until"],
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
+            mode=(
+                row["mode"]
+                if "mode" in keys and row["mode"] in ("ASSIST", "AUTONOMOUS")
+                else "AUTONOMOUS"
+            ),
             child_strategy=(
                 row["child_strategy"]
                 if "child_strategy" in keys and row["child_strategy"] in ("all", "any")

@@ -29,6 +29,22 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classify_fast_command("Đừng nói nữa"), UserIntent.MUTE)
         self.assertEqual(classify_fast_command("Jarvis, nói được rồi"), UserIntent.UNMUTE)
         self.assertIsNone(classify_fast_command("Sửa lỗi đăng nhập giúp anh"))
+
+    def test_meeting_mode_is_a_fast_command(self) -> None:
+        for text in (
+            "ok turn on meeting mode, jarvis",
+            "Jarvis, meeting mode on.",
+            "switch to meeting mode",
+            "start meeting mode please",
+            "enter meeting mode",
+            "bật chế độ họp",
+        ):
+            self.assertEqual(classify_fast_command(text), UserIntent.MEETING_ON, text)
+        for text in ("meeting mode off", "turn off meeting mode", "end meeting mode", "tắt chế độ họp"):
+            self.assertEqual(classify_fast_command(text), UserIntent.MEETING_OFF, text)
+        # The mode has to be named: ordinary requests about a call go to the conversation model.
+        for text in ("start the meeting", "join the meeting and share the screen", "what did we decide in the meeting"):
+            self.assertIsNone(classify_fast_command(text), text)
         self.assertIsNone(classify_fast_command("Dừng lại đi."))  # stops the work, never mutes
 
     def test_not_for_jarvis_phrases(self) -> None:

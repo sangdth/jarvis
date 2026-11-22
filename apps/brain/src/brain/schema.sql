@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     parent_id TEXT REFERENCES tasks(id),
     kind TEXT NOT NULL CHECK (kind IN ('goal', 'problem')),
+    mode TEXT NOT NULL DEFAULT 'AUTONOMOUS' CHECK (mode IN ('ASSIST', 'AUTONOMOUS')),
     repo TEXT NOT NULL,
     title TEXT NOT NULL,
     spec TEXT NOT NULL,

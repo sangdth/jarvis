@@ -193,7 +193,11 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   check off nobody is `[Room]`: everyone counts as the master. Memory neither saves meeting turns nor searches for
   the room. **Guests may add comments, and only comments:** `add_comment` / `read_comments` exist only in meeting
   mode, write `JARVIS_HOME/meeting/<date>.md` with the speaker label from `JarvisState.current_speaker`, and touch
-  no agent, no approval and no memory (`meeting_notes.py`).
+  no agent, no approval and no memory (`meeting_notes.py`). **The mode itself is switchable by voice:** "meeting mode
+  on" / "meeting mode off" are fast local commands (`state.classify_fast_command`, no model call) handled before the
+  mute check; only the master may switch it (`master_check` and `is_owner`), and the rules are handed to the model as
+  a system note (`JarvisState.notify`) so no restart is needed. `JarvisState.meeting` is the one source of truth —
+  the gate, the STT and the comment tools read it live; `jarvis meeting` at startup is just its initial value.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
 - **Agent ids are exact** (`claude`, `opencode`, `t3-code`, `brain`, or `hermes` for a separate one), matched as
   written in `agents.json`. A bad `DEFAULT_CODING_AGENT` stops Jarvis at startup.

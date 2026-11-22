@@ -299,30 +299,35 @@ class Reconciler:
             await asyncio.sleep(self.cfg.reconcile_interval_seconds)
 
     async def tick(self) -> TaskRow | None:
-        """Executes one deterministic reconciler cycle."""
+        """Executes one deterministic reconciler cycle for the active mode (ASSIST or AUTONOMOUS)."""
         self.db.reap_stale_leases()
         state = self.db.get_state()
-        if state.mode != "AUTONOMOUS":
-            self._set_phase("assist_idle", mode=state.mode)
-            return None
         if state.spent_today_usd >= state.daily_budget_usd:
             self._set_phase("budget_paused", spent_usd=state.spent_today_usd)
-            logger.warning("[Reconciler] Daily budget reached; pausing autonomous claiming.")
+            logger.warning("[Reconciler] Daily budget reached; pausing task claiming.")
             return None
 
-        task = self.db.claim_next_task(lease_seconds=self.cfg.lease_seconds)
+        task = self.db.claim_next_task(
+            lease_seconds=self.cfg.lease_seconds, mode=state.mode
+        )
         if task is None:
-            self._set_phase("idle")
-            unreflected = self.db.list_unreflected_attempts()
-            should_reflect = len(unreflected) >= 2 or any(
-                a.outcome in ("failed_verify", "errored", "timed_out") or bool(a.diagnostic)
-                for a in unreflected
-            )
-            if should_reflect:
-                await self.run_skill_improver()
+            self._set_phase("idle", mode=state.mode)
+            if state.mode == "AUTONOMOUS":
+                unreflected = self.db.list_unreflected_attempts()
+                should_reflect = len(unreflected) >= 2 or any(
+                    a.outcome in ("failed_verify", "errored", "timed_out") or bool(a.diagnostic)
+                    for a in unreflected
+                )
+                if should_reflect:
+                    await self.run_skill_improver()
             return None
 
-        self._set_phase("claimed", task_id=task.id, role="builder" if task.verify_cmd else "planner")
+        self._set_phase(
+            "claimed",
+            task_id=task.id,
+            role="builder" if task.verify_cmd else "planner",
+            mode=task.mode,
+        )
         finished = await self.execute_claimed_task(task)
         if self.restart_pending and self.on_restart_requested is not None:
             self.on_restart_requested()
@@ -731,7 +736,7 @@ class Reconciler:
             else self.cfg.home_dir
         )
         tasks_summary = "\n".join(
-            f"- {t.id} [{t.kind}/{t.status}] ({t.repo}): {t.title} (verify={t.verify_cmd!r})"
+            f"- {t.id} [{t.kind}/{t.mode}/{t.status}] ({t.repo}): {t.title} (verify={t.verify_cmd!r})"
             for t in self.db.list_tasks()[:20]
         )
         prompt = (
@@ -740,10 +745,20 @@ class Reconciler:
             f"Current tasks on board:\n{tasks_summary or '(none)'}\n\n"
             f"Owner request: {user_input}\n"
             "Use `upsert_task` to create or update tasks when appropriate. "
+            "The background reconciler runs continuously: in ASSIST mode it resolves ASSIST tasks, "
+            "and in AUTONOMOUS mode it resolves AUTONOMOUS tasks. "
+            "When the owner (Sang) gives a new task or request:\n"
+            "- If you can clearly see it is related to the current conversation topic or existing tasks "
+            "currently being worked on (or the owner explicitly asks to resolve it now / in ASSIST mode), "
+            "call `upsert_task` with `mode='ASSIST'` and `ready=true`.\n"
+            "- If the owner explicitly asks to resolve it later in AUTONOMOUS / overnight mode, "
+            "call `upsert_task` with `mode='AUTONOMOUS'` and `ready=true`.\n"
+            "- If you are not sure whether it is related to the current topic/tasks or when the owner wants "
+            "the issue resolved, ask the owner when you should resolve the issue before marking it ready.\n"
             "If the owner complains about a Brain bug/feature or asks to upgrade this repository "
             "('jarvis', 'the brain', 'your code', 'brain'), call `upsert_task` with "
             "`repo='jarvis'`, `kind='problem'` (for bugs/complaints) or `kind='goal'` "
-            "(for new tech/upgrades), a deterministic `verify_cmd` (e.g. 'uv run pytest'), and "
+            "(for new tech/upgrades), `mode='ASSIST'`, a deterministic `verify_cmd` (e.g. 'uv run pytest'), and "
             "`ready=true` so Brain immediately builds, verifies, and restarts itself. "
             "Reply in 1-2 concise sentences suitable to be spoken aloud."
         )
@@ -991,10 +1006,12 @@ class Reconciler:
                 if method == "upsert_task":
                     if role != "planner":
                         raise ValueError("upsert_task is only permitted for the planner role.")
+                    raw_mode = params.get("mode")
                     t = self.db.upsert_task(
                         task_id=params.get("id"),
                         parent_id=params.get("parent_id") or (task.id if task else None),
                         kind=params["kind"],
+                        mode=str(raw_mode) if raw_mode is not None else (task.mode if task else None),
                         repo=params["repo"],
                         title=params["title"],
                         spec=params["spec"],
@@ -1005,7 +1022,10 @@ class Reconciler:
                         ready=params.get("ready"),
                     )
                     upserted_ids.append(t.id)
-                    resp: dict[str, Any] = {"ok": True, "result": {"id": t.id, "status": t.status}}
+                    resp: dict[str, Any] = {
+                        "ok": True,
+                        "result": {"id": t.id, "status": t.status, "mode": t.mode},
+                    }
                 elif method == "record_note":
                     target_id = task.id if task else str(params.get("task_id") or "general")
                     if not re.fullmatch(r"[A-Za-z0-9_.-]+", target_id) or ".." in target_id:

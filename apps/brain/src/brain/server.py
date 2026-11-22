@@ -174,6 +174,7 @@ class BrainServer:
             "id": t.id,
             "parent_id": t.parent_id,
             "kind": t.kind,
+            "mode": t.mode,
             "repo": t.repo,
             "title": t.title,
             "spec": t.spec,
@@ -312,7 +313,13 @@ class BrainServer:
         valid = {"draft", "ready", "in_progress", "done", "blocked"}
         if raw and raw not in valid:
             return web.json_response({"error": f"status must be one of {sorted(valid)}"}, status=400)
-        tasks = self.db.list_tasks(status=raw) if raw else self.db.list_tasks()  # type: ignore[arg-type]
+        raw_mode = (request.query.get("mode") or "").strip().upper()
+        if raw_mode and raw_mode not in ("ASSIST", "AUTONOMOUS"):
+            return web.json_response({"error": "mode must be ASSIST or AUTONOMOUS"}, status=400)
+        tasks = self.db.list_tasks(
+            status=raw or None,  # type: ignore[arg-type]
+            mode=raw_mode or None,  # type: ignore[arg-type]
+        )
         return web.json_response({"tasks": [self._task_dict(t) for t in tasks]})
 
     async def handle_add_task(self, request: web.Request) -> web.Response:
@@ -325,6 +332,7 @@ class BrainServer:
             task = self.db.upsert_task(
                 task_id=(str(body.get("id")).strip() or None) if body.get("id") else None,
                 kind=kind,  # type: ignore[arg-type]
+                mode=(str(body.get("mode")).strip() or None) if body.get("mode") else None,
                 repo=str(body.get("repo") or "jarvis"),
                 title=str(body.get("title") or "").strip(),
                 spec=str(body.get("spec") or "").strip(),
@@ -628,9 +636,9 @@ class BrainServer:
             # 1. Fast zero-token commands (mode switches, morning brief, explicit task trigger)
             if _AUTONOMOUS_RE.search(user_input):
                 st = self.db.set_mode("AUTONOMOUS")
-                ready_count = len(self.db.list_tasks(status="ready"))
+                ready_count = len(self.db.list_tasks(status="ready", mode="AUTONOMOUS"))
                 rec.output = (
-                    f"Switched to autonomous mode. {ready_count} ready task"
+                    f"Switched to autonomous mode. {ready_count} ready autonomous task"
                     f"{'' if ready_count == 1 else 's'} queued, "
                     f"${st.budget_remaining_usd:.2f} budget remaining today."
                 )
@@ -639,8 +647,13 @@ class BrainServer:
                 return
 
             if _ASSIST_RE.search(user_input):
-                self.db.set_mode("ASSIST")
-                rec.output = "Switched to assist mode. Background autonomous runs are paused."
+                st = self.db.set_mode("ASSIST")
+                ready_count = len(self.db.list_tasks(status="ready", mode="ASSIST"))
+                rec.output = (
+                    f"Switched to assist mode. {ready_count} ready assist task"
+                    f"{'' if ready_count == 1 else 's'} queued, "
+                    f"${st.budget_remaining_usd:.2f} budget remaining today."
+                )
                 rec.status = "completed"
                 rec.publish({"event": "run.completed", "run_id": rec.run_id, "output": rec.output})
                 return
