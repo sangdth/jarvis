@@ -25,12 +25,19 @@ class CliTest(unittest.TestCase):
         with patch("jarvis_core.home.distribution", return_value=dist(url)):
             self.assertEqual(cli.version(), "dev (/Users/me/jarvis)")
 
-    def test_update_of_a_dev_checkout_fast_forwards_the_checkout(self) -> None:
-        with patch.object(cli, "version", return_value="dev (/x)"), patch.object(cli.subprocess, "run") as run, \
-                patch.object(cli, "upgrade_checkout") as upgrade:
-            cli.update_installed()
-        run.assert_not_called()
-        upgrade.assert_called_once_with()
+    def test_upgrade_of_a_dev_checkout_fast_forwards_with_its_flags(self) -> None:
+        with patch.object(cli.sys, "argv", ["jarvis", "upgrade", "--check"]), \
+                patch.object(cli, "version", return_value="dev (/x)"), \
+                patch.object(cli, "brain") as brain:
+            cli.main()
+        brain.assert_called_once_with(["upgrade", "--check"])
+
+    def test_upgrade_of_an_installed_jarvis_upgrades_the_tool(self) -> None:
+        with patch.object(cli.sys, "argv", ["jarvis", "upgrade"]), \
+                patch.object(cli, "version", return_value="master @ abc1234"), \
+                patch.object(cli, "update_installed") as update, patch("builtins.print"):
+            cli.main()
+        update.assert_called_once_with()
 
     def test_second_jarvis_is_stopped_by_the_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

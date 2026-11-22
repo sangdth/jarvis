@@ -61,11 +61,18 @@ def version() -> str:
     return f"dev ({checkout_root(info)})"
 
 
+def upgrade(flags: list[str]) -> None:
+    """`jarvis upgrade`: a checkout fast-forwards (Superbrain's divergence-safe upgrade, flags and all)."""
+    if version().startswith("dev"):
+        return brain(["upgrade", *flags])
+    if flags:
+        print("`jarvis upgrade` takes no flags for an installed Jarvis; updating from GitHub master.")
+    update_installed()
+
+
 def update_installed() -> None:
-    """`uv tool upgrade` for the installed Jarvis; a checkout is upgraded by Superbrain's ff-only upgrade."""
+    """`uv tool upgrade` for the installed Jarvis; the cockpit is rebuilt if it is here."""
     before = version()
-    if before.startswith("dev"):
-        return upgrade_checkout()
     uv = shutil.which("uv")
     if uv is None:
         sys.exit("`jarvis upgrade` needs uv on the PATH.")
@@ -87,13 +94,6 @@ def update_cockpit() -> None:
         capture_output=True,
     ).returncode != 0:
         print("The cockpit did not rebuild; `jarvis top` keeps working on the previous binary.")
-
-
-def upgrade_checkout() -> None:
-    """A dev checkout: fast-forward the whole monorepo (Python and Rust) to origin/master, then restart the daemon."""
-    from superbrain.upgrade import run_upgrade
-
-    sys.exit(run_upgrade())
 
 
 def folder_size(path: Path) -> str:
@@ -197,8 +197,8 @@ def main() -> None:
         args = args[1:] or ["status"]
     if args and args[0] in BRAIN_COMMANDS:
         return brain(args)
-    if args == ["upgrade"] or args == ["update"]:
-        return update_installed()
+    if args[:1] in (["upgrade"], ["update"]):
+        return upgrade(args[1:])
     if args == ["uninstall"]:
         return uninstall()
     if args == ["init"]:
