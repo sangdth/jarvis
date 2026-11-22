@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+.env
+state.db*
+worktrees/
+sessions/
+memory/
+traces/
+skills/
+ext/
+logs/
+
+# Rust dashboard (tui/)
+tui/target/
