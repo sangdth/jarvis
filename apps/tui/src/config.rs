@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub jarvis_home: PathBuf,
     pub home: PathBuf,
     pub db_path: PathBuf,
     pub sessions_dir: PathBuf,
@@ -59,11 +60,24 @@ impl Config {
             skills_dir: home.join("skills"),
             notes_dir: home.join("memory").join("progress"),
             logs_dir: jarvis_home.join("logs"),
+            jarvis_home,
             home,
             host,
             port,
             api_key,
         }
+    }
+
+    pub fn speakers_path(&self) -> PathBuf {
+        self.jarvis_home.join("speakers").join("speakers.json")
+    }
+
+    pub fn soul_path(&self) -> PathBuf {
+        self.jarvis_home.join("SOUL.md")
+    }
+
+    pub fn owner_voiceprint_path(&self) -> PathBuf {
+        self.jarvis_home.join("owner_voice.npy")
     }
 
     pub fn endpoint(&self) -> String {

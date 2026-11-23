@@ -134,6 +134,119 @@ impl Outbox {
     }
 }
 
+/// One enrolled guest voice loaded from `JARVIS_HOME/speakers/speakers.json`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DiskSpeaker {
+    pub id: String,
+    pub name: String,
+    pub clips: u64,
+    pub speech_secs: f64,
+    pub vouched: bool,
+}
+
+/// Speaker roster read off the UI thread from `SOUL.md`, `owner_voice.npy`, and `speakers/speakers.json`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DiskSpeakers {
+    pub owner_name: Option<String>,
+    pub owner_voiceprint: bool,
+    pub guests: Vec<DiskSpeaker>,
+}
+
+/// One speaker row in `6 SPEAKERS` (saved disk roster merged with live `voice.stt` / `voice.speaker` telemetry).
+#[derive(Debug, Clone, Default)]
+pub struct Speaker {
+    /// Canonical id: `"owner"`, `"voice_1"`, ..., or `"room"`.
+    pub id: String,
+    pub label: String,
+    pub is_owner: bool,
+    pub enrolled: bool,
+    pub vouched: bool,
+    pub known: bool,
+    /// Latest Bayesian name-belief confidence (`0.0..=1.0`) from `voice.speaker`.
+    pub confidence: Option<f64>,
+    /// Utterances accepted by `voice.stt` (`passed: true`) in this daemon run.
+    pub heard: u64,
+    /// Turns that reached the executive gate (`voice.speaker`).
+    pub turns: u64,
+    /// Utterances rejected by the voice check (`voice.stt` `passed: false`).
+    pub dropped: u64,
+    /// Acoustic cosine similarity vs the owner voiceprint (`voice.stt`).
+    pub last_sim: Option<f64>,
+    pub min_sim: Option<f64>,
+    pub max_sim: Option<f64>,
+    /// Saved voiceprint metadata from `speakers.json`.
+    pub clips: u64,
+    pub speech_secs: f64,
+    /// Daemon wall-clock unix timestamp (`ev.ts`) of the latest utterance.
+    pub last_ts: Option<f64>,
+}
+
+impl Speaker {
+    pub fn record_sim(&mut self, sim: f64) {
+        self.last_sim = Some(sim);
+        self.min_sim = Some(self.min_sim.map_or(sim, |m| m.min(sim)));
+        self.max_sim = Some(self.max_sim.map_or(sim, |m| m.max(sim)));
+    }
+
+    pub fn is_ephemeral(&self) -> bool {
+        !self.is_owner && !self.enrolled && self.id != "room"
+    }
+
+    pub fn display_name(&self) -> &str {
+        if !self.label.is_empty() {
+            &self.label
+        } else if self.is_owner {
+            "Owner"
+        } else if self.id == "room" {
+            "Room"
+        } else {
+            &self.id
+        }
+    }
+
+    pub fn status_label(&self, learning_owner: bool) -> String {
+        if self.is_owner {
+            if learning_owner {
+                "learning".to_string()
+            } else {
+                "owner".to_string()
+            }
+        } else if self.id == "room" {
+            "room".to_string()
+        } else if self.enrolled {
+            if self.vouched {
+                "vouched".to_string()
+            } else {
+                "enrolled".to_string()
+            }
+        } else if self.known {
+            "known".to_string()
+        } else if let Some(conf) = self.confidence {
+            if conf >= 0.50 {
+                format!("{:.0}%?", conf * 100.0)
+            } else {
+                "guest".to_string()
+            }
+        } else {
+            "guest".to_string()
+        }
+    }
+
+    pub fn profile_label(&self) -> String {
+        if self.is_owner {
+            if self.enrolled {
+                "voiceprint".to_string()
+            } else {
+                "unclaimed".to_string()
+            }
+        } else if self.enrolled && self.clips > 0 {
+            format!("{}c·{:.1}s", self.clips, self.speech_secs)
+        } else {
+            self.id.clone()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Counts {
     pub tasks: i64,
@@ -152,6 +265,7 @@ pub struct Snapshot {
     pub attempts: Vec<Attempt>,
     pub skills: Vec<Skill>,
     pub outbox: Vec<Outbox>,
+    pub speakers: DiskSpeakers,
     pub counts: Counts,
     pub db_bytes: u64,
     pub wal_bytes: u64,

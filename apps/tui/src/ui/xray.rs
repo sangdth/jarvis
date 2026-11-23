@@ -346,6 +346,7 @@ mod tests {
     fn event_lines_keeps_newest_rows_and_skips_active_turn_duplicates() {
         let (tx, _rx) = mpsc::channel();
         let cfg = Config {
+            jarvis_home: PathBuf::from("/tmp"),
             home: PathBuf::from("/tmp"),
             db_path: PathBuf::from("/tmp/state.db"),
             sessions_dir: PathBuf::from("/tmp/sessions"),

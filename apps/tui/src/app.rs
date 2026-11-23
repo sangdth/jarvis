@@ -13,8 +13,12 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::config::Config;
 use crate::http;
 use crate::model::{
-    Outbox, PendingPair, Snapshot, StageTone, Task, TelemetryEvent, Trace, TraceStage, Turn,
+    DiskSpeakers, Outbox, PendingPair, Snapshot, Speaker, StageTone, Task, TelemetryEvent, Trace,
+    TraceStage, Turn,
 };
+
+/// Mirrors `MAX_EPHEMERAL` in `apps/voice/src/jarvis_voice/speaker.py` so background chatter never leaks RAM.
+const MAX_EPHEMERAL_SPEAKERS: usize = 8;
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -39,6 +43,7 @@ pub enum Pane {
     Tasks,
     Ledger,
     Xray,
+    Speakers,
 }
 
 impl Pane {
@@ -49,13 +54,15 @@ impl Pane {
             Pane::Tasks => "3 TASKS",
             Pane::Ledger => "4 LEDGER",
             Pane::Xray => "5 X-RAY",
+            Pane::Speakers => "6 SPEAKERS",
         }
     }
 
     pub fn next(self) -> Self {
         match self {
             Pane::Topology => Pane::Prompts,
-            Pane::Prompts => Pane::Tasks,
+            Pane::Prompts => Pane::Speakers,
+            Pane::Speakers => Pane::Tasks,
             Pane::Tasks => Pane::Ledger,
             Pane::Ledger => Pane::Xray,
             Pane::Xray => Pane::Topology,
@@ -69,6 +76,7 @@ impl Pane {
             '3' => Some(Pane::Tasks),
             '4' => Some(Pane::Ledger),
             '5' => Some(Pane::Xray),
+            '6' => Some(Pane::Speakers),
             _ => None,
         }
     }
@@ -201,6 +209,7 @@ pub enum Modal {
     Attempt(i64),
     Skill(String),
     Task(String),
+    Speaker(String),
 }
 
 pub struct App {
@@ -245,6 +254,11 @@ pub struct App {
     pub speaker_known: bool,
     pub speaker_confidence: f64,
     pub speaker_updated: Option<Instant>,
+    /// Recognized and heard speakers (saved roster merged with live `voice.stt` / `voice.speaker`).
+    pub speakers: Vec<Speaker>,
+    pub sel_speakers: usize,
+    max_speaker_seq: u64,
+    last_ear_ts: f64,
 
     pub session_path: Option<PathBuf>,
     pub turns: Vec<Turn>,
@@ -312,6 +326,10 @@ impl App {
             speaker_known: false,
             speaker_confidence: 0.0,
             speaker_updated: None,
+            speakers: Vec::new(),
+            sel_speakers: 0,
+            max_speaker_seq: 0,
+            last_ear_ts: 0.0,
             session_path: None,
             turns: Vec::new(),
             follow: true,
@@ -473,9 +491,11 @@ impl App {
         self.dirty = true;
         match event {
             AppEvent::Snapshot(snapshot) => {
+                let disk_speakers = snapshot.speakers.clone();
                 self.snapshot = *snapshot;
                 self.snapshot_age = Some(Instant::now());
                 self.snapshot_error = None;
+                self.sync_disk_speakers(&disk_speakers);
             }
             AppEvent::SnapshotError(err) => {
                 self.snapshot_error = Some(err);
@@ -598,7 +618,12 @@ impl App {
             }
             "heartbeat" => {
                 self.daemon_connected = true;
-                self.daemon_pid = ev.i64("pid");
+                let pid = ev.i64("pid");
+                if pid.is_some() && self.daemon_pid.is_some() && pid != self.daemon_pid {
+                    // Daemon restarted: sequence numbers start at 1 again.
+                    self.max_speaker_seq = 0;
+                }
+                self.daemon_pid = pid;
                 self.daemon_uptime = ev.f64("uptime_s").unwrap_or(0.0);
                 return; // keepalive only: keep 5s beats from pushing turns out of the log pane
             }
@@ -638,6 +663,12 @@ impl App {
             }
             // ------------------------------------------------------------ the voice's turn, stage by stage
             "voice.ear" => {
+                if ev.seq > 0 && ev.seq < self.max_speaker_seq && ev.ts > self.last_ear_ts + 0.5 {
+                    self.max_speaker_seq = 0;
+                }
+                if ev.ts > self.last_ear_ts {
+                    self.last_ear_ts = ev.ts;
+                }
                 let local = ev.bool("local_audio").unwrap_or(true);
                 let relay = ev.bool("relay").unwrap_or(false);
                 self.ear = match (local, relay) {
@@ -646,8 +677,10 @@ impl App {
                     (false, true) => "paired only".to_string(),
                     (false, false) => "none".to_string(),
                 };
-                self.check_mode = if ev.bool("master_check").unwrap_or(false) {
-                    if ev.bool("owner_enrolled").unwrap_or(true) {
+                let master_check = ev.bool("master_check").unwrap_or(false);
+                let owner_enrolled = ev.bool("owner_enrolled").unwrap_or(true);
+                self.check_mode = if master_check {
+                    if owner_enrolled {
                         "master check".to_string()
                     } else {
                         "learning owner".to_string()
@@ -655,10 +688,17 @@ impl App {
                 } else {
                     "any voice".to_string()
                 };
+                if master_check {
+                    self.ensure_owner_row();
+                    if let Some(idx) = self.speaker_index_by_id("owner") {
+                        self.speakers[idx].enrolled = owner_enrolled || self.snapshot.speakers.owner_voiceprint;
+                    }
+                }
                 self.pulse("local");
             }
             "voice.stt" => {
                 self.pulse("stt");
+                self.record_stt_speaker(&ev);
                 let passed = ev.bool("passed").unwrap_or(true);
                 let ms = ev.i64("ms").unwrap_or(0);
                 let detail = match ev.f64("score") {
@@ -694,6 +734,7 @@ impl App {
                 self.speaker_known = ev.bool("known").unwrap_or(false);
                 self.speaker_confidence = ev.f64("confidence").unwrap_or(0.0);
                 self.speaker_updated = Some(Instant::now());
+                self.record_voice_speaker(&ev);
             }
             "voice.fastcmd" => {
                 self.pulse("intent");
@@ -852,7 +893,299 @@ impl App {
         trace.stages.push(TraceStage::new(kind, tone, ts, text, detail));
     }
 
+    // ---------------------------------------------------------------- speakers
+
+    fn is_speaker_replay(&mut self, seq: u64) -> bool {
+        if seq == 0 {
+            return false;
+        }
+        if seq <= self.max_speaker_seq {
+            return true;
+        }
+        self.max_speaker_seq = seq;
+        false
+    }
+
+    fn ensure_owner_row(&mut self) {
+        if self.speakers.iter().any(|s| s.id == "owner") {
+            return;
+        }
+        self.speakers.push(Speaker {
+            id: "owner".to_string(),
+            label: "Owner".to_string(),
+            is_owner: true,
+            known: true,
+            ..Speaker::default()
+        });
+        self.normalize_speakers();
+    }
+
+    fn speaker_index_by_id(&self, id: &str) -> Option<usize> {
+        self.speakers.iter().position(|s| s.id == id)
+    }
+
+    fn speaker_index_by_label(&self, label: &str) -> Option<usize> {
+        if is_generic_speaker_label(label) {
+            return None;
+        }
+        let low = label.to_ascii_lowercase();
+        self.speakers
+            .iter()
+            .position(|s| !s.is_owner && s.label.to_ascii_lowercase() == low)
+    }
+
+    fn speaker_mut_or_insert(&mut self, id: &str) -> &mut Speaker {
+        let idx = match self.speaker_index_by_id(id) {
+            Some(idx) => idx,
+            None => {
+                let is_owner = id == "owner";
+                let label = if is_owner {
+                    "Owner".to_string()
+                } else if id == "room" {
+                    "Room".to_string()
+                } else if let Some(n) = speaker_number_from_id(id) {
+                    format!("Speaker {n}")
+                } else {
+                    id.to_string()
+                };
+                self.speakers.push(Speaker {
+                    id: id.to_string(),
+                    label,
+                    is_owner,
+                    known: is_owner,
+                    ..Speaker::default()
+                });
+                self.speakers.len() - 1
+            }
+        };
+        &mut self.speakers[idx]
+    }
+
+    fn merge_speaker_id(&mut self, from_id: &str, into_id: &str) {
+        if from_id.is_empty() || from_id == into_id {
+            return;
+        }
+        let Some(from_idx) = self.speaker_index_by_id(from_id) else {
+            return;
+        };
+        let src = self.speakers.remove(from_idx);
+        let target = self.speaker_mut_or_insert(into_id);
+        fold_speaker_into(target, src);
+    }
+
+    /// Merges the disk roster (`SOUL.md`, `owner_voice.npy`, `speakers.json`) without dropping live counters.
+    pub fn sync_disk_speakers(&mut self, disk: &DiskSpeakers) {
+        if disk.owner_voiceprint || disk.owner_name.is_some() || self.speaker_index_by_id("owner").is_some() {
+            let check_enrolled = self.check_mode == "master check";
+            let owner = self.speaker_mut_or_insert("owner");
+            owner.is_owner = true;
+            owner.known = true;
+            owner.enrolled = disk.owner_voiceprint || check_enrolled;
+            if let Some(name) = &disk.owner_name {
+                if owner.label.is_empty() || owner.label == "Owner" {
+                    owner.label = name.clone();
+                }
+            }
+        }
+
+        let mut disk_ids: Vec<&str> = Vec::with_capacity(disk.guests.len());
+        for guest in &disk.guests {
+            disk_ids.push(guest.id.as_str());
+            if self.speaker_index_by_id(&guest.id).is_none() {
+                if let Some(by_name) = self.speaker_index_by_label(&guest.name) {
+                    self.speakers[by_name].id = guest.id.clone();
+                }
+            } else if let Some(dup) = self
+                .speakers
+                .iter()
+                .position(|s| !s.is_owner && s.id != guest.id && s.label.eq_ignore_ascii_case(&guest.name))
+            {
+                let src = self.speakers.remove(dup);
+                let target = self.speaker_mut_or_insert(&guest.id);
+                fold_speaker_into(target, src);
+            }
+            let row = self.speaker_mut_or_insert(&guest.id);
+            row.label = guest.name.clone();
+            row.enrolled = true;
+            row.known = true;
+            row.vouched = guest.vouched;
+            row.clips = guest.clips;
+            row.speech_secs = guest.speech_secs;
+        }
+
+        // A guest deleted from speakers.json drops its enrolled flag; quiet deleted rows disappear.
+        self.speakers.retain_mut(|row| {
+            if !row.is_owner && row.enrolled && !disk_ids.contains(&row.id.as_str()) {
+                row.enrolled = false;
+                row.vouched = false;
+                row.clips = 0;
+                row.speech_secs = 0.0;
+                return row.heard > 0 || row.turns > 0 || row.dropped > 0;
+            }
+            true
+        });
+
+        self.normalize_speakers();
+    }
+
+    fn record_stt_speaker(&mut self, ev: &TelemetryEvent) {
+        if self.is_speaker_replay(ev.seq) {
+            return;
+        }
+        let raw_profile = ev.text("profile_id");
+        let role = ev.text("role");
+        let id = if !raw_profile.is_empty() {
+            normalize_profile_id(&raw_profile)
+        } else if matches!(role.as_str(), "" | "owner" | "u") {
+            "owner".to_string()
+        } else if matches!(role.as_str(), "room" | "guest") {
+            "room".to_string()
+        } else if role.starts_with("voice_") {
+            role.clone()
+        } else if let Some(idx) = self.speaker_index_by_label(&role) {
+            self.speakers[idx].id.clone()
+        } else {
+            role.clone()
+        };
+
+        let passed = ev.bool("passed").unwrap_or(true);
+        let score = ev.f64("score");
+        let ts = ev.ts;
+        let row = self.speaker_mut_or_insert(&id);
+        if passed {
+            row.heard += 1;
+        } else {
+            row.dropped += 1;
+        }
+        if let Some(sim) = score {
+            row.record_sim(sim);
+        }
+        if ts > 0.0 {
+            row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
+        }
+        if !row.is_owner && !is_generic_role(&role) {
+            row.label = role;
+            row.known = true;
+        }
+        self.normalize_speakers();
+    }
+
+    fn record_voice_speaker(&mut self, ev: &TelemetryEvent) {
+        if self.is_speaker_replay(ev.seq) {
+            return;
+        }
+        let label = ev.text("label");
+        let raw_profile = ev.text("profile_id");
+        let raw_voice = ev.text("voice_id");
+        let known = ev.bool("known").unwrap_or(false);
+        let confidence = ev.f64("confidence");
+        let ts = ev.ts;
+
+        let id = if !raw_profile.is_empty() {
+            let canonical = normalize_profile_id(&raw_profile);
+            if raw_voice.starts_with("voice_") && raw_voice != canonical {
+                self.merge_speaker_id(&raw_voice, &canonical);
+            }
+            canonical
+        } else if matches!(raw_voice.as_str(), "owner" | "u") {
+            "owner".to_string()
+        } else if raw_voice == "room" {
+            "room".to_string()
+        } else if !raw_voice.is_empty() {
+            if self.speaker_index_by_id(&raw_voice).is_some() {
+                raw_voice
+            } else if let Some(idx) = self.speaker_index_by_label(&raw_voice) {
+                self.speakers[idx].id.clone()
+            } else {
+                raw_voice
+            }
+        } else if label.eq_ignore_ascii_case("owner") {
+            "owner".to_string()
+        } else if label.eq_ignore_ascii_case("room") {
+            "room".to_string()
+        } else if let Some(idx) = self.speaker_index_by_label(&label) {
+            self.speakers[idx].id.clone()
+        } else if !label.is_empty() {
+            label.to_ascii_lowercase()
+        } else {
+            "room".to_string()
+        };
+
+        // If this voice now holds a real name that matches another non-owner row, fold them together.
+        if id != "owner" && id != "room" && !is_generic_speaker_label(&label) {
+            if let Some(existing_idx) = self
+                .speakers
+                .iter()
+                .position(|s| !s.is_owner && s.id != id && s.label.eq_ignore_ascii_case(&label))
+            {
+                let existing_id = self.speakers[existing_idx].id.clone();
+                if self.speakers[existing_idx].enrolled {
+                    self.merge_speaker_id(&id, &existing_id);
+                    let row = self.speaker_mut_or_insert(&existing_id);
+                    row.turns += 1;
+                    row.known = row.known || known;
+                    if let Some(conf) = confidence {
+                        row.confidence = Some(conf);
+                    }
+                    if ts > 0.0 {
+                        row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
+                    }
+                    self.normalize_speakers();
+                    return;
+                }
+            }
+        }
+
+        let row = self.speaker_mut_or_insert(&id);
+        row.turns += 1;
+        if !label.is_empty() && (!row.is_owner || label != "Owner" || row.label.is_empty()) {
+            row.label = label;
+        }
+        row.known = row.is_owner || row.enrolled || known;
+        if let Some(conf) = confidence {
+            row.confidence = Some(conf);
+        }
+        if ts > 0.0 {
+            row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
+        }
+        self.normalize_speakers();
+    }
+
+    fn normalize_speakers(&mut self) {
+        while self.speakers.iter().filter(|s| s.is_ephemeral()).count() > MAX_EPHEMERAL_SPEAKERS {
+            let oldest = self
+                .speakers
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.is_ephemeral())
+                .min_by(|(_, a), (_, b)| {
+                    a.last_ts
+                        .unwrap_or(0.0)
+                        .total_cmp(&b.last_ts.unwrap_or(0.0))
+                        .then_with(|| a.id.cmp(&b.id))
+                })
+                .map(|(idx, _)| idx);
+            if let Some(idx) = oldest {
+                self.speakers.remove(idx);
+            } else {
+                break;
+            }
+        }
+        self.speakers.sort_by(compare_speakers);
+        self.sel_speakers = self
+            .sel_speakers
+            .min(self.speakers.len().saturating_sub(1));
+    }
+
     // ---------------------------------------------------------------- selections
+
+    pub fn selected_speaker(&self) -> Option<&Speaker> {
+        self.speakers.get(self.sel_speakers)
+    }
+
+    pub fn speaker_by_id(&self, id: &str) -> Option<&Speaker> {
+        self.speakers.iter().find(|s| s.id == id)
+    }
 
     pub fn flat_task_rows(&self) -> Vec<(usize, usize)> {
         flat_tasks(&self.snapshot)
@@ -912,7 +1245,7 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.modal = Some(Modal::Help),
             KeyCode::Tab | KeyCode::BackTab => self.focus = self.focus.next(),
-            KeyCode::Char(digit @ '1'..='5') => {
+            KeyCode::Char(digit @ '1'..='6') => {
                 if let Some(pane) = Pane::from_digit(digit) {
                     self.focus = pane;
                 }
@@ -989,6 +1322,9 @@ impl App {
                 let len = self.flat_task_rows().len();
                 self.sel_tasks = step(self.sel_tasks, delta, len);
             }
+            Pane::Speakers => {
+                self.sel_speakers = step(self.sel_speakers, delta, self.speakers.len());
+            }
             Pane::Prompts => {
                 self.sel_prompts = step(self.sel_prompts, delta, self.turns.len());
                 self.follow = false;
@@ -1019,6 +1355,7 @@ impl App {
                 self.follow = false;
             }
             Pane::Tasks => self.sel_tasks = pick(self.flat_task_rows().len()),
+            Pane::Speakers => self.sel_speakers = pick(self.speakers.len()),
             Pane::Prompts => {
                 self.sel_prompts = pick(self.turns.len());
                 self.follow = false;
@@ -1057,6 +1394,12 @@ impl App {
                 if let Some(task) = self.selected_task() {
                     let id = task.id.clone();
                     self.modal = Some(Modal::Task(id));
+                }
+            }
+            Pane::Speakers => {
+                if let Some(speaker) = self.selected_speaker() {
+                    let id = speaker.id.clone();
+                    self.modal = Some(Modal::Speaker(id));
                 }
             }
             Pane::Ledger => match self.ledger_tab {
@@ -1176,6 +1519,19 @@ impl App {
                 .selected_task()
                 .map(|t| format!("{} — {}\n{}", t.id, t.title, t.spec))
                 .unwrap_or_default(),
+            Pane::Speakers => self
+                .selected_speaker()
+                .map(|s| {
+                    format!(
+                        "{} ({}) · heard {} · turns {} · drop {}",
+                        s.display_name(),
+                        s.id,
+                        s.heard,
+                        s.turns,
+                        s.dropped
+                    )
+                })
+                .unwrap_or_default(),
             Pane::Topology => crate::ui::topology::node_text(self.sel_topology),
             Pane::Ledger => match self.ledger_tab {
                 LedgerTab::Attempts => self
@@ -1245,6 +1601,76 @@ impl App {
         self.logs_cache = Some((mtime, text.clone()));
         text
     }
+}
+
+fn normalize_profile_id(raw: &str) -> String {
+    match raw.trim() {
+        "" | "u" | "owner" => "owner".to_string(),
+        "room" => "room".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_generic_role(role: &str) -> bool {
+    matches!(role, "" | "owner" | "u" | "guest" | "room") || role.starts_with("voice_")
+}
+
+fn is_generic_speaker_label(label: &str) -> bool {
+    let trimmed = label.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("owner")
+        || trimmed.eq_ignore_ascii_case("room")
+        || trimmed.eq_ignore_ascii_case("guest")
+        || trimmed
+            .strip_prefix("Speaker ")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn speaker_number_from_id(id: &str) -> Option<u64> {
+    id.strip_prefix("voice_")?.parse::<u64>().ok()
+}
+
+fn fold_speaker_into(target: &mut Speaker, src: Speaker) {
+    target.heard += src.heard;
+    target.turns += src.turns;
+    target.dropped += src.dropped;
+    if let Some(s) = src.min_sim {
+        target.min_sim = Some(target.min_sim.map_or(s, |m| m.min(s)));
+    }
+    if let Some(s) = src.max_sim {
+        target.max_sim = Some(target.max_sim.map_or(s, |m| m.max(s)));
+    }
+    if src.last_sim.is_some() && (target.last_sim.is_none() || src.last_ts > target.last_ts) {
+        target.last_sim = src.last_sim;
+    }
+    target.last_ts = match (target.last_ts, src.last_ts) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+}
+
+fn compare_speakers(a: &Speaker, b: &Speaker) -> std::cmp::Ordering {
+    fn rank(s: &Speaker) -> u8 {
+        if s.is_owner {
+            0
+        } else if s.enrolled {
+            1
+        } else if s.id == "room" {
+            3
+        } else {
+            2
+        }
+    }
+    rank(a)
+        .cmp(&rank(b))
+        .then_with(|| match (speaker_number_from_id(&a.id), speaker_number_from_id(&b.id)) {
+            (Some(na), Some(nb)) if !a.enrolled && !b.enrolled => na.cmp(&nb),
+            _ => a
+                .display_name()
+                .to_ascii_lowercase()
+                .cmp(&b.display_name().to_ascii_lowercase())
+                .then_with(|| a.id.cmp(&b.id)),
+        })
 }
 
 fn step(current: usize, delta: isize, len: usize) -> usize {
@@ -1319,6 +1745,7 @@ mod tests {
 
     fn test_app() -> App {
         let cfg = Config {
+            jarvis_home: PathBuf::from("/tmp"),
             home: PathBuf::from("/tmp"),
             db_path: PathBuf::from("/tmp/state.db"),
             sessions_dir: PathBuf::from("/tmp/sessions"),
@@ -1517,5 +1944,145 @@ mod tests {
         assert_eq!(step(4, 1, 5), 4);
         assert_eq!(step(0, 1, 5), 1);
         assert_eq!(step(0, 1, 0), 0);
+    }
+
+    #[test]
+    fn owner_variants_collapse_into_one_row() {
+        let mut app = test_app();
+        app.apply(AppEvent::Snapshot(Box::new(Snapshot {
+            speakers: DiskSpeakers {
+                owner_name: Some("Sang".to_string()),
+                owner_voiceprint: true,
+                guests: Vec::new(),
+            },
+            ..Default::default()
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 2, "ts": 100.0, "event": "voice.stt", "turn_id": "t1",
+            "text": "hi", "passed": true, "score": 0.81, "role": "owner", "profile_id": "owner"
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 3, "ts": 101.0, "event": "voice.speaker", "turn_id": "t1",
+            "label": "Sang", "known": true, "confidence": 1.0, "voice_id": "u", "profile_id": "owner"
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 4, "ts": 102.0, "event": "voice.speaker", "turn_id": "t2",
+            "label": "Owner", "known": true, "confidence": 1.0, "voice_id": ""
+        })));
+        assert_eq!(app.speakers.len(), 1);
+        let owner = &app.speakers[0];
+        assert_eq!(owner.id, "owner");
+        assert_eq!(owner.label, "Sang", "generic 'Owner' label never overwrites SOUL.md name");
+        assert_eq!(owner.heard, 1);
+        assert_eq!(owner.turns, 2);
+        assert_eq!(owner.last_sim, Some(0.81));
+    }
+
+    #[test]
+    fn disk_roster_and_graduated_guest_merge_without_duplicates() {
+        use crate::model::DiskSpeaker;
+
+        let mut app = test_app();
+        app.apply(AppEvent::Snapshot(Box::new(Snapshot {
+            speakers: DiskSpeakers {
+                owner_name: Some("Sang".to_string()),
+                owner_voiceprint: true,
+                guests: vec![DiskSpeaker {
+                    id: "voice_1".to_string(),
+                    name: "David".to_string(),
+                    clips: 5,
+                    speech_secs: 14.2,
+                    vouched: true,
+                }],
+            },
+            ..Default::default()
+        })));
+        // Enrolled David speaks: role is "David", canonical profile_id is "voice_1".
+        app.apply(voice_event(serde_json::json!({
+            "seq": 2, "ts": 10.0, "event": "voice.stt", "turn_id": "t1",
+            "text": "hello", "passed": true, "score": 0.19, "role": "David", "profile_id": "voice_1"
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 3, "ts": 11.0, "event": "voice.speaker", "turn_id": "t1",
+            "label": "David", "known": true, "confidence": 1.0, "voice_id": "David", "profile_id": "voice_1"
+        })));
+        // Ephemeral voice_3 speaks once (dropped), once (heard), then graduates and merges into voice_1 ("David").
+        app.apply(voice_event(serde_json::json!({
+            "seq": 4, "ts": 12.0, "event": "voice.stt", "turn_id": "t2",
+            "text": "hey", "passed": false, "score": 0.15, "role": "guest", "profile_id": "voice_3"
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 5, "ts": 13.0, "event": "voice.stt", "turn_id": "t3",
+            "text": "I'm David", "passed": true, "score": 0.22, "role": "voice_3", "profile_id": "voice_3"
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 6, "ts": 14.0, "event": "voice.speaker", "turn_id": "t3",
+            "label": "David", "known": true, "confidence": 0.96, "voice_id": "voice_3", "profile_id": "voice_1"
+        })));
+
+        assert_eq!(app.speakers.len(), 2, "only owner + merged David remain");
+        let david = app.speaker_by_id("voice_1").expect("David row");
+        assert_eq!(david.label, "David");
+        assert_eq!(david.heard, 2);
+        assert_eq!(david.dropped, 1);
+        assert_eq!(david.turns, 2);
+        assert_eq!(david.min_sim, Some(0.15));
+        assert_eq!(david.max_sim, Some(0.22));
+        assert!(app.speaker_by_id("voice_3").is_none());
+    }
+
+    #[test]
+    fn replayed_events_do_not_double_count_and_restart_resets_seq() {
+        let mut app = test_app();
+        app.apply(voice_event(serde_json::json!({
+            "seq": 1, "ts": 1000.0, "event": "voice.ear", "master_check": true, "owner_enrolled": true
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "event": "heartbeat", "pid": 100, "uptime_s": 5.0
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 10, "ts": 1005.0, "event": "voice.stt", "turn_id": "t1",
+            "text": "hi", "passed": true, "score": 0.80, "profile_id": "owner"
+        })));
+        // SSE reconnect to the SAME daemon replays sticky voice.ear (same ts) + seq 10.
+        app.apply(voice_event(serde_json::json!({
+            "seq": 1, "ts": 1000.0, "event": "voice.ear", "master_check": true, "owner_enrolled": true
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 10, "ts": 1005.0, "event": "voice.stt", "turn_id": "t1",
+            "text": "hi", "passed": true, "score": 0.80, "profile_id": "owner"
+        })));
+        assert_eq!(app.speaker_by_id("owner").unwrap().heard, 1);
+
+        // Daemon restarts with a new PID and fresh seq=2.
+        app.apply(voice_event(serde_json::json!({
+            "event": "heartbeat", "pid": 200, "uptime_s": 1.0
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 2, "ts": 1060.0, "event": "voice.stt", "turn_id": "t1",
+            "text": "back", "passed": true, "score": 0.82, "profile_id": "owner"
+        })));
+        assert_eq!(app.speaker_by_id("owner").unwrap().heard, 2);
+    }
+
+    #[test]
+    fn ephemeral_speakers_cap_at_eight_evicting_oldest() {
+        let mut app = test_app();
+        app.apply(voice_event(serde_json::json!({
+            "seq": 1, "ts": 1.0, "event": "voice.stt", "turn_id": "t0",
+            "text": "hi", "passed": true, "score": 0.85, "profile_id": "owner"
+        })));
+        for i in 1..=10u64 {
+            app.apply(voice_event(serde_json::json!({
+                "seq": i + 1, "ts": (i + 1) as f64, "event": "voice.stt", "turn_id": format!("t{i}"),
+                "text": "tv", "passed": false, "score": 0.12, "role": "guest",
+                "profile_id": format!("voice_{i}")
+            })));
+        }
+        assert_eq!(app.speakers.len(), 1 + MAX_EPHEMERAL_SPEAKERS);
+        assert!(app.speaker_by_id("owner").is_some());
+        assert!(app.speaker_by_id("voice_1").is_none());
+        assert!(app.speaker_by_id("voice_2").is_none());
+        assert!(app.speaker_by_id("voice_10").is_some());
     }
 }
