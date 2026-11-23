@@ -146,6 +146,7 @@ class BrainServer:
         self._pair_failures: deque[float] = deque(maxlen=PAIR_MAX_FAILURES * 2)
         self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
         self._started_at = started_at if started_at is not None else time.time()
+        self._version = git_version()  # pinned at boot so `/v1/status` reports what is running, not a newer pull
         memory.ensure_layout(self.cfg.home_dir)
         self.db.subscribe_outbox(self._on_outbox)
         self.app = web.Application(middlewares=[self._auth_middleware])
@@ -524,7 +525,7 @@ class BrainServer:
         outbox = self.db.list_outbox()
         return {
             "ok": True,
-            "version": git_version(),
+            "version": self._version,
             "repo": str(REPO_ROOT),
             "home": str(JARVIS_HOME),
             "pid": os.getpid(),
@@ -550,7 +551,7 @@ class BrainServer:
             {
                 "ok": True,
                 "service": "jarvis",
-                "version": git_version(),
+                "version": self._version,
                 "pid": os.getpid(),
                 "uptime_s": round(time.time() - self._started_at, 1),
             }

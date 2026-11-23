@@ -184,6 +184,27 @@ class ServiceTest(unittest.TestCase):
             self.assertEqual(cli.run_cockpit([]), 0)
         call.assert_not_called()
 
+    def test_stale_cockpit_binary_is_rebuilt_on_top(self) -> None:
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cargo_toml = root / "Cargo.toml"
+            cargo_toml.write_text("[workspace]\n")
+            src = root / "apps" / "tui" / "src"
+            src.mkdir(parents=True)
+            rs = src / "main.rs"
+            rs.write_text("fn main() {}\n")
+            binary = root / "target" / "release" / "jarvis-top"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"old")
+            os.utime(cargo_toml, (100.0, 100.0))
+            os.utime(binary, (100.0, 100.0))
+            os.utime(rs, (200.0, 200.0))
+            self.assertTrue(cli.cockpit_stale(binary, root))
+            os.utime(binary, (300.0, 300.0))
+            self.assertFalse(cli.cockpit_stale(binary, root))
+
     def test_restart_keeps_the_mode_already_installed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             plist = Path(tmp) / "p.plist"

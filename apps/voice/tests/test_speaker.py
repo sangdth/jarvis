@@ -46,6 +46,7 @@ class TestSpeaker(unittest.TestCase):
 
     def test_suggested_threshold_sits_under_the_lowest_score(self) -> None:
         self.assertEqual(suggest_threshold([0.52, 0.41, 0.47]), 0.36)
+        self.assertEqual(suggest_threshold([0.68, 0.65, 0.71]), 0.40)
 
     def test_extract_speaker_name_recognizes_self_introductions_and_ignores_adjectives(self) -> None:
         self.assertEqual(extract_speaker_name("Hi Jarvis, I'm David."), "David")

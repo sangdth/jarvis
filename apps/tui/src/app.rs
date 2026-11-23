@@ -547,6 +547,7 @@ impl App {
                 self.daemon_connected = true;
                 self.daemon_pid = ev.i64("pid");
                 self.daemon_uptime = ev.f64("uptime_s").unwrap_or(0.0);
+                return; // keepalive only: keep 5s beats from pushing turns out of the log pane
             }
             "pair.requested" => {
                 let code = ev.text("code");
@@ -1368,6 +1369,17 @@ mod tests {
         let thinking: Vec<_> = trace.stages.iter().filter(|s| s.kind == "THINK").collect();
         assert_eq!(thinking.len(), 1, "one reasoning stage per turn, not one per token");
         assert_eq!(thinking[0].text, "Looking at the project list, then delegating.");
+    }
+
+    #[test]
+    fn heartbeats_update_liveness_without_flooding_the_log() {
+        let mut app = test_app();
+        app.apply(voice_event(serde_json::json!({
+            "event": "heartbeat", "pid": 99, "uptime_s": 42.5
+        })));
+        assert!(app.daemon_connected);
+        assert_eq!(app.daemon_pid, Some(99));
+        assert!(app.events.is_empty());
     }
 
     fn task(id: &str, parent: Option<&str>) -> Task {

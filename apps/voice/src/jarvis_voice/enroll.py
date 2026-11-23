@@ -18,13 +18,14 @@ from jarvis_voice.speaker import SAMPLE_RATE, SpeakerEmbedder, cosine, save_voic
 
 # Room for a slow start; the silence around the sentence is trimmed before it is scored.
 SECONDS_PER_CLIP = 5
-# The suggested SPEAKER_THRESHOLD sits this far below your lowest check score.
+# The suggested SPEAKER_THRESHOLD sits this far below your lowest check score, capped so short 1-2 s commands pass.
 THRESHOLD_MARGIN = 0.05
+MAX_SUGGESTED_THRESHOLD = 0.40
 
 
 def suggest_threshold(scores: list[float]) -> float:
     """A threshold just under the lowest score of your own unseen sentences."""
-    return round(min(scores) - THRESHOLD_MARGIN, 2)
+    return min(round(min(scores) - THRESHOLD_MARGIN, 2), MAX_SUGGESTED_THRESHOLD)
 
 
 def main() -> None:

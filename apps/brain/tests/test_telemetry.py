@@ -58,6 +58,22 @@ def test_hub_ring_buffer_and_fanout() -> None:
     assert queue.empty()
 
 
+def test_sticky_state_events_and_heartbeats_preserve_cockpit_header() -> None:
+    from brain.telemetry import EVENT_VOICE_EAR, EVENT_VOICE_MODE
+
+    hub = TelemetryHub(max_events=3)
+    hub.emit(EVENT_VOICE_EAR, local_audio=True, relay=False, master_check=True)
+    hub.emit(EVENT_VOICE_MODE, mode="VOICE")
+    for i in range(5):
+        hub.emit(EVENT_BOARD_RPC, method=f"m{i}")
+    sub = hub.subscribe()
+    for _ in range(5):
+        hub.heartbeat(pid=123)
+    assert sub.get_nowait()["event"] == "heartbeat"
+    kinds = [e["event"] for e in hub.snapshot(3)]
+    assert kinds == [EVENT_VOICE_EAR, EVENT_VOICE_MODE, EVENT_BOARD_RPC, EVENT_BOARD_RPC, EVENT_BOARD_RPC]
+
+
 async def test_telemetry_snapshot_endpoint_reports_inbound_events(tmp_path: Path) -> None:
     hub = TelemetryHub()
     brain_server, db = _make_brain(tmp_path, hub)

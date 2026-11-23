@@ -41,6 +41,20 @@ class TestVoiceTelemetry(unittest.TestCase):
         telemetry.bind(explode)
         telemetry.emit("voice.tts", text="still fine")
 
+    def test_summarize_context_handles_pipecat_tools_schema(self) -> None:
+        from pipecat.processors.aggregators.llm_context import LLMContext
+
+        from jarvis_voice.agent_tools import agent_tools
+        from jarvis_voice.llm import summarize_context
+
+        ctx = LLMContext(messages=[{"role": "user", "content": "check my tasks"}], tools=agent_tools())
+        summary = summarize_context(ctx)
+        self.assertEqual(summary["messages"], 1)
+        self.assertEqual(summary["user_tail"], "check my tasks")
+        self.assertIn("send_agent_task", summary["tools"])
+        self.assertEmpty = summarize_context(LLMContext())["tools"]
+        self.assertEqual(self.assertEmpty, "")
+
 
 if __name__ == "__main__":
     unittest.main()

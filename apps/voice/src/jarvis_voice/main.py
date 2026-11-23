@@ -214,7 +214,8 @@ async def run_pipecat_harness(
     task_ref: dict[str, PipelineTask] = {}
 
     async def on_speak(text: str) -> None:
-        telemetry.emit("voice.tts", text=text, mode=state.mode.value, spoken=True)
+        if not settings.elevenlabs_api_key:
+            telemetry.emit("voice.tts", text=text, mode=state.mode.value, spoken=True)
         if "task" in task_ref:
             # TTSSpeakFrame saves the line to the context as spoken (cut short if interrupted),
             # so the LLM knows which agent the user's next answer is about.
@@ -401,7 +402,19 @@ async def run_pipecat_harness(
         )
         processors.append(tts)
 
-    processors.extend([transport.output(), context_aggregator.assistant()])
+    assistant_agg = context_aggregator.assistant()
+
+    @assistant_agg.event_handler("on_assistant_turn_stopped")
+    async def _on_spoken(_agg: Any, message: Any) -> None:
+        if getattr(message, "content", ""):
+            telemetry.emit(
+                "voice.tts",
+                text=message.content,
+                mode=state.mode.value,
+                interrupted=bool(getattr(message, "interrupted", False)),
+            )
+
+    processors.extend([transport.output(), assistant_agg])
 
     pipeline = Pipeline(processors)
     task = PipelineTask(
@@ -456,16 +469,24 @@ async def run_pipecat_harness(
 
     # Start background coding agent watchers (Claude Code, OpenCode)
     live["local_audio"] = transport.has_local_audio
-    telemetry.emit(
-        "voice.ear",
-        local_audio=transport.has_local_audio,
-        relay=relay is not None,
-        language=settings.language,
-        whisper=settings.whisper_model,
-        master_check=settings.master_check,
-        executive_model=settings.executive_model,
-        meeting=meeting,
-    )
+
+    def emit_ear() -> None:
+        telemetry.emit(
+            "voice.ear",
+            local_audio=transport.has_local_audio,
+            relay=relay is not None and relay.hub.client is not None,
+            language=settings.language,
+            whisper=settings.whisper_model,
+            master_check=settings.master_check,
+            executive_model=settings.executive_model,
+            meeting=state.meeting,
+        )
+
+    if relay is not None:
+        relay.hub.on_attach.append(emit_ear)
+        relay.hub.on_detach.append(emit_ear)
+    emit_ear()
+    telemetry.emit("voice.mode", mode=state.mode.value, meeting=state.meeting)
     await orchestrator.start_all()
     live["state"] = "listening"
     logger.info("Jarvis is listening (no wake word required). Say 'Shut up' to mute to beep-only mode.")

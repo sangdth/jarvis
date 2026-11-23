@@ -30,7 +30,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Two-thirds events, one-third the daemon log: the log explains what an event cannot.
     let parts = Layout::vertical([Constraint::Percentage(70), Constraint::Min(3)]).split(inner);
-    frame.render_widget(Paragraph::new(event_lines(app, inner.width as usize)).style(theme::base()), parts[0]);
+    frame.render_widget(
+        Paragraph::new(event_lines(app, inner.width as usize, parts[0].height as usize)).style(theme::base()),
+        parts[0],
+    );
 
     let mut log_lines = vec![Line::from(Span::styled("DAEMON LOG · jarvis.err.log", theme::bold(theme::PURPLE)))];
     let tail = app.daemon_log();
@@ -55,7 +58,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(Text::from(log_lines)).style(theme::base()), parts[1]);
 }
 
-fn event_lines(app: &App, width: usize) -> Text<'static> {
+fn event_lines(app: &App, width: usize, height: usize) -> Text<'static> {
     let matching: Vec<&TelemetryEvent> = app.events.iter().filter(|ev| app.log_filter.matches(ev)).collect();
     if matching.is_empty() {
         return Text::from(Line::from(Span::styled(
@@ -63,9 +66,10 @@ fn event_lines(app: &App, width: usize) -> Text<'static> {
             theme::dim(),
         )));
     }
-    // Newest last, like a log; the visible window ends at the bottom.
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(matching.len());
-    for ev in matching {
+    // Newest last, like a log; slice to the visible window so new events stay in view at the bottom.
+    let window = &matching[matching.len().saturating_sub(height.max(1))..];
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(window.len());
+    for ev in window {
         let (label, style) = kind_style(&ev.event);
         let mut spans = vec![
             Span::styled(format!("{:>6} ", ev.seq), theme::faint()),
@@ -143,4 +147,40 @@ fn kind_style(event: &str) -> (String, Style) {
         _ => return (theme::clip(event, 8), theme::dim()),
     };
     (label.to_string(), style)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AppEvent;
+    use crate::config::Config;
+    use std::path::PathBuf;
+    use std::sync::{mpsc, Arc, Mutex};
+
+    #[test]
+    fn event_lines_keeps_the_newest_rows_within_height() {
+        let (tx, _rx) = mpsc::channel();
+        let cfg = Config {
+            home: PathBuf::from("/tmp"),
+            db_path: PathBuf::from("/tmp/state.db"),
+            sessions_dir: PathBuf::from("/tmp/sessions"),
+            traces_dir: PathBuf::from("/tmp/traces"),
+            skills_dir: PathBuf::from("/tmp/skills"),
+            notes_dir: PathBuf::from("/tmp/notes"),
+            logs_dir: PathBuf::from("/tmp/logs"),
+            host: "127.0.0.1".into(),
+            port: 8643,
+            api_key: "k".into(),
+        };
+        let mut app = App::new(cfg, tx, Arc::new(Mutex::new(None)));
+        for seq in 1..=10 {
+            app.apply(AppEvent::Telemetry(TelemetryEvent::from_value(serde_json::json!({
+                "seq": seq, "ts": seq as f64, "event": "voice.stt", "turn_id": format!("t{seq}"), "text": format!("msg-{seq}")
+            }))));
+        }
+        let rendered = event_lines(&app, 80, 3);
+        assert_eq!(rendered.lines.len(), 3);
+        let tail = format!("{:?}", rendered.lines.last().unwrap());
+        assert!(tail.contains("msg-10"), "{tail}");
+    }
 }

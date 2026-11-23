@@ -15,34 +15,62 @@ from pipecat.services.openrouter.llm import OpenRouterLLMService
 from jarvis_voice import telemetry
 
 
+def _tool_names(raw_tools: Any) -> list[str]:
+    items = getattr(raw_tools, "standard_tools", raw_tools)
+    if not isinstance(items, (list, tuple)):
+        return []
+    names: list[str] = []
+    for item in items:
+        name = item.get("function", {}).get("name", "") if isinstance(item, dict) else getattr(item, "name", "")
+        if name:
+            names.append(str(name))
+    return names
+
+
 def summarize_context(context: Any) -> dict[str, Any]:
     """A few facts about the prepared request: how big it was, what the user said, which tools it can call."""
     messages = [m for m in context.get_messages() if isinstance(m, dict)]
     users = [m for m in messages if m.get("role") == "user"]
-    tools = [t.get("function", {}).get("name", "") for t in (getattr(context, "tools", None) or [])]
+    tools = _tool_names(getattr(context, "tools", None))
     return {
         "messages": len(messages),
         "user_tail": telemetry.preview(users[-1].get("content") if users else "", 400),
-        "tools": ", ".join(name for name in tools if name),
+        "tools": ", ".join(tools),
     }
 
 
 async def _tee_reasoning(stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
-    """Passes every chunk through untouched, publishing the reasoning text as it arrives."""
-    async for chunk in stream:
-        choices = getattr(chunk, "choices", None) or []
-        delta = choices[0].delta if choices else None
-        reasoning = getattr(delta, "reasoning", None) if delta is not None else None
-        if reasoning:
-            telemetry.emit("voice.thinking", text=str(reasoning))
-        yield chunk
+    """Passes every chunk through untouched, publishing coalesced reasoning text."""
+    buf: list[str] = []
+    try:
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            delta = choices[0].delta if choices else None
+            reasoning = getattr(delta, "reasoning", None) if delta is not None else None
+            if reasoning:
+                buf.append(str(reasoning))
+            elif buf:
+                telemetry.emit("voice.thinking", text="".join(buf))
+                buf.clear()
+            yield chunk
+    finally:
+        if buf:
+            telemetry.emit("voice.thinking", text="".join(buf))
+        close = getattr(stream, "close", None) or getattr(stream, "aclose", None)
+        if close is not None:
+            res = close()
+            if inspect.isawaitable(res):
+                await res
 
 
 class JarvisLLM(OpenRouterLLMService):
     """OpenRouter's service, with the prepared request and the model's reasoning on the telemetry bus."""
 
     async def get_chat_completions(self, context: Any) -> AsyncIterator[Any]:  # type: ignore[override]
-        telemetry.emit("voice.request", **summarize_context(context))
+        try:
+            telemetry.emit("voice.request", **summarize_context(context))
+        except Exception:  # noqa: BLE001 - telemetry must never block an LLM turn
+            pass
         stream = await super().get_chat_completions(context)
         return _tee_reasoning(stream)
 

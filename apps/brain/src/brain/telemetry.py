@@ -62,11 +62,15 @@ def preview(text: str | None, limit: int = _MAX_PREVIEW_CHARS) -> str:
     return f"{collapsed[: limit - 1]}…"
 
 
+_STICKY_EVENTS = frozenset({EVENT_RECONCILER_PHASE, EVENT_VOICE_EAR, EVENT_VOICE_MODE})
+
+
 class TelemetryHub:
     """Bounded in-memory event ring buffer with fan-out to SSE subscribers."""
 
     def __init__(self, max_events: int = 2000, queue_size: int = 1000) -> None:
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
+        self._sticky: dict[str, dict[str, Any]] = {}
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._queue_size = queue_size
         self._seq = 0
@@ -84,6 +88,14 @@ class TelemetryHub:
     def subscriber_count(self) -> int:
         return len(self._subscribers)
 
+    def _fanout(self, envelope: dict[str, Any]) -> None:
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(envelope)
+            except asyncio.QueueFull:
+                # A stalled dashboard must never back-pressure the reconciler.
+                continue
+
     def emit(self, event: str, **fields: Any) -> dict[str, Any]:
         """Publishes one event, returning the enriched envelope (sequence + timestamp included)."""
         self._seq += 1
@@ -94,20 +106,19 @@ class TelemetryHub:
             **fields,
         }
         self._events.append(envelope)
-        for queue in list(self._subscribers):
-            try:
-                queue.put_nowait(envelope)
-            except asyncio.QueueFull:
-                # A stalled dashboard must never back-pressure the reconciler.
-                continue
+        if event in _STICKY_EVENTS:
+            self._sticky[event] = envelope
+        self._fanout(envelope)
         return envelope
 
     def snapshot(self, limit: int = 100) -> list[dict[str, Any]]:
-        """Returns the most recent `limit` events, oldest first."""
+        """Returns the most recent `limit` events, oldest first, keeping sticky state events."""
         if limit <= 0:
             return []
-        events = list(self._events)
-        return events[-limit:]
+        tail = list(self._events)[-limit:]
+        seen_seqs = {e["seq"] for e in tail}
+        pinned = sorted((e for e in self._sticky.values() if e["seq"] not in seen_seqs), key=lambda e: e["seq"])
+        return pinned + tail
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self._queue_size)
@@ -118,12 +129,18 @@ class TelemetryHub:
         self._subscribers.discard(queue)
 
     def heartbeat(self, **fields: Any) -> dict[str, Any]:
-        return self.emit(
-            EVENT_HEARTBEAT,
-            uptime_s=round(self.uptime_seconds, 1),
-            subscribers=self.subscriber_count,
+        """Keepalive for live SSE subscribers; kept out of the ring buffer so idle time never evicts turns."""
+        self._seq += 1
+        envelope: dict[str, Any] = {
+            "seq": self._seq,
+            "ts": time.time(),
+            "event": EVENT_HEARTBEAT,
+            "uptime_s": round(self.uptime_seconds, 1),
+            "subscribers": self.subscriber_count,
             **fields,
-        )
+        }
+        self._fanout(envelope)
+        return envelope
 
 
 __all__ = [

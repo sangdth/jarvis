@@ -300,7 +300,8 @@ def build_cockpit() -> None:
     root = workspace_root()
     if root is None or not (root / "Cargo.toml").is_file():
         return
-    cargo = shutil.which("cargo")
+    fallback = Path("~/.cargo/bin/cargo").expanduser()
+    cargo = shutil.which("cargo") or (str(fallback) if fallback.is_file() else None)
     if cargo is None:
         print("`cargo` is not on PATH; skipping the cockpit build.")
         return
@@ -340,8 +341,26 @@ def cockpit_binary() -> Path | None:
     return None
 
 
+def cockpit_stale(binary: Path, root: Path | None = None) -> bool:
+    """True when `apps/tui` sources or workspace Cargo files are newer than the built `jarvis-top`."""
+    base = root if root is not None else workspace_root()
+    if base is None or not binary.is_file():
+        return False
+    built_at = binary.stat().st_mtime
+    inputs = [
+        base / "Cargo.toml",
+        base / "Cargo.lock",
+        base / "apps" / "tui" / "Cargo.toml",
+        *(base / "apps" / "tui").rglob("*.rs"),
+    ]
+    return any(p.is_file() and p.stat().st_mtime > built_at for p in inputs)
+
+
 def run_cockpit(args: list[str]) -> int:
     binary = cockpit_binary()
+    if binary is None:
+        build_cockpit()
+        binary = cockpit_binary()
     if binary is None:
         print("`jarvis top` needs the cockpit built first:", file=sys.stderr)
         print("  cargo build --release --workspace", file=sys.stderr)
@@ -351,6 +370,9 @@ def run_cockpit(args: list[str]) -> int:
         # restart that worked look like it failed.
         print("Jarvis is up. Run `jarvis top` in a terminal to watch the board.")
         return 0
+    if cockpit_stale(binary):
+        build_cockpit()
+        binary = cockpit_binary() or binary
     # The cockpit defaults to an installed home; hand it the one this process runs on, token included.
     env = dict(os.environ)
     env["JARVIS_HOME"] = str(JARVIS_HOME)
