@@ -1,10 +1,10 @@
 #!/bin/sh
-# Builds the mac client (`Jarvis.app`) and the zip the gateway serves at `/Jarvis.app.zip`.
-# Needs only the Xcode command line tools: no package manager, no dependencies.
+# Builds the Connect app (`Jarvis.app`) and the zip the gateway serves at `/Jarvis.app.zip`.
+# Needs full Xcode (the SwiftUI macros), not only the command line tools: no package manager, no dependencies.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-OUT="$ROOT/target/mac"
+OUT="$ROOT/target/connect"
 APP="$OUT/Jarvis.app"
 ZIP="$OUT/Jarvis.app.zip"
 
@@ -25,7 +25,7 @@ rm -rf "$APP" "$ZIP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -swift-version 5 -target arm64-apple-macos13.0 \
-  -o "$APP/Contents/MacOS/Jarvis" "$ROOT"/apps/mac/src/*.swift
+  -o "$APP/Contents/MacOS/Jarvis" "$ROOT"/apps/connect/src/*.swift
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

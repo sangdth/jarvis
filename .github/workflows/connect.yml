@@ -1,0 +1,27 @@
+# Builds the Connect app (`Jarvis.app`, one Connect button) on every push to master and keeps the zip as a workflow
+# artifact. Apple Silicon only: apps/connect/build.sh compiles for arm64.
+name: connect
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connect
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh apps/connect/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: connect
+          path: target/connect/Jarvis.app.zip
+          if-no-files-found: error

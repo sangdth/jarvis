@@ -56,7 +56,7 @@ fi
 # The mac client app, served at /Jarvis.app.zip so another Mac can install it with one command.
 if command -v swiftc >/dev/null 2>&1; then
   echo "Building the mac client (Jarvis.app)..."
-  (cd "$TARGET" && sh apps/mac/build.sh >/dev/null 2>&1) ||
+  (cd "$TARGET" && sh apps/connect/build.sh >/dev/null 2>&1) ||
     echo "The mac client did not build; \`jarvis start\` tries again."
 else
   echo "No swiftc, so the mac client is skipped (xcode-select --install, then \`just mac\`)."

@@ -39,10 +39,11 @@ the bundle is writable — otherwise install again with `/install-app`.
 ## Build
 
 ```bash
-sh apps/mac/build.sh      # or: just mac
+sh apps/connect/build.sh      # or: just mac
 ```
 
-Writes `target/mac/Jarvis.app` and `target/mac/Jarvis.app.zip`, signed ad-hoc (or with an Apple Development identity
-when one is in the keychain). Needs `swiftc` from the Xcode command line tools and nothing else: the sources are
-`src/JarvisApp.swift` (the window), `src/AppModel.swift` (state and the update), `src/ApiClient.swift` (health,
-pairing, credentials) and `src/AudioRelay.swift` (the socket and the audio).
+Writes `target/connect/Jarvis.app` and `target/connect/Jarvis.app.zip`, signed ad-hoc (or with an Apple Development
+identity when one is in the keychain). `.github/workflows/connect.yml` does the same on every push to master and
+keeps the zip as the `connect` workflow artifact. Needs full Xcode (the SwiftUI macros), not only the command line
+tools: the sources are `src/JarvisApp.swift` (the window), `src/AppModel.swift` (state and the update),
+`src/ApiClient.swift` (health, pairing, credentials) and `src/AudioRelay.swift` (the socket and the audio).

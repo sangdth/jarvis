@@ -1283,7 +1283,7 @@
     "/Jarvis.app.zip": {
       "get": {
         "summary": "The mac client, built on this checkout (`Jarvis.app.zip`)",
-        "description": "Open for the same reason as `/client.py`: it arrives before there is a secret and carries none. The bundle is signed as it is built (`apps/mac/build.sh`), so nothing is patched per request; `jarvis start` rebuilds it. 404 with the fix when the app has not been built yet.",
+        "description": "Open for the same reason as `/client.py`: it arrives before there is a secret and carries none. The bundle is signed as it is built (`apps/connect/build.sh`), so nothing is patched per request; `jarvis start` rebuilds it. 404 with the fix when the app has not been built yet.",
         "security": [],
         "responses": {
           "200": {

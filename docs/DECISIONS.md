@@ -8,7 +8,7 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   paired device reads nothing there), and why a second request reuses the live code rather than minting another:
   a double click, or asking twice while you type, cannot steal the digits off the screen. Limits: whoever can read
   `jarvis top` can pair a device; with no cockpit open, `jarvis pair` in a terminal is the way to see a code.
-- **The mac client is a download from the gateway, not a release.** `apps/mac/build.sh` builds `Jarvis.app` on the
+- **The Connect app is a download from the gateway, not a release.** `apps/connect/build.sh` builds `Jarvis.app` on the
   checkout and the gateway serves it at `/Jarvis.app.zip` with `/install-app` beside it, so the app is never older
   than the code running on the Mac mini. Limits: `swiftc` is needed to build it; the bundle is signed ad-hoc when no
   Apple Development identity is in the keychain, so macOS can ask for the Microphone again after an in-app update.

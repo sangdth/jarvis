@@ -271,10 +271,10 @@ def build_cockpit() -> None:
 
 
 def build_mac_app() -> None:
-    """Build the mac client (`apps/mac`) so `/Jarvis.app.zip` serves this checkout's code. Needs only `swiftc`."""
+    """Build the Connect app (`apps/connect`) so `/Jarvis.app.zip` serves this checkout's code. Needs `swiftc`."""
     import shutil
 
-    script = REPO_ROOT / "apps" / "mac" / "build.sh"
+    script = REPO_ROOT / "apps" / "connect" / "build.sh"
     if not script.is_file():
         return
     if sys.platform != "darwin" or shutil.which("swiftc") is None:

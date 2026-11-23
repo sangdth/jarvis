@@ -37,8 +37,9 @@ from jarvis_voice.config import settings
 
 SAMPLE_RATE = 16000  # 16-bit mono both ways, the rate the pipeline runs at; the client resamples to it
 CLIENT_SCRIPT = Path(__file__).parent / "defaults" / "remote" / "client.py"
-# The mac app, built by `apps/mac/build.sh` on this checkout and served like the client script: no secret inside.
-MAC_APP_ZIP = REPO_ROOT / "target" / "mac" / "Jarvis.app.zip"
+# The Connect app, built by `apps/connect/build.sh` on this checkout and served like the client script: no secret
+# inside.
+MAC_APP_ZIP = REPO_ROOT / "target" / "connect" / "Jarvis.app.zip"
 MAC_APP_NAME = "Jarvis.app"
 # Mic audio waiting for the pipeline, in 20 ms blocks: past a second behind, the oldest goes rather than lag.
 MIC_QUEUE_BLOCKS = 50

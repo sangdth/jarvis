@@ -24,14 +24,14 @@ fmt:
     uv run ruff check --fix src apps packages tests scripts
     cargo fmt --all
 
-# The cockpit and the mac client (the one compiled artifact per language; Python is live as written).
+# The cockpit and the Connect app (the one compiled artifact per language; Python is live as written).
 build:
     cargo build --release --workspace
-    sh apps/mac/build.sh
+    sh apps/connect/build.sh
 
-# The mac client alone: Jarvis.app, served at /Jarvis.app.zip, needs only swiftc.
+# The Connect app alone: Jarvis.app, served at /Jarvis.app.zip.
 mac:
-    sh apps/mac/build.sh
+    sh apps/connect/build.sh
 
 # Listen in this terminal with this Mac's mic and speaker.
 run:
