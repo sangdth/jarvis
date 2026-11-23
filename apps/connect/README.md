@@ -11,18 +11,20 @@ That installs `/Applications/Jarvis.app` (or `~/Applications` when `/Application
 download's quarantine flag, writes only the server URL to `~/.config/jarvis-remote/server`, and opens it. A raw
 [`/Jarvis.app.zip`](http://localhost:8643/Jarvis.app.zip) download works too; put the URL in Settings by hand.
 
-Without a Jarvis to ask, install the newest build from the rolling release in one command — it also clears the
-quarantine flag, so macOS does not block the first launch:
+Without a Jarvis to ask, the newest build is on the rolling [releases page](https://github.com/sangdth/jarvis/releases/tag/connect).
+The repo is private, so that page needs a signed-in browser; from a terminal:
 
 ```bash
-curl -fsSL 'https://github.com/sangdth/jarvis/releases/download/connect/install-connect.sh' | sh
-# or, to also point it at your server:
-curl -fsSL 'https://github.com/sangdth/jarvis/releases/download/connect/install-connect.sh' | sh -s http://mac-mini:8643
+# download only
+gh release download connect --repo sangdth/jarvis --pattern '*.dmg' --dir ~/Downloads
+
+# or download, install, and clear the quarantine flag so Gatekeeper does not block the first launch
+gh release download connect --repo sangdth/jarvis --pattern 'install-connect.sh' --dir /tmp --clobber
+sh /tmp/install-connect.sh http://mac-mini:8643     # the address is optional; Settings takes it too
 ```
 
-The [`Jarvis Connect.dmg`](https://github.com/sangdth/jarvis/releases/download/connect/Jarvis%20Connect.dmg) next to
-it works by hand: drag `Jarvis.app` to Applications, then allow it once in Privacy & Security (ad-hoc signature, not
-notarized).
+By hand: open `Jarvis.Connect.dmg`, drag `Jarvis.app` to Applications, then allow it once in Privacy & Security
+(ad-hoc signature, not notarized).
 
 ## What it does
 

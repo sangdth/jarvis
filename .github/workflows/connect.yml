@@ -1,6 +1,6 @@
 # Builds the Connect app (`Jarvis.app`, one Connect button) on every push to master, publishes a `Jarvis Connect.dmg`
 # as a workflow artifact, and replaces the asset on the rolling `connect` release so there is a stable public link:
-# https://github.com/sangdth/jarvis/releases/download/connect/Jarvis%20Connect.dmg
+# https://github.com/sangdth/jarvis/releases/tag/connect  (private repo: sign in, or `gh release download connect`)
 # Apple Silicon only: apps/connect/build.sh compiles for arm64.
 name: connect
 
@@ -41,8 +41,9 @@ jobs:
       - name: Publish to the rolling release
         env:
           GH_TOKEN: ${{ github.token }}
-          NOTES: 'The Mac app with one Connect button. Rebuilt on every push to master; the same tag, a newer `Jarvis Connect.dmg`. Install it without the first-launch block: `curl -fsSL https://github.com/sangdth/jarvis/releases/download/connect/install-connect.sh | sh`. The dmg opens by hand only if you clear quarantine yourself (`xattr -dr com.apple.quarantine /Applications/Jarvis.app`): it is ad-hoc signed, not notarized.'
+          NOTES: 'The Mac app with one Connect button (`Jarvis.app`), rebuilt on every push to master; the same tag, a newer `Jarvis.Connect.dmg`. This repo is private: download it here while signed in, or run `gh release download connect --repo sangdth/jarvis --pattern "*.dmg"`. `install-connect.sh` beside it copies the app and clears the quarantine flag, so Gatekeeper does not block the first launch (the app is ad-hoc signed, not notarized).'
         run: |
           gh release view connect >/dev/null 2>&1 || gh release create connect --title 'Connect app' --notes "$NOTES"
           gh release edit connect --notes "$NOTES"
+          # A release asset cannot hold a space: GitHub stores it as `Jarvis.Connect.dmg`.
           gh release upload connect 'target/connect/Jarvis Connect.dmg' apps/connect/install-connect.sh --clobber
