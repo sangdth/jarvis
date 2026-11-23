@@ -13,6 +13,7 @@ from typing import Any
 from loguru import logger
 
 from jarvis_core.soul import load_soul
+from jarvis_voice import telemetry
 from jarvis_voice.agent_adapter import WatchedAgentConfig
 from jarvis_voice.agent_tools import agent_tool_handlers, agent_tools
 from jarvis_voice.brain_client import BrainClientAdapter
@@ -142,14 +143,17 @@ async def run_pipecat_harness(
     meeting: bool = False,
     relay: Any = None,
     status: dict[str, Any] | None = None,
+    hub_emit: Any = None,
 ) -> None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers.
 
     `relay` is the already-built `RemoteVoiceTransport` when the shared Jarvis server owns its routes; without it,
     one is built and it listens on its own (the voice without the brain). Either way a paired Mac's mic and speaker
     are always served, and take over from this Mac's while connected. `status`, when given, is kept up to date for
-    the server's `/v1/status` answer.
+    the server's `/v1/status` answer. `hub_emit` is the brain's telemetry bus, so `jarvis top` can show each turn
+    stage by stage; without it (standalone voice) those stages go nowhere.
     """
+    telemetry.bind(hub_emit)
     live = status if status is not None else {}
     from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -210,12 +214,14 @@ async def run_pipecat_harness(
     task_ref: dict[str, PipelineTask] = {}
 
     async def on_speak(text: str) -> None:
+        telemetry.emit("voice.tts", text=text, mode=state.mode.value, spoken=True)
         if "task" in task_ref:
             # TTSSpeakFrame saves the line to the context as spoken (cut short if interrupted),
             # so the LLM knows which agent the user's next answer is about.
             await task_ref["task"].queue_frame(TTSSpeakFrame(text=text))
 
     async def on_report(text: str) -> None:
+        telemetry.emit("voice.retell", text=text, chars=len(text))
         if "task" in task_ref:
             await task_ref["task"].queue_frame(
                 LLMMessagesAppendFrame(
@@ -224,6 +230,7 @@ async def run_pipecat_harness(
             )
 
     async def on_beep(pcm_bytes: bytes) -> None:
+        telemetry.emit("voice.tts", text="(beep)", mode=state.mode.value, beep=True)
         if "task" in task_ref:
             await task_ref["task"].queue_frame(
                 OutputAudioRawFrame(audio=pcm_bytes, sample_rate=16000, num_channels=1)
@@ -297,12 +304,12 @@ async def run_pipecat_harness(
 
     # 3. Executive LLM Brain (OpenRouter)
     if settings.openrouter_api_key:
-        from pipecat.services.openrouter.llm import OpenRouterLLMService
+        from jarvis_voice.llm import JarvisLLM
 
-        llm = OpenRouterLLMService(
+        llm = JarvisLLM(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
-            settings=OpenRouterLLMService.Settings(
+            settings=JarvisLLM.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(
                     orchestrator,
@@ -334,8 +341,10 @@ async def run_pipecat_harness(
     tools = agent_tools()
 
     if llm is not None:
+        from jarvis_voice.llm import traced_tool
+
         for name, handler in agent_tool_handlers(orchestrator).items():
-            llm.register_function(name, handler)
+            llm.register_function(name, traced_tool(name, handler))
 
     context = LLMContext(tools=tools)
     # Pipecat 1.x runs voice detection in the user aggregator; it signals speech start/stop
@@ -447,6 +456,16 @@ async def run_pipecat_harness(
 
     # Start background coding agent watchers (Claude Code, OpenCode)
     live["local_audio"] = transport.has_local_audio
+    telemetry.emit(
+        "voice.ear",
+        local_audio=transport.has_local_audio,
+        relay=relay is not None,
+        language=settings.language,
+        whisper=settings.whisper_model,
+        master_check=settings.master_check,
+        executive_model=settings.executive_model,
+        meeting=meeting,
+    )
     await orchestrator.start_all()
     live["state"] = "listening"
     logger.info("Jarvis is listening (no wake word required). Say 'Shut up' to mute to beep-only mode.")

@@ -8,11 +8,13 @@ too slow (gemma3:4b 27 s a save) or lost facts (gemma3:1b).
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from jarvis_voice import telemetry
 from jarvis_voice.config import JARVIS_HOME, settings
 from jarvis_voice.prompts import MEETING_TRANSCRIPT, NOT_THE_USER, ROOM, SPEAKER, USER
 
@@ -106,7 +108,14 @@ def create_memory_service() -> Any | None:
             if query.startswith((NOT_THE_USER, ROOM, SPEAKER)) or last_line.lstrip().startswith((ROOM, SPEAKER)):
                 return
             self.last_query = query
+            started = time.monotonic()
             memories = await self._retrieve_memories(query)
+            telemetry.emit(
+                "voice.memory",
+                hits=len(memories),
+                ms=round((time.monotonic() - started) * 1000),
+                text="; ".join(str(m.get("memory", "")) for m in memories[:4]),
+            )
             if not memories:
                 return
             memory_text = self.system_prompt + "".join(f"{i}. {m.get('memory', '')}\n\n" for i, m in enumerate(memories, 1))

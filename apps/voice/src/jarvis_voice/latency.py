@@ -7,6 +7,8 @@ from pipecat.frames.frames import InterruptionFrame
 from pipecat.observers.base_observer import FramePushed
 from pipecat.observers.user_bot_latency_observer import LatencyBreakdown, UserBotLatencyObserver
 
+from jarvis_voice import telemetry
+
 
 class JarvisLatencyObserver(UserBotLatencyObserver):
     """Pipecat's latency observer, for turns that start after the user stopped talking.
@@ -28,8 +30,11 @@ def log_breakdown(breakdown: LatencyBreakdown) -> None:
     # ran from a sentence Jarvis never answered to a later agent report: minutes, not latency.
     if breakdown.user_turn_secs is None:
         return
-    for line in breakdown.turn_contribution_lines():
+    parts = breakdown.turn_contribution_lines()
+    for line in parts:
         logger.info(f"[Latency] {line}")
+    # The same numbers on the telemetry bus, so the cockpit's turn row can show where the time went.
+    telemetry.emit("voice.latency", text=" · ".join(parts))
 
 
 def latency_observer() -> UserBotLatencyObserver:

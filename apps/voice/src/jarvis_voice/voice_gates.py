@@ -34,6 +34,7 @@ from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from jarvis_voice import telemetry
 from jarvis_voice.cleanup import TranscriptCleaner
 from jarvis_voice.config import JARVIS_HOME, WHISPER_MODELS, settings
 from jarvis_voice.executive_filter import ExecutiveFilter
@@ -214,6 +215,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
             yield ErrorFrame(error=f"Unknown error occurred: {exc}")
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        started = time.monotonic()
         checking = self._embedder is not None and self._voiceprint is not None
         enrolling = self._state.enrolling if self._state is not None else False
         score_task = asyncio.create_task(asyncio.to_thread(self._analyze, audio, enrolling)) if checking else None
@@ -234,6 +236,9 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         meeting = self._state.meeting if self._state is not None else self._meeting
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
+                ms = round((time.monotonic() - started) * 1000)
+                # One turn per sentence: every stage after this lands under the same id in the cockpit.
+                telemetry.new_turn()
                 known = profile is not None and profile.enrolled and profile.name is not None
                 if meeting:
                     if owner:
@@ -245,11 +250,20 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                     else:
                         role = "room"
                     logger.info(f"[Speaker] {heard} {role}: {frame.text!r}{saved}")
+                    telemetry.emit(
+                        "voice.stt", text=frame.text, score=score, threshold=self._threshold,
+                        passed=True, role=role, ms=ms, clip=clip.name if clip else "",
+                    )
                     frame = replace(frame, user_id=role)
                 else:
                     fast = classify_fast_command(frame.text) in (UserIntent.MUTE, UserIntent.UNMUTE)
                     passed = owner or known or (enrolling and profile is not None) or fast
                     logger.info(f"[Speaker] {heard} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
+                    telemetry.emit(
+                        "voice.stt", text=frame.text, score=score, threshold=self._threshold,
+                        passed=passed, role="owner" if owner else (profile.name if known and profile else "guest"),
+                        ms=ms, clip=clip.name if clip else "",
+                    )
                     if not passed:
                         continue
                     if not owner and profile is not None:
@@ -561,6 +575,9 @@ class JarvisIntentGate(FrameProcessor):
             self._stop_enrollment()
 
         fast = classify_fast_command(transcript)
+        if fast is not None and fast != UserIntent.IGNORE_BACKGROUND:
+            # Mute, unmute and the meeting switch settle in code, with no model call and no latency.
+            telemetry.emit("voice.fastcmd", command=fast.value, text=transcript)
         enrolling_this = (
             profile is not None and self._enrollment is not None and self._enrollment.profile_id in (None, profile.id)
         )
@@ -631,8 +648,18 @@ class JarvisIntentGate(FrameProcessor):
             transcript=transcript,
             recent_jarvis_question=question,
         )
+        intent_ms = round((time.monotonic() - asked_at) * 1000)
         # Pipecat's `[Latency]` lines count this inside transcription (the gate re-sends the transcript), so say it here.
         logger.info(f"[Intent] {intent.value} in {(time.monotonic() - asked_at) * 1000:.0f} ms")
+        telemetry.emit(
+            "voice.intent",
+            intent=intent.value,
+            ms=intent_ms,
+            speaker=speaker,
+            owner=is_owner,
+            meeting=self.state.meeting,
+            backdrop=telemetry.preview(question or "", 160),
+        )
 
         if intent == UserIntent.MUTE:
             logger.warning("User requested silence ('Shut up' / 'Be quiet'). Entering BEEP_ONLY mode.")
@@ -675,10 +702,14 @@ class JarvisIntentGate(FrameProcessor):
             # An open agent question or approval is agent text (maybe from a web page): it never steers the rewrite.
             context = None if self.state.active_agent_context else question
             cleaned_at = time.monotonic()
+            heard_text = transcript
             cleaned = await self.cleaner.clean(transcript, recent_jarvis_question=context)
             ms = (time.monotonic() - cleaned_at) * 1000
             change = f": {transcript!r} -> {cleaned!r}" if cleaned != transcript else " (unchanged)"
             logger.info(f"[Cleanup] {ms:.0f} ms{change}")
+            telemetry.emit(
+                "voice.cleanup", raw=heard_text, text=cleaned, ms=round(ms), changed=cleaned != heard_text
+            )
             transcript = cleaned
             frame = replace(frame, text=transcript)
 

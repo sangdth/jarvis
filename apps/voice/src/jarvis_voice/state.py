@@ -8,6 +8,8 @@ from typing import Awaitable, Callable
 
 import numpy as np
 
+from jarvis_voice import telemetry
+
 
 class JarvisMode(str, Enum):
     VOICE = "VOICE"
@@ -179,6 +181,7 @@ class JarvisState:
     async def set_mute(self) -> None:
         """Triggered when user says 'Shut up' or 'Be quiet'."""
         self.mode = JarvisMode.BEEP_ONLY
+        telemetry.emit("voice.mode", mode=self.mode.value, meeting=self.meeting)
         if self.on_interrupt:
             await self.on_interrupt()
         if self.on_beep:
@@ -190,6 +193,7 @@ class JarvisState:
         """Triggered when user says 'You can talk'. Speaks queued questions, then retells finished turns."""
         self.mode = JarvisMode.VOICE
         topics, self.pending_topics = self.pending_topics, []
+        telemetry.emit("voice.mode", mode=self.mode.value, meeting=self.meeting, queued=len(topics))
         if not topics:
             msg = "I'm back. Nothing urgent came up while I was quiet."
         else:

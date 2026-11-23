@@ -30,6 +30,25 @@ EVENT_PAIR_REQUESTED = "pair.requested"
 EVENT_PAIR_RESOLVED = "pair.resolved"
 EVENT_HEARTBEAT = "heartbeat"
 
+# The voice's turn, stage by stage (`jarvis_voice/telemetry.py`): what the user said, how it was checked,
+# what the model was given and thought, which tool it called, and what came back to the speaker.
+EVENT_VOICE_EAR = "voice.ear"
+EVENT_VOICE_STT = "voice.stt"
+EVENT_VOICE_INTENT = "voice.intent"
+EVENT_VOICE_CLEANUP = "voice.cleanup"
+EVENT_VOICE_FASTCMD = "voice.fastcmd"
+EVENT_VOICE_MEMORY = "voice.memory"
+EVENT_VOICE_REQUEST = "voice.request"
+EVENT_VOICE_THINKING = "voice.thinking"
+EVENT_VOICE_TOOL = "voice.tool"
+EVENT_VOICE_LATENCY = "voice.latency"
+EVENT_VOICE_DISPATCH = "voice.dispatch"
+EVENT_VOICE_RETURN = "voice.return"
+EVENT_VOICE_RETELL = "voice.retell"
+EVENT_VOICE_TTS = "voice.tts"
+EVENT_VOICE_MODE = "voice.mode"
+EVENT_BRAIN_ROUTE = "brain.route"
+
 _MAX_PREVIEW_CHARS = 280
 
 
@@ -46,7 +65,7 @@ def preview(text: str | None, limit: int = _MAX_PREVIEW_CHARS) -> str:
 class TelemetryHub:
     """Bounded in-memory event ring buffer with fan-out to SSE subscribers."""
 
-    def __init__(self, max_events: int = 500, queue_size: int = 1000) -> None:
+    def __init__(self, max_events: int = 2000, queue_size: int = 1000) -> None:
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._queue_size = queue_size
@@ -112,6 +131,7 @@ __all__ = [
     "EVENT_APPROVAL_RESPONDED",
     "EVENT_ATTEMPT_FINISHED",
     "EVENT_BOARD_RPC",
+    "EVENT_BRAIN_ROUTE",
     "EVENT_HEARTBEAT",
     "EVENT_HTTP_COMPLETED",
     "EVENT_HTTP_INBOUND",
@@ -120,6 +140,21 @@ __all__ = [
     "EVENT_PI_PROGRESS",
     "EVENT_RECONCILER_PHASE",
     "EVENT_RUN_STATUS",
+    "EVENT_VOICE_CLEANUP",
+    "EVENT_VOICE_DISPATCH",
+    "EVENT_VOICE_EAR",
+    "EVENT_VOICE_FASTCMD",
+    "EVENT_VOICE_INTENT",
+    "EVENT_VOICE_LATENCY",
+    "EVENT_VOICE_MEMORY",
+    "EVENT_VOICE_MODE",
+    "EVENT_VOICE_REQUEST",
+    "EVENT_VOICE_RETELL",
+    "EVENT_VOICE_RETURN",
+    "EVENT_VOICE_STT",
+    "EVENT_VOICE_THINKING",
+    "EVENT_VOICE_TOOL",
+    "EVENT_VOICE_TTS",
     "TelemetryHub",
     "preview",
 ]

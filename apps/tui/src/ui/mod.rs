@@ -2,10 +2,12 @@
 
 pub mod grid;
 pub mod ledger;
+pub mod logs;
 pub mod prompts;
 pub mod tasks;
 pub mod theme;
 pub mod topology;
+pub mod xray;
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -19,28 +21,24 @@ use crate::model::PendingPair;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
-    if area.width < 40 || area.height < 12 {
+    if area.width < 60 || area.height < 18 {
         frame.render_widget(
-            Paragraph::new("terminal too small — resize or press q").style(theme::base()),
+            Paragraph::new("terminal too small — jarvis top wants a wide screen (resize or press q)")
+                .style(theme::base()),
             area,
         );
         return;
     }
 
-    let ledger_height = if app.zoomed == Some(Pane::Ledger) {
-        0
-    } else if area.height >= 40 {
-        14
-    } else if area.height >= 30 {
-        11
-    } else {
-        8
-    };
+    // A big screen gets the whole flow map plus a three-column deck; a laptop drops a few rows.
+    let flow_height = if area.height >= 44 { 12 } else { 10 };
+    let bottom_height = if area.height >= 40 { 7 } else { 6 };
 
     let chunks = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(3),
-        Constraint::Length(ledger_height),
+        Constraint::Length(4),
+        Constraint::Length(flow_height),
+        Constraint::Min(8),
+        Constraint::Length(bottom_height),
         Constraint::Length(1),
     ])
     .split(area);
@@ -48,38 +46,43 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_header(frame, app, chunks[0]);
 
     if let Some(pane) = app.zoomed {
+        let full = Rect {
+            y: chunks[1].y,
+            height: chunks[1].height + chunks[2].height + chunks[3].height,
+            ..chunks[1]
+        };
         match pane {
-            Pane::Topology => topology::draw(frame, app, chunks[1]),
-            Pane::Prompts => prompts::draw(frame, app, chunks[1]),
-            Pane::Tasks => tasks::draw(frame, app, chunks[1]),
-            Pane::Ledger => {
-                let full = Rect {
-                    y: chunks[1].y,
-                    height: chunks[1].height + chunks[2].height,
-                    ..chunks[1]
-                };
-                ledger::draw(frame, app, full);
-            }
+            Pane::Topology => topology::draw(frame, app, full),
+            Pane::Xray => xray::draw(frame, app, full),
+            Pane::Prompts => prompts::draw(frame, app, full),
+            Pane::Logs => logs::draw(frame, app, full),
+            Pane::Tasks => tasks::draw(frame, app, full),
+            Pane::Ledger => ledger::draw(frame, app, full),
         }
     } else {
-        let columns =
-            Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)])
-                .split(chunks[1]);
-        let left =
-            Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)])
-                .split(columns[0]);
-        topology::draw(frame, app, left[0]);
-        tasks::draw(frame, app, left[1]);
-        prompts::draw(frame, app, columns[1]);
-        ledger::draw(frame, app, chunks[2]);
+        topology::draw(frame, app, chunks[1]);
+
+        let deck = Layout::horizontal([
+            Constraint::Fill(11),
+            Constraint::Fill(9),
+            Constraint::Fill(8),
+        ])
+        .split(chunks[2]);
+        xray::draw(frame, app, deck[0]);
+        prompts::draw(frame, app, deck[1]);
+        logs::draw(frame, app, deck[2]);
+
+        let bottom = Layout::horizontal([Constraint::Fill(4), Constraint::Fill(5)]).split(chunks[3]);
+        tasks::draw(frame, app, bottom[0]);
+        ledger::draw(frame, app, bottom[1]);
     }
 
     // A pending pairing code sits over the panes: it is the one thing to read, and it is gone once it is used.
     if let (Some(pair), Some(left)) = (app.pending_pair.clone(), app.pair_seconds_left()) {
-        draw_pair_banner(frame, chunks[1], &pair, left);
+        draw_pair_banner(frame, chunks[2], &pair, left);
     }
 
-    draw_footer(frame, app, chunks[3]);
+    draw_footer(frame, app, chunks[4]);
 
     if let Some(modal) = app.modal.clone() {
         draw_modal(frame, app, area, modal);
@@ -111,9 +114,22 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut row0 = vec![
-        Span::styled(" BRAIN ", theme::bold(theme::PURPLE)),
+        Span::styled(" JARVIS ", theme::bold(theme::PURPLE)),
         Span::styled(format!("[{}] ", app.snapshot.state.mode), mode_style),
-        Span::styled(format!("{}:{} ", app.cfg.host, app.cfg.port), theme::faint()),
+        Span::styled("voice ", theme::faint()),
+        Span::styled(
+            app.voice_mode.clone(),
+            if app.voice_mode == "BEEP_ONLY" {
+                theme::bold(theme::WARN)
+            } else {
+                theme::fg(theme::ACCENT)
+            },
+        ),
+        Span::styled("  check ", theme::faint()),
+        Span::styled(app.check_mode.clone(), theme::dim()),
+        Span::styled("  ear ", theme::faint()),
+        Span::styled(app.ear.clone(), theme::fg(theme::CYAN)),
+        Span::styled(format!("  {}:{} ", app.cfg.host, app.cfg.port), theme::faint()),
         daemon,
         Span::styled("  phase ", theme::faint()),
         Span::styled(app.phase.clone(), phase_style),
@@ -193,41 +209,47 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let file = app
-        .session_path
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("—");
     let last_event = app
         .events
         .last()
         .map(|e| e.event.clone())
         .unwrap_or_else(|| "—".to_string());
-    let row2 = vec![
-        Span::styled(" session ", theme::faint()),
-        Span::styled(theme::clip_ellipsis(file, 30), theme::dim()),
-        Span::styled(format!(" · {} turns", app.turns.len()), theme::faint()),
-        Span::styled(
-            format!(" · follow {}", if app.follow { "on" } else { "off" }),
-            if app.follow {
-                theme::fg(theme::ACCENT)
-            } else {
-                theme::faint()
-            },
+    let mut row2 = vec![Span::styled(" turn ", theme::faint())];
+    match app.newest_trace() {
+        Some(trace) => {
+            row2.push(Span::styled(format!("#{} ", trace.id), theme::bold(theme::CYAN)));
+            row2.push(Span::styled(
+                theme::clip_ellipsis(&trace.headline(), 40),
+                theme::fg(theme::TEXT),
+            ));
+            // The same numbers the x-ray pane lists, one line: where the turn's time went.
+            for kind in ["STT", "INTENT", "MEM", "PREP", "THINK", "LAT"] {
+                if let Some(stage) = trace.stage(kind) {
+                    if stage.detail.is_empty() {
+                        continue;
+                    }
+                    row2.push(Span::styled(format!(" · {kind} "), theme::faint()));
+                    row2.push(Span::styled(stage.detail.clone(), theme::dim()));
+                }
+            }
+        }
+        None => row2.push(Span::styled(
+            "waiting for a sentence (the flow fills in as it happens)",
+            theme::dim(),
+        )),
+    }
+    row2.push(Span::styled(
+        format!(
+            "   events {} · last {} · skills {}/{} · {} msgs · follow {}",
+            app.events.len(),
+            last_event,
+            app.snapshot.counts.skills_active,
+            app.snapshot.counts.skills_total,
+            app.turns.len(),
+            if app.follow { "on" } else { "off" },
         ),
-        Span::styled(
-            format!(
-                "   events {} · last {}   mode {} · skills {}/{}",
-                app.events.len(),
-                last_event,
-                app.snapshot.state.spend_date,
-                app.snapshot.counts.skills_active,
-                app.snapshot.counts.skills_total
-            ),
-            theme::faint(),
-        ),
-    ];
+        theme::faint(),
+    ));
 
     frame.render_widget(
         Paragraph::new(Text::from(vec![
@@ -263,7 +285,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" quit ", theme::faint()),
         Span::styled("?", theme::bold(theme::CYAN)),
         Span::styled(" help ", theme::faint()),
-        Span::styled("Tab/1-4", theme::bold(theme::CYAN)),
+        Span::styled("1-6", theme::bold(theme::CYAN)),
         Span::styled(" focus ", theme::faint()),
         Span::styled("z", theme::bold(theme::CYAN)),
         Span::styled(" zoom ", theme::faint()),
@@ -271,6 +293,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" move ", theme::faint()),
         Span::styled("Enter", theme::bold(theme::CYAN)),
         Span::styled(" inspect ", theme::faint()),
+        Span::styled("p", theme::bold(theme::CYAN)),
+        Span::styled(" payload ", theme::faint()),
+        Span::styled("v/b/e/A", theme::bold(theme::CYAN)),
+        Span::styled(" log filter ", theme::faint()),
+        Span::styled("f", theme::bold(theme::CYAN)),
+        Span::styled(" follow ", theme::faint()),
         Span::styled("a/r", theme::bold(theme::CYAN)),
         Span::styled(" approve ", theme::faint()),
         Span::styled("m", theme::bold(theme::CYAN)),
@@ -389,13 +417,14 @@ fn help_lines() -> Vec<Line<'static>> {
     let rows = [
         ("q / Ctrl-c", "quit"),
         ("? ", "toggle this help"),
-        ("Tab / 1-4", "focus Architecture · Prompts · Tasks · Ledger"),
+        ("Tab / 1-6", "focus Flow · X-Ray · Payload · Logs · Tasks · Ledger"),
         ("z", "zoom the focused pane fullscreen"),
-        ("j / k, g / G", "move selection, jump to first/last"),
+        ("j / k, g / G", "move selection (turns, nodes, tasks), jump to first/last"),
         ("PageUp / PageDown", "scroll the focused pane or modal"),
-        ("[ / ]", "switch ledger tabs (Attempts · Skills · Outbox · Notes · DB)"),
-        ("f", "toggle live follow on the prompt stream"),
-        ("Enter", "inspect node / expand prompt / open skill or task detail"),
+        ("p", "cycle the payload tab: Voice Ctx · Runner · Retell"),
+        ("v / b / e / A", "log filter: voice · brain · errors · all"),
+        ("f", "toggle live follow on the newest turn"),
+        ("Enter", "inspect node / cycle payload / open skill or task detail"),
         ("a / r", "approve or reject the selected queued outbox approval"),
         ("m", "toggle ASSIST ↔ AUTONOMOUS via /v1/ask"),
         ("x", "stop the active run"),
