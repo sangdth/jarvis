@@ -227,7 +227,7 @@ server's, an **Update** button that pulls the newer bundle from the Mac mini, th
 
 Nothing heavy moves: the app is a mic, a speaker and a socket, with macOS voice processing doing the echo
 cancellation so "shut up" and talking over Jarvis still work. `jarvis start` rebuilds the bundle
-(`apps/connect/build.sh`, needs full Xcode), so the app always matches the code running there.
+(`apps/connect/build.sh`, needs only the Xcode Command Line Tools), so the app always matches the code running there.
 
 ### Listen from another Mac (thin client, no install)
 

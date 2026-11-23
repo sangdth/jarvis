@@ -62,6 +62,6 @@ sh apps/connect/build.sh      # or: just mac
 
 Writes `target/connect/Jarvis.app` and `target/connect/Jarvis.app.zip`, signed ad-hoc (or with an Apple Development
 identity when one is in the keychain). `.github/workflows/connect.yml` does the same on every push to master and
-keeps the zip as the `connect` workflow artifact. Needs full Xcode (the SwiftUI macros), not only the command line
-tools: the sources are `src/JarvisApp.swift` (the window), `src/AppModel.swift` (state and the update),
+keeps the zip as the `connect` workflow artifact. Needs only the Command Line Tools (`xcode-select --install`):
+the sources are `src/JarvisApp.swift` (the window), `src/AppModel.swift` (state and the update),
 `src/ApiClient.swift` (health, pairing, credentials) and `src/AudioRelay.swift` (the socket and the audio).

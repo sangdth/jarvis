@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     @Published var serverURL: String
     @Published var codeInput = ""
     @Published var message: String?
+    @Published var showsSettings = false
 
     let appVersion = Bundle.main.object(forInfoDictionaryKey: "JarvisVersion") as? String ?? "dev"
 
@@ -321,7 +322,7 @@ final class AppModel: ObservableObject {
         let (download, response) = try await URLSession.shared.download(from: url)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
-            throw ApiError(status: status, message: "The server has no app to download (\(status)). Build it with `jarvis restart`.")
+            throw ApiError(status: status, message: "The server has no app to download (\(status)). Build it with `jarvis start`.")
         }
         try fm.moveItem(at: download, to: work.appendingPathComponent("Jarvis.app.zip"))
         try run("/usr/bin/ditto", ["-xk", work.appendingPathComponent("Jarvis.app.zip").path, work.path])

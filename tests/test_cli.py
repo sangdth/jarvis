@@ -187,6 +187,26 @@ class ServiceTest(unittest.TestCase):
         self.assertNotIn("<string>--remote</string>", plist)
         self.assertIn("WorkingDirectory", plist)
 
+    def test_failed_mac_build_keeps_the_last_bundle(self) -> None:
+        # `cli.build_mac_app` promises `/Jarvis.app.zip` keeps serving the last bundle when `swiftc` fails.
+        import subprocess
+
+        script = cli.REPO_ROOT / "apps" / "connect" / "build.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            bad_swiftc = fake_bin / "swiftc"
+            bad_swiftc.write_text("#!/bin/sh\nexit 1\n")
+            bad_swiftc.chmod(0o755)
+            out = root / "out"
+            out.mkdir()
+            (out / "Jarvis.app.zip").write_bytes(b"last-good-bundle")
+            env = {**cli.os.environ, "PATH": f"{fake_bin}:{cli.os.environ.get('PATH', '')}", "JARVIS_CONNECT_OUT": str(out)}
+            proc = subprocess.run(["/bin/sh", str(script)], cwd=str(cli.REPO_ROOT), env=env, capture_output=True)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual((out / "Jarvis.app.zip").read_bytes(), b"last-good-bundle")
+
 
 if __name__ == "__main__":
     unittest.main()

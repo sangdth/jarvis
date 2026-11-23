@@ -21,7 +21,6 @@ struct JarvisApp: App {
 /// The whole app: one big button, and Settings behind the gear.
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var showsSettings = false
 
     var body: some View {
         VStack(spacing: 20) {
@@ -35,8 +34,8 @@ struct ContentView: View {
         .padding(.horizontal, 28)
         .padding(.vertical, 22)
         .background(Color(nsColor: .windowBackgroundColor))
-        .sheet(isPresented: $showsSettings) {
-            SettingsView(isPresented: $showsSettings)
+        .sheet(isPresented: $model.showsSettings) {
+            SettingsView(isPresented: $model.showsSettings)
                 .environmentObject(model)
         }
         .alert(
@@ -58,7 +57,7 @@ struct ContentView: View {
                 .font(.system(size: 20, weight: .semibold, design: .rounded))
             Spacer()
             Button {
-                showsSettings = true
+                model.showsSettings = true
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 16, weight: .medium))

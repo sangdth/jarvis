@@ -1,10 +1,10 @@
 #!/bin/sh
 # Builds the Connect app (`Jarvis.app`) and the zip the gateway serves at `/Jarvis.app.zip`.
-# Needs full Xcode (the SwiftUI macros), not only the command line tools: no package manager, no dependencies.
+# Needs only the Command Line Tools (`xcode-select --install`): no SwiftUI macros, no package manager, no dependencies.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-OUT="$ROOT/target/connect"
+OUT=${JARVIS_CONNECT_OUT:-"$ROOT/target/connect"}
 APP="$OUT/Jarvis.app"
 ZIP="$OUT/Jarvis.app.zip"
 
@@ -21,13 +21,17 @@ if [ -n "$(cd "$ROOT" && git status --porcelain --untracked-files=no 2>/dev/null
 fi
 JARVIS_VERSION="$BRANCH @ $COMMIT$DIRTY"
 
-rm -rf "$APP" "$ZIP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# Stage first so a failed compile leaves the previous bundle in place for `/Jarvis.app.zip`.
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/jarvis-connect.XXXXXX")
+trap 'rm -rf "$STAGE"' EXIT
+STAGED_APP="$STAGE/Jarvis.app"
+STAGED_ZIP="$STAGE/Jarvis.app.zip"
+mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources"
 
 swiftc -O -swift-version 5 -target arm64-apple-macos13.0 \
-  -o "$APP/Contents/MacOS/Jarvis" "$ROOT"/apps/connect/src/*.swift
+  -o "$STAGED_APP/Contents/MacOS/Jarvis" "$ROOT"/apps/connect/src/*.swift
 
-cat > "$APP/Contents/Info.plist" <<PLIST
+cat > "$STAGED_APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -61,9 +65,14 @@ IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null |
 if [ -z "$IDENTITY" ]; then
   IDENTITY="-"
 fi
-codesign --force --deep --sign "$IDENTITY" --identifier com.sangdth.jarvis.remote "$APP" >/dev/null
+codesign --force --deep --sign "$IDENTITY" --identifier com.sangdth.jarvis.remote "$STAGED_APP" >/dev/null
 
-ditto -c -k --keepParent "$APP" "$ZIP"
+ditto -c -k --keepParent "$STAGED_APP" "$STAGED_ZIP"
+
+mkdir -p "$OUT"
+rm -rf "$APP" "$ZIP"
+mv "$STAGED_APP" "$APP"
+mv "$STAGED_ZIP" "$ZIP"
 
 echo "Built $APP ($JARVIS_VERSION, signed with: $IDENTITY)"
 echo "      $ZIP"
