@@ -165,6 +165,19 @@ class TestJarvisStateAndFilters(unittest.IsolatedAsyncioTestCase):
         await offline.notify_topic(done)
         self.assertEqual(spoken[-1], "Claude Code: Edited `src/app.py`.")
 
+    def test_working_context_expires_after_ttl(self) -> None:
+        from jarvis_voice.state import CONTEXT_TTL_SECS, WorkingContext
+
+        now = 100.0
+        ctx = WorkingContext(clock=lambda: now)
+        ctx.add("Bug in login", project="web")
+        ctx.add("Bug in login")  # exact consecutive duplicate ignored
+        self.assertEqual(ctx.notes, ["Bug in login"])
+        self.assertIn("(project: web)", ctx.format_for_prompt())
+        now += CONTEXT_TTL_SECS + 1.0
+        self.assertFalse(ctx.active())
+        self.assertEqual((ctx.notes, ctx.project), ([], None))
+
 
 if __name__ == "__main__":
     unittest.main()

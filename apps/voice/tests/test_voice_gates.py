@@ -126,12 +126,69 @@ class TestIntentGate(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.1)
         self.assertEqual(self.turns(), ["Hmm..."])
 
-    async def test_with_smart_turn_a_trailing_off_sentence_goes_on_at_once(self) -> None:
+    @patch("jarvis_voice.voice_gates.HOLD_SECS", 0.05)
+    async def test_with_smart_turn_trailing_off_goes_on_only_when_smart_turn_already_held(self) -> None:
         from jarvis_voice.config import settings
 
-        with patch.object(settings, "smart_turn", True):  # it already held the audio across the pause
-            await self.gate.process_frame(heard("Open the..."), FrameDirection.DOWNSTREAM)
-        self.assertEqual(self.turns(), ["Open the..."])
+        with patch.object(settings, "smart_turn", True):
+            already_held = heard("Open the...")
+            already_held._smart_turn_held = True  # type: ignore[attr-defined]
+            await self.gate.process_frame(already_held, FrameDirection.DOWNSTREAM)
+            self.assertEqual(self.turns(), ["Open the..."])
+
+            # When Smart Turn misjudged a brief pause as COMPLETE (_smart_turn_held is False), trailing punctuation
+            # or mid-clause connectors ("because", ",") still wait and join the continuation.
+            self.gate.push_frame.reset_mock()
+            await self.gate.process_frame(heard("It crashes because"), FrameDirection.DOWNSTREAM)
+            self.assertEqual(self.turns(), [])
+            await self.gate.process_frame(heard("React unmounts the form."), FrameDirection.DOWNSTREAM)
+            self.assertEqual(self.turns(), ["It crashes because React unmounts the form."])
+
+    @patch("jarvis_voice.voice_gates.SPEECH_SETTLE_SECS", 0.05)
+    async def test_continued_speech_during_gate_holds_and_merges_without_interrupting_user(self) -> None:
+        down, up = FrameDirection.DOWNSTREAM, FrameDirection.UPSTREAM
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_check(**_: object) -> UserIntent:
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+            return UserIntent.ADDRESSED_TO_JARVIS
+
+        self.filter.classify_user_utterance = AsyncMock(side_effect=slow_check)
+        await self.gate.process_frame(BotStartedSpeakingFrame(), up)
+        self.gate.push_frame.reset_mock()
+
+        first = asyncio.create_task(self.gate.process_frame(heard("There is a bug in the modal."), down))
+        await entered.wait()
+        # User starts the next clause after a slight pause while the first clause is still in the gate.
+        await self.gate.process_frame(VADUserStartedSpeakingFrame(), up)
+        release.set()
+        await first
+
+        # Jarvis stopped talking, did NOT push a premature turn over the user, and kept the first clause.
+        pushed_types = [type(c.args[0]) for c in self.gate.push_frame.await_args_list]
+        self.assertIn(InterruptionFrame, pushed_types)
+        self.assertEqual(self.turns(), [])
+        self.assertTrue(self.state.user_speaking)
+
+        await self.gate.process_frame(VADUserStoppedSpeakingFrame(), up)
+        await self.gate.process_frame(heard("When I click save nothing happens."), down)
+        self.assertFalse(self.state.user_speaking)
+        frames = [c.args[0] for c in self.gate.push_frame.await_args_list if isinstance(c.args[0], TranscriptionFrame)]
+        self.assertEqual([f.text for f in frames], ["There is a bug in the modal. When I click save nothing happens."])
+        self.assertFalse(frames[0].interruptible)
+
+    @patch("jarvis_voice.voice_gates.SPEECH_SETTLE_SECS", 0.05)
+    async def test_held_ready_turn_flushes_after_settle_when_vad_sound_had_no_words(self) -> None:
+        down, up = FrameDirection.DOWNSTREAM, FrameDirection.UPSTREAM
+        await self.gate.process_frame(VADUserStartedSpeakingFrame(), up)
+        await self.gate.process_frame(heard("Run the tests."), down)
+        self.assertEqual(self.turns(), [])  # VAD still active
+        await self.gate.process_frame(VADUserStoppedSpeakingFrame(), up)
+        await asyncio.sleep(0.1)  # Whisper heard nothing from the cough/noise
+        self.assertEqual(self.turns(), ["Run the tests."])
 
     async def test_mute_does_not_wait_for_a_held_sentence(self) -> None:
         self.filter.classify_user_utterance.return_value = UserIntent.MUTE

@@ -118,7 +118,7 @@ class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
     async def test_remind_skips_speaking_if_state_changes_during_lines_next(self) -> None:
         from jarvis_voice.state import JarvisMode
 
-        for change in ("finish", "mute"):
+        for change in ("finish", "mute", "user_speaking"):
             with self.subTest(change=change):
                 state = JarvisState(on_speak=AsyncMock())
                 orch = AgentOrchestrator(state=state)
@@ -129,6 +129,8 @@ class TestRemindWhileBusy(unittest.IsolatedAsyncioTestCase):
                 async def slow_next() -> str:
                     if change == "finish":
                         agent.busy = False
+                    elif change == "user_speaking":
+                        state.user_speaking = True
                     else:
                         state.mode = JarvisMode.BEEP_ONLY
                     return "Still on it."

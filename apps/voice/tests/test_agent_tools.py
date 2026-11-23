@@ -371,5 +371,85 @@ class TestSessionSwitch(unittest.IsolatedAsyncioTestCase):
         self.agent.send_task.assert_not_awaited()
 
 
+class TestHoldContext(unittest.IsolatedAsyncioTestCase):
+    """Multi-turn context scratchpad: explain -> lookup side question -> execute with full context."""
+
+    def setUp(self) -> None:
+        from pathlib import Path
+
+        from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
+        from jarvis_voice.state import JarvisState
+
+        self.state = JarvisState()
+        self.orch = AgentOrchestrator(state=self.state)
+        self.orch._http = None
+        agent = MagicMock(spec=CodingSessionAdapter)
+        agent.config = MagicMock(id="brain")
+        agent.busy, agent.connected, agent.cwd, agent.session_id = False, False, "", None
+        agent.send_task = AsyncMock(return_value=True)
+        agent.pick_session = AsyncMock(return_value=True)
+        agent.list_sessions = AsyncMock(return_value=[AgentSession("t1", "Settings bug", "/p/web", 1.0)])
+        self.agent = agent
+        self.orch.adapters["brain"] = agent
+        self.handlers = agent_tool_handlers(self.orch)
+        self.projects = {"web": Path("/p/web")}
+
+    async def call(self, tool: str, **arguments) -> dict:
+        p = params(arguments)
+        with patch("jarvis_voice.agent_tools.resolve_project", new=self.projects.get):
+            await self.handlers[tool](p)
+        return p.result_callback.await_args.args[0]
+
+    async def test_explain_then_side_lookup_then_fix_preserves_and_consumes_context(self) -> None:
+        # 1. User starts explaining the bug across two turns: no agent work runs yet.
+        r1 = await self.call("hold_context", project="web", note="Modal closes without saving on settings page")
+        self.assertEqual(r1["status"], "held")
+        self.assertEqual(r1["project"], "web")
+        r2 = await self.call("hold_context", note="Repro: open profile settings, edit email, switch tabs -> hook crash")
+        self.assertEqual(len(r2["notes"]), 2)
+        self.agent.send_task.assert_not_awaited()
+
+        # 2. User stops mid-explanation to ask the React version: side_question=True keeps notes open.
+        lookup = await self.call(
+            "send_agent_task", project="web", task="What version of React is used right now?", side_question=True
+        )
+        self.assertEqual((lookup["status"], lookup["held_notes"]), ("sent", 2))
+        self.agent.send_task.assert_awaited_once_with("What version of React is used right now?")
+        self.assertTrue(self.state.working_context.active())
+
+        # 3. A failed send_task never loses the held notes.
+        self.agent.send_task.reset_mock()
+        self.agent.send_task.return_value = False
+        failed = await self.call("send_agent_task", task="Fix the React 19 RC unmount crash")
+        self.assertEqual(failed["status"], "failed")
+        self.assertTrue(self.state.working_context.active())
+
+        # 4. User asks Jarvis to fix it (project omitted -> falls back to held project "web", notes prepended, cleared).
+        self.agent.send_task.return_value = True
+        done = await self.call("send_agent_task", task="Fix the React 19 RC unmount crash")
+        self.assertEqual(done["status"], "sent")
+        sent_prompt = self.agent.send_task.await_args.args[0]
+        self.assertIn("Modal closes without saving on settings page", sent_prompt)
+        self.assertIn("Repro: open profile settings, edit email, switch tabs -> hook crash", sent_prompt)
+        self.assertIn("Fix the React 19 RC unmount crash", sent_prompt)
+        self.assertFalse(self.state.working_context.active())
+
+    async def test_clear_and_guest_isolation(self) -> None:
+        from jarvis_voice.config import settings
+
+        await self.call("hold_context", project="web", note="Draft bug note")
+        self.state.room_turn = True
+        self.assertEqual((await self.call("hold_context", note="Guest injection"))["status"], "owner_only")
+        with patch.object(settings, "meeting_guests", "allow"):
+            await self.call("send_agent_task", task="What time is the deploy?")
+        # Guest task neither receives nor clears the owner's held notes.
+        self.assertEqual(self.agent.send_task.await_args.args[0], "What time is the deploy?")
+        self.assertEqual(self.state.working_context.notes, ["Draft bug note"])
+
+        self.state.room_turn = False
+        self.assertEqual((await self.call("hold_context", clear=True))["status"], "cleared")
+        self.assertFalse(self.state.working_context.active())
+
+
 if __name__ == "__main__":
     unittest.main()

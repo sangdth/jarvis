@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import functools
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable
 
 import numpy as np
 
 from jarvis_voice import telemetry
+
+CONTEXT_TTL_SECS = 1800.0  # stale held notes expire after 30 min of silence so they never leak into a later topic
+MAX_CONTEXT_NOTES = 20
 
 
 class JarvisMode(str, Enum):
@@ -40,6 +44,59 @@ class AgentTopic:
     summary: str
     # A finished turn's full text: the conversation model retells it instead of reading it out.
     is_report: bool = False
+
+
+@dataclass
+class WorkingContext:
+    """Short-lived notes while the user explains a multi-part problem before asking Jarvis to act."""
+
+    project: str | None = None
+    notes: list[str] = field(default_factory=list)
+    updated_at: float = 0.0
+    clock: Callable[[], float] = time.monotonic
+
+    def active(self) -> bool:
+        if not self.notes and not self.project:
+            return False
+        if self.clock() - self.updated_at >= CONTEXT_TTL_SECS:
+            self.clear()
+            return False
+        return True
+
+    def add(self, note: str = "", project: str | None = None) -> None:
+        self.active()
+        cleaned = note.strip()
+        if cleaned and (not self.notes or self.notes[-1] != cleaned):
+            self.notes.append(cleaned)
+            if len(self.notes) > MAX_CONTEXT_NOTES:
+                del self.notes[: len(self.notes) - MAX_CONTEXT_NOTES]
+        if project and project.strip():
+            self.project = project.strip()
+        if self.notes or self.project:
+            self.updated_at = self.clock()
+
+    def clear(self) -> None:
+        self.project = None
+        self.notes.clear()
+        self.updated_at = 0.0
+
+    def format_for_task(self) -> str:
+        if not self.active() or not self.notes:
+            return ""
+        lines = "\n".join(f"- {n}" for n in self.notes)
+        return f"[Context noted while the user explained the task:\n{lines}]"
+
+    def format_for_prompt(self) -> str:
+        if not self.active():
+            return ""
+        proj = f" (project: {self.project})" if self.project else ""
+        lines = "\n".join(f"- {n}" for n in self.notes) if self.notes else "- (project noted, waiting for details)"
+        return (
+            f"[Not the user speaking: Held working context{proj}:\n{lines}\n"
+            "Keep calling hold_context with a brief acknowledgment while they are still explaining; use"
+            " send_agent_task with side_question=true if they pause to ask for information; call send_agent_task"
+            " without side_question once they ask you to act on it.]"
+        )
 
 
 def _last_line(text: str) -> str:
@@ -146,6 +203,8 @@ class JarvisState:
         self.mode: JarvisMode = JarvisMode.VOICE
         self.pending_topics: list[AgentTopic] = []
         self.active_agent_context: dict[str, AgentTopic] = {}
+        self.working_context = WorkingContext()
+        self.user_speaking = False
         # `jarvis meeting` or an enrolled guest speaker: the turn came from someone other than the master, so agent
         # tools that act on the user's behalf (answer, stop, replace) refuse it. Set by JarvisIntentGate on every turn.
         self.room_turn = False

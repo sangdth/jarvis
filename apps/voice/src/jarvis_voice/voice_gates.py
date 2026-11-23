@@ -58,10 +58,18 @@ from jarvis_voice.state import JarvisMode, JarvisState, UserIntent, classify_fas
 
 # Longest sentence Smart Turn keeps open across pauses; past this it goes to Whisper as it is.
 MAX_HELD_SECS = 30
-# Whisper ends a sentence that trails off mid-thought with one of these ("Open the...").
-TRAILING_OFF = ("...", "…", "-", "—")
+# Whisper ends a sentence cut off mid-thought with trailing punctuation or a dangling mid-clause connector.
+TRAILING_OFF = ("...", "…", "-", "—", ",", ":", ";")
+_TRAILING_CONNECTOR = re.compile(
+    r"\b(?:and|or|but|because|although|unless|until|into|onto|the|và|hoặc|nhưng|bởi\s+vì)[.]?$",
+    re.IGNORECASE,
+)
 # How long a trailing-off sentence waits for the rest, counted from the last stretch of silence.
 HOLD_SECS = 2.0
+# After VAD speech stops while a verified turn was waiting on continued speech, wait briefly for Whisper's segment.
+SPEECH_SETTLE_SECS = 0.8
+# Hard ceiling on holding a ready turn when background sound keeps VAD active.
+MAX_READY_HOLD_SECS = 8.0
 # A sentence this soon after Jarvis stopped talking is judged as a possible answer to what it said.
 REPLY_WINDOW_SECS = 20.0
 # How long after the master's INTRODUCTION Jarvis waits for a new speaker to start talking or answer.
@@ -90,6 +98,26 @@ class _Enrollment:
 def is_meeting_addressed(transcript: str) -> bool:
     """True when a sentence in a meeting names Jarvis directly."""
     return _MEETING_ADDRESS_PATTERNS.search(transcript) is not None
+
+
+def is_trailing_off(transcript: str) -> bool:
+    """True when a transcribed clause stops on trailing punctuation or an open mid-clause connector."""
+    text = transcript.strip()
+    if not text:
+        return False
+    if text.endswith(TRAILING_OFF):
+        return True
+    if text.endswith(("?", "!")):
+        return False
+    return _TRAILING_CONNECTOR.search(text) is not None
+
+
+def _uninterruptible(frame: TranscriptionFrame, *, smart_turn_held: bool | None = None) -> TranscriptionFrame:
+    """User speech must not be dropped or cancelled when an InterruptionFrame travels upstream."""
+    frame.interruptible = False
+    if smart_turn_held is not None:
+        frame._smart_turn_held = smart_turn_held  # type: ignore[attr-defined]
+    return frame
 
 
 def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> Path | None:
@@ -165,10 +193,12 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         self._turn = turn_analyzer
         self._vad_speaking = False
         self._holding = False
+        self._smart_turn_held = False
 
     async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame) -> None:
         self._vad_speaking = True
         self._holding = False  # the rest of a held sentence: it joins the same buffer
+        self._smart_turn_held = False
         await super()._handle_user_started_speaking(frame)
 
     async def _handle_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame) -> None:
@@ -186,6 +216,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                     return
                 self._turn.clear()
         self._holding = False
+        self._smart_turn_held = False
         await super()._handle_user_stopped_speaking(frame)
 
     async def process_audio_frame(self, frame: InputAudioRawFrame, direction: FrameDirection) -> None:
@@ -196,6 +227,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         # to Pipecat's flush: the analyzer has cleared its audio, so asking it again would hold the sentence forever.
         if self._turn.append_audio(frame.audio, self._vad_speaking) == EndOfTurnState.COMPLETE and self._holding:
             self._holding = False
+            self._smart_turn_held = True
             await super()._handle_user_stopped_speaking(VADUserStoppedSpeakingFrame())
 
     async def _transcribe_mlx(self, audio: bytes) -> AsyncGenerator[Frame, None]:
@@ -221,12 +253,13 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
             await self.stop_processing_metrics()
             if text.strip():
                 logger.debug(f"Transcription: [{text}]")
-                yield TranscriptionFrame(text, self._user_id, time_now_iso8601(), language)
+                yield _uninterruptible(TranscriptionFrame(text, self._user_id, time_now_iso8601(), language))
         except Exception as exc:
             yield ErrorFrame(error=f"Unknown error occurred: {exc}")
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         started = time.monotonic()
+        held_by_turn, self._smart_turn_held = self._smart_turn_held, False
         checking = self._embedder is not None and self._voiceprint is not None
         enrolling = self._state.enrolling if self._state is not None else False
         score_task = asyncio.create_task(asyncio.to_thread(self._analyze, audio, enrolling)) if checking else None
@@ -279,6 +312,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                         continue
                     if not owner and profile is not None:
                         frame = replace(frame, user_id=profile.name if known and profile.name else profile.id)
+                frame = _uninterruptible(frame, smart_turn_held=held_by_turn)
             yield frame
 
     async def start(self, frame: StartFrame) -> None:
@@ -351,10 +385,16 @@ class JarvisIntentGate(FrameProcessor):
         self._meeting_log: list[str] = []
         self._bot_speaking = False
         self._bot_stopped_at: float | None = None
+        self._vad_speaking = False
         # A sentence that trailed off ("Open the..."), waiting for the rest after a pause.
         self._held: TranscriptionFrame | None = None
         self._hold_timer: asyncio.Task | None = None
         self._released: TranscriptionFrame | None = None
+        # A verified turn held briefly when the user has already started speaking the next clause.
+        self._ready: TranscriptionFrame | None = None
+        self._ready_started_at: float = 0.0
+        self._ready_timer: asyncio.Task | None = None
+        self._flushing_ready: TranscriptionFrame | None = None
         self._in_flight: asyncio.Task[None] | None = None
 
     async def queue_frame(
@@ -381,13 +421,31 @@ class JarvisIntentGate(FrameProcessor):
             elif isinstance(frame, BotStoppedSpeakingFrame):
                 self._bot_speaking = False
                 self._bot_stopped_at = time.monotonic()
-            if self._held is not None:
-                # The user speaks again: wait for that sentence; once they stop, give Whisper the window again.
-                if isinstance(frame, VADUserStartedSpeakingFrame):
+            elif isinstance(frame, VADUserStartedSpeakingFrame):
+                self._vad_speaking = True
+                self.state.user_speaking = True
+                if self._held is not None:
                     self._cancel_hold_timer()
-                elif isinstance(frame, VADUserStoppedSpeakingFrame):
+                if self._ready is not None:
+                    remaining = max(0.05, MAX_READY_HOLD_SECS - (time.monotonic() - self._ready_started_at))
+                    self._start_ready_timer(direction, remaining)
+            elif isinstance(frame, VADUserStoppedSpeakingFrame):
+                self._vad_speaking = False
+                self.state.user_speaking = False
+                if self._held is not None:
                     self._start_hold_timer(direction)
+                elif self._ready is not None:
+                    self._start_ready_timer(direction, SPEECH_SETTLE_SECS)
             await self.push_frame(frame, direction)
+            return
+
+        _uninterruptible(frame)
+        if frame is self._flushing_ready:
+            self._flushing_ready = None
+            if self._ready is frame:
+                self._ready = None
+                self._cancel_ready_timer()
+                await self._emit_turn(frame, direction)
             return
 
         transcript = frame.text.strip()
@@ -403,21 +461,26 @@ class JarvisIntentGate(FrameProcessor):
         if fast in (UserIntent.MUTE, UserIntent.UNMUTE):
             self._cancel_hold_timer()
             self._held = None
+            self._cancel_ready_timer()
+            self._ready = None
             if self._in_flight is not None and not self._in_flight.done():
                 self._in_flight.cancel()
+        elif self._ready is not None and self._ready.user_id != frame.user_id:
+            await self._flush_ready_now(direction)
         # Mute / unmute / introduction act at once and never join a held sentence.
         if fast is None:
             held = self._held
             if held is not None and held.user_id == frame.user_id:
                 self._cancel_hold_timer()
-                frame = replace(frame, text=f"{held.text.strip()} {transcript}")
+                frame = _uninterruptible(replace(frame, text=f"{held.text.strip()} {transcript}"))
                 self._held = None
-            # Hold once: a joined sentence that trails off again goes on now instead of waiting another HOLD_SECS.
-            # Smart Turn already held the audio across the pause, so with it on a second wait only adds delay.
-            elif held is None and not settings.smart_turn and frame.text.strip().endswith(TRAILING_OFF):
-                logger.info(f"[User Transcript] holding for the rest: {frame.text.strip()!r}")
+            # Hold once unless Smart Turn already waited out its silence cap: catches brief mid-thought pauses.
+            elif held is None and not getattr(frame, "_smart_turn_held", False) and is_trailing_off(transcript):
+                logger.info(f"[User Transcript] holding for the rest: {transcript!r}")
                 self._held = frame
-                self._start_hold_timer(direction)
+                self._cancel_ready_timer()
+                if not self._vad_speaking:
+                    self._start_hold_timer(direction)
                 return
 
         await self._run_gate(frame, direction)
@@ -436,6 +499,10 @@ class JarvisIntentGate(FrameProcessor):
 
     async def cleanup(self) -> None:
         self._cancel_hold_timer()
+        self._cancel_ready_timer()
+        self._held = None
+        self._ready = None
+        self.state.user_speaking = False
         if self._in_flight is not None:
             self._in_flight.cancel()
             self._in_flight = None
@@ -466,6 +533,29 @@ class JarvisIntentGate(FrameProcessor):
             # Re-enter via queue_frame so the released frame serializes with incoming frames on FrameProcessor's queue.
             self._released = frame
             await self.queue_frame(frame, direction)
+
+    def _start_ready_timer(self, direction: FrameDirection, delay: float) -> None:
+        self._cancel_ready_timer()
+        self._ready_timer = asyncio.create_task(self._release_ready(direction, delay))
+
+    def _cancel_ready_timer(self) -> None:
+        if self._ready_timer is not None:
+            self._ready_timer.cancel()
+            self._ready_timer = None
+
+    async def _release_ready(self, direction: FrameDirection, delay: float) -> None:
+        """Flush a verified turn once follow-up speech settles (or hits MAX_READY_HOLD_SECS)."""
+        await asyncio.sleep(delay)
+        frame, self._ready_timer = self._ready, None
+        if frame is not None and (self._held is None or self._held.user_id != frame.user_id):
+            self._flushing_ready = frame
+            await self.queue_frame(frame, direction)
+
+    async def _flush_ready_now(self, direction: FrameDirection) -> None:
+        if self._ready is not None:
+            ready, self._ready = self._ready, None
+            self._cancel_ready_timer()
+            await self._emit_turn(ready, direction)
 
     def _recent_jarvis_question(self) -> str | None:
         """An open agent question first; else Jarvis's own last reply, if it stopped talking moments ago."""
@@ -605,6 +695,7 @@ class JarvisIntentGate(FrameProcessor):
 
         # "Meeting mode on / off": deterministic, no model call, and it works while muted (it is about who is heard).
         if fast in (UserIntent.MEETING_ON, UserIntent.MEETING_OFF):
+            await self._flush_ready_now(direction)
             await self._set_meeting_mode(fast is UserIntent.MEETING_ON, is_owner=is_owner)
             return
 
@@ -637,6 +728,7 @@ class JarvisIntentGate(FrameProcessor):
             and fast not in (UserIntent.MUTE, UserIntent.UNMUTE, UserIntent.IGNORE_BACKGROUND)
             and not is_not_for_jarvis(transcript)
         ):
+            await self._flush_ready_now(direction)
             await self._handle_enrollment(profile)
             return
 
@@ -652,6 +744,8 @@ class JarvisIntentGate(FrameProcessor):
             and not is_meeting_addressed(transcript)
         ):
             self._buffer_meeting(speaker, transcript)
+            if not self._vad_speaking and self._held is None and not self.has_queued_frame(TranscriptionFrame):
+                await self._flush_ready_now(direction)
             return
 
         asked_at = time.monotonic()
@@ -673,11 +767,15 @@ class JarvisIntentGate(FrameProcessor):
         )
 
         if intent == UserIntent.MUTE:
+            self._cancel_ready_timer()
+            self._ready = None
             logger.warning("User requested silence ('Shut up' / 'Be quiet'). Entering BEEP_ONLY mode.")
             await self.state.set_mute()
             return
 
         if intent == UserIntent.UNMUTE:
+            self._cancel_ready_timer()
+            self._ready = None
             logger.info("User restored voice mode ('You can talk').")
             await self.state.set_unmute()
             return
@@ -691,6 +789,7 @@ class JarvisIntentGate(FrameProcessor):
                 # Without the master check voices are not told apart, so the conversation model just says hello.
                 intent = UserIntent.ADDRESSED_TO_JARVIS
             elif is_owner:
+                await self._flush_ready_now(direction)
                 hint_name = extract_introduced_name(transcript)
                 self._start_enrollment(hint_name=hint_name)
                 logger.info(f"[Enroll] master introduced a new speaker (hint={hint_name!r}); waiting for their voice.")
@@ -703,12 +802,16 @@ class JarvisIntentGate(FrameProcessor):
                 self._buffer_meeting(speaker, transcript)
             else:
                 logger.debug(f"Ignored self-talk / unaddressed speech: {transcript!r}")
+            if not self._vad_speaking and self._held is None and not self.has_queued_frame(TranscriptionFrame):
+                await self._flush_ready_now(direction)
             return
 
+        if self._bot_speaking and (self.cleaner is not None or self._vad_speaking):
+            # Stop playback right away when cleaning up or holding for continued speech so Jarvis never talks over it.
+            self._bot_speaking = False
+            await self.push_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+
         if self.cleaner is not None:
-            if self._bot_speaking:  # stop playback before waiting up to 1.5 s on OpenRouter
-                self._bot_speaking = False
-                await self.push_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
             # After the speech check (it and its feedback log need the words as heard), before the speaker labels.
             # An open agent question or approval is agent text (maybe from a web page): it never steers the rewrite.
             context = None if self.state.active_agent_context else question
@@ -722,8 +825,33 @@ class JarvisIntentGate(FrameProcessor):
                 "voice.cleanup", raw=heard_text, text=cleaned, ms=round(ms), changed=cleaned != heard_text
             )
             transcript = cleaned
-            frame = replace(frame, text=transcript)
+            frame = _uninterruptible(replace(frame, text=transcript))
 
+        if self._ready is not None:
+            transcript = f"{self._ready.text.strip()} {transcript}"
+            frame = _uninterruptible(replace(frame, text=transcript))
+        else:
+            self._ready_started_at = time.monotonic()
+
+        elapsed = time.monotonic() - self._ready_started_at
+        same_held = self._held is not None and self._held.user_id == frame.user_id
+        if (
+            self._vad_speaking or same_held or self.has_queued_frame(TranscriptionFrame)
+        ) and elapsed < MAX_READY_HOLD_SECS:
+            logger.info(f"[User Transcript] user still speaking; holding turn: {transcript!r}")
+            self._ready = frame
+            self._start_ready_timer(direction, max(0.05, MAX_READY_HOLD_SECS - elapsed))
+            return
+
+        self._ready = None
+        self._cancel_ready_timer()
+        await self._emit_turn(frame, direction)
+
+    async def _emit_turn(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
+        transcript = frame.text.strip()
+        is_owner = frame.user_id in ("owner", "u", "")
+        profile = self._resolve_profile(frame.user_id)
+        speaker = "User" if is_owner else (f"Speaker: {profile.name}" if profile and profile.name else "Room")
         self.state.room_turn = not is_owner
         self.state.current_speaker = speaker
         if profile is not None and profile.enrolled and profile.name and not profile.greeted:
@@ -736,9 +864,9 @@ class JarvisIntentGate(FrameProcessor):
             history = "\n".join(self._meeting_log)
             self._meeting_log.clear()
             prefix = f"{MEETING_TRANSCRIPT}\n{history}]\n" if history else ""
-            frame = replace(frame, text=f"{prefix}[{speaker}]: {transcript}")
+            frame = _uninterruptible(replace(frame, text=f"{prefix}[{speaker}]: {transcript}"))
         elif not is_owner:
-            frame = replace(frame, text=f"[{speaker}]: {transcript}")
+            frame = _uninterruptible(replace(frame, text=f"[{speaker}]: {transcript}"))
 
         # User is addressing Jarvis: this sentence is the whole user turn. The aggregator runs on
         # ExternalUserTurnStrategies, so only these frames start a turn (and interrupt Jarvis).

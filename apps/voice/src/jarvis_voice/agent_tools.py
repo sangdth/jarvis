@@ -14,6 +14,7 @@ from jarvis_voice.config import settings
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.screen import ScreenError, ask_screen, capture_front_window
 from jarvis_voice.sessions import CodingSessionAdapter, match_sessions
+from jarvis_voice.state import WorkingContext
 from jarvis_voice.t3_adapter import resolve_project
 
 
@@ -72,6 +73,44 @@ def agent_tools() -> list:
                         " name, a changed detail, 'no, I meant ...'): the old task is stopped and this one runs"
                         " instead, so give the whole corrected task. False or omitted for an extra, separate task."
                     ),
+                },
+                "side_question": {
+                    "type": "boolean",
+                    "description": (
+                        "True when working context is being held (`hold_context`) and the user pauses their"
+                        " explanation to ask for information or a quick lookup ('what version of React are we using"
+                        " right now?') before finishing the main topic: runs this lookup while keeping the held"
+                        " context open for when they continue. Omit or false when acting on the main task."
+                    ),
+                },
+            },
+            required=[],
+        ),
+        FunctionSchema(
+            name="hold_context",
+            description=(
+                "Jot down working context while the user is explaining a bigger problem, bug, symptoms, reproduction"
+                " steps, or background across multiple turns without asking you to act yet ('let me explain a bug...',"
+                " 'when I click save the modal closes...'). Starts no agent work. After calling it, reply with only a"
+                " brief acknowledgment ('Mm-hmm.', 'I see.', 'Got it, go on.') so the user can keep speaking. Never"
+                " use this for a direct one-shot command or question (call send_agent_task immediately), for saving a"
+                " permanent personal note ('save a note that...' -> send_agent_task), or for small talk."
+            ),
+            properties={
+                "note": {
+                    "type": "string",
+                    "description": (
+                        "Concise English note of what the user just explained (symptoms, steps, files, theory),"
+                        " translated if they spoke another language."
+                    ),
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Folder from the user's project list if named in this turn; omit to keep the held one.",
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "True only when the user drops or cancels the unfinished topic ('never mind that').",
                 },
             },
             required=[],
@@ -204,8 +243,13 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
     async def send(agent: Any, args: dict) -> bool | str | dict:
         if args.get("replace") and agent.busy:
             await agent.interrupt()  # a correction: the old task must not come back as a second answer
+        ctx = orchestrator.state.working_context
+        has_held = isinstance(ctx, WorkingContext) and orchestrator.state.room_turn is not True and ctx.active()
+        side = bool(args.get("side_question"))
         task, project = args.get("task", "").strip(), args.get("project")
         session = (args.get("session") or "").strip()
+        if has_held and not side and task and not project and not session and ctx.project:
+            project = ctx.project
         moved: dict = {}
         if isinstance(agent, CodingSessionAdapter) and (session or project) and not agent.connected:
             moved = await switch_session(agent, session, project)
@@ -213,7 +257,8 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
                 return moved  # nothing went out: a refusal, or "continue the login session" alone
         if not task:
             return "nothing_to_send"  # "continue on X" while connected: not a failure
-        prompt = task
+        held_prefix = ctx.format_for_task() if has_held and not side else ""
+        prompt = f"{held_prefix}\n\n{task}" if held_prefix else task
         if args.get("include_screen"):
             try:
                 shot = await capture_front_window()
@@ -224,10 +269,14 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         before = agent.session_id if isinstance(agent, CodingSessionAdapter) else None
         if not await agent.send_task(prompt):
             return False
+        if has_held and not side:
+            ctx.clear()
         orchestrator.remind_while_busy(agent, task)
         t3 = orchestrator.t3
         if agent is t3 and t3 is not None and t3.session_id != before:  # T3 continued its newest thread, or started one
             moved = {**moved, "session": t3.title or "new"}
+        if has_held and side:
+            moved = {**moved, "held_notes": len(ctx.notes)}
         return {**moved, "status": "sent"}
 
     async def switch_session(agent: CodingSessionAdapter, session: str, project: str | None) -> dict:
@@ -344,12 +393,42 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         notes = meeting_notes.read_comments()
         await params.result_callback({"status": "read", "comments": notes} if notes else {"status": "no_comments"})
 
+    async def hold(params: Any) -> None:
+        if orchestrator.state.room_turn is True:  # a meeting guest cannot alter the owner's working scratchpad
+            await params.result_callback({"status": "owner_only"})
+            return
+        ctx = orchestrator.state.working_context
+        if not isinstance(ctx, WorkingContext):
+            ctx = WorkingContext()
+            orchestrator.state.working_context = ctx
+        args = params.arguments
+        if args.get("clear"):
+            ctx.clear()
+            await params.result_callback({"status": "cleared"})
+            return
+        note = str(args.get("note") or "").strip()
+        raw_project = str(args.get("project") or "").strip()
+        resolved = raw_project if raw_project and resolve_project(raw_project) is not None else None
+        if raw_project and resolved is None and not note:
+            await params.result_callback({"status": "unknown_project"})
+            return
+        if not note and not resolved:
+            await params.result_callback({"status": "nothing_to_hold"})
+            return
+        ctx.add(note=note, project=resolved)
+        await params.result_callback({
+            "status": "held",
+            "notes": list(ctx.notes),
+            **({"project": ctx.project} if ctx.project else {}),
+        })
+
     async def stop(agent: Any, args: dict) -> bool | str:
         # Nothing running: say so, instead of a "failed" the model would read out as "I couldn't stop it".
         return await agent.interrupt() if agent.busy else "nothing_running"
 
     handlers: dict[str, Callable[[Any], Awaitable[None]]] = {
         "send_agent_task": handler(send, "sent", "failed", guest_waits=True),
+        "hold_context": hold,
         # No id: an answer goes to the agent that asked, a stop to the one that is working.
         "answer_agent": handler(
             lambda a, args: a.answer(args.get("answer", "")),
