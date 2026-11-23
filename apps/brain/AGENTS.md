@@ -102,9 +102,12 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   - **Evidence:** `board.ts` records `record_skill_load` when a worker reads `skills/<slug>/SKILL.md` and exposes
     `report_diagnostic`; `reconciler.py` writes `traces/attempt-<id>.json` after every attempt.
   - **Reflection:** Offline `Improver` role receives a 1-line-per-item index of skills, repo notes and trace files,
-    inspects them on demand via `read`/`grep`, and proposes at most 1 skill change (`create`, incremental `append`,
-    `update`, or `retire`) via `propose_skill_change` plus at most 1 memory change via `propose_memory_update`
-    (checking the claim against the trace first).
+    the deterministic failure summary (`skills.mine_failure_patterns`: failed traces by harness surface, plus
+    `feedback/intent.jsonl` corrections), inspects them on demand via `read`/`grep`, and proposes at most 1 skill
+    change (`create`, incremental `append`, `update`, or `retire`) via `propose_skill_change`, at most 1 memory
+    change via `propose_memory_update` (checking the claim against the trace first), or at most 1 bounded harness
+    fix via `propose_harness_task` (evidence + reproduce-first `verify_cmd`; a `repo='jarvis'` `draft` task under
+    `harness-proposal`, `ready` only with `AUTONOMOUS_HARNESS_UPGRADES`). Protected files are refused.
   - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; `append`/`update` requires $\ge 1$
     attempt ID plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any
     skill with 2 failures and 0 successes after an update automatically rolls back or retires.
@@ -119,7 +122,10 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     than resetting anything backwards.
   - Every self build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, the `brain self-check` canary,
     then `cargo test` for the cockpit when cargo is on PATH) **plus** the pre-edit baseline held-out suite in
-    `apps/brain/tests` against the candidate worktree before the checkout is updated.
+    `apps/brain/tests` against the candidate worktree before the checkout is updated. A candidate that touches the
+    voice also runs `scripts/bench_intent.py 1` (≥97% for `executive_filter.py` / `languages.json`) and
+    `scripts/bench_routing.py 1` (≥95% for `prompts.py`, `agent_tools.py`, `orchestrator.py`); the scripts are read
+    from the checkout, never the candidate.
   - Edits touching `PROTECTED_SELF_PATHS` (`pyproject.toml`, `uv.lock`, `Cargo.toml`, `Cargo.lock`,
     `apps/brain/src/brain/{config,sandbox}.py`, `apps/brain/src/brain/defaults/pi/board.ts`,
     `apps/voice/src/jarvis_voice/{config,voice_gates}.py`, `src/jarvis/{cli,supervisor}.py`), or modifying/deleting

@@ -23,7 +23,7 @@ from jarvis_voice.feedback import FeedbackLog
 from jarvis_voice.memory import create_memory_service
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.pi_adapter import PiAdapter, install_extension
-from jarvis_voice.prompts import AGENT_REPORT_PROMPT, LANGUAGES, greeting_prompt, system_prompt
+from jarvis_voice.prompts import AGENT_REPORT_PROMPT, LANGUAGES, NOT_THE_USER, greeting_prompt, system_prompt
 from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
 from jarvis_voice.state import JarvisState
 from jarvis_voice.system_prompts import load_overrides
@@ -215,6 +215,10 @@ async def run_pipecat_harness(
         logger.info(f"SYSTEM.md overrides: {', '.join(name.capitalize() for name in overrides)}")
     use_cleanup = settings.transcript_cleanup and settings.openrouter_api_key
     cleaner = TranscriptCleaner(prompt=overrides.get("cleanup")) if use_cleanup else None
+    retell_prompt = overrides.get("retell") or AGENT_REPORT_PROMPT
+    if not retell_prompt.startswith(NOT_THE_USER):
+        # The marker keeps agent output out of the user's voice; an override may add rules, not drop it.
+        retell_prompt = f"{NOT_THE_USER} an agent finished its turn.] {retell_prompt}"
     if cleaner is not None:
         logger.info(f"Cleaning up sentences with {cleaner.model}")
     task_ref: dict[str, PipelineTask] = {}
@@ -238,7 +242,7 @@ async def run_pipecat_harness(
             )
             await task_ref["task"].queue_frame(
                 LLMMessagesAppendFrame(
-                    messages=[{"role": "system", "content": AGENT_REPORT_PROMPT + held + text}], run_llm=True
+                    messages=[{"role": "system", "content": retell_prompt + held + text}], run_llm=True
                 )
             )
 
@@ -269,7 +273,9 @@ async def run_pipecat_harness(
         meeting=meeting,  # from then on `state.meeting` follows the voice ("meeting mode on")
     )
     soul = load_soul()
-    orchestrator = AgentOrchestrator(state=state, personality=soul.personality)
+    orchestrator = AgentOrchestrator(
+        state=state, personality=soul.personality, waiting_prompt=overrides.get("waiting", "")
+    )
     orchestrator.load_from_file(settings.watch_config_path)
     thread = await pick_connection(orchestrator, connect) if connect else None
 

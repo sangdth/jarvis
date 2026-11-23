@@ -81,6 +81,8 @@ class Settings(EnvSettings):
     sandbox_enabled: bool = True
     max_personal_skills: int = 10
     auto_research_after_strikes: int = 0
+    # An Improver-proposed harness fix lands as a draft task unless the owner opts into auto-ready.
+    autonomous_harness_upgrades: bool = False
 
     # Interactive orchestration. A small question is one-shot `pi`; project work goes to a long-lived client
     # thread (`t3` by default). `orchestrator_model` routes a turn; empty = a fast default model.

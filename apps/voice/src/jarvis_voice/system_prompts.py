@@ -12,7 +12,7 @@ from loguru import logger
 from jarvis_voice.config import JARVIS_HOME
 
 SYSTEM_PATH = JARVIS_HOME / "SYSTEM.md"
-KNOWN = ("cleanup",)  # the section names Jarvis reads, lower case
+KNOWN = ("cleanup", "retell", "waiting")  # the section names Jarvis reads, lower case
 
 
 def parse_overrides(text: str) -> dict[str, str]:
