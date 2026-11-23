@@ -11,6 +11,19 @@ That installs `/Applications/Jarvis.app` (or `~/Applications` when `/Application
 download's quarantine flag, writes only the server URL to `~/.config/jarvis-remote/server`, and opens it. A raw
 [`/Jarvis.app.zip`](http://localhost:8643/Jarvis.app.zip) download works too; put the URL in Settings by hand.
 
+Without a Jarvis to ask, install the newest build from the rolling release in one command — it also clears the
+quarantine flag, so macOS does not block the first launch:
+
+```bash
+curl -fsSL 'https://github.com/sangdth/jarvis/releases/download/connect/install-connect.sh' | sh
+# or, to also point it at your server:
+curl -fsSL 'https://github.com/sangdth/jarvis/releases/download/connect/install-connect.sh' | sh -s http://mac-mini:8643
+```
+
+The [`Jarvis Connect.dmg`](https://github.com/sangdth/jarvis/releases/download/connect/Jarvis%20Connect.dmg) next to
+it works by hand: drag `Jarvis.app` to Applications, then allow it once in Privacy & Security (ad-hoc signature, not
+notarized).
+
 ## What it does
 
 - **Connect.** With no secret yet, the button asks the server for a pairing code
@@ -34,7 +47,10 @@ with `codesign --verify --deep --strict`, swaps the bundle, and relaunches. The 
 
 Limits: ad-hoc signing (`codesign -s -`) changes the bundle's hash on every build, so macOS may ask for the
 Microphone again after an update; an Apple Development identity in the keychain avoids that. In-place updates assume
-the bundle is writable — otherwise install again with `/install-app`.
+the bundle is writable — otherwise install again with `/install-app`. An app downloaded from the release (not
+installed through `/install-app`, which clears the quarantine flag) is blocked on first launch, because ad-hoc
+signatures are not notarized: allow it once in System Settings → Privacy & Security → Open Anyway, or run
+`xattr -dr com.apple.quarantine /Applications/Jarvis.app`.
 
 ## Build
 
