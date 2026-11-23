@@ -37,9 +37,9 @@ mac:
 run:
     uv run jarvis
 
-# The 24/7 service on this checkout: sync if deps changed, refresh launchd, restart.
-restart:
-    uv run jarvis restart
+# The 24/7 service on this checkout: sync, build the cockpit and the mac app, relaunch, open the cockpit.
+start:
+    uv run jarvis start
 
 status:
     uv run jarvis status

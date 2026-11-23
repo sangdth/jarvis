@@ -12,7 +12,7 @@
 tokens and `SOUL.md`. `src/jarvis` is the one command (`jarvis`) that starts, stops and talks to the stack.
 
 The checkout is the runtime. `jarvis` runs the brain and the voice in one process on this checkout (`uv sync` is
-the only build step, and only when dependencies changed), so `jarvis restart` is the whole update loop. One aiohttp
+the only build step, and only when dependencies changed), so `jarvis start` is the whole update loop. One aiohttp
 app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface: the brain's API, the cockpit's
 telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode`, `/v1/restart`, and the thin client's
 `/ws` + `/client.py`. Every route but `/health` needs the shared token. One machine, one board, one SQLite writer,

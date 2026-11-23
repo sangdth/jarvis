@@ -2,7 +2,7 @@
 Where Jarvis keeps its code and runtime state.
 
 The repository checkout (`REPO_ROOT`) is the single source of truth and live runtime: editing code
-takes effect immediately on `jarvis restart` with no wheel build or tool reinstall. Runtime state,
+takes effect immediately on `jarvis start` with no wheel build or tool reinstall. Runtime state,
 databases (`brain/state.db`, `memory/`), secrets (`.env`, `brain_token`, `remote_token`), logs, and
 models stay in `JARVIS_HOME` (defaulting to `REPO_ROOT`, overridable via `$JARVIS_HOME`) and are
 gitignored so they are never committed.

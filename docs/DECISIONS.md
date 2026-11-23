@@ -12,6 +12,10 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   checkout and the gateway serves it at `/Jarvis.app.zip` with `/install-app` beside it, so the app is never older
   than the code running on the Mac mini. Limits: `swiftc` is needed to build it; the bundle is signed ad-hoc when no
   Apple Development identity is in the keychain, so macOS can ask for the Microphone again after an in-app update.
+- **One service command: `jarvis start`.** It syncs, builds the cockpit, builds the mac app, kicks launchd and opens
+  the cockpit; `restart`, `update` and `upgrade` were separate spellings of parts of that and are gone. Limits: it is
+  a restart, not "ensure running" — on a live instance it kills the voice mid-sentence. Run `jarvis` in a terminal,
+  or `jarvis serve` for the stack without launchd, when you do not want it supervising.
 - **One pending request per client** (T3 `runtime-request`, OpenCode `_pending_permission` / `_pending_form`).
   A second request before the first is answered replaces it. With one user answering by voice this has not
   happened; Claude Code serializes its own prompts with `_ask_lock`.
@@ -76,7 +80,7 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   installed one.
 - **The checkout is the runtime; one home, one `.env`, one token.** Nothing is packaged: `install.sh` clones the
   repository, `uv sync`s it, and `~/.local/bin/jarvis` is a three-line shim into that checkout's `.venv`, so an
-  edit plus `jarvis restart` is live and there is no release to wait for. Limits: a checkout with uncommitted
+  edit plus `jarvis start` is live and there is no release to wait for. Limits: a checkout with uncommitted
   edits runs those edits (that is the point), so `jarvis --version` prints `+dirty` to make it obvious; two
   checkouts on one machine would each want the port, and the one-mic lock (`~/.config/jarvis/jarvis.lock`) stops
   the second.

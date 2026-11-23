@@ -11,10 +11,11 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 
 - Production is a checkout, not a package: `curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh`
   (`site/install.sh`: uv, clone into `~/Projects/jarvis`, `uv sync`, a thin `~/.local/bin/jarvis` shim into that
-  `.venv`, then `jarvis init`). The checkout *is* the runtime: an edit plus `jarvis restart` is live, and so is
-  `git pull` plus `jarvis restart`. `jarvis --version` names the running branch and commit (`+dirty` when edited).
+  `.venv`, then `jarvis init`). The checkout *is* the runtime: an edit plus `jarvis start` is live, and so is
+  `git pull` plus `jarvis start`. `jarvis --version` names the running branch and commit (`+dirty` when edited).
   Commands: `jarvis` (this Mac's mic and speaker, or a paired Mac's when it connects), `jarvis serve [--meeting|--connect X]`
-  (the same, spelled out), `jarvis start|stop|restart|logs` (the 24/7 launchd service on this checkout), `jarvis pair`
+  (the same, spelled out), `jarvis start|stop|logs` (the 24/7 launchd service on this checkout, and the one command
+  that restarts it), `jarvis pair`
   (one code, then another Mac's mic and speaker take over while connected: `jarvis remote` is gone), `jarvis meeting`
   (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
   project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve|timers|remind|schedule`
@@ -123,7 +124,8 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   thread, a minimal Claude/OpenCode turn, or the board). A new kind of work is a new runner in
   `apps/brain/src/brain/runners/`, not new code in the voice.
 - **The checkout is the runtime; one gateway is the surface.** `src/jarvis/supervisor.py` runs the brain and the
-  voice in one process on this checkout (no wheel, no `uv tool`), and `jarvis restart` is the only update step.
+  voice in one process on this checkout (no wheel, no `uv tool`). `jarvis start` syncs, builds both compiled
+  artifacts (cockpit, mac app), kicks launchd and opens the cockpit; it is the only service command.
   Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`), built by
   `BrainServer`: the brain's API, the cockpit's telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`,
   `/v1/mode`, `/v1/restart`, and the thin client's `/ws` + `/client.py`. Every route but `/health` needs the shared

@@ -449,7 +449,7 @@ class RemoteVoiceTransport:
         if not MAC_APP_ZIP.is_file():
             return web.Response(
                 status=404,
-                text="No mac app built on this checkout yet: run `jarvis restart` (or `just build`) on the Mac "
+                text="No mac app built on this checkout yet: run `jarvis start` (or `just build`) on the Mac "
                 "running Jarvis, then download again.\n",
             )
         return web.FileResponse(

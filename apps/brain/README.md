@@ -12,8 +12,7 @@ It needs no setup of its own: `jarvis` runs it with the voice in one process on 
 
 ```bash
 jarvis                      # the voice and the brain together, in this terminal
-jarvis start                # or as a 24/7 service: launchd keeps this checkout running
-jarvis restart              # after an edit: the new code starts
+jarvis start                # 24/7: launchd keeps this checkout running, and how you restart after an edit
 jarvis status               # version, uptime, mode, spend today, tasks, voice
 jarvis top                  # the cockpit (cargo build --release --workspace first)
 ```

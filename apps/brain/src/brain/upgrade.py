@@ -187,7 +187,7 @@ def _divergence_message(snapshot: RepoSnapshot) -> str:
         "Suggested remedy (saves your local commits to a backup branch first):\n"
         f"  git -C {snapshot.repo_dir} branch backup/{stamp} HEAD\n"
         f"  git -C {snapshot.repo_dir} rebase origin/master\n"
-        "Then re-run: jarvis restart\n"
+        "Then re-run: jarvis start\n"
         "(or, if the local commits are disposable: git reset --hard origin/master)"
     )
 

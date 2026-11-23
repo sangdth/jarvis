@@ -117,18 +117,40 @@ class HttpTest(unittest.TestCase):
 
 
 class ServiceTest(unittest.TestCase):
-    def test_restart_writes_the_plist_and_kicks_launchd(self) -> None:
+    def test_start_builds_everything_starts_it_and_opens_the_cockpit(self) -> None:
+        # One path: the only service command builds, starts and opens the cockpit, so a `git pull` and a start never
+        # serve a stale cockpit or mac app.
         with patch.object(cli, "PLIST_PATH", Path("/tmp/com.sangdth.jarvis.plist")), \
                 patch.object(cli, "sync_dependencies") as sync, patch.object(cli, "build_cockpit") as build, \
+                patch.object(cli, "build_mac_app") as mac, \
                 patch.object(cli, "write_plist") as write, patch.object(cli, "launchd_loaded", return_value=True), \
                 patch.object(cli, "launchd_kick") as kick, patch.object(cli, "run_cockpit") as top, \
                 patch.object(cli.sys, "platform", "darwin"), patch("builtins.print"):
-            cli.service_restart(["--meeting"])
+            cli.service_start(["--meeting"])
         sync.assert_called_once_with()
         build.assert_called_once_with()
+        mac.assert_called_once_with()
         write.assert_called_once_with(["--meeting"])
         kick.assert_called_once_with()
         top.assert_called_once_with([])
+
+    def test_start_bootstraps_when_the_agent_is_not_loaded(self) -> None:
+        with patch.object(cli, "PLIST_PATH", Path("/tmp/com.sangdth.jarvis.plist")), \
+                patch.object(cli, "sync_dependencies"), patch.object(cli, "build_cockpit"), \
+                patch.object(cli, "build_mac_app"), patch.object(cli, "write_plist"), \
+                patch.object(cli, "launchd_loaded", return_value=False), \
+                patch.object(cli, "launchd_boot") as boot, patch.object(cli, "run_cockpit"), \
+                patch.object(cli.sys, "platform", "darwin"), patch("builtins.print"):
+            cli.service_start()
+        boot.assert_called_once_with()
+
+    def test_the_cockpit_is_skipped_when_there_is_no_terminal(self) -> None:
+        # `jarvis start` over ssh: the restart worked, so it must not exit nonzero because a TUI cannot open.
+        with patch.object(cli, "cockpit_binary", return_value=Path("/tmp/jarvis-top")), \
+                patch.object(cli.sys.stdout, "isatty", return_value=False), \
+                patch.object(cli.subprocess, "call") as call, patch("builtins.print"):
+            self.assertEqual(cli.run_cockpit([]), 0)
+        call.assert_not_called()
 
     def test_restart_keeps_the_mode_already_installed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,7 +163,7 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(cli.plist_serve_args(), ["--meeting", "--connect", "pi"])
 
     def test_the_old_remote_flag_is_dropped_from_an_installed_plist(self) -> None:
-        # It was its own mode; the thin client is always served now, so `jarvis restart` cleans the plist as it goes.
+        # It was its own mode; the thin client is always served now, so `jarvis start` cleans the plist as it goes.
         with tempfile.TemporaryDirectory() as tmp:
             plist = Path(tmp) / "p.plist"
             plist.write_text(

@@ -84,8 +84,8 @@ runs `uv sync`, and puts one tiny shim on your `PATH` that runs that checkout's 
 present it also builds the cockpit (`jarvis top`). Apple Silicon Macs only.
 
 **There is no release to wait for: the checkout is the runtime.** Nothing is packaged into a wheel and nothing is
-installed globally. Editing a file and running `jarvis restart` is the whole update loop; so is `git pull` and
-`jarvis restart`. `jarvis --version` prints the branch and commit of the code that is actually running, with
+installed globally. Editing a file and running `jarvis start` is the whole update loop; so is `git pull` and
+`jarvis start`. `jarvis --version` prints the branch and commit of the code that is actually running, with
 `+dirty` when the tree has uncommitted edits.
 
 Everything of yours — `.env`, `agents.json`, `SOUL.md`, the voiceprint, models, memory, the board, logs and the
@@ -175,15 +175,16 @@ Ollama, Jarvis still runs, just without memory.
 ```bash
 jarvis                 # listen here, in this terminal
 jarvis start           # or as a 24/7 service: launchd keeps this checkout running
-jarvis restart         # after any edit: sync if dependencies changed, then restart on the new code
 ```
+`jarvis start` is also how you restart: it syncs, rebuilds the cockpit and the mac app, and relaunches the daemon on
+whatever is on disk, so an edit or a `git pull` is one command.
 Jarvis greets you in a few words and listens. Speakers work: the mic and speaker run through macOS voice
 processing (the echo canceller FaceTime uses), so you can talk over Jarvis. With the master check on, enroll your
 voice again after updating from an older version (`jarvis enroll`): it now records through the same processing.
 Updated from a version that required enrollment? Your voiceprint stays, but the check is now off until you set
 `MASTER_CHECK=true`; the startup log says so.
 
-`jarvis restart` never waits for a release: the daemon runs this checkout directly, so the file you just saved is
+`jarvis start` never waits for a release: the daemon runs this checkout directly, so the file you just saved is
 the code that starts. `jarvis logs` follows its log; `jarvis stop` stops it.
 
 ### The brain and the cockpit
@@ -201,7 +202,7 @@ jarvis schedule --every "0 8 * * 1-5" --title "Morning PRs" --prompt "check the 
 jarvis timers                             # follow-ups and schedules (`timers cancel <id>`)
 jarvis mode AUTONOMOUS                    # or ASSIST: pause background work
 jarvis top                                # live cockpit: tasks, attempts, spend, telemetry (cargo build first)
-jarvis restart                            # the 24/7 service, on this checkout
+jarvis start                              # sync, rebuild, relaunch the 24/7 service and open the cockpit
 ```
 
 A scheduled check runs read-only and lands in the outbox: in `ASSIST` mode Jarvis speaks it as soon as it is
@@ -225,8 +226,8 @@ then on the button just connects (Disconnect hands the mic back). Settings shows
 server's, an **Update** button that pulls the newer bundle from the Mac mini, the server address, and Unpair.
 
 Nothing heavy moves: the app is a mic, a speaker and a socket, with macOS voice processing doing the echo
-cancellation so "shut up" and talking over Jarvis still work. `jarvis restart` rebuilds the bundle (`apps/mac/build.sh`,
-needs only `swiftc`), so the app always matches the code running there.
+cancellation so "shut up" and talking over Jarvis still work. `jarvis start` rebuilds the bundle
+(`apps/mac/build.sh`, needs only `swiftc`), so the app always matches the code running there.
 
 ### Listen from another Mac (thin client, no install)
 

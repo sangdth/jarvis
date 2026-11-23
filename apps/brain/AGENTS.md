@@ -12,8 +12,7 @@ history: `docs/super-brain-plan.md`, `docs/architecture.md`.
 Run from the repository root. `jarvis …` is the documented surface; `uv run python -m brain.cli …` is the same code.
 
 - Install / sync: `uv sync` (the only build step; the checkout is what runs)
-- Run the whole stack: `jarvis` (this terminal) or `jarvis start` (launchd, 24/7)
-- Restart after an edit: `jarvis restart`
+- Run the whole stack: `jarvis` (this terminal) or `jarvis start` (launchd, 24/7; the same command restarts it)
 - The server alone, no voice: `uv run python -m brain.cli serve` (what the LaunchAgent used to start)
 - Check status / tasks: `jarvis status`, `jarvis tasks`
 - Add or update a task: `jarvis add --repo <repo> --kind goal|problem --title "..." --spec "..."`
@@ -21,7 +20,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
 - SoL-Pi auto-research fan-out: `jarvis research <task_id>`
 - Self-improving skill reflection: `jarvis improve`
 - `launchd` plist: `jarvis launchd` (`--install` writes it; `jarvis start` does both)
-- Update the checkout and restart: `git pull` then `jarvis restart` (`brain upgrade --check` reports git state)
+- Update the checkout and restart: `git pull` then `jarvis start` (`brain upgrade --check` reports git state)
 - Cockpit: `jarvis top` (Rust, `apps/tui`; build once with `cargo build --release --workspace`)
 - Lint & types: `uv run ruff check src apps packages tests` and `uv run mypy` (whole repo, one config)
 - Tests: `uv run pytest` (this app's suite is `apps/brain/tests`); cockpit: `cargo test --workspace`

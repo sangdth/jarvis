@@ -2,7 +2,7 @@
 # Installs Jarvis from a checkout: curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh
 #
 # There is no packaged release to wait for. The checkout *is* the runtime, so updating is `git pull` and
-# `jarvis restart`; editing a file is `jarvis restart`. It installs uv (if missing), which brings its own Python,
+# `jarvis start`; editing a file is `jarvis start`. It installs uv (if missing), which brings its own Python,
 # so nothing touches the Python you already have.
 set -eu
 
@@ -57,7 +57,7 @@ fi
 if command -v swiftc >/dev/null 2>&1; then
   echo "Building the mac client (Jarvis.app)..."
   (cd "$TARGET" && sh apps/mac/build.sh >/dev/null 2>&1) ||
-    echo "The mac client did not build; \`jarvis restart\` tries again."
+    echo "The mac client did not build; \`jarvis start\` tries again."
 else
   echo "No swiftc, so the mac client is skipped (xcode-select --install, then \`just mac\`)."
 fi

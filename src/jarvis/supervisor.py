@@ -2,7 +2,7 @@
 `jarvis` runs the whole thing: the brain and the voice harness in one process, on this checkout.
 
 There is no build or install step between the code and what runs. The repository is the runtime, so an edit plus
-`jarvis restart` is live. One HTTP/SSE/WebSocket server on `BRAIN_PORT` is the only network surface: the brain's
+`jarvis start` is live. One HTTP/SSE/WebSocket server on `BRAIN_PORT` is the only network surface: the brain's
 API, the cockpit's telemetry, the thin client's mic and speaker, and the small probe/operator routes.
 """
 

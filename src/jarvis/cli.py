@@ -2,10 +2,10 @@
 The `jarvis` command: a thin launcher for the one process that runs this checkout.
 
 There is no build, wheel or tool install between the code and what runs: the repository *is* the runtime. An edit
-plus `jarvis restart` is live. The CLI only starts, stops and talks to that process:
+plus `jarvis start` is live. The CLI only starts, stops and talks to that process:
 
 - foreground: `jarvis` (this Mac's mic and speaker, or a paired Mac's), `jarvis meeting`, `jarvis connect [agent]`
-- as a service: `jarvis start | stop | restart | logs`
+- as a service: `jarvis start | stop | logs`
 - over HTTP: `jarvis status | health | ask | add | board | tasks | mode | research | improve | timers | remind | schedule`
 - once: `jarvis init | enroll | top`
 
@@ -45,9 +45,9 @@ a paired Mac (no install, no mode to start):
   jarvis devices  list them (`devices revoke <id>` cuts one off)
 
 as a service (launchd keeps it up, 24/7):
-  start [flags]   install/refresh the LaunchAgent and start it; keeps the mode it already had
+  start           sync, build the cockpit and the mac app, (re)start it, then open the cockpit;
+                  keeps the mode it already had
   stop            stop it
-  restart         sync, refresh the LaunchAgent, restart: the only step an edit needs
   logs            tail the daemon's log
 
 over the network (one HTTP/SSE/WebSocket server, one token):
@@ -113,7 +113,7 @@ def call(method: str, path: str, *, url: str = "", timeout: float = 30.0, **kwar
 
 
 # --------------------------------------------------------------------------------------------------------------
-# The service: launchd runs this checkout, and `restart` is the only step an edit needs
+# The service: launchd runs this checkout, and `jarvis start` is the only step an edit needs
 # --------------------------------------------------------------------------------------------------------------
 def hold_lock(home: Path = IPC_HOME) -> IO[str]:
     """One listening Jarvis per machine: two would share the mic and the vector store. Keep the file open."""
@@ -125,7 +125,7 @@ def hold_lock(home: Path = IPC_HOME) -> IO[str]:
         lock.seek(0)
         pid = lock.read().strip() or "?"
         lock.close()
-        sys.exit(f"Jarvis is already running (pid {pid}); `jarvis restart` replaces it.")
+        sys.exit(f"Jarvis is already running (pid {pid}); `jarvis start` replaces it.")
     lock.seek(0)
     lock.truncate()
     lock.write(str(os.getpid()))
@@ -134,7 +134,7 @@ def hold_lock(home: Path = IPC_HOME) -> IO[str]:
 
 
 def plist_serve_args() -> list[str]:
-    """The mode the installed LaunchAgent already runs, so `restart` never silently changes it."""
+    """The mode the installed LaunchAgent already runs, so `jarvis start` never silently changes it."""
     import re
 
     try:
@@ -212,19 +212,23 @@ def sync_dependencies() -> None:
         return
     proc = subprocess.run([uv, "sync", "--quiet"], cwd=str(REPO_ROOT))
     if proc.returncode != 0:
-        sys.exit("`uv sync` failed; the running code was not restarted. Fix it and run `jarvis restart` again.")
+        sys.exit("`uv sync` failed; the running code was not restarted. Fix it and run `jarvis start` again.")
 
 
 def service_start(serve_args: list[str] | None = None) -> None:
+    """`jarvis start`: sync, build what compiles, (re)start it, then show the cockpit."""
     if sys.platform != "darwin":
         sys.exit("`jarvis start` uses launchd; on another system run `jarvis serve` in a terminal.")
     sync_dependencies()
+    build_cockpit()
+    build_mac_app()
     write_plist(serve_args if serve_args is not None else plist_serve_args())
     if launchd_loaded():
         launchd_kick()
     else:
         launchd_boot()
-    print(f"Started {LAUNCHD_LABEL}. `jarvis status` once it is up; `jarvis logs` follows the log.")
+    print(f"Started {LAUNCHD_LABEL} on {version()}. `jarvis status` checks it; `jarvis logs` follows the log.")
+    run_cockpit([])
 
 
 def service_stop() -> None:
@@ -233,19 +237,6 @@ def service_stop() -> None:
         return
     subprocess.run(["launchctl", "bootout", launchd_domain()], capture_output=True)
     print(f"Stopped {LAUNCHD_LABEL}.")
-
-
-def service_restart(serve_args: list[str] | None = None) -> None:
-    """`jarvis restart`: best-effort sync, build cockpit and mac client, refresh the LaunchAgent, restart, and open `top`."""
-    sync_dependencies()
-    build_cockpit()
-    build_mac_app()
-    write_plist(serve_args if serve_args is not None else plist_serve_args())
-    if sys.platform != "darwin":
-        sys.exit("`jarvis restart` uses launchd; on another system stop and re-run `jarvis serve`.")
-    launchd_kick() if launchd_loaded() else launchd_boot()
-    print(f"Restarted {LAUNCHD_LABEL} on {version()}.")
-    run_cockpit([])
 
 
 def follow_logs() -> None:
@@ -316,6 +307,11 @@ def run_cockpit(args: list[str]) -> int:
         print("`jarvis top` needs the cockpit built first:", file=sys.stderr)
         print("  cargo build --release --workspace", file=sys.stderr)
         return 1
+    if not sys.stdout.isatty():
+        # `jarvis start` over ssh: there is no terminal for a fullscreen TUI, and a nonzero exit here would make a
+        # restart that worked look like it failed.
+        print("Jarvis is up. Run `jarvis top` in a terminal to watch the board.")
+        return 0
     # The cockpit defaults to an installed home; hand it the one this process runs on, token included.
     env = dict(os.environ)
     env["JARVIS_HOME"] = str(JARVIS_HOME)
@@ -418,9 +414,6 @@ def dispatch(argv: list[str]) -> None:
         return service_start(local_or_remote(rest) or None)
     if cmd == "stop":
         return service_stop()
-    if cmd in ("restart", "update", "upgrade"):
-        flags = local_or_remote(rest)
-        return service_restart(flags or None)
     if cmd == "health" or cmd == "probe":
         url = _take(rest, "--url")
         body = call("GET", "/health", url=url, timeout=5.0)

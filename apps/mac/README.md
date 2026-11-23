@@ -30,7 +30,7 @@ download's quarantine flag, writes only the server URL to `~/.config/jarvis-remo
 
 The gateway serves the bundle built on its own checkout. **Update** downloads `/Jarvis.app.zip`, checks its signature
 with `codesign --verify --deep --strict`, swaps the bundle, and relaunches. The server rebuilds it on
-`jarvis restart` and `just build`, so the app is never older than the code running beside it.
+`jarvis start` and `just build` rebuild it, so the app is never older than the code running beside it.
 
 Limits: ad-hoc signing (`codesign -s -`) changes the bundle's hash on every build, so macOS may ask for the
 Microphone again after an update; an Apple Development identity in the keychain avoids that. In-place updates assume
