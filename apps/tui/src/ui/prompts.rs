@@ -1,30 +1,26 @@
-//! Pane 2 — live and historical prompt / response / tool-call transcript inspector.
+//! Pane 3 — the payload of one turn: what the model was given, what the runner did, and how the answer came back.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{App, Pane};
-use crate::model::{Turn, TurnKind};
+use crate::model::{Trace, Turn, TurnKind};
 use crate::ui::grid::wrap_text;
 use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Pane::Prompts;
-    let file = app
-        .session_path
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("no session");
-    let title = format!(
-        "PROMPTS · {} · {} turns · follow:{}",
-        theme::clip_ellipsis(file, 26),
-        app.turns.len(),
-        if app.follow { "on" } else { "off" }
-    );
+    let turn = app.selected_trace().map(|t| t.id.clone());
+    let title = match &turn {
+        Some(id) => format!(
+            "3 PAYLOAD · turn #{id} · [{}] · p cycles · j/k picks a turn",
+            app.payload_tab.label()
+        ),
+        None => "3 PAYLOAD · no turn yet · showing the pi session".to_string(),
+    };
     let block = theme::panel(focused, &title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -32,13 +28,198 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let width = inner.width.saturating_sub(2) as usize;
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+    frame.render_widget(Paragraph::new(tab_bar(app)).style(theme::base()), chunks[0]);
+
+    match (turn.is_some(), app.payload_tab) {
+        (true, tab) => {
+            let Some(trace) = app.selected_trace() else { return };
+            let lines = payload_lines(trace, tab, inner.width as usize);
+            frame.render_widget(
+                Paragraph::new(Text::from(lines)).style(theme::base()).scroll((
+                    app.scroll_ledger.min(u16::MAX as usize) as u16,
+                    0,
+                )),
+                chunks[1],
+            );
+        }
+        (false, _) => draw_transcript(frame, app, chunks[1]),
+    }
+}
+
+fn tab_bar(app: &App) -> Line<'static> {
+    let mut spans = Vec::new();
+    for tab in crate::app::PayloadTab::ALL {
+        let active = tab == app.payload_tab;
+        let style = if active { theme::bold(theme::CYAN) } else { theme::dim() };
+        let label = if active {
+            format!("▸{}", tab.label())
+        } else {
+            format!(" {}", tab.label())
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
+        spans.push(Span::styled("│", theme::faint()));
+    }
+    Line::from(spans)
+}
+
+fn payload_lines(trace: &Trace, tab: crate::app::PayloadTab, width: usize) -> Vec<Line<'static>> {
+    let body = width.saturating_sub(4).max(8);
+    let mut lines = Vec::new();
+    match tab {
+        crate::app::PayloadTab::Voice => {
+            block(
+                &mut lines,
+                "PREPARED REQUEST",
+                trace.stage("PREP").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("PREP").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::BLUE),
+            );
+            block(
+                &mut lines,
+                "MEMORY INJECTED",
+                trace.stage("MEM").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("MEM").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::PURPLE),
+            );
+            block(
+                &mut lines,
+                "SENTENCE THE MODEL READ",
+                trace
+                    .stage("CLEAN")
+                    .map(|s| s.detail.clone())
+                    .unwrap_or_else(|| "as Whisper heard it".to_string()),
+                Some(trace.prepared_text()),
+                body,
+                theme::fg(theme::TEXT),
+            );
+            block(
+                &mut lines,
+                "INTENT VERDICT",
+                trace.stage("INTENT").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("INTENT").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::ACCENT),
+            );
+            block(
+                &mut lines,
+                "REASONING (thinking on)",
+                String::new(),
+                trace.stage("THINK").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::PURPLE),
+            );
+        }
+        crate::app::PayloadTab::Runner => {
+            block(
+                &mut lines,
+                "DISPATCHED TO THE BRAIN",
+                trace.stage("DISPATCH").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("DISPATCH").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::ACCENT),
+            );
+            for stage in trace.stages.iter().filter(|s| s.kind == "ROUTE") {
+                block(
+                    &mut lines,
+                    "BRAIN ROUTE",
+                    stage.detail.clone(),
+                    Some(stage.text.clone()),
+                    body,
+                    theme::fg(theme::CYAN),
+                );
+            }
+            for stage in trace.stages.iter().filter(|s| s.kind == "TOOL") {
+                block(
+                    &mut lines,
+                    "AGENT TOOL",
+                    stage.detail.clone(),
+                    Some(stage.text.clone()),
+                    body,
+                    theme::fg(theme::BLUE),
+                );
+            }
+            block(
+                &mut lines,
+                "RUNNER RETURNED",
+                trace.stage("RETURN").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("RETURN").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::WARN),
+            );
+        }
+        crate::app::PayloadTab::Retell => {
+            block(
+                &mut lines,
+                "AGENT OUTPUT (raw, in the LLM context)",
+                trace.stage("RETURN").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("RETURN").map(|s| s.text.clone()),
+                body,
+                theme::dim(),
+            );
+            block(
+                &mut lines,
+                "RETOLD FOR VOICE (AGENT_REPORT_PROMPT)",
+                trace.stage("RETELL").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("RETELL").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::WARN),
+            );
+            block(
+                &mut lines,
+                "SPOKEN",
+                trace.stage("TTS").map(|s| s.detail.clone()).unwrap_or_default(),
+                trace.stage("TTS").map(|s| s.text.clone()),
+                body,
+                theme::fg(theme::ACCENT),
+            );
+            if let Some(stage) = trace.stage("LAT") {
+                block(&mut lines, "LATENCY", String::new(), Some(stage.text.clone()), body, theme::dim());
+            }
+        }
+    }
+    lines
+}
+
+fn block(
+    lines: &mut Vec<Line<'static>>,
+    title: &str,
+    subtitle: String,
+    body: Option<String>,
+    width: usize,
+    style: Style,
+) {
+    let mut header = vec![Span::styled(title.to_string(), theme::bold(theme::PURPLE))];
+    if !subtitle.is_empty() {
+        header.push(Span::styled(
+            format!("  {}", theme::clip_ellipsis(&subtitle, width.saturating_sub(title.len() + 4))),
+            theme::faint(),
+        ));
+    }
+    lines.push(Line::from(header));
+    match body {
+        Some(text) if !text.trim().is_empty() => {
+            for chunk in wrap_text(&text, width) {
+                lines.push(Line::from(Span::styled(format!("  {chunk}"), style)));
+            }
+        }
+        _ => lines.push(Line::from(Span::styled("  (not yet)", theme::faint()))),
+    }
+    lines.push(Line::from(""));
+}
+
+/// The `pi` session transcript, for a board task with no voice turn behind it.
+fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
+    let focused = app.focus == Pane::Prompts;
+    let width = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut block_starts: Vec<(usize, usize)> = Vec::new(); // (turn_idx, start_line)
 
     if app.turns.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  waiting for a pi session… (start a run, or press Enter on an attempt)",
+            "  waiting for a session… (start a run, or press Enter on an attempt)",
             theme::dim(),
         )));
     }
@@ -53,7 +234,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    let height = inner.height as usize;
+    let height = area.height as usize;
     let total = lines.len();
     let offset = if app.follow {
         total.saturating_sub(height)
@@ -81,7 +262,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Text::from(lines))
             .style(theme::base())
             .scroll((scroll, 0)),
-        inner,
+        area,
     );
 }
 

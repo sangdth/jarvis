@@ -12,7 +12,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Config;
 use crate::http;
-use crate::model::{Outbox, PendingPair, Snapshot, Task, TelemetryEvent, Turn};
+use crate::model::{
+    Outbox, PendingPair, Snapshot, StageTone, Task, TelemetryEvent, Trace, TraceStage, Turn,
+};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -33,7 +35,9 @@ pub enum AppEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Topology,
+    Xray,
     Prompts,
+    Logs,
     Tasks,
     Ledger,
 }
@@ -41,17 +45,21 @@ pub enum Pane {
 impl Pane {
     pub fn label(self) -> &'static str {
         match self {
-            Pane::Topology => "1 ARCHITECTURE",
-            Pane::Prompts => "2 PROMPTS",
-            Pane::Tasks => "3 TASKS",
-            Pane::Ledger => "4 LEDGER",
+            Pane::Topology => "1 FLOW",
+            Pane::Xray => "2 X-RAY",
+            Pane::Prompts => "3 PAYLOAD",
+            Pane::Logs => "4 LOGS",
+            Pane::Tasks => "5 TASKS",
+            Pane::Ledger => "6 LEDGER",
         }
     }
 
     pub fn next(self) -> Self {
         match self {
-            Pane::Topology => Pane::Prompts,
-            Pane::Prompts => Pane::Tasks,
+            Pane::Topology => Pane::Xray,
+            Pane::Xray => Pane::Prompts,
+            Pane::Prompts => Pane::Logs,
+            Pane::Logs => Pane::Tasks,
             Pane::Tasks => Pane::Ledger,
             Pane::Ledger => Pane::Topology,
         }
@@ -60,10 +68,75 @@ impl Pane {
     pub fn from_digit(digit: char) -> Option<Self> {
         match digit {
             '1' => Some(Pane::Topology),
-            '2' => Some(Pane::Prompts),
-            '3' => Some(Pane::Tasks),
-            '4' => Some(Pane::Ledger),
+            '2' => Some(Pane::Xray),
+            '3' => Some(Pane::Prompts),
+            '4' => Some(Pane::Logs),
+            '5' => Some(Pane::Tasks),
+            '6' => Some(Pane::Ledger),
             _ => None,
+        }
+    }
+}
+
+/// Which half of a turn the payload pane is showing: what the model was given, what the runner did, or the retell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadTab {
+    Voice,
+    Runner,
+    Retell,
+}
+
+impl PayloadTab {
+    pub const ALL: [PayloadTab; 3] = [PayloadTab::Voice, PayloadTab::Runner, PayloadTab::Retell];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PayloadTab::Voice => "Voice Ctx",
+            PayloadTab::Runner => "Runner",
+            PayloadTab::Retell => "Retell",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            PayloadTab::Voice => PayloadTab::Runner,
+            PayloadTab::Runner => PayloadTab::Retell,
+            PayloadTab::Retell => PayloadTab::Voice,
+        }
+    }
+}
+
+/// Which lines the log pane keeps: everything, the voice's turn, the brain's routing, or only what went wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFilter {
+    All,
+    Voice,
+    Brain,
+    Errors,
+}
+
+impl LogFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            LogFilter::All => "all",
+            LogFilter::Voice => "voice",
+            LogFilter::Brain => "brain",
+            LogFilter::Errors => "errors",
+        }
+    }
+
+    pub fn matches(self, event: &TelemetryEvent) -> bool {
+        match self {
+            LogFilter::All => true,
+            LogFilter::Voice => event.event.starts_with("voice."),
+            LogFilter::Brain => {
+                event.event.starts_with("brain.") || event.event.starts_with("run.") || event.event == "http.inbound"
+            }
+            LogFilter::Errors => {
+                event.event.contains("failed")
+                    || event.bool("passed") == Some(false)
+                    || !event.text("error").is_empty()
+            }
         }
     }
 }
@@ -138,6 +211,18 @@ pub struct App {
     pub daemon_uptime: f64,
     pub active_run: Option<String>,
 
+    /// Turns from the voice's own telemetry: the newest is the one on screen.
+    pub traces: Vec<Trace>,
+    pub sel_trace: usize,
+    pub payload_tab: PayloadTab,
+    pub log_filter: LogFilter,
+    /// Where the ear is (`local`, `paired only`, ...) and the speech-check setup, from `voice.ear`.
+    pub ear: String,
+    /// `VOICE` or `BEEP_ONLY`, from `voice.mode`.
+    pub voice_mode: String,
+    /// `master check` or `any voice`, from `voice.ear`.
+    pub check_mode: String,
+
     pub session_path: Option<PathBuf>,
     pub turns: Vec<Turn>,
     pub follow: bool,
@@ -190,6 +275,13 @@ impl App {
             daemon_pid: None,
             daemon_uptime: 0.0,
             active_run: None,
+            traces: Vec::new(),
+            sel_trace: 0,
+            payload_tab: PayloadTab::Voice,
+            log_filter: LogFilter::All,
+            ear: "—".to_string(),
+            voice_mode: "—".to_string(),
+            check_mode: "—".to_string(),
             session_path: None,
             turns: Vec::new(),
             follow: true,
@@ -281,18 +373,47 @@ impl App {
         let pulsed = self.pulse_level(node) > 0.0;
         let worker = self.active_worker();
         match node {
-            "macbook" | "iphone" | "board" | "scout" | "skills" => pulsed,
-            "server" => self.daemon_connected || pulsed,
             "db" => true,
-            "reconciler" => self.is_running() || pulsed,
+            "rec" => self.is_running() || pulsed,
+            "local" => self.ear.starts_with("local") || pulsed,
             "planner" => worker == Some("planner") || pulsed,
             "builder" => worker == Some("builder") || pulsed,
             "improver" => worker == Some("improver") || pulsed,
             "worktree" => matches!(self.phase.as_str(), "prepare" | "verifying" | "pushing") || pulsed,
             "verify" => self.phase == "verifying" || pulsed,
             "github" => self.phase == "pushing" || pulsed,
+            "server" => self.daemon_connected || pulsed,
             _ => pulsed,
         }
+    }
+
+    /// The turn the x-ray pane and the payload pane are showing.
+    pub fn selected_trace(&self) -> Option<&Trace> {
+        self.traces.get(self.sel_trace)
+    }
+
+    /// The turn in progress, for the header's per-stage timings.
+    pub fn newest_trace(&self) -> Option<&Trace> {
+        self.traces.last()
+    }
+
+    /// The turn with this id, creating it on first sight. Old turns fall off so a day of talk cannot grow forever.
+    fn trace_mut(&mut self, id: &str, ts: f64) -> &mut Trace {
+        let idx = match self.traces.iter().rposition(|t| t.id == id) {
+            Some(idx) => idx,
+            None => {
+                self.traces.push(Trace {
+                    id: id.to_string(),
+                    started: ts,
+                    ..Trace::default()
+                });
+                if self.traces.len() > 40 {
+                    self.traces.remove(0);
+                }
+                self.traces.len() - 1
+            }
+        };
+        &mut self.traces[idx]
     }
 
     pub fn apply(&mut self, event: AppEvent) {
@@ -461,12 +582,204 @@ impl App {
                 ));
                 self.pulse("server");
             }
+            // ------------------------------------------------------------ the voice's turn, stage by stage
+            "voice.ear" => {
+                let local = ev.bool("local_audio").unwrap_or(true);
+                let relay = ev.bool("relay").unwrap_or(false);
+                self.ear = match (local, relay) {
+                    (true, true) => "local + paired".to_string(),
+                    (true, false) => "local".to_string(),
+                    (false, true) => "paired only".to_string(),
+                    (false, false) => "none".to_string(),
+                };
+                self.check_mode = if ev.bool("master_check").unwrap_or(false) {
+                    "master check".to_string()
+                } else {
+                    "any voice".to_string()
+                };
+                self.pulse("local");
+            }
+            "voice.stt" => {
+                self.pulse("stt");
+                let passed = ev.bool("passed").unwrap_or(true);
+                let ms = ev.i64("ms").unwrap_or(0);
+                let detail = match ev.f64("score") {
+                    Some(score) => format!("spk {score:.2} · {ms}ms"),
+                    None => format!("spk off · {ms}ms"),
+                };
+                let tone = if passed { StageTone::Ok } else { StageTone::Bad };
+                let id = ev.text("turn_id");
+                let text = ev.text("text");
+                let ts = ev.ts;
+                let trace = self.trace_mut(&id, ts);
+                trace.stages.push(TraceStage::new("STT", tone, ts, text, detail));
+                if !passed {
+                    trace.done = true; // dropped by the voice check: no turn follows
+                }
+                if self.follow {
+                    self.sel_trace = self.traces.len().saturating_sub(1);
+                }
+            }
+            "voice.intent" => {
+                self.pulse("intent");
+                let intent = ev.text("intent");
+                let tone = match intent.as_str() {
+                    "ADDRESSED_TO_JARVIS" => StageTone::Ok,
+                    "IGNORE_BACKGROUND" => StageTone::Bad,
+                    _ => StageTone::Info,
+                };
+                let detail = format!("{}ms · {}", ev.i64("ms").unwrap_or(0), ev.text("speaker"));
+                self.push_stage(&ev, "INTENT", tone, intent, detail);
+            }
+            "voice.fastcmd" => {
+                self.pulse("intent");
+                let command = ev.text("command");
+                let text = ev.text("text");
+                self.push_stage(&ev, "FAST", StageTone::Ok, command, text);
+            }
+            "voice.cleanup" => {
+                self.pulse("intent");
+                let detail = if ev.bool("changed").unwrap_or(false) {
+                    format!("{}ms · changed", ev.i64("ms").unwrap_or(0))
+                } else {
+                    format!("{}ms · unchanged", ev.i64("ms").unwrap_or(0))
+                };
+                let text = ev.text("text");
+                self.push_stage(&ev, "CLEAN", StageTone::Info, text, detail);
+            }
+            "voice.memory" => {
+                self.pulse("mem0");
+                let detail = format!(
+                    "{} hit(s) · {}ms",
+                    ev.i64("hits").unwrap_or(0),
+                    ev.i64("ms").unwrap_or(0)
+                );
+                let text = ev.text("text");
+                self.push_stage(&ev, "MEM", StageTone::Info, text, detail);
+            }
+            "voice.request" => {
+                self.pulse("exec");
+                let detail = format!(
+                    "{} msgs · {}",
+                    ev.i64("messages").unwrap_or(0),
+                    ev.text("tools")
+                );
+                let text = ev.text("user_tail");
+                self.push_stage(&ev, "PREP", StageTone::Info, text, detail);
+            }
+            "voice.thinking" => {
+                self.pulse("exec");
+                // Reasoning arrives token by token: keep it in one stage instead of one stage per chunk.
+                let id = ev.text("turn_id");
+                let text = ev.text("text");
+                let ts = ev.ts;
+                let trace = self.trace_mut(&id, ts);
+                match trace.stages.last_mut() {
+                    Some(last) if last.kind == "THINK" => {
+                        last.text.push_str(&text);
+                        if last.text.chars().count() > 2000 {
+                            last.text = last.text.chars().take(2000).collect();
+                        }
+                    }
+                    _ => trace
+                        .stages
+                        .push(TraceStage::new("THINK", StageTone::Think, ts, text, "")),
+                }
+            }
+            "voice.tool" => {
+                self.pulse("exec");
+                let tool = ev.text("tool");
+                let phase = ev.text("phase");
+                let detail = if phase == "result" {
+                    ev.text("result")
+                } else {
+                    "called".to_string()
+                };
+                self.push_stage(&ev, "TOOL", StageTone::Ok, format!("{tool} · {phase}"), detail);
+            }
+            "voice.latency" => {
+                let text = ev.text("text");
+                self.push_stage(&ev, "LAT", StageTone::Info, text, "");
+            }
+            "voice.dispatch" => {
+                self.pulse("gw");
+                self.pulse("route");
+                let detail = format!("run {} → {}", ev.text("run_id"), ev.text("session"));
+                let text = ev.text("text");
+                self.push_stage(&ev, "DISPATCH", StageTone::Ok, text, detail);
+            }
+            "voice.return" => {
+                self.pulse("runners");
+                let detail = format!(
+                    "{} chars · {}",
+                    ev.i64("chars").unwrap_or(0),
+                    ev.text("outcome")
+                );
+                let text = ev.text("text");
+                self.push_stage(&ev, "RETURN", StageTone::Return, text, detail);
+            }
+            "voice.retell" => {
+                self.pulse("exec");
+                let detail = format!("{} chars", ev.i64("chars").unwrap_or(0));
+                let text = ev.text("text");
+                self.push_stage(&ev, "RETELL", StageTone::Return, text, detail);
+            }
+            "voice.tts" => {
+                self.pulse("tts");
+                let mode = ev.text("mode");
+                let text = ev.text("text");
+                let id = ev.text("turn_id");
+                let ts = ev.ts;
+                let trace = self.trace_mut(&id, ts);
+                trace.stages.push(TraceStage::new("TTS", StageTone::Ok, ts, text, mode));
+                trace.done = true;
+            }
+            "voice.mode" => {
+                self.voice_mode = ev.text("mode");
+            }
+            "brain.route" => {
+                self.pulse("route");
+                let phase = ev.text("phase");
+                let tone = if phase == "done" {
+                    StageTone::Ok
+                } else {
+                    StageTone::Info
+                };
+                let runner = ev.text("runner");
+                let choice = ev.text("choice");
+                let text = if runner.is_empty() {
+                    choice
+                } else {
+                    format!("{choice} · {runner}")
+                };
+                let detail = if phase == "done" {
+                    format!("{} · {}", ev.text("outcome"), ev.text("summary"))
+                } else {
+                    ev.text("project")
+                };
+                self.push_stage(&ev, "ROUTE", tone, text, detail);
+            }
             _ => {}
         }
         self.events.push(ev);
         if self.events.len() > 500 {
             self.events.remove(0);
         }
+    }
+
+    /// Appends one stage to the turn the event belongs to.
+    fn push_stage(
+        &mut self,
+        ev: &TelemetryEvent,
+        kind: &str,
+        tone: StageTone,
+        text: impl Into<String>,
+        detail: impl Into<String>,
+    ) {
+        let id = ev.text("turn_id");
+        let ts = ev.ts;
+        let trace = self.trace_mut(&id, ts);
+        trace.stages.push(TraceStage::new(kind, tone, ts, text, detail));
     }
 
     // ---------------------------------------------------------------- selections
@@ -529,11 +842,16 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.modal = Some(Modal::Help),
             KeyCode::Tab | KeyCode::BackTab => self.focus = self.focus.next(),
-            KeyCode::Char(digit @ '1'..='4') => {
+            KeyCode::Char(digit @ '1'..='6') => {
                 if let Some(pane) = Pane::from_digit(digit) {
                     self.focus = pane;
                 }
             }
+            KeyCode::Char('p') => self.payload_tab = self.payload_tab.next(),
+            KeyCode::Char('v') => self.log_filter = LogFilter::Voice,
+            KeyCode::Char('b') => self.log_filter = LogFilter::Brain,
+            KeyCode::Char('e') => self.log_filter = LogFilter::Errors,
+            KeyCode::Char('A') => self.log_filter = LogFilter::All,
             KeyCode::Char('z') => {
                 self.zoomed = if self.zoomed == Some(self.focus) {
                     None
@@ -593,6 +911,10 @@ impl App {
     fn move_selection(&mut self, delta: isize) {
         match self.focus {
             Pane::Topology => self.sel_topology = step(self.sel_topology, delta, crate::ui::topology::NODES.len()),
+            Pane::Xray => {
+                self.sel_trace = step(self.sel_trace, delta, self.traces.len());
+                self.follow = false;
+            }
             Pane::Tasks => {
                 let len = self.flat_task_rows().len();
                 self.sel_tasks = step(self.sel_tasks, delta, len);
@@ -601,6 +923,7 @@ impl App {
                 self.sel_prompts = step(self.sel_prompts, delta, self.turns.len());
                 self.follow = false;
             }
+            Pane::Logs => self.scroll_ledger = step(self.scroll_ledger, delta, 10_000),
             Pane::Ledger => match self.ledger_tab {
                 LedgerTab::Attempts => {
                     self.sel_attempts = step(self.sel_attempts, delta, self.snapshot.attempts.len());
@@ -622,7 +945,12 @@ impl App {
         let pick = |len: usize| if last { len.saturating_sub(1) } else { 0 };
         match self.focus {
             Pane::Topology => self.sel_topology = pick(crate::ui::topology::NODES.len()),
+            Pane::Xray => {
+                self.sel_trace = pick(self.traces.len());
+                self.follow = false;
+            }
             Pane::Tasks => self.sel_tasks = pick(self.flat_task_rows().len()),
+            Pane::Logs => self.scroll_ledger = if last { 10_000 } else { 0 },
             Pane::Prompts => {
                 self.sel_prompts = pick(self.turns.len());
                 self.follow = false;
@@ -649,6 +977,13 @@ impl App {
     fn open_selected(&mut self) {
         match self.focus {
             Pane::Topology => self.modal = Some(Modal::Node(self.sel_topology)),
+            Pane::Xray => self.payload_tab = self.payload_tab.next(),
+            Pane::Logs => self.log_filter = match self.log_filter {
+                LogFilter::All => LogFilter::Voice,
+                LogFilter::Voice => LogFilter::Brain,
+                LogFilter::Brain => LogFilter::Errors,
+                LogFilter::Errors => LogFilter::All,
+            },
             Pane::Prompts => {
                 self.expanded = if self.expanded == Some(self.sel_prompts) {
                     None
@@ -755,6 +1090,22 @@ impl App {
 
     fn copy_selected(&mut self) {
         let text = match self.focus {
+            Pane::Xray => self
+                .selected_trace()
+                .map(|t| {
+                    let mut out = format!("#{} {}\n", t.id, t.headline());
+                    for stage in &t.stages {
+                        out.push_str(&format!("{:<9} {} {}\n", stage.kind, stage.text, stage.detail));
+                    }
+                    out
+                })
+                .unwrap_or_default(),
+            Pane::Logs => self
+                .events
+                .iter()
+                .filter(|e| self.log_filter.matches(e))
+                .map(|e| format!("{:.0} {}\n", e.ts, e.event))
+                .collect(),
             Pane::Prompts => self
                 .selected_turn()
                 .map(|t| format!("{}\n{}", t.title, t.body))
@@ -925,6 +1276,10 @@ mod tests {
         AppEvent::Telemetry(TelemetryEvent::from_value(value))
     }
 
+    fn voice_event(value: serde_json::Value) -> AppEvent {
+        AppEvent::Telemetry(TelemetryEvent::from_value(value))
+    }
+
     #[test]
     fn a_pairing_code_stays_until_it_is_used() {
         let mut app = test_app();
@@ -970,6 +1325,49 @@ mod tests {
             })));
         }
         assert_eq!(app.pending_pair.as_ref().unwrap().code, "111222");
+    }
+
+    #[test]
+    fn a_voice_turn_is_grouped_by_turn_id() {
+        let mut app = test_app();
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.stt", "turn_id": "t7", "ts": 1.0, "text": "fix the bug",
+            "passed": true, "score": 0.8, "ms": 120
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.tts", "turn_id": "t7", "ts": 2.0, "text": "Done.", "mode": "VOICE"
+        })));
+        assert_eq!(app.traces.len(), 1, "one sentence, one turn");
+        let trace = &app.traces[0];
+        assert!(trace.done);
+        assert_eq!(trace.headline(), "fix the bug");
+        assert_eq!(trace.spoken().map(|s| s.text.as_str()), Some("Done."));
+    }
+
+    #[test]
+    fn a_dropped_sentence_shows_why_and_ends_the_turn() {
+        let mut app = test_app();
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.stt", "turn_id": "t8", "ts": 1.0, "text": "hello tv",
+            "passed": false, "score": 0.21, "ms": 90
+        })));
+        let trace = &app.traces[0];
+        assert!(trace.done, "nothing follows a sentence the voice check dropped");
+        assert_eq!(trace.stages[0].tone, StageTone::Bad);
+    }
+
+    #[test]
+    fn reasoning_chunks_coalesce_into_one_stage() {
+        let mut app = test_app();
+        for chunk in ["Looking at the ", "project list, ", "then delegating."] {
+            app.apply(voice_event(serde_json::json!({
+                "event": "voice.thinking", "turn_id": "t9", "ts": 1.0, "text": chunk
+            })));
+        }
+        let trace = &app.traces[0];
+        let thinking: Vec<_> = trace.stages.iter().filter(|s| s.kind == "THINK").collect();
+        assert_eq!(thinking.len(), 1, "one reasoning stage per turn, not one per token");
+        assert_eq!(thinking[0].text, "Looking at the project list, then delegating.");
     }
 
     fn task(id: &str, parent: Option<&str>) -> Task {

@@ -161,10 +161,14 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   without a token. Any route also accepts `?token=` or `X-Jarvis-Token`. The contract is `schemas/openapi.json`;
   keep it in step.
 - **Fullscreen cockpit (`apps/tui` + `telemetry.py`):**
-  - `TelemetryHub` is a dependency-free in-memory ring buffer (500 events) that fans out transient events
+  - `TelemetryHub` is a dependency-free in-memory ring buffer (2000 events) that fans out transient events
     (`http.inbound`, `run.status`, `approval.*`, `reconciler.phase`, `board.rpc`, `pi.progress`,
-    `attempt.finished`, `heartbeat`) to SSE subscribers via `GET /v1/telemetry/events`; publishing can never fail a
-    worker run.
+    `attempt.finished`, `heartbeat`, `pair.*`, `brain.route`) plus the voice's turn stages (`voice.stt`,
+    `voice.intent`, `voice.cleanup`, `voice.memory`, `voice.request`, `voice.thinking`, `voice.tool`,
+    `voice.dispatch`, `voice.return`, `voice.retell`, `voice.tts`, all grouped by `turn_id`) to SSE subscribers via
+    `GET /v1/telemetry/events`; publishing can never fail a worker run. The voice's half is
+    `apps/voice/src/jarvis_voice/telemetry.py`, bound to this hub by `src/jarvis/supervisor.py` and a no-op when the
+    voice runs alone.
   - `apps/tui` (`jarvis-top`, Rust + Ratatui, launched with `jarvis top`) reads `state.db` **read-only** on its own
     connection, tails `sessions/**/*.jsonl` by byte offset, and reconnects to the SSE stream automatically, so the
     dashboard survives daemon restarts and never blocks WAL writers.

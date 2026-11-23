@@ -81,7 +81,15 @@ async def start_all(
         from jarvis_voice.main import run_pipecat_harness
 
         voice = asyncio.create_task(
-            run_pipecat_harness(connect=connect, meeting=meeting, relay=relay, status=voice_state),
+            run_pipecat_harness(
+                connect=connect,
+                meeting=meeting,
+                relay=relay,
+                status=voice_state,
+                # The voice's turn stages ride the same bus the cockpit already subscribes to, so `jarvis top`
+                # shows what was heard, how it was checked, and what came back without reading a log file.
+                hub_emit=server.hub.emit,
+            ),
             name="jarvis-voice",
         )
         stop = asyncio.create_task(restart.wait(), name="jarvis-restart")

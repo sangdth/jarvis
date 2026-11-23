@@ -21,6 +21,7 @@ from brain.config import Settings
 from brain.db import BrainDB, TaskRow
 from brain.reconciler import Reconciler
 from brain.runners.base import ApprovalCallback, RunRequest, RunResult
+from brain.telemetry import EVENT_BRAIN_ROUTE, preview
 from jarvis_core.projects import list_projects, projects_dir, resolve_project
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -201,6 +202,15 @@ class BrainOrchestrator:
         if choice is None:
             choice = self._heuristic(user_input, projects, session_id)
         logger.info(f"[Brain] route {choice['name']} for {user_input[:80]!r}")
+        args = choice.get("arguments") or {}
+        self._telemetry(
+            phase="route",
+            run_id=run_id,
+            choice=str(choice.get("name")),
+            runner=str(args.get("runner") or ""),
+            project=str(args.get("project") or ""),
+            text=preview(user_input, 400),
+        )
 
         if pinned and choice["name"] in ("delegate_project", "ask_ephemeral_pi"):
             choice = {
@@ -208,11 +218,27 @@ class BrainOrchestrator:
                 "arguments": {"task": user_input, "runner": pinned.get("runner", "t3"),
                               "session": pinned.get("session_id")},
             }
-        return await self._dispatch(
+        result = await self._dispatch(
             choice, run_id=run_id, user_input=user_input, session_id=session_id,
             pinned=pinned, approval_cb=approval_cb, emit=emit, screenshot=screenshot,
             session_mode=session_mode, cwd=cwd, chat_session_key=chat_session_key,
         )
+        self._telemetry(
+            phase="done",
+            run_id=run_id,
+            choice=str(choice.get("name")),
+            outcome=result.outcome,
+            project=result.project or "",
+            summary=preview(result.summary, 400),
+        )
+        return result
+
+    def _telemetry(self, **fields: Any) -> None:
+        """Publishes the route the brain took, for the cockpit; a missing hub is not an error."""
+        try:
+            self.reconciler.hub.emit(EVENT_BRAIN_ROUTE, **fields)
+        except Exception:  # noqa: BLE001 - telemetry must never fail a request
+            pass
 
     async def _choose(self, prompt: str, user_input: str) -> dict[str, Any] | None:
         if self._http is None:

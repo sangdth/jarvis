@@ -252,3 +252,5 @@ The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voi
 | `meeting_notes.py`    | `jarvis meeting` comments: the day's notes file, appended and read back     |
 | `t3_adapter.py`       | `T3Adapter`, optional direct T3 Code, `jarvis connect` thread lookup       |
 | `memory.py`           | Local Mem0 config, `LastExchangeMemory` (saves only the newest exchange)   |
+| `telemetry.py`        | The voice's stage events for `jarvis top`, bound to the brain's hub by the supervisor |
+| `llm.py`              | `JarvisLLM`: OpenRouter with the prepared request and the reasoning teed to telemetry |

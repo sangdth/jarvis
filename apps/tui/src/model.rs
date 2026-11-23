@@ -235,7 +235,6 @@ pub struct PendingPair {
     /// Unix epoch seconds on the daemon's clock; the cockpit runs on the same Mac.
     pub expires_at: f64,
 }
-
 impl PendingPair {
     /// `123 456`, the way `jarvis pair` prints it.
     pub fn spaced(&self) -> String {
@@ -256,7 +255,78 @@ pub enum TurnKind {
     Meta,
 }
 
-/// One parsed `pi --mode json` session line, ready for rendering.
+/// How a stage of a turn is drawn: a normal step, a pass, the model's thinking, a return, or a rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StageTone {
+    #[default]
+    Info,
+    Ok,
+    Think,
+    Return,
+    Bad,
+}
+
+/// One stage of one voice turn, straight from a `voice.*` telemetry event.
+#[derive(Debug, Clone, Default)]
+pub struct TraceStage {
+    /// Short label: STT, INTENT, CLEAN, MEM, PREP, THINK, TOOL, ROUTE, RETURN, RETELL, TTS.
+    pub kind: String,
+    pub tone: StageTone,
+    pub ts: f64,
+    pub text: String,
+    pub detail: String,
+}
+
+impl TraceStage {
+    pub fn new(kind: &str, tone: StageTone, ts: f64, text: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            kind: kind.to_string(),
+            tone,
+            ts,
+            text: text.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
+/// One turn from the user's sentence to Jarvis speaking, grouped by the `turn_id` the voice stamps.
+#[derive(Debug, Clone, Default)]
+pub struct Trace {
+    pub id: String,
+    pub started: f64,
+    pub stages: Vec<TraceStage>,
+    pub done: bool,
+}
+
+impl Trace {
+    /// The sentence the user said, or the first thing the turn produced.
+    pub fn headline(&self) -> String {
+        self.stages
+            .iter()
+            .find(|s| s.kind == "STT")
+            .or_else(|| self.stages.first())
+            .map(|s| s.text.clone())
+            .unwrap_or_else(|| "(no text)".to_string())
+    }
+
+    /// What was spoken back, if the turn got that far.
+    pub fn spoken(&self) -> Option<&TraceStage> {
+        self.stages.iter().rev().find(|s| s.kind == "TTS" && s.text != "(beep)")
+    }
+
+    pub fn stage(&self, kind: &str) -> Option<&TraceStage> {
+        self.stages.iter().find(|s| s.kind == kind)
+    }
+
+    /// The cleaned sentence the conversation model read, else what Whisper heard.
+    pub fn prepared_text(&self) -> String {
+        self.stage("CLEAN")
+            .or_else(|| self.stage("STT"))
+            .map(|s| s.text.clone())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Turn {
     pub kind: TurnKind,

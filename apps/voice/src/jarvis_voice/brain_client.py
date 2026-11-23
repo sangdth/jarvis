@@ -18,6 +18,7 @@ from loguru import logger
 from jarvis_core.home import brain_token
 from jarvis_core.projects import projects_dir
 from jarvis_core.sessions import AgentSession
+from jarvis_voice import telemetry
 from jarvis_voice.agent_adapter import WatchedAgentConfig, is_approval
 from jarvis_voice.config import settings
 from jarvis_voice.sessions import CodingSessionAdapter
@@ -185,9 +186,16 @@ class BrainClientAdapter(CodingSessionAdapter):
             self._title = str(event.get("title") or "") or self._title
         elif kind == "run.completed" and event.get("output"):
             self._pending = None
-            await self._surface(str(event["output"]), is_report=True)
+            output = str(event["output"])
+            telemetry.emit(
+                "voice.return", run_id=event.get("run_id"), chars=len(output), text=output, outcome="completed"
+            )
+            await self._surface(output, is_report=True)
         elif kind == "run.failed":
             self._pending = None
+            telemetry.emit(
+                "voice.return", run_id=event.get("run_id"), outcome="failed", text=str(event.get("error") or "")
+            )
             await self._surface(f"The turn failed. {event.get('error', '')}".strip(), is_report=True)
         # run.cancelled: the user stopped it, so it is not news.
 
@@ -211,8 +219,17 @@ class BrainClientAdapter(CodingSessionAdapter):
             payload = resp.json()
             run_id = payload["run_id"]
             self._session_id = payload.get("session_id") or run_id
+            telemetry.emit(
+                "voice.dispatch",
+                run_id=run_id,
+                session=self._session_id,
+                text=task,
+                pinned=bool(self._pinned),
+                cwd=self._explicit_cwd or self.cwd or "",
+            )
         except (httpx.HTTPError, KeyError, ValueError) as exc:
             logger.error(f"Failed to send task to the brain: {exc}")
+            telemetry.emit("voice.dispatch", text=task, error=str(exc))
             return False
         if not self.connected:
             self._pinned = None  # a picked session is for this task; the brain keeps its own binding after it

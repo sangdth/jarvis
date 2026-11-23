@@ -280,6 +280,54 @@ fn selftest(cfg: Config, seconds: u64) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The turn `--render-check` paints: a real shape from the telemetry bus, so a layout change shows what it breaks.
+fn demo_voice_turn() -> Vec<model::TelemetryEvent> {
+    let values = vec![
+        serde_json::json!({"seq": 1, "ts": 1.0, "event": "voice.ear", "local_audio": true, "relay": true,
+                           "language": "en", "whisper": "turbo", "master_check": true, "meeting": false}),
+        serde_json::json!({"seq": 2, "ts": 1.1, "event": "voice.stt", "turn_id": "t42", "text":
+                           "uh check why the auth test is failing in platform v2", "score": 0.78,
+                           "threshold": 0.35, "passed": true, "role": "owner", "ms": 188}),
+        serde_json::json!({"seq": 3, "ts": 1.2, "event": "voice.intent", "turn_id": "t42",
+                           "intent": "ADDRESSED_TO_JARVIS", "ms": 94, "speaker": "User", "owner": true}),
+        serde_json::json!({"seq": 4, "ts": 1.3, "event": "voice.cleanup", "turn_id": "t42",
+                           "text": "Check why the auth test is failing in platform-v2.",
+                           "raw": "uh check why the auth test is failing in platform v2", "ms": 236,
+                           "changed": true}),
+        serde_json::json!({"seq": 5, "ts": 1.4, "event": "voice.memory", "turn_id": "t42", "hits": 2,
+                           "ms": 22, "text": "platform-v2 uses pnpm test; auth tests hit local postgres"}),
+        serde_json::json!({"seq": 6, "ts": 1.5, "event": "voice.request", "turn_id": "t42", "messages": 14,
+                           "user_tail": "Check why the auth test is failing in platform-v2.",
+                           "tools": "send_agent_task, answer_agent, stop_agent, list_sessions"}),
+        serde_json::json!({"seq": 7, "ts": 1.6, "event": "voice.thinking", "turn_id": "t42",
+                           "text": "Matches HuggerHustle/platform-v2 in the project list. Delegate to the brain with a clear English task and keep the spoken acknowledgement short."}),
+        serde_json::json!({"seq": 8, "ts": 1.7, "event": "voice.tool", "turn_id": "t42",
+                           "tool": "send_agent_task", "phase": "call"}),
+        serde_json::json!({"seq": 9, "ts": 1.8, "event": "voice.dispatch", "turn_id": "t42",
+                           "run_id": "r91f", "session": "HuggerHustle/platform-v2",
+                           "text": "Check why the auth test is failing", "pinned": false}),
+        serde_json::json!({"seq": 10, "ts": 1.9, "event": "brain.route", "turn_id": "t42", "phase": "route",
+                           "run_id": "r91f", "choice": "delegate_project", "runner": "t3",
+                           "project": "HuggerHustle/platform-v2"}),
+        serde_json::json!({"seq": 11, "ts": 2.0, "event": "voice.return", "turn_id": "t42", "run_id": "r91f",
+                           "chars": 840, "outcome": "completed",
+                           "text": "Investigated apps/api/test/auth.spec.ts: the hardcoded JWT expired on 2026-10-01, causing 401s in three tests. Replaced it with a signed fixture; 14/14 tests pass."}),
+        serde_json::json!({"seq": 12, "ts": 2.1, "event": "voice.retell", "turn_id": "t42", "chars": 74,
+                           "text": "Found it — the JWT fixture expired; I updated it and the auth tests pass."}),
+        serde_json::json!({"seq": 13, "ts": 2.2, "event": "voice.tts", "turn_id": "t42", "mode": "VOICE",
+                           "text": "Found it — the JWT fixture expired; I updated it and the auth tests pass."}),
+        serde_json::json!({"seq": 14, "ts": 2.3, "event": "voice.latency", "turn_id": "t42",
+                           "text": "STT 188ms · LLM 410ms · TTS 105ms · total 1.06s"}),
+        serde_json::json!({"seq": 15, "ts": 2.4, "event": "brain.route", "turn_id": "t42", "phase": "done",
+                           "run_id": "r91f", "choice": "delegate_project", "outcome": "pushed",
+                           "project": "HuggerHustle/platform-v2", "summary": "14/14 auth tests pass."}),
+    ];
+    values
+        .into_iter()
+        .map(model::TelemetryEvent::from_value)
+        .collect()
+}
+
 /// Headless render: paints one full frame into a `TestBackend` and prints it.
 /// Used by CI/smoke checks and to verify layout without a real terminal.
 fn render_check(cfg: Config) -> std::io::Result<()> {
@@ -302,6 +350,9 @@ fn render_check(cfg: Config) -> std::io::Result<()> {
     app.live_elapsed = 43.0;
     app.daemon_pid = Some(4242);
     app.daemon_uptime = 9123.0;
+    for event in demo_voice_turn() {
+        app.apply(AppEvent::Telemetry(event));
+    }
     if let Some(path) = session::newest_session(&cfg.sessions_dir) {
         if let Ok(text) = std::fs::read_to_string(&path) {
             let turns: Vec<model::Turn> = text
@@ -312,15 +363,17 @@ fn render_check(cfg: Config) -> std::io::Result<()> {
             app.apply(AppEvent::SessionAppend { path, turns });
         }
     }
-    app.pulse("builder");
-    app.pulse("server");
+    app.pulse("rec");
+    app.pulse("gw");
 
     // Debug selectors so each pane can be rendered headlessly in CI.
     if let Ok(pane) = std::env::var("SB_DEMO_PANE") {
         app.focus = match pane.as_str() {
-            "2" => Pane::Prompts,
-            "3" => Pane::Tasks,
-            "4" => Pane::Ledger,
+            "2" => Pane::Xray,
+            "3" => Pane::Prompts,
+            "4" => Pane::Logs,
+            "5" => Pane::Tasks,
+            "6" => Pane::Ledger,
             _ => Pane::Topology,
         };
     }
