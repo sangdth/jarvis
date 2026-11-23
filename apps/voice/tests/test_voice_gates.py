@@ -893,3 +893,21 @@ class TestActivationChime(unittest.IsolatedAsyncioTestCase):
         self.assertIs(type(pushed[3]), TTSAudioRawFrame)
         self.assertEqual(timed.pts, 100 + self.chime._chime_ns)
         self.assertEqual(stop.pts, 200 + self.chime._chime_ns)
+
+    def test_harness_disables_pipecat_five_minute_idle_timeout(self) -> None:
+        import ast
+        from pathlib import Path
+
+        from jarvis_voice import main as voice_main
+
+        tree = ast.parse(Path(voice_main.__file__).read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "PipelineTask"
+        ]
+        self.assertEqual(len(calls), 1)
+        kw = {k.arg: k.value for k in calls[0].keywords}
+        self.assertIn("idle_timeout_secs", kw)
+        self.assertIsInstance(kw["idle_timeout_secs"], ast.Constant)
+        self.assertIsNone(kw["idle_timeout_secs"].value)

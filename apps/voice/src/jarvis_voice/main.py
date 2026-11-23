@@ -425,6 +425,8 @@ async def run_pipecat_harness(
     pipeline = Pipeline(processors)
     task = PipelineTask(
         pipeline,
+        # Jarvis listens 24/7; Pipecat's 5-minute call idle timeout would cancel the pipeline and close the mic.
+        idle_timeout_secs=None,
         params=PipelineParams(
             # Services report their own times, so each `[Latency]` line names Whisper, the LLM and the voice.
             enable_metrics=True,

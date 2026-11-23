@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 import os
@@ -139,6 +140,7 @@ class BrainServer:
             cfg, db, reconciler, runners=self.runners, last_project=self._last_project
         )
         self._global_subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._stopping = False
         self._last_project_by_session: dict[str, str] = {}
         # One pairing code at a time, in memory: a restart clears it, which is what we want.
         self._pair_codes: dict[str, float] = {}
@@ -280,6 +282,11 @@ class BrainServer:
                 logger.warning(f"[Brain] runner {runner.id} did not start: {exc!r}")
 
     async def stop_background(self) -> None:
+        self._stopping = True
+        self._publish_global({})
+        for queue in list(self.hub._subscribers):
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait({})
         for runner in self.runners.values():
             try:
                 await runner.stop()
@@ -336,12 +343,14 @@ class BrainServer:
         self._global_subscribers.add(queue)
         try:
             await resp.write(b": brain events connected\n\n")
-            while True:
+            while not self._stopping:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=5.0)
                 except asyncio.TimeoutError:
                     await resp.write(b": keepalive\n\n")
                     continue
+                if self._stopping:
+                    break
                 await resp.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
         except (ConnectionResetError, BrokenPipeError):
             pass
@@ -878,7 +887,7 @@ class BrainServer:
             for past in self.hub.snapshot(100):
                 await resp.write(f"data: {json.dumps(past)}\n\n".encode("utf-8"))
             await resp.write(b": brain telemetry connected\n\n")
-            while True:
+            while not self._stopping:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=5.0)
                 except asyncio.TimeoutError:
@@ -887,6 +896,8 @@ class BrainServer:
                         active_runs=sum(1 for r in self.runs.values() if r.status == "running"),
                     )
                     continue
+                if self._stopping:
+                    break
                 await resp.write(f"data: {json.dumps(event)}\n\n".encode("utf-8"))
         except (ConnectionResetError, BrokenPipeError):
             pass

@@ -139,3 +139,23 @@ async def test_outbox_resolve_endpoint_approves_and_requeues_task(tmp_path: Path
         assert db.get_unconsumed_approved_outbox(task.id) is not None
     finally:
         db.close()
+
+
+async def test_stop_background_closes_open_telemetry_sse_stream_immediately(tmp_path: Path) -> None:
+    import asyncio
+
+    hub = TelemetryHub()
+    brain_server, db = _make_brain(tmp_path, hub)
+    try:
+        async with TestClient(TestServer(brain_server.app)) as client:
+            headers = {"Authorization": "Bearer secret-token"}
+            sse = await client.get("/v1/telemetry/events", headers=headers)
+            assert sse.status == 200
+            first = await asyncio.wait_for(sse.content.readline(), timeout=1.0)
+            assert first
+            await brain_server.stop_background()
+            await asyncio.wait_for(sse.content.read(), timeout=1.0)
+            assert sse.content.at_eof()
+            sse.close()
+    finally:
+        db.close()

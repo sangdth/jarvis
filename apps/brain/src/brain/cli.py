@@ -175,7 +175,7 @@ async def running(
         voice_snapshot=voice_snapshot,
         extra_routes=extra_routes,
     )
-    runner = web.AppRunner(server.app)
+    runner = web.AppRunner(server.app, shutdown_timeout=2.0)
     await runner.setup()
     site = web.TCPSite(runner, host=settings.brain_host, port=settings.brain_port)
     try:
