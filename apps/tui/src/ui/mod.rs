@@ -1,8 +1,7 @@
-//! Root layout: header bar, 4-quadrant cockpit, footer keyhints, and modals.
+//! Root layout: left workspace (header, flow, payload, tasks, ledger, footer) + full-height right X-Ray sidebar.
 
 pub mod grid;
 pub mod ledger;
-pub mod logs;
 pub mod prompts;
 pub mod tasks;
 pub mod theme;
@@ -30,66 +29,70 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    // A big screen gets the whole flow map plus a three-column deck; a laptop drops a few rows.
+    // A big screen gets the whole flow map plus a full-height X-Ray/Logs sidebar on the far right.
     let flow_height = if area.height >= 44 { 12 } else { 10 };
-    let bottom_height = if area.height >= 40 { 7 } else { 6 };
-
-    let chunks = Layout::vertical([
-        Constraint::Length(4),
-        Constraint::Length(flow_height),
-        Constraint::Min(8),
-        Constraint::Length(bottom_height),
-        Constraint::Length(1),
-    ])
-    .split(area);
-
-    draw_header(frame, app, chunks[0]);
+    let bottom_height = if area.height >= 40 { 8 } else { 6 };
 
     if let Some(pane) = app.zoomed {
-        let full = Rect {
-            y: chunks[1].y,
-            height: chunks[1].height + chunks[2].height + chunks[3].height,
-            ..chunks[1]
-        };
-        match pane {
-            Pane::Topology => topology::draw(frame, app, full),
-            Pane::Xray => xray::draw(frame, app, full),
-            Pane::Prompts => prompts::draw(frame, app, full),
-            Pane::Logs => logs::draw(frame, app, full),
-            Pane::Tasks => tasks::draw(frame, app, full),
-            Pane::Ledger => ledger::draw(frame, app, full),
-        }
-    } else {
-        topology::draw(frame, app, chunks[1]);
-
-        let deck = Layout::horizontal([
-            Constraint::Fill(11),
-            Constraint::Fill(9),
-            Constraint::Fill(8),
+        let chunks = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Min(8),
+            Constraint::Length(1),
         ])
-        .split(chunks[2]);
-        xray::draw(frame, app, deck[0]);
-        prompts::draw(frame, app, deck[1]);
-        logs::draw(frame, app, deck[2]);
+        .split(area);
+        draw_header(frame, app, chunks[0], true);
+        match pane {
+            Pane::Topology => topology::draw(frame, app, chunks[1]),
+            Pane::Prompts => prompts::draw(frame, app, chunks[1]),
+            Pane::Tasks => tasks::draw(frame, app, chunks[1]),
+            Pane::Ledger => ledger::draw(frame, app, chunks[1]),
+            Pane::Xray => xray::draw(frame, app, chunks[1]),
+        }
+        if let (Some(pair), Some(left)) = (app.pending_pair.clone(), app.pair_seconds_left()) {
+            draw_pair_banner(frame, chunks[1], &pair, left);
+        }
+        draw_footer(frame, app, chunks[2]);
+    } else {
+        let sidebar_w = if area.width >= 100 {
+            (area.width * 33 / 100)
+                .clamp(38, 68)
+                .min(area.width.saturating_sub(62))
+        } else {
+            (area.width / 3).max(24)
+        };
+        let columns = Layout::horizontal([Constraint::Min(36), Constraint::Length(sidebar_w)]).split(area);
 
-        let bottom = Layout::horizontal([Constraint::Fill(4), Constraint::Fill(5)]).split(chunks[3]);
+        let left = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Length(flow_height),
+            Constraint::Min(8),
+            Constraint::Length(bottom_height),
+            Constraint::Length(1),
+        ])
+        .split(columns[0]);
+
+        draw_header(frame, app, left[0], false);
+        topology::draw(frame, app, left[1]);
+        prompts::draw(frame, app, left[2]);
+
+        let bottom = Layout::horizontal([Constraint::Fill(4), Constraint::Fill(5)]).split(left[3]);
         tasks::draw(frame, app, bottom[0]);
         ledger::draw(frame, app, bottom[1]);
-    }
 
-    // A pending pairing code sits over the panes: it is the one thing to read, and it is gone once it is used.
-    if let (Some(pair), Some(left)) = (app.pending_pair.clone(), app.pair_seconds_left()) {
-        draw_pair_banner(frame, chunks[2], &pair, left);
-    }
+        if let (Some(pair), Some(left_s)) = (app.pending_pair.clone(), app.pair_seconds_left()) {
+            draw_pair_banner(frame, left[2], &pair, left_s);
+        }
 
-    draw_footer(frame, app, chunks[4]);
+        draw_footer(frame, app, left[4]);
+        xray::draw(frame, app, columns[1]);
+    }
 
     if let Some(modal) = app.modal.clone() {
         draw_modal(frame, app, area, modal);
     }
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &App, area: Rect, show_mic: bool) {
     let block = Block::default()
         .borders(Borders::BOTTOM)
         .border_style(theme::fg(theme::BORDER))
@@ -252,7 +255,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     ));
 
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(2)]).split(inner);
-    if inner.width >= 70 {
+    if show_mic && inner.width >= 70 {
         let top = Layout::horizontal([Constraint::Min(10), Constraint::Length(24)]).split(rows[0]);
         frame.render_widget(Paragraph::new(Line::from(row0)).style(theme::base()), top[0]);
         frame.render_widget(
@@ -270,10 +273,10 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn mic_meter_line(app: &App) -> Line<'static> {
+pub(crate) fn mic_meter_line(app: &App) -> Line<'static> {
     const CELLS: usize = 10;
     let filled = ((app.mic_ratio() * CELLS as f64).round() as usize).min(CELLS);
-    let label = if app.mic_source == "relay" { "pair " } else { "mic " };
+    let label = if app.mic_source == "relay" { " pair " } else { " mic " };
     let mut spans = vec![Span::styled(label, theme::faint())];
     for idx in 0..CELLS {
         if idx < filled {
@@ -322,7 +325,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" quit ", theme::faint()),
         Span::styled("?", theme::bold(theme::CYAN)),
         Span::styled(" help ", theme::faint()),
-        Span::styled("1-6", theme::bold(theme::CYAN)),
+        Span::styled("1-5", theme::bold(theme::CYAN)),
         Span::styled(" focus ", theme::faint()),
         Span::styled("z", theme::bold(theme::CYAN)),
         Span::styled(" zoom ", theme::faint()),
@@ -454,7 +457,7 @@ fn help_lines() -> Vec<Line<'static>> {
     let rows = [
         ("q / Ctrl-c", "quit"),
         ("? ", "toggle this help"),
-        ("Tab / 1-6", "focus Flow · X-Ray · Payload · Logs · Tasks · Ledger"),
+        ("Tab / 1-5", "focus Flow · Payload · Tasks · Ledger · X-Ray & Logs"),
         ("z", "zoom the focused pane fullscreen"),
         ("j / k, g / G", "move selection (turns, nodes, tasks), jump to first/last"),
         ("PageUp / PageDown", "scroll the focused pane or modal"),

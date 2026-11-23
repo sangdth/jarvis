@@ -5,32 +5,24 @@ machine inside Ghostty (or any truecolor terminal) and to be readable over Tails
 It is one of the three apps in this repository; it never writes state, only reads it and calls the brain's API.
 
 ```
-┌ header ──────────────────────────────────────────────────────────────────────────────┐
-│ JARVIS [AUTONOMOUS] voice VOICE  check master check  ear local + paired  ● live       │
-│ budget ████░░░░░░░░░░░░░░░░░░░░░░ $15.76 / $200.00 (8%)  [! 1 APPROVAL]              │
-│ turn #42 "check why the auth test is failing" · STT 188ms · INTENT 94ms · LLM 410ms  │
-├ 1 LIVE FLOW ─────────────────────────────────────────────────────────────────────────┤
-│ 1 EAR/IO      2 VOICE IN      3 EXEC/OUT     4 GATEWAY      5 BRAIN                  │
-│ Paired Mac ●  Whisper+Spk ●   Mem0+Ctx ●     BrainServer ●  state.db ●               │
-│ Meet / CLI ○  Intent+Cln ●    Exec LLM ●     Router ●       Reconciler ●             │
-│               ...             State+TTS ●    T3 / Pi ●      Improver/Out ○            │
-│ RETURN ↩ agent output → SSE → AGENT_REPORT_PROMPT → retell → TTS                      │
-├ 2 TURN X-RAY ──────────┬ 3 PAYLOAD ─────────────┬ 4 LOGS ───────────────────────────┤
-│ heard/spoke            │ Voice Ctx · Runner ·   │ voice.stt · voice.intent ·        │
-│ STT INTENT CLEAN MEM   │ Retell                 │ brain.route · … filtered          │
-│ PREP THINK TOOL SEND   │ prepared request,      ├ daemon log tail ──────────────────┤
-│ RETURN RETELL TTS LAT  │ memory, reasoning      │ jarvis.err.log                    │
-├ 5 TASKS ───────────────┴ 6 LEDGER ───────────────────────────────────────────────────┤
-│ DAG + metrics          │ Attempts │ Skills │ Outbox │ Notes │ DB & Logs             │
-└───────────────────────────────────────────────────────────────────────────────────────┘
- q quit  ? help  1-6 focus  z zoom  Enter inspect  p payload  v/b/e/A log filter  ...
+┌ header ─────────────────────────────────────────────┐┌ 5 X-RAY ── mic ███████░░░ -17dB ┐
+│ JARVIS [AUTONOMOUS] voice VOICE  ear local  ● live  ││ turn #t42 · 14 stages · done    │
+│ budget ████░░░░░░░░░░░░░░░░ $15.76 / $200.00 (8%)   ││ heard  check why auth fails     │
+│ turn #t42 "check why auth fails" · STT 188ms        ││ spoke  Found it — JWT expired.  │
+├ 1 LIVE FLOW ────────────────────────────────────────┤│                                 │
+│ 1 EAR/IO  2 VOICE IN  3 EXEC/OUT  4 GATEWAY  5 BRAIN││ ▎STT    +0.00s spk 0.78 · 188ms │
+│ Local ●   Whisper ●   Mem0+Ctx ●  Server ●   db ●   ││ ▎INTENT +0.10s 94ms · User      │
+│ RETURN ↩ agent output → SSE → retell → TTS          ││ ▎CLEAN  +0.20s 236ms · changed  │
+├ 2 PAYLOAD ──────────────────────────────────────────┤│ ...                             │
+│ Voice Ctx · Runner · Retell                         ││ EVENTS · all (v/b/e/A)          │
+│ prepared request, memory, reasoning, runner output  ││   other turns & brain events    │
+├ 3 TASKS ─────────────┬ 4 LEDGER ────────────────────┤│ DAEMON LOG · jarvis.err.log     │
+│ DAG + metrics        │ Attempts │ Skills │ Outbox   ││   live stderr tail              │
+└──────────────────────┴──────────────────────────────┘└─────────────────────────────────┘
+ q quit  ? help  1-5 focus  z zoom  Enter inspect  p payload  v/b/e/A log filter  ...
 ```
 
-Six panes, because one screen should answer "what did I say, what did Jarvis do with it, what came back". Pane 1 is
-the flow map: the ear, the voice checks, the conversation model, the gateway and the brain, with the wire into a
-stage lit while that stage works and the return path spelled out underneath. Pane 2 is one turn stage by stage,
-every line a real telemetry event. Pane 3 shows the payload behind those stages: the cleaned sentence, the memories
-injected, the prepared request, the model's reasoning, the runner's output and the retell. Pane 4 is the firehose.
+Five panes: the left workspace holds Flow (`1`), Payload (`2`), Tasks (`3`), and Ledger (`4`); the far-right full-height sidebar (`5`) merges the Turn X-Ray, the filtered event stream, and the daemon log tail, with the live input volume meter anchored at the top-right corner.
 
 ## Build & run
 
@@ -77,7 +69,7 @@ device from reading a code out of it.
 | :--- | :--- |
 | `q` / `Ctrl-c` | quit |
 | `?` | keybinding overlay |
-| `Tab`, `1`–`6` | focus Flow / X-Ray / Payload / Logs / Tasks / Ledger |
+| `Tab`, `1`–`5` | focus Flow / Payload / Tasks / Ledger / X-Ray & Logs |
 | `z` | zoom the focused pane to the full body |
 | `j`/`k`, `g`/`G`, `PgUp`/`PgDn` | move selection / scroll |
 | `[` / `]` | switch ledger tabs |

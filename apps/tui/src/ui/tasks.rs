@@ -14,7 +14,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let ready = app.snapshot.tasks.iter().filter(|t| t.status == "ready").count();
     let blocked = app.snapshot.tasks.iter().filter(|t| t.status == "blocked").count();
     let title = format!(
-        "TASKS · {} total · {} ready · {} blocked",
+        "3 TASKS · {} total · {} ready · {} blocked",
         app.snapshot.tasks.len(),
         ready,
         blocked

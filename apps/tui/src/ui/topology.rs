@@ -152,13 +152,13 @@ pub fn node_text(index: usize) -> String {
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Pane::Topology;
     let title = format!(
-        "1 LIVE FLOW · {} · enter = x-ray · green working · amber return",
+        "1 LIVE FLOW · {} · enter = inspect · green working · amber return",
         app.ear
     );
     let block = theme::panel(focused, &title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if inner.width < 60 || inner.height < 8 {
+    if inner.width < 36 || inner.height < 8 {
         return;
     }
 

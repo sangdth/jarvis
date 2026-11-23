@@ -35,44 +35,40 @@ pub enum AppEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Topology,
-    Xray,
     Prompts,
-    Logs,
     Tasks,
     Ledger,
+    Xray,
 }
 
 impl Pane {
     pub fn label(self) -> &'static str {
         match self {
             Pane::Topology => "1 FLOW",
-            Pane::Xray => "2 X-RAY",
-            Pane::Prompts => "3 PAYLOAD",
-            Pane::Logs => "4 LOGS",
-            Pane::Tasks => "5 TASKS",
-            Pane::Ledger => "6 LEDGER",
+            Pane::Prompts => "2 PAYLOAD",
+            Pane::Tasks => "3 TASKS",
+            Pane::Ledger => "4 LEDGER",
+            Pane::Xray => "5 X-RAY",
         }
     }
 
     pub fn next(self) -> Self {
         match self {
-            Pane::Topology => Pane::Xray,
-            Pane::Xray => Pane::Prompts,
-            Pane::Prompts => Pane::Logs,
-            Pane::Logs => Pane::Tasks,
+            Pane::Topology => Pane::Prompts,
+            Pane::Prompts => Pane::Tasks,
             Pane::Tasks => Pane::Ledger,
-            Pane::Ledger => Pane::Topology,
+            Pane::Ledger => Pane::Xray,
+            Pane::Xray => Pane::Topology,
         }
     }
 
     pub fn from_digit(digit: char) -> Option<Self> {
         match digit {
             '1' => Some(Pane::Topology),
-            '2' => Some(Pane::Xray),
-            '3' => Some(Pane::Prompts),
-            '4' => Some(Pane::Logs),
-            '5' => Some(Pane::Tasks),
-            '6' => Some(Pane::Ledger),
+            '2' => Some(Pane::Prompts),
+            '3' => Some(Pane::Tasks),
+            '4' => Some(Pane::Ledger),
+            '5' => Some(Pane::Xray),
             _ => None,
         }
     }
@@ -122,6 +118,24 @@ impl LogFilter {
             LogFilter::Voice => "voice",
             LogFilter::Brain => "brain",
             LogFilter::Errors => "errors",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            LogFilter::All => LogFilter::Voice,
+            LogFilter::Voice => LogFilter::Brain,
+            LogFilter::Brain => LogFilter::Errors,
+            LogFilter::Errors => LogFilter::All,
+        }
+    }
+
+    pub fn matches_stage(self, stage: &TraceStage) -> bool {
+        match self {
+            LogFilter::All => true,
+            LogFilter::Voice => stage.kind != "ROUTE",
+            LogFilter::Brain => matches!(stage.kind.as_str(), "DISPATCH" | "ROUTE" | "RETURN"),
+            LogFilter::Errors => stage.tone == StageTone::Bad,
         }
     }
 
@@ -879,7 +893,7 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.modal = Some(Modal::Help),
             KeyCode::Tab | KeyCode::BackTab => self.focus = self.focus.next(),
-            KeyCode::Char(digit @ '1'..='6') => {
+            KeyCode::Char(digit @ '1'..='5') => {
                 if let Some(pane) = Pane::from_digit(digit) {
                     self.focus = pane;
                 }
@@ -960,7 +974,6 @@ impl App {
                 self.sel_prompts = step(self.sel_prompts, delta, self.turns.len());
                 self.follow = false;
             }
-            Pane::Logs => self.scroll_ledger = step(self.scroll_ledger, delta, 10_000),
             Pane::Ledger => match self.ledger_tab {
                 LedgerTab::Attempts => {
                     self.sel_attempts = step(self.sel_attempts, delta, self.snapshot.attempts.len());
@@ -987,7 +1000,6 @@ impl App {
                 self.follow = false;
             }
             Pane::Tasks => self.sel_tasks = pick(self.flat_task_rows().len()),
-            Pane::Logs => self.scroll_ledger = if last { 10_000 } else { 0 },
             Pane::Prompts => {
                 self.sel_prompts = pick(self.turns.len());
                 self.follow = false;
@@ -1014,13 +1026,7 @@ impl App {
     fn open_selected(&mut self) {
         match self.focus {
             Pane::Topology => self.modal = Some(Modal::Node(self.sel_topology)),
-            Pane::Xray => self.payload_tab = self.payload_tab.next(),
-            Pane::Logs => self.log_filter = match self.log_filter {
-                LogFilter::All => LogFilter::Voice,
-                LogFilter::Voice => LogFilter::Brain,
-                LogFilter::Brain => LogFilter::Errors,
-                LogFilter::Errors => LogFilter::All,
-            },
+            Pane::Xray => self.log_filter = self.log_filter.next(),
             Pane::Prompts => {
                 self.expanded = if self.expanded == Some(self.sel_prompts) {
                     None
@@ -1127,22 +1133,22 @@ impl App {
 
     fn copy_selected(&mut self) {
         let text = match self.focus {
-            Pane::Xray => self
-                .selected_trace()
-                .map(|t| {
-                    let mut out = format!("#{} {}\n", t.id, t.headline());
-                    for stage in &t.stages {
-                        out.push_str(&format!("{:<9} {} {}\n", stage.kind, stage.text, stage.detail));
-                    }
-                    out
-                })
-                .unwrap_or_default(),
-            Pane::Logs => self
-                .events
-                .iter()
-                .filter(|e| self.log_filter.matches(e))
-                .map(|e| format!("{:.0} {}\n", e.ts, e.event))
-                .collect(),
+            Pane::Xray => {
+                let mut out = self
+                    .selected_trace()
+                    .map(|t| {
+                        let mut s = format!("#{} {}\n", t.id, t.headline());
+                        for stage in &t.stages {
+                            s.push_str(&format!("{:<9} {} {}\n", stage.kind, stage.text, stage.detail));
+                        }
+                        s
+                    })
+                    .unwrap_or_default();
+                for ev in self.events.iter().filter(|e| self.log_filter.matches(e)) {
+                    out.push_str(&format!("{:.0} {}\n", ev.ts, ev.event));
+                }
+                out
+            }
             Pane::Prompts => self
                 .selected_turn()
                 .map(|t| format!("{}\n{}", t.title, t.body))

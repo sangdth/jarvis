@@ -178,7 +178,13 @@ async def run_pipecat_harness(
     from jarvis_voice.latency import latency_observer
     from jarvis_voice.mac_audio import MacVoiceTransport
     from jarvis_voice.speaker import VOICEPRINT_PATH, SpeakerEmbedder, SpeakerRegistry, load_voiceprint
-    from jarvis_voice.voice_gates import CLIPS_DIR, JarvisIntentGate, SpeakerVerifiedWhisperSTT, last_assistant_text
+    from jarvis_voice.voice_gates import (
+        CLIPS_DIR,
+        ActivationChime,
+        JarvisIntentGate,
+        SpeakerVerifiedWhisperSTT,
+        last_assistant_text,
+    )
 
     voiceprint = None
     if settings.master_check:
@@ -400,7 +406,7 @@ async def run_pipecat_harness(
             api_key=settings.elevenlabs_api_key,
             settings=ElevenLabsDialogueTTSService.Settings(voice=settings.elevenlabs_voice_id),
         )
-        processors.append(tts)
+        processors.extend([tts, ActivationChime()])
 
     assistant_agg = context_aggregator.assistant()
 

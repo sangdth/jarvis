@@ -813,3 +813,83 @@ class TestLastAssistantText(unittest.TestCase):
         self.assertIsNone(
             last_assistant_text([{"role": "user", "content": "hi"}, {"role": "assistant", "content": ""}])
         )
+
+
+class TestActivationChime(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from jarvis_voice.voice_gates import ActivationChime
+
+        self.now = 0.0
+        self.chime = ActivationChime(bounce_secs=60.0, clock=lambda: self.now)
+        self.chime.push_frame = AsyncMock()
+        patcher = patch.object(FrameProcessor, "process_frame", new=AsyncMock())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_shipped_activation_sound_is_low_and_chunk_aligned(self) -> None:
+        from jarvis_voice.voice_gates import load_activation_pcm
+
+        pcm, rate = load_activation_pcm()
+        self.assertEqual(rate, 24000)
+        self.assertEqual(len(pcm) % 1920, 0)  # whole 40 ms chunks at 24 kHz mono int16
+        peak = int(np.max(np.abs(np.frombuffer(pcm, dtype="<i2"))))
+        self.assertGreater(peak, 1000)
+        self.assertLessEqual(peak, 8200)
+
+    async def test_plays_before_first_speech_then_debounces_until_idle_past_one_minute(self) -> None:
+        from pipecat.frames.frames import (
+            OutputAudioRawFrame,
+            TTSAudioRawFrame,
+            TTSStoppedFrame,
+            UserStartedSpeakingFrame,
+            UserStoppedSpeakingFrame,
+        )
+
+        # 1. First speech on startup: chime plays right before the first TTS chunk, not on the second chunk/sentence.
+        tts1 = TTSAudioRawFrame(b"\x01\x00", 24000, 1)
+        tts2 = TTSAudioRawFrame(b"\x02\x00", 24000, 1)
+        await self.chime.process_frame(tts1, FrameDirection.DOWNSTREAM)
+        await self.chime.process_frame(tts2, FrameDirection.DOWNSTREAM)
+        await self.chime.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        self.now = 5.0
+        await self.chime.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+        pushed = [c.args[0] for c in self.chime.push_frame.await_args_list]
+        self.assertEqual(
+            [type(f) for f in pushed[:3]],
+            [OutputAudioRawFrame, TTSAudioRawFrame, TTSAudioRawFrame],
+        )
+
+        # 2. Next turn 30s later (< 60s): no chime; active user speech at t=70s also keeps the conversation alive.
+        self.chime.push_frame.reset_mock()
+        self.now = 35.0
+        await self.chime.process_frame(TTSAudioRawFrame(b"\x03\x00", 24000, 1), FrameDirection.DOWNSTREAM)
+        await self.chime.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        self.now = 80.0  # 45s after last speech (< 60s): user speaks, then LLM/tool takes 20s -> still active at t=100s
+        await self.chime.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        self.now = 83.0
+        await self.chime.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        self.now = 100.0
+        await self.chime.process_frame(TTSAudioRawFrame(b"\x04\x00", 24000, 1), FrameDirection.DOWNSTREAM)
+        await self.chime.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        self.assertFalse(any(type(c.args[0]) is OutputAudioRawFrame for c in self.chime.push_frame.await_args_list))
+
+        # 3. Conversation stops for > 60s (t=100s -> t=165s), then user speaks and Jarvis replies -> chime plays again!
+        self.chime.push_frame.reset_mock()
+        self.now = 165.0
+        await self.chime.process_frame(UserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        self.now = 167.0
+        await self.chime.process_frame(UserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        self.now = 168.0
+        timed = TextFrame(text="word")
+        timed.pts = 100
+        stop = TTSStoppedFrame()
+        stop.pts = 200
+        await self.chime.process_frame(TTSAudioRawFrame(b"\x05\x00", 24000, 1), FrameDirection.DOWNSTREAM)
+        await self.chime.process_frame(timed, FrameDirection.DOWNSTREAM)
+        await self.chime.process_frame(stop, FrameDirection.DOWNSTREAM)
+        pushed = [c.args[0] for c in self.chime.push_frame.await_args_list]
+        self.assertIs(type(pushed[2]), OutputAudioRawFrame)
+        self.assertIs(type(pushed[3]), TTSAudioRawFrame)
+        self.assertEqual(timed.pts, 100 + self.chime._chime_ns)
+        self.assertEqual(stop.pts, 200 + self.chime._chime_ns)

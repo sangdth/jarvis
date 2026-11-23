@@ -16,10 +16,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let turn = app.selected_trace().map(|t| t.id.clone());
     let title = match &turn {
         Some(id) => format!(
-            "3 PAYLOAD · turn #{id} · [{}] · p cycles · j/k picks a turn",
+            "2 PAYLOAD · turn #{id} · [{}] · p cycles · j/k picks a turn",
             app.payload_tab.label()
         ),
-        None => "3 PAYLOAD · no turn yet · showing the pi session".to_string(),
+        None => "2 PAYLOAD · no turn yet · showing the pi session".to_string(),
     };
     let block = theme::panel(focused, &title);
     let inner = block.inner(area);

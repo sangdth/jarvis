@@ -52,7 +52,7 @@ LIVE
   POST /v1/outbox/{id}/resolve, /v1/ask, /v1/runs/{id}/stop
 
 KEYS
-  q quit · ? help · Tab/1-4 focus · z zoom · j/k move · Enter inspect
+  q quit · ? help · Tab/1-5 focus · z zoom · j/k move · Enter inspect
   a/r approve-reject · m mode · x stop run · : ask · y copy
 ";
 
@@ -370,11 +370,10 @@ fn render_check(cfg: Config) -> std::io::Result<()> {
     // Debug selectors so each pane can be rendered headlessly in CI.
     if let Ok(pane) = std::env::var("SB_DEMO_PANE") {
         app.focus = match pane.as_str() {
-            "2" => Pane::Xray,
-            "3" => Pane::Prompts,
-            "4" => Pane::Logs,
-            "5" => Pane::Tasks,
-            "6" => Pane::Ledger,
+            "2" => Pane::Prompts,
+            "3" => Pane::Tasks,
+            "4" => Pane::Ledger,
+            "5" => Pane::Xray,
             _ => Pane::Topology,
         };
     }

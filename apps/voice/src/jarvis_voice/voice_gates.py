@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import re
 import time
@@ -15,16 +16,22 @@ import numpy as np
 from loguru import logger
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.frames.frames import (
+    BotSpeakingFrame,
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     ErrorFrame,
     Frame,
     InputAudioRawFrame,
     InterruptionFrame,
+    OutputAudioRawFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     StartFrame,
     TranscriptionFrame,
+    TTSAudioRawFrame,
+    TTSStoppedFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -65,6 +72,10 @@ CLIPS_DIR = JARVIS_HOME / "clips"
 MEETING_LOG_LIMIT = 40
 # In a meeting, people talk to each other by default; unless Jarvis just asked a question, it only answers when named.
 _MEETING_ADDRESS_PATTERNS = re.compile(r"\b(jarvis|javis|jarvis's)\b", re.IGNORECASE)
+ACTIVATION_SOUND_PATH = Path(__file__).parent / "defaults" / "sound-activation.wav"
+# Play the low activation sound right before Jarvis speaks once the conversation has stopped for at least this long.
+ACTIVATION_BOUNCE_SECS = 60.0
+ACTIVATION_VOLUME = 0.25
 
 
 @dataclass
@@ -747,3 +758,85 @@ def last_assistant_text(messages: list) -> str | None:
         if isinstance(content, str) and content.strip():
             return content.strip()[-500:]
     return None
+
+
+@functools.lru_cache(maxsize=2)
+def load_activation_pcm(volume: float = ACTIVATION_VOLUME) -> tuple[bytes, int]:
+    """Load the shipped activation sound as 16-bit mono PCM bytes and its sample rate."""
+    with wave.open(str(ACTIVATION_SOUND_PATH), "rb") as wav:
+        rate = wav.getframerate()
+        pcm = wav.readframes(wav.getnframes())
+    if volume != 1.0:
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64) * volume
+        pcm = np.clip(samples, -32767, 32767).astype("<i2").tobytes()
+    return pcm, rate
+
+
+class ActivationChime(FrameProcessor):
+    """Plays a low activation sound right before Jarvis speaks when the conversation stopped for >= `bounce_secs`."""
+
+    def __init__(
+        self,
+        *,
+        bounce_secs: float = ACTIVATION_BOUNCE_SECS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__()
+        self._pcm, self._sample_rate = load_activation_pcm()
+        self._chime_ns = round((len(self._pcm) / 2 / self._sample_rate) * 1_000_000_000)
+        self._bounce_secs = bounce_secs
+        self._clock = clock
+        self._armed = True
+        self._bot_speaking = False
+        self._user_speaking = False
+        self._last_active_at: float | None = None
+        self._pts_shift_ns = 0
+
+    def _rearm_if_idle(self, now: float) -> None:
+        if (
+            not self._bot_speaking
+            and not self._user_speaking
+            and self._last_active_at is not None
+            and now - self._last_active_at >= self._bounce_secs
+        ):
+            self._armed = True
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        now = self._clock()
+
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._rearm_if_idle(now)
+            self._user_speaking = True
+            self._last_active_at = now
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            self._user_speaking = False
+            self._last_active_at = now
+        elif isinstance(frame, (BotStartedSpeakingFrame, BotSpeakingFrame)):
+            self._bot_speaking = True
+            self._last_active_at = now
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self._pts_shift_ns = 0
+            self._last_active_at = now
+        elif isinstance(frame, InterruptionFrame):
+            self._bot_speaking = False
+            self._pts_shift_ns = 0
+        elif direction == FrameDirection.DOWNSTREAM and isinstance(frame, TTSAudioRawFrame) and frame.audio:
+            self._rearm_if_idle(now)
+            if self._armed:
+                self._armed = False
+                self._pts_shift_ns = self._chime_ns
+                await self.push_frame(
+                    OutputAudioRawFrame(audio=self._pcm, sample_rate=self._sample_rate, num_channels=1),
+                    direction,
+                )
+            self._last_active_at = now
+        elif isinstance(frame, TTSStoppedFrame):
+            if frame.pts and self._pts_shift_ns:
+                frame.pts += self._pts_shift_ns
+            self._pts_shift_ns = 0
+        elif direction == FrameDirection.DOWNSTREAM and frame.pts and self._pts_shift_ns:
+            frame.pts += self._pts_shift_ns
+
+        await self.push_frame(frame, direction)

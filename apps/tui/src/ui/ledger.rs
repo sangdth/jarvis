@@ -11,7 +11,7 @@ use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Pane::Ledger;
-    let title = format!("LEDGER · {}", app.ledger_tab.label());
+    let title = format!("4 LEDGER · {}", app.ledger_tab.label());
     let block = theme::panel(focused, &title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
