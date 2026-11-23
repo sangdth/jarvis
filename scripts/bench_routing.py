@@ -50,6 +50,26 @@ def waiting(spoken: str, reply: str) -> list[dict]:
     return [{"role": "assistant", "content": spoken}, {"role": "user", "content": reply}]
 
 
+def explaining(first: str, note: str, then: str, *, project: str = "", middle: list[dict] | None = None) -> list[dict]:
+    """A follow-up turn while `hold_context` holds earlier explanation notes."""
+    from jarvis_voice.state import WorkingContext
+
+    ctx = WorkingContext()
+    ctx.add(note, project or None)
+    args = {"note": note, **({"project": project} if project else {})}
+    call = {"id": "hold_1", "type": "function", "function": {"name": "hold_context", "arguments": json.dumps(args)}}
+    result = {"status": "held", "notes": [note], **({"project": project} if project else {})}
+    return [
+        {"role": "user", "content": first},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "hold_1", "content": json.dumps(result)},
+        {"role": "assistant", "content": "Got it, go on."},
+        *(middle or []),
+        {"role": "system", "content": ctx.format_for_prompt()},
+        {"role": "user", "content": then},
+    ]
+
+
 # Agents only read English: a Vietnamese letter in `task` or `answer` is a miss.
 VIETNAMESE = re.compile(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", re.IGNORECASE)
 
@@ -152,6 +172,30 @@ CASES: list[tuple[str | list[dict], str]] = [
     ("Read me the error I'm looking at", "look"),
     ("Fix this error on my screen", "t3-code+screen"),
     ("Can you see what's wrong with the layout on my screen? Fix it.", "t3-code+screen"),
+    # Multi-turn context: hold notes while explaining, side_question for a lookup in the middle, then act when asked
+    ("Let me explain a bug in the Jarvis project first: when I click save on settings, the modal closes without saving.",
+     "hold@jarvis"),
+    (explaining(
+        "Let me explain a weird UI bug first: clicking save closes the modal.",
+        "Clicking save on settings closes the modal without saving",
+        "To reproduce it, open profile settings, edit the email, and switch tabs — it crashes with a hook error.",
+    ), "hold"),
+    (explaining(
+        "Let me explain a bug in Jarvis: editing email and switching tabs crashes with a hook error.",
+        "Editing email in profile settings and switching tabs crashes with a hook error",
+        "Wait, what version of Pipecat are we using in Jarvis right now?",
+        project="jarvis",
+    ), "t3-code@jarvis+task+side"),
+    (explaining(
+        "Let me explain a bug in Jarvis: editing email and switching tabs crashes with a hook error.",
+        "Editing email in profile settings and switching tabs crashes with a hook error",
+        "Okay, with Pipecat 1.15 I think unmounting causes that error. Find a way to fix it for me.",
+        project="jarvis",
+        middle=[
+            {"role": "user", "content": "Wait, what version of Pipecat are we using right now?"},
+            {"role": "assistant", "content": "It's using Pipecat 1.15.0."},
+        ],
+    ), "t3-code@jarvis+task"),
 ]
 
 # Vietnamese or mixed speech, with the vi prompt: routed the same, with English arguments
@@ -167,6 +211,7 @@ VI_CASES: list[tuple[str | list[dict], str]] = [
     (waiting("T3 Code asks: Which database should I use, Postgres or SQLite?", "Dùng Postgres nhé."), "answer"),
     ("Cái lỗi trên màn hình này nghĩa là gì?", "look"),
     ("Sửa cái lỗi đang hiện trên màn hình giúp anh", "t3-code+screen"),
+    ("Để anh kể cho nghe cái bug trong dự án Jarvis trước đã: lúc bấm lưu thì cửa sổ tự đóng luôn.", "hold@jarvis"),
 ]
 
 
@@ -177,8 +222,8 @@ def outcome(message: dict, default_id: str | None) -> str:
     if calls[0]["function"]["name"] == "stop_agent":
         return "stop"  # stop_agent finds the busy agent itself when no id is given
     args = json.loads(calls[0]["function"].get("arguments") or "{}")
-    if VIETNAMESE.search(args.get("task", "") + args.get("answer", "") + args.get("question", "")):
-        return "not English: " + (args.get("task") or args.get("answer") or args.get("question"))
+    if VIETNAMESE.search(args.get("task", "") + args.get("answer", "") + args.get("question", "") + args.get("note", "")):
+        return "not English: " + (args.get("task") or args.get("answer") or args.get("question") or args.get("note"))
     if calls[0]["function"]["name"] == "look_at_screen":
         return "look"
     if calls[0]["function"]["name"] == "list_sessions":
@@ -190,13 +235,16 @@ def outcome(message: dict, default_id: str | None) -> str:
     if raw_project.lower().startswith(f"{label.lower()}/"):
         raw_project = raw_project[len(label) + 1 :].strip("/")
     project = f"@{raw_project.lower()}" if raw_project else ""
+    if calls[0]["function"]["name"] == "hold_context":
+        return "hold" + project + ("+clear" if args.get("clear") else "")
     named = (args.get("session") or "").strip().lower()
     # Opening a project or session names work only when the user did ("+task"); an invented task is a miss.
     task = "+task" if (project or named) and args.get("task", "").strip() else ""
     agent = args.get("agent_id") or default_id or "?"
     session = "" if not named else "+new" if named == "new" else "+session"
     screen = "+screen" if args.get("include_screen") else ""
-    return agent + project + task + session + screen + ("+replace" if args.get("replace") else "")
+    side = "+side" if args.get("side_question") else ""
+    return agent + project + task + session + screen + ("+replace" if args.get("replace") else "") + side
 
 
 async def main(rounds: int) -> int:

@@ -66,6 +66,22 @@ async def _tee_reasoning(stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
 class JarvisLLM(OpenRouterLLMService):
     """OpenRouter's service, with the prepared request and the model's reasoning on the telemetry bus."""
 
+    def __init__(self, *args: Any, working_context: Any = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._working_context = working_context
+
+    def build_chat_completion_params(self, params_from_context: Any) -> dict[str, Any]:  # type: ignore[override]
+        if self._working_context is not None and (held := self._working_context.format_for_prompt()):
+            msgs = list(params_from_context.get("messages") or [])
+            idx = next(
+                (i for i in range(len(msgs) - 1, -1, -1) if isinstance(msgs[i], dict) and msgs[i].get("role") == "user"),
+                len(msgs) - 1 if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") != "tool" else None,
+            )
+            if idx is not None:
+                msgs.insert(idx, {"role": "system", "content": held})
+                params_from_context = {**params_from_context, "messages": msgs}
+        return super().build_chat_completion_params(params_from_context)
+
     async def get_chat_completions(self, context: Any) -> AsyncIterator[Any]:  # type: ignore[override]
         try:
             telemetry.emit("voice.request", **summarize_context(context))

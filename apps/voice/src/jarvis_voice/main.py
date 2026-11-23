@@ -230,9 +230,15 @@ async def run_pipecat_harness(
     async def on_report(text: str) -> None:
         telemetry.emit("voice.retell", text=text, chars=len(text))
         if "task" in task_ref:
+            held = (
+                "The user paused explaining a bigger task to ask for this; give the answer briefly so they can"
+                " continue, and do not start other work yet.\n\n"
+                if state.working_context.active()
+                else ""
+            )
             await task_ref["task"].queue_frame(
                 LLMMessagesAppendFrame(
-                    messages=[{"role": "system", "content": AGENT_REPORT_PROMPT + text}], run_llm=True
+                    messages=[{"role": "system", "content": AGENT_REPORT_PROMPT + held + text}], run_llm=True
                 )
             )
 
@@ -304,8 +310,8 @@ async def run_pipecat_harness(
         meeting=meeting,
         registry=registry,
         state=state,
-        # Its silence limit adds to the VAD's 0.2 s below: 1.5 s of silence ends a sentence held mid-thought.
-        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=1.3)) if settings.smart_turn else None,
+        # Its silence limit adds to the VAD's 0.45 s below: ~2.45 s of silence ends a sentence held mid-thought.
+        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=2.0)) if settings.smart_turn else None,
         settings=SpeakerVerifiedWhisperSTT.Settings(model=settings.whisper_model, language=Language(settings.language)),
     )
 
@@ -316,6 +322,7 @@ async def run_pipecat_harness(
         llm = JarvisLLM(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
+            working_context=state.working_context,
             settings=JarvisLLM.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(
@@ -359,9 +366,9 @@ async def run_pipecat_harness(
     context_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            # A pause ends a Whisper sentence: 0.2 s, then Smart Turn decides; without it 0.6 s, as shorter splits
-            # one sentence into two turns.
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2 if settings.smart_turn else 0.6, min_volume=0.5)),
+            # A pause ends a Whisper sentence: 0.45 s so a brief breath stays one segment, then Smart Turn decides;
+            # without Smart Turn, 0.7 s.
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.45 if settings.smart_turn else 0.7, min_volume=0.5)),
             # Turns come only from JarvisIntentGate, after the voice and intent checks: raw room sound
             # would let background voices interrupt Jarvis and hold a turn open while they keep talking.
             user_turn_strategies=ExternalUserTurnStrategies(),

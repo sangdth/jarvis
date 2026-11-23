@@ -99,7 +99,11 @@ class AgentOrchestrator:
         wait, next_wait = 8, 13  # Fibonacci seconds: 8, 13, 21, 34, 55, 89, 144, ...
 
         def can_speak() -> bool:
-            return agent.config.id not in self.state.active_agent_context and self.state.mode == JarvisMode.VOICE
+            return (
+                agent.config.id not in self.state.active_agent_context
+                and self.state.mode == JarvisMode.VOICE
+                and self.state.user_speaking is not True
+            )
 
         try:
             while True:

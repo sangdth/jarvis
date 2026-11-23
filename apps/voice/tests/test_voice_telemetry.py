@@ -55,6 +55,26 @@ class TestVoiceTelemetry(unittest.TestCase):
         self.assertEmpty = summarize_context(LLMContext())["tools"]
         self.assertEqual(self.assertEmpty, "")
 
+    def test_jarvis_llm_injects_working_context_before_last_user_without_splitting_tool_calls(self) -> None:
+        from jarvis_voice.llm import JarvisLLM
+        from jarvis_voice.state import WorkingContext
+
+        working = WorkingContext()
+        working.add("Clicking save closes modal", project="jarvis")
+        llm = JarvisLLM(api_key="k", working_context=working, settings=JarvisLLM.Settings(model="deepseek/deepseek-chat"))
+        call = {"id": "c1", "type": "function", "function": {"name": "send_agent_task", "arguments": "{}"}}
+        raw_messages = [
+            {"role": "system", "content": "base"},
+            {"role": "user", "content": "What version of React?"},
+            {"role": "assistant", "content": "", "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"status": "sent"}'},
+        ]
+        built = llm.build_chat_completion_params({"messages": raw_messages})["messages"]
+        # Inserted right before the latest user message, leaving assistant(tool_calls) -> tool adjacent.
+        self.assertEqual([m["role"] for m in built], ["system", "system", "user", "assistant", "tool"])
+        self.assertIn("Clicking save closes modal", built[1]["content"])
+        self.assertEqual(len(raw_messages), 4)  # caller's list untouched
+
 
 if __name__ == "__main__":
     unittest.main()
