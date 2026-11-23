@@ -34,6 +34,7 @@ EVENT_HEARTBEAT = "heartbeat"
 # what the model was given and thought, which tool it called, and what came back to the speaker.
 EVENT_VOICE_EAR = "voice.ear"
 EVENT_VOICE_STT = "voice.stt"
+EVENT_VOICE_SPEAKER = "voice.speaker"
 EVENT_VOICE_INTENT = "voice.intent"
 EVENT_VOICE_CLEANUP = "voice.cleanup"
 EVENT_VOICE_FASTCMD = "voice.fastcmd"
@@ -172,6 +173,7 @@ __all__ = [
     "EVENT_VOICE_REQUEST",
     "EVENT_VOICE_RETELL",
     "EVENT_VOICE_RETURN",
+    "EVENT_VOICE_SPEAKER",
     "EVENT_VOICE_STT",
     "EVENT_VOICE_THINKING",
     "EVENT_VOICE_TOOL",

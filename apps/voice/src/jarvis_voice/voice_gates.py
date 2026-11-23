@@ -307,6 +307,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                 # One turn per sentence: every stage after this lands under the same id in the cockpit.
                 telemetry.new_turn()
                 known = profile is not None and profile.enrolled and profile.name is not None
+                profile_id = "owner" if owner else (profile.id if profile is not None else "room")
                 if meeting:
                     if owner:
                         role = "owner"
@@ -319,7 +320,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                     logger.info(f"[Speaker] {heard} {role}: {frame.text!r}{saved}")
                     telemetry.emit(
                         "voice.stt", text=frame.text, score=score, threshold=self._threshold,
-                        passed=True, role=role, ms=ms, clip=clip.name if clip else "",
+                        passed=True, role=role, profile_id=profile_id, ms=ms, clip=clip.name if clip else "",
                     )
                     frame = replace(frame, user_id=role)
                 else:
@@ -330,7 +331,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                     telemetry.emit(
                         "voice.stt", text=frame.text, score=score, threshold=self._threshold,
                         passed=passed, role="owner" if owner else (profile.name if known and profile else "guest"),
-                        ms=ms, clip=clip.name if clip else "",
+                        profile_id=profile_id, ms=ms, clip=clip.name if clip else "",
                     )
                     if not passed:
                         continue
@@ -862,14 +863,18 @@ class JarvisIntentGate(FrameProcessor):
         speaker = "User" if is_owner else (f"Speaker: {display}" if display not in ("Room", "Guest") else tag)
         self.state.room_turn = not is_owner
         self.state.current_speaker = speaker
+        # Resolve after `_speaker_tag` so a graduated voice that merged into an existing profile emits the surviving id.
+        resolved = None if is_owner else (self._resolve_profile(frame.user_id) or self.registry.get(display) or profile)
+        profile_id = "owner" if is_owner else (resolved.id if resolved is not None else "room")
         telemetry.emit(
             "voice.speaker",
             label=display,
             confidence=confidence,
             known=is_owner or (confidence is not None and confidence >= KNOWN_AT),
             voice_id=frame.user_id,
+            profile_id=profile_id,
         )
-        profile = self._resolve_profile(frame.user_id) or profile
+        profile = resolved
         if profile is not None and profile.enrolled and profile.name and not profile.greeted:
             # Once per run; the request itself still goes on to the model below.
             profile.greeted = True

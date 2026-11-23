@@ -8,7 +8,7 @@ use rusqlite::{Connection, OpenFlags, Row};
 
 use crate::config::Config;
 use crate::model::{
-    Attempt, Counts, Outbox, Skill, Snapshot, SystemState, Task,
+    Attempt, Counts, DiskSpeaker, DiskSpeakers, Outbox, Skill, Snapshot, SystemState, Task,
 };
 
 pub type DbResult<T> = Result<T, rusqlite::Error>;
@@ -201,6 +201,8 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
         ),
     };
 
+    snap.speakers = load_disk_speakers(cfg);
+
     snap.db_bytes = file_len(&cfg.db_path);
     let wal_path = std::path::PathBuf::from(format!("{}-wal", cfg.db_path.display()));
     let shm_path = std::path::PathBuf::from(format!("{}-shm", cfg.db_path.display()));
@@ -211,6 +213,61 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
     snap.page_size = pragma_i64(conn, "page_size");
 
     Ok(snap)
+}
+
+/// Reads the saved speaker roster from `SOUL.md`, `owner_voice.npy`, and `speakers/speakers.json`.
+pub fn load_disk_speakers(cfg: &Config) -> DiskSpeakers {
+    let owner_name = std::fs::read_to_string(cfg.soul_path())
+        .ok()
+        .and_then(|text| parse_owner_name(&text));
+    let owner_voiceprint = cfg.owner_voiceprint_path().is_file();
+    let mut guests = Vec::new();
+    if let Ok(raw) = std::fs::read_to_string(cfg.speakers_path()) {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&raw) {
+            for (id, meta) in map {
+                let Some(obj) = meta.as_object() else {
+                    continue;
+                };
+                let name = obj
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                guests.push(DiskSpeaker {
+                    id,
+                    name,
+                    clips: obj.get("clips").and_then(|v| v.as_u64()).unwrap_or(1),
+                    speech_secs: obj.get("speech_secs").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    vouched: obj.get("vouched").and_then(|v| v.as_bool()).unwrap_or(false),
+                });
+            }
+        }
+    }
+    guests.sort_by(|a, b| {
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    DiskSpeakers {
+        owner_name,
+        owner_voiceprint,
+        guests,
+    }
+}
+
+/// Mirrors `jarvis_core.soul._USER_NAME_RE` (`The user's name is "..."`).
+pub fn parse_owner_name(text: &str) -> Option<String> {
+    const MARKER: &str = "The user's name is \"";
+    let start = text.find(MARKER)?;
+    let rest = &text[start + MARKER.len()..];
+    let end = rest.find('"')?;
+    let name = rest[..end].trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 fn count(conn: &Connection, table: &str) -> i64 {
@@ -242,4 +299,58 @@ pub fn tail_file(path: &Path, max_lines: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(max_lines);
     lines[start..].join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_owner_name_from_soul_markdown() {
+        let soul = "---\nprojects_dir: ~/Projects\n---\nPersonality: direct.\nThe user's name is \"Sang\"; use it rarely.\n";
+        assert_eq!(parse_owner_name(soul).as_deref(), Some("Sang"));
+        assert_eq!(parse_owner_name("Personality: direct.\n"), None);
+        assert_eq!(parse_owner_name("The user's name is \"\""), None);
+    }
+
+    #[test]
+    fn loads_saved_speakers_and_owner_files() {
+        let dir = std::env::temp_dir().join(format!("jarvis-top-speakers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("speakers")).unwrap();
+        std::fs::write(
+            dir.join("SOUL.md"),
+            "---\nprojects_dir: ~/Projects\n---\nThe user's name is \"Sang\"; use it rarely.\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("owner_voice.npy"), b"fake").unwrap();
+        std::fs::write(
+            dir.join("speakers").join("speakers.json"),
+            r#"{"voice_2": {"name": "Alex", "clips": 3, "speech_secs": 9.4, "vouched": false},
+                "voice_1": {"name": "David", "clips": 6, "speech_secs": 18.2, "vouched": true}}"#,
+        )
+        .unwrap();
+
+        let cfg = Config {
+            jarvis_home: dir.clone(),
+            home: dir.join("brain"),
+            db_path: dir.join("brain/state.db"),
+            sessions_dir: dir.join("brain/sessions"),
+            traces_dir: dir.join("brain/traces"),
+            skills_dir: dir.join("brain/skills"),
+            notes_dir: dir.join("brain/memory/progress"),
+            logs_dir: dir.join("logs"),
+            host: "127.0.0.1".into(),
+            port: 8643,
+            api_key: String::new(),
+        };
+        let loaded = load_disk_speakers(&cfg);
+        assert_eq!(loaded.owner_name.as_deref(), Some("Sang"));
+        assert!(loaded.owner_voiceprint);
+        assert_eq!(loaded.guests.len(), 2);
+        assert_eq!(loaded.guests[0].name, "Alex");
+        assert_eq!(loaded.guests[1].id, "voice_1");
+        assert!(loaded.guests[1].vouched);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -3,6 +3,7 @@
 pub mod grid;
 pub mod ledger;
 pub mod prompts;
+pub mod speakers;
 pub mod tasks;
 pub mod theme;
 pub mod topology;
@@ -44,6 +45,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         match pane {
             Pane::Topology => topology::draw(frame, app, chunks[1]),
             Pane::Prompts => prompts::draw(frame, app, chunks[1]),
+            Pane::Speakers => speakers::draw(frame, app, chunks[1]),
             Pane::Tasks => tasks::draw(frame, app, chunks[1]),
             Pane::Ledger => ledger::draw(frame, app, chunks[1]),
             Pane::Xray => xray::draw(frame, app, chunks[1]),
@@ -62,10 +64,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         };
         let columns = Layout::horizontal([Constraint::Min(36), Constraint::Length(sidebar_w)]).split(area);
 
+        let speakers_height = if area.height >= 44 {
+            7
+        } else if area.height >= 34 {
+            5
+        } else {
+            0
+        };
+
         let left = Layout::vertical([
             Constraint::Length(4),
             Constraint::Length(flow_height),
             Constraint::Min(8),
+            Constraint::Length(speakers_height),
             Constraint::Length(bottom_height),
             Constraint::Length(1),
         ])
@@ -74,8 +85,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_header(frame, app, left[0], false);
         topology::draw(frame, app, left[1]);
         prompts::draw(frame, app, left[2]);
+        if speakers_height > 0 {
+            speakers::draw(frame, app, left[3]);
+        }
 
-        let bottom = Layout::horizontal([Constraint::Fill(4), Constraint::Fill(5)]).split(left[3]);
+        let bottom = Layout::horizontal([Constraint::Fill(4), Constraint::Fill(5)]).split(left[4]);
         tasks::draw(frame, app, bottom[0]);
         ledger::draw(frame, app, bottom[1]);
 
@@ -83,7 +97,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_pair_banner(frame, left[2], &pair, left_s);
         }
 
-        draw_footer(frame, app, left[4]);
+        draw_footer(frame, app, left[5]);
         xray::draw(frame, app, columns[1]);
     }
 
@@ -342,7 +356,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" quit ", theme::faint()),
         Span::styled("?", theme::bold(theme::CYAN)),
         Span::styled(" help ", theme::faint()),
-        Span::styled("1-5", theme::bold(theme::CYAN)),
+        Span::styled("1-6", theme::bold(theme::CYAN)),
         Span::styled(" focus ", theme::faint()),
         Span::styled("z", theme::bold(theme::CYAN)),
         Span::styled(" zoom ", theme::faint()),
@@ -443,6 +457,7 @@ fn draw_modal(frame: &mut Frame, app: &App, area: Rect, modal: Modal) {
         Modal::Attempt(id) => ("ATTEMPT DETAIL", prompts::attempt_lines(app, *id)),
         Modal::Skill(slug) => ("SKILL DETAIL", ledger::skill_modal_lines(app, slug)),
         Modal::Task(id) => ("TASK DETAIL", tasks::task_modal_lines(app, id)),
+        Modal::Speaker(id) => ("SPEAKER DETAIL", speakers::speaker_modal_lines(app, id)),
     };
 
     let desired = (lines.len() as u16).saturating_add(2);
@@ -474,7 +489,7 @@ fn help_lines() -> Vec<Line<'static>> {
     let rows = [
         ("q / Ctrl-c", "quit"),
         ("? ", "toggle this help"),
-        ("Tab / 1-5", "focus Flow · Payload · Tasks · Ledger · X-Ray & Logs"),
+        ("Tab / 1-6", "focus Flow · Payload · Speakers · Tasks · Ledger · X-Ray"),
         ("z", "zoom the focused pane fullscreen"),
         ("j / k, g / G", "move selection (turns, nodes, tasks), jump to first/last"),
         ("PageUp / PageDown", "scroll the focused pane or modal"),

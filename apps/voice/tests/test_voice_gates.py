@@ -749,6 +749,59 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mlx_mock.transcribe.call_args.kwargs["temperature"], 0.0)
         turn.cleanup.assert_awaited_once()
 
+    async def test_telemetry_emits_canonical_profile_id_across_stt_and_guest_merge(self) -> None:
+        import time
+
+        import numpy as np
+
+        from jarvis_voice import telemetry
+        from jarvis_voice.speaker import SpeakerRegistry
+
+        registry = SpeakerRegistry(folder=None)
+        # Existing enrolled guest voice_1 ("David") and a new unlinked voice_2 that will merge into David.
+        david = registry.observe(np.array([0.0, 1.0], dtype=np.float32), threshold=0.5, speech_secs=5.0)
+        assert david is not None
+        registry.link_name(david.id, "David", enroll=True)
+        state = JarvisState()
+        state.meeting = True
+        flt = MagicMock(classify_user_utterance=AsyncMock(return_value=UserIntent.ADDRESSED_TO_JARVIS))
+        gate = JarvisIntentGate(state, flt, registry=registry)
+        gate._enable_direct_mode = True
+        gate.push_frame = AsyncMock()
+
+        seen: list[dict] = []
+        telemetry.bind(lambda kind, **fields: seen.append({"kind": kind, **fields}))
+        try:
+            # 1. Owner sentence -> profile_id == "owner"
+            await self.run_stt("Hey Jarvis", [0.95, 0.05], meeting=True, registry=registry, state=state)
+            # 2. Enrolled David -> profile_id == "voice_1" even though role is "David"
+            await self.run_stt("Hey Jarvis, check status", [0.05, 0.99], meeting=True, registry=registry, state=state)
+            # 3. Dropped unknown voice outside meeting -> profile_id == "voice_2", passed == False
+            state.meeting = False
+            state.social_window_until = 0.0
+            await self.run_stt("Background chatter", [-0.1, -0.95], meeting=False, registry=registry, state=state)
+            # 4. Owner introduces David and voice_2 identifies as "David" -> merges into voice_1, emits profile_id="voice_1"
+            state.meeting = True
+            state.social_window_until = time.monotonic() + 60.0
+            gate.tracker.note_intro("David", None)
+            frames = await self.run_stt(
+                "Hey Jarvis, I'm David", [-0.1, -0.95], meeting=True, registry=registry, state=state
+            )
+            for f in frames:
+                await gate.process_frame(f, FrameDirection.DOWNSTREAM)
+        finally:
+            telemetry.bind(None)
+
+        stt_events = [e for e in seen if e["kind"] == "voice.stt"]
+        self.assertEqual([e["profile_id"] for e in stt_events], ["owner", "voice_1", "voice_2", "voice_2"])
+        self.assertEqual(stt_events[1]["role"], "David")
+        self.assertFalse(stt_events[2]["passed"])
+        speaker_events = [e for e in seen if e["kind"] == "voice.speaker"]
+        self.assertEqual(len(speaker_events), 1)
+        self.assertEqual(speaker_events[0]["label"], "David")
+        self.assertEqual(speaker_events[0]["profile_id"], "voice_1")
+        self.assertEqual(speaker_events[0]["voice_id"], "voice_2")
+
 
 class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
     """The turn analyzer is mocked; Pipecat's flush (one Whisper segment per call) is counted, not run."""

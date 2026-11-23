@@ -219,6 +219,7 @@ mod tests {
 
     fn test_config(port: u16) -> Config {
         Config {
+            jarvis_home: std::path::PathBuf::from("/tmp"),
             home: std::path::PathBuf::from("/tmp"),
             db_path: std::path::PathBuf::from("/tmp/state.db"),
             sessions_dir: std::path::PathBuf::from("/tmp/sessions"),

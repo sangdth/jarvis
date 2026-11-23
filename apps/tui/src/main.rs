@@ -52,7 +52,7 @@ LIVE
   POST /v1/outbox/{id}/resolve, /v1/ask, /v1/runs/{id}/stop
 
 KEYS
-  q quit · ? help · Tab/1-5 focus · z zoom · j/k move · Enter inspect
+  q quit · ? help · Tab/1-6 focus · z zoom · j/k move · Enter inspect
   a/r approve-reject · m mode · x stop run · : ask · y copy
 ";
 
@@ -284,42 +284,55 @@ fn selftest(cfg: Config, seconds: u64) -> std::io::Result<()> {
 fn demo_voice_turn() -> Vec<model::TelemetryEvent> {
     let values = vec![
         serde_json::json!({"seq": 1, "ts": 1.0, "event": "voice.ear", "local_audio": true, "relay": true,
-                           "language": "en", "whisper": "turbo", "master_check": true, "meeting": false}),
-        serde_json::json!({"seq": 1, "ts": 1.0, "event": "voice.level", "peak": 0.14, "source": "local"}),
-        serde_json::json!({"seq": 2, "ts": 1.1, "event": "voice.stt", "turn_id": "t42", "text":
+                           "language": "en", "whisper": "turbo", "master_check": true, "owner_enrolled": true,
+                           "meeting": false}),
+        serde_json::json!({"seq": 2, "ts": 1.0, "event": "voice.level", "peak": 0.14, "source": "local"}),
+        serde_json::json!({"seq": 3, "ts": 1.02, "event": "voice.stt", "turn_id": "t40", "text":
+                           "hi jarvis, i'm alex", "score": 0.21, "threshold": 0.35, "passed": true,
+                           "role": "voice_1", "profile_id": "voice_1", "ms": 140}),
+        serde_json::json!({"seq": 4, "ts": 1.04, "event": "voice.speaker", "turn_id": "t40",
+                           "label": "Alex", "known": false, "confidence": 0.72, "voice_id": "voice_1",
+                           "profile_id": "voice_1"}),
+        serde_json::json!({"seq": 5, "ts": 1.06, "event": "voice.stt", "turn_id": "t41", "text":
+                           "tonight on the evening news", "score": 0.14, "threshold": 0.35, "passed": false,
+                           "role": "guest", "profile_id": "voice_2", "ms": 92}),
+        serde_json::json!({"seq": 6, "ts": 1.1, "event": "voice.stt", "turn_id": "t42", "text":
                            "uh check why the auth test is failing in platform v2", "score": 0.78,
-                           "threshold": 0.35, "passed": true, "role": "owner", "ms": 188}),
-        serde_json::json!({"seq": 3, "ts": 1.2, "event": "voice.intent", "turn_id": "t42",
+                           "threshold": 0.35, "passed": true, "role": "owner", "profile_id": "owner", "ms": 188}),
+        serde_json::json!({"seq": 7, "ts": 1.15, "event": "voice.speaker", "turn_id": "t42",
+                           "label": "Sang", "known": true, "confidence": 1.0, "voice_id": "u",
+                           "profile_id": "owner"}),
+        serde_json::json!({"seq": 8, "ts": 1.2, "event": "voice.intent", "turn_id": "t42",
                            "intent": "ADDRESSED_TO_JARVIS", "ms": 94, "speaker": "User", "owner": true}),
-        serde_json::json!({"seq": 4, "ts": 1.3, "event": "voice.cleanup", "turn_id": "t42",
+        serde_json::json!({"seq": 9, "ts": 1.3, "event": "voice.cleanup", "turn_id": "t42",
                            "text": "Check why the auth test is failing in platform-v2.",
                            "raw": "uh check why the auth test is failing in platform v2", "ms": 236,
                            "changed": true}),
-        serde_json::json!({"seq": 5, "ts": 1.4, "event": "voice.memory", "turn_id": "t42", "hits": 2,
+        serde_json::json!({"seq": 10, "ts": 1.4, "event": "voice.memory", "turn_id": "t42", "hits": 2,
                            "ms": 22, "text": "platform-v2 uses pnpm test; auth tests hit local postgres"}),
-        serde_json::json!({"seq": 6, "ts": 1.5, "event": "voice.request", "turn_id": "t42", "messages": 14,
+        serde_json::json!({"seq": 11, "ts": 1.5, "event": "voice.request", "turn_id": "t42", "messages": 14,
                            "user_tail": "Check why the auth test is failing in platform-v2.",
                            "tools": "send_agent_task, answer_agent, stop_agent, list_sessions"}),
-        serde_json::json!({"seq": 7, "ts": 1.6, "event": "voice.thinking", "turn_id": "t42",
+        serde_json::json!({"seq": 12, "ts": 1.6, "event": "voice.thinking", "turn_id": "t42",
                            "text": "Matches HuggerHustle/platform-v2 in the project list. Delegate to the brain with a clear English task and keep the spoken acknowledgement short."}),
-        serde_json::json!({"seq": 8, "ts": 1.7, "event": "voice.tool", "turn_id": "t42",
+        serde_json::json!({"seq": 13, "ts": 1.7, "event": "voice.tool", "turn_id": "t42",
                            "tool": "send_agent_task", "phase": "call"}),
-        serde_json::json!({"seq": 9, "ts": 1.8, "event": "voice.dispatch", "turn_id": "t42",
+        serde_json::json!({"seq": 14, "ts": 1.8, "event": "voice.dispatch", "turn_id": "t42",
                            "run_id": "r91f", "session": "HuggerHustle/platform-v2",
                            "text": "Check why the auth test is failing", "pinned": false}),
-        serde_json::json!({"seq": 10, "ts": 1.9, "event": "brain.route", "turn_id": "t42", "phase": "route",
+        serde_json::json!({"seq": 15, "ts": 1.9, "event": "brain.route", "turn_id": "t42", "phase": "route",
                            "run_id": "r91f", "choice": "delegate_project", "runner": "t3",
                            "project": "HuggerHustle/platform-v2"}),
-        serde_json::json!({"seq": 11, "ts": 2.0, "event": "voice.return", "turn_id": "t42", "run_id": "r91f",
+        serde_json::json!({"seq": 16, "ts": 2.0, "event": "voice.return", "turn_id": "t42", "run_id": "r91f",
                            "chars": 840, "outcome": "completed",
                            "text": "Investigated apps/api/test/auth.spec.ts: the hardcoded JWT expired on 2026-10-01, causing 401s in three tests. Replaced it with a signed fixture; 14/14 tests pass."}),
-        serde_json::json!({"seq": 12, "ts": 2.1, "event": "voice.retell", "turn_id": "t42", "chars": 74,
+        serde_json::json!({"seq": 17, "ts": 2.1, "event": "voice.retell", "turn_id": "t42", "chars": 74,
                            "text": "Found it — the JWT fixture expired; I updated it and the auth tests pass."}),
-        serde_json::json!({"seq": 13, "ts": 2.2, "event": "voice.tts", "turn_id": "t42", "mode": "VOICE",
+        serde_json::json!({"seq": 18, "ts": 2.2, "event": "voice.tts", "turn_id": "t42", "mode": "VOICE",
                            "text": "Found it — the JWT fixture expired; I updated it and the auth tests pass."}),
-        serde_json::json!({"seq": 14, "ts": 2.3, "event": "voice.latency", "turn_id": "t42",
+        serde_json::json!({"seq": 19, "ts": 2.3, "event": "voice.latency", "turn_id": "t42",
                            "text": "STT 188ms · LLM 410ms · TTS 105ms · total 1.06s"}),
-        serde_json::json!({"seq": 15, "ts": 2.4, "event": "brain.route", "turn_id": "t42", "phase": "done",
+        serde_json::json!({"seq": 20, "ts": 2.4, "event": "brain.route", "turn_id": "t42", "phase": "done",
                            "run_id": "r91f", "choice": "delegate_project", "outcome": "pushed",
                            "project": "HuggerHustle/platform-v2", "summary": "14/14 auth tests pass."}),
     ];
@@ -342,6 +355,8 @@ fn render_check(cfg: Config) -> std::io::Result<()> {
     let mut app = App::new(cfg.clone(), tx, Arc::new(Mutex::new(None)));
     if let Some(snapshot) = snapshot {
         app.apply(AppEvent::Snapshot(Box::new(snapshot)));
+    } else {
+        app.sync_disk_speakers(&db::load_disk_speakers(&cfg));
     }
     app.apply(AppEvent::Daemon(true, None));
     app.phase = "pi_running".to_string();
@@ -374,6 +389,7 @@ fn render_check(cfg: Config) -> std::io::Result<()> {
             "3" => Pane::Tasks,
             "4" => Pane::Ledger,
             "5" => Pane::Xray,
+            "6" => Pane::Speakers,
             _ => Pane::Topology,
         };
     }
@@ -396,6 +412,7 @@ fn render_check(cfg: Config) -> std::io::Result<()> {
                     "attempt" => Some(Modal::Attempt(value.parse::<i64>().unwrap_or(1))),
                     "skill" => Some(Modal::Skill(value.to_string())),
                     "task" => Some(Modal::Task(value.to_string())),
+                    "speaker" => Some(Modal::Speaker(value.to_string())),
                     _ => None,
                 }
             }
