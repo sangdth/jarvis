@@ -116,15 +116,12 @@ To change how Jarvis tidies what you say, write your own prompt under a `## Clea
 `JARVIS_HOME/SYSTEM.md` (create the file; `init` doesn't). It replaces the shipped one; with no file or no section
 Jarvis uses its own, and new versions keep improving it. Startup logs `SYSTEM.md overrides: Cleanup` while yours is used.
 
-Last, it records your voice for the master check (on by default; later: `jarvis enroll`). Jarvis then acts only on
-yours: read eight everyday lines (5 s each, in the language
-`LANGUAGE` sets) with the mic Jarvis will use, then three more that Jarvis scores against your new voiceprint; it
-prints those scores, suggests a `SPEAKER_THRESHOLD` just under the lowest and sets `MASTER_CHECK=true` in `.env`. It
-downloads the speaker model (25 MB) to `JARVIS_HOME/models/` and saves your voiceprint to
-`JARVIS_HOME/owner_voice.npy`. Anyone can still say "shut up" or "you can talk". Enroll close to the mic in a
-quiet moment: background voices in the recording weaken the voiceprint. Declining the recording writes
-`MASTER_CHECK=false`, and any voice may talk to Jarvis until you enroll; `MASTER_CHECK=false` also turns the check
-off again later and keeps the voiceprint.
+Last, it asks whether to lock Jarvis to your voice (on by default; later: `jarvis enroll`). There are no lines to
+read aloud: when Jarvis starts without `JARVIS_HOME/owner_voice.npy`, the first person who chats with it becomes its
+owner after a couple of sentences (downloading the 25 MB speaker model to `JARVIS_HOME/models/` on first use).
+`jarvis enroll` resets `owner_voice.npy` and starts a short chat so a new voice (or a new mic) becomes the owner.
+Anyone can still say "shut up" or "you can talk". Declining writes `MASTER_CHECK=false`, and any voice may talk to
+Jarvis until you enroll; `MASTER_CHECK=false` also turns the check off again later and keeps the voiceprint.
 
 ### 3. Configure `.env`
 `jarvis init` fills the two API keys unless your shell exports them; set the rest in `JARVIS_HOME/.env`. A variable set in

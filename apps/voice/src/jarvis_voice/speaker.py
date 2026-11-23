@@ -14,6 +14,7 @@ import shutil
 import threading
 import time
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,8 +46,9 @@ EPHEMERAL_TTL_SECS = 600.0
 MAX_EPHEMERAL = 8
 # Two stored profiles this close are the same voice unless the margin picks one clearly.
 MATCH_MARGIN = 0.04
-# A voiceprint needs about 4 s of clean speech to generalize (1 s clips cost ~13% EER, 4 s clips under 1%).
+# A voiceprint needs about 4 s of clean speech across two sentences (or one long 6 s turn) to generalize.
 ENOUGH_SPEECH_SECS = 4.0
+ENOUGH_SINGLE_TURN_SECS = 6.0
 # Log-odds the belief loop starts from: one person in ten in the room is the name just introduced.
 BASE_LOG_ODDS = -2.20
 INTRO_BOOST = 2.40
@@ -376,15 +378,97 @@ class VoiceProfile:
 
 
 class SpeakerRegistry:
-    """Tracks voice fingerprints for every heard speaker and persists named/enrolled profiles in SPEAKERS_DIR."""
+    """Tracks the owner's voiceprint (claiming the first speaker when missing) and guest profiles in SPEAKERS_DIR."""
 
-    def __init__(self, folder: Path | None = SPEAKERS_DIR) -> None:
+    def __init__(
+        self,
+        folder: Path | None = SPEAKERS_DIR,
+        *,
+        owner_voiceprint: np.ndarray | None = None,
+        owner_name: str | None = None,
+        voiceprint_path: Path | None = ...,  # type: ignore[assignment]
+        on_owner_enrolled: Callable[[VoiceProfile], None] | None = None,
+    ) -> None:
         self._lock = threading.RLock()
         self.folder = folder
+        self.owner_voiceprint = owner_voiceprint
+        self.owner_name = owner_name
+        self.claiming_owner: VoiceProfile | None = None
+        self.voiceprint_path = (VOICEPRINT_PATH if folder is not None else None) if voiceprint_path is ... else voiceprint_path
+        self.on_owner_enrolled = on_owner_enrolled
         self.profiles: dict[str, VoiceProfile] = {}
         self._next_id = 1
         if self.folder is not None:
             self._load()
+
+    def active_owner_voiceprint(self) -> np.ndarray | None:
+        """The enrolled owner voiceprint, or the first speaker's in-progress voiceprint while learning it."""
+        with self._lock:
+            if self.owner_voiceprint is not None:
+                return self.owner_voiceprint
+            return self.claiming_owner.voiceprint if self.claiming_owner is not None else None
+
+    def record_owner_clip(self, emb: np.ndarray, speech_secs: float, name: str | None = None) -> VoiceProfile | None:
+        """Feed one addressed utterance from the first speaker; returns the finalized owner profile once mature."""
+        graduated: VoiceProfile | None = None
+        with self._lock:
+            if name and not self.owner_name:
+                self.owner_name = _clean_name(name) or name.strip()
+            if self.owner_voiceprint is not None:
+                return None
+            norm = float(np.linalg.norm(emb))
+            if norm == 0.0 or not np.isfinite(norm):
+                return None
+            unit = _unit(emb)
+            weight = max(0.5, min(speech_secs, 4.0))
+            if self.claiming_owner is None:
+                self.claiming_owner = VoiceProfile(
+                    id="owner",
+                    voiceprint=unit,
+                    name=self.owner_name,
+                    clips=1,
+                    speech_secs=speech_secs,
+                    last_seen=time.monotonic(),
+                    _embeddings=[unit],
+                    _weights=[weight],
+                )
+            else:
+                self.claiming_owner.add_embedding(emb, speech_secs)
+                if self.owner_name:
+                    self.claiming_owner.name = self.owner_name
+            if (
+                self.claiming_owner.clips >= 2 and self.claiming_owner.speech_secs >= ENOUGH_SPEECH_SECS
+            ) or self.claiming_owner.speech_secs >= ENOUGH_SINGLE_TURN_SECS:
+                graduated = self._finalize_owner()
+        if graduated is not None and self.on_owner_enrolled is not None:
+            self.on_owner_enrolled(graduated)
+        return graduated
+
+    def flush_claiming_owner(self) -> VoiceProfile | None:
+        """Persist an in-progress owner voiceprint on shutdown so a short first conversation is still kept."""
+        graduated: VoiceProfile | None = None
+        with self._lock:
+            if self.owner_voiceprint is None and self.claiming_owner is not None:
+                graduated = self._finalize_owner()
+        if graduated is not None and self.on_owner_enrolled is not None:
+            self.on_owner_enrolled(graduated)
+        return graduated
+
+    def _finalize_owner(self) -> VoiceProfile:
+        assert self.claiming_owner is not None
+        profile = self.claiming_owner
+        profile.enrolled = True
+        if self.owner_name:
+            profile.name = self.owner_name
+        self.owner_voiceprint = profile.voiceprint
+        self.claiming_owner = None
+        if self.voiceprint_path is not None:
+            save_owner_voiceprint(profile.voiceprint, self.voiceprint_path)
+            logger.info(
+                f"[Speaker] Saved owner voiceprint to {self.voiceprint_path} "
+                f"(clips={profile.clips}, speech={profile.speech_secs:.1f}s)"
+            )
+        return profile
 
     def match(self, emb: np.ndarray | None, threshold: float) -> VoiceProfile | None:
         """Return the closest profile at or above `threshold`, or None when two profiles are too close to tell."""
@@ -695,6 +779,17 @@ class SpeakerBeliefTracker:
 def speaker_number(profile: VoiceProfile) -> int:
     """`voice_3` -> 3, for the cockpit and logs."""
     return int(profile.id.rsplit("_", 1)[-1]) if profile.id.rsplit("_", 1)[-1].isdigit() else 0
+
+
+def save_owner_voiceprint(voiceprint: np.ndarray, path: Path = VOICEPRINT_PATH) -> Path:
+    """Write a unit-normalized owner voiceprint atomically with mode 0600."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+        np.save(f, _unit(voiceprint))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    return path
 
 
 def save_voiceprint(embeddings: list[np.ndarray], path: Path = VOICEPRINT_PATH) -> Path:

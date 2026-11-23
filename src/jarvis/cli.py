@@ -70,8 +70,8 @@ over the network (one HTTP/SSE/WebSocket server, one token):
 
 once:
   top             open the cockpit (the Rust TUI, built from this checkout)
-  init            set up the state home, then offer to record your voiceprint
-  enroll          record your voiceprint again (pauses the running service while you record)
+  init            set up the state home, keys and personality
+  enroll          learn a new owner voice through a short chat (pauses the running service)
   --version       the running checkout's branch and commit
 """
 

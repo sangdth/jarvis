@@ -35,8 +35,6 @@ class LanguageText(TypedDict):
     meeting_on: str  # "meeting mode on", by voice
     meeting_off: str  # "meeting mode off", by voice
     waiting: list[str]  # no agent name: Jarvis speaks as one assistant
-    enroll: list[str]  # `jarvis enroll`: lines read aloud for the voiceprint
-    enroll_check: list[str]  # read after it, unseen, to measure the score and suggest SPEAKER_THRESHOLD
     speaker_greeting: str  # {name}
 
 
@@ -108,15 +106,23 @@ AGENT_REPORT_PROMPT = (
 )
 
 
-def greeting_prompt(now: datetime, memories: list[str], language: str = "en") -> str:
+def greeting_prompt(now: datetime, memories: list[str], language: str = "en", *, unclaimed: bool = False) -> str:
     """What the brain gets at startup so Jarvis speaks first: the local time and a few things it remembers."""
+    greeting = LANGUAGES[language]["greeting"]
+    if unclaimed:
+        return (
+            f"{NOT_THE_USER} Jarvis just started and has no owner voiceprint yet.] Greet the person warmly in one"
+            " or two short sentences, invite them to chat naturally so you can learn their voice as your owner, and"
+            " casually ask what to call them."
+            + (f" {greeting}" if greeting else "")
+            + " Do not call any tool."
+        )
     remembered = (
         " Things you remember about the user: " + "; ".join(memories) + ". Mention one only if it is timely"
         " (today or the next day or two), in one more sentence of at most eight words; otherwise mention none."
         if memories
         else ""
     )
-    greeting = LANGUAGES[language]["greeting"]
     return (
         f"{NOT_THE_USER} Jarvis just started. It is {now:%A %H:%M}.] Greet the user first in at most five words that fit"
         f" the time of day, like \"Evening. I'm listening.\" Don't say the time or ask how they are.{remembered}"

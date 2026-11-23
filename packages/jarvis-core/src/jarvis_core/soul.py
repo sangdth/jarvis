@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from jarvis_core.home import JARVIS_HOME
 
 SOUL_PATH = JARVIS_HOME / "SOUL.md"
 DEFAULT_PROJECTS_DIR = "~/Projects"
+_USER_NAME_RE = re.compile(r'The user\'s name is "([^"]+)"')
 
 
 @dataclass(frozen=True)
@@ -45,3 +47,29 @@ def render_soul(personality: str, user_name: str, projects_dir: str, extra: str)
     if extra:
         lines.append(extra)
     return f"---\nprojects_dir: {projects_dir}\n---\n" + "\n".join(lines) + "\n"
+
+
+def owner_name(personality: str) -> str | None:
+    """The user's name written in `SOUL.md`, or None when not set yet."""
+    m = _USER_NAME_RE.search(personality)
+    return m.group(1).strip() if m else None
+
+
+def remember_owner_name(name: str, path: Path = SOUL_PATH) -> bool:
+    """Record the owner's stated name in `SOUL.md` when no name is stored there yet."""
+    cleaned = name.strip().replace('"', "")
+    if not cleaned:
+        return False
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if _USER_NAME_RE.search(existing):
+        return False
+    line = f'The user\'s name is "{cleaned}"; use it rarely, not in every reply.'
+    text = (
+        f"{existing.rstrip(chr(10))}\n{line}\n"
+        if existing.strip()
+        else f"---\nprojects_dir: {DEFAULT_PROJECTS_DIR}\n---\n{line}\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o600)
+    return True

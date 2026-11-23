@@ -615,6 +615,79 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         frames = await self.run_stt("Hello Jarvis", [0.05, 0.99], registry=registry, state=state)
         self.assertEqual([(f.user_id, f.text) for f in frames], [("David", "Hello Jarvis")])
 
+    async def test_first_person_talking_to_jarvis_becomes_owner_and_tv_cannot(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from jarvis_core.soul import load_soul, owner_name
+        from jarvis_voice.speaker import AudioStats, SpeakerRegistry, cosine, load_voiceprint
+        from jarvis_voice.voice_gates import SpeakerVerifiedWhisperSTT
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vp_path = Path(tmp) / "owner_voice.npy"
+            soul_path = Path(tmp) / "SOUL.md"
+            enrolled: list[str] = []
+            registry = SpeakerRegistry(
+                folder=Path(tmp) / "speakers",
+                voiceprint_path=vp_path,
+                on_owner_enrolled=lambda p: enrolled.append(p.name or "Owner"),
+            )
+            state = JarvisState()
+            flt = MagicMock()
+            gate = JarvisIntentGate(state, flt, registry=registry)
+            gate._enable_direct_mode = True
+            gate.push_frame = AsyncMock()
+            embedder = MagicMock()
+            stt = SpeakerVerifiedWhisperSTT(
+                embedder=embedder,
+                voiceprint=None,
+                threshold=0.5,
+                registry=registry,
+                state=state,
+            )
+
+            async def say(text: str, emb: list[float], secs: float = 2.5) -> None:
+                async def whisper(_self, _audio):
+                    yield heard(text)
+
+                embedder.analyze.return_value = AudioStats(
+                    embedding=np.array(emb, dtype=np.float32), speech_secs=secs, pitch_hz=120.0
+                )
+                with (
+                    patch.object(SpeakerVerifiedWhisperSTT, "_transcribe_mlx", new=whisper),
+                    patch("jarvis_core.soul.SOUL_PATH", soul_path),
+                    patch("jarvis_voice.voice_gates.remember_owner_name", side_effect=lambda n: __import__(
+                        "jarvis_core.soul", fromlist=["remember_owner_name"]
+                    ).remember_owner_name(n, soul_path)),
+                ):
+                    for f in [f async for f in stt.run_stt(b"\x00\x00" * 16000)]:
+                        await gate.process_frame(f, FrameDirection.DOWNSTREAM)
+
+            # 1. Background TV chatter is ignored by the speech check and never claims ownership.
+            flt.classify_user_utterance = AsyncMock(return_value=UserIntent.IGNORE_BACKGROUND)
+            await say("Tonight on the evening news", [0.0, 1.0], secs=5.0)
+            self.assertIsNone(registry.active_owner_voiceprint())
+            self.assertFalse(vp_path.exists())
+
+            # 2. First person addresses Jarvis: locks onto their voice from turn 1, awaits a second turn to save.
+            flt.classify_user_utterance = AsyncMock(return_value=UserIntent.ADDRESSED_TO_JARVIS)
+            await say("Hi Jarvis, I'm Sang.", [1.0, 0.0], secs=2.5)
+            self.assertIsNotNone(registry.claiming_owner)
+            self.assertFalse(vp_path.exists())
+            self.assertEqual(owner_name(load_soul(soul_path).personality), "Sang")
+
+            # 3. A second stranger speaking before save is rejected as non-owner (cannot hijack or pollute owner).
+            state.social_window_until = 0.0
+            gate.push_frame.reset_mock()
+            await say("Run rm -rf", [0.0, 1.0], secs=3.0)
+            gate.push_frame.assert_not_awaited()
+
+            # 4. Sang's second sentence reaches >= 4 s across 2 turns -> saves owner_voice.npy and promotes live.
+            await say("What's on my board today?", [0.98, 0.05], secs=2.5)
+            self.assertTrue(vp_path.is_file())
+            self.assertEqual(enrolled, ["Sang"])
+            self.assertGreater(cosine(load_voiceprint(vp_path), np.array([1.0, 0.0], dtype=np.float32)), 0.99)
+
     async def test_other_voice_passes_as_room_in_meeting_mode(self) -> None:
         room = await self.run_stt("what about the deadline", [0.1, 0.9], meeting=True)
         owner = await self.run_stt("let's ask Jarvis", [0.9, 0.1], meeting=True)

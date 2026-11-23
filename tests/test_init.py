@@ -31,6 +31,59 @@ class InitTest(unittest.TestCase):
             self.assertIn("warm, playful", load_soul(path).personality)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_accepting_voice_lock_enables_master_check_for_first_speaker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "shared"
+            home.mkdir()
+            path = home / "SOUL.md"
+            env = home / ".env"
+            env.write_text("OPENROUTER_API_KEY=sk-or-1\nMASTER_CHECK=false\n")
+            answers = iter(["calm", "Sang", tmp, "", "y"])
+            with patch.object(init, "SOUL_PATH", path), patch.object(init, "ENV_PATH", env), \
+                    patch("builtins.input", lambda _: next(answers)), \
+                    patch("builtins.print"), patch.object(init, "copy_config", return_value=[]), \
+                    patch.object(init, "setup_brain", return_value=[]), \
+                    patch.object(init, "ask_api_keys"):
+                init.main()
+            self.assertIn("MASTER_CHECK=true", env.read_text())
+
+    def test_enroll_restores_previous_voiceprint_on_cancel_and_enables_master_check_on_save(self):
+        from unittest.mock import AsyncMock
+
+        from jarvis_voice import enroll
+        from jarvis_voice.speaker import VoiceProfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vp = Path(tmp) / "owner_voice.npy"
+            env = Path(tmp) / ".env"
+            vp.write_bytes(b"old-voiceprint")
+            env.write_text("OPENROUTER_API_KEY=sk-or-1\nMASTER_CHECK=false\n")
+
+            # Cancelled before speaking: existing voiceprint is restored intact.
+            with patch.object(enroll, "VOICEPRINT_PATH", vp), patch.object(enroll, "ENV_PATH", env), \
+                    patch.object(enroll.settings, "openrouter_api_key", "sk-or-1"), \
+                    patch("jarvis_voice.main.run_pipecat_harness", new=AsyncMock(side_effect=KeyboardInterrupt)), \
+                    patch("builtins.print"):
+                enroll.main()
+            self.assertEqual(vp.read_bytes(), b"old-voiceprint")
+            self.assertEqual(vp.stat().st_mode & 0o777, 0o600)
+
+            # Natural chat saves a new voiceprint and flips MASTER_CHECK=true.
+            async def fake_chat(*, enroll_owner: bool = False):
+                self.assertTrue(enroll_owner)
+                vp.write_bytes(b"new-voiceprint")
+                return VoiceProfile(id="owner", voiceprint=__import__("numpy").ones(2), name="Sang", clips=2, speech_secs=4.5)
+
+            with patch.object(enroll, "VOICEPRINT_PATH", vp), patch.object(enroll, "ENV_PATH", env), \
+                    patch.object(init, "ENV_PATH", env), \
+                    patch.object(enroll.settings, "openrouter_api_key", "sk-or-1"), \
+                    patch.object(enroll.settings, "master_check", False), \
+                    patch("jarvis_voice.main.run_pipecat_harness", side_effect=fake_chat), \
+                    patch("builtins.print"):
+                enroll.main()
+            self.assertEqual(vp.read_bytes(), b"new-voiceprint")
+            self.assertIn("MASTER_CHECK=true", env.read_text())
+
     def test_init_copies_the_defaults_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"

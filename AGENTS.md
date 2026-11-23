@@ -249,11 +249,12 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   tags come from Pipecat's expressive conversation mode; Jarvis writes no tag rules of its own.
 - **Memory is local Mem0** (open source, Apache 2.0): Qdrant on disk in `~/.config/jarvis/memory`, `bge-m3` embeddings
   on the Ollama app, fact extraction on `EXTRACTION_MODEL`. Telemetry stays off (`MEM0_TELEMETRY=False`). It saves only the newest exchange. Without Ollama, Jarvis runs with memory off and logs why.
-- **The master check is on by default.** `MASTER_CHECK=true` (the default; `jarvis init` records the voiceprint and
-  `jarvis enroll` re-records it): `SpeakerVerifiedWhisperSTT` scores each whole Whisper sentence against
+- **The master check is on by default.** `MASTER_CHECK=true` (the default; with no `owner_voice.npy` yet, the first
+  person who addresses Jarvis claims ownership naturally across their opening sentences, and `jarvis enroll` resets it
+  through a short chat): `SpeakerVerifiedWhisperSTT` scores each whole Whisper sentence against
   `JARVIS_HOME/owner_voice.npy` (sherpa-onnx, 3D-Speaker ERes2Net en) and drops other
-  voices; mute and unmute phrases pass from any voice; no voiceprint stops Jarvis at startup, so `jarvis init`
-  writes `MASTER_CHECK=false` when the user declines the recording. User turns come only
+  voices; mute and unmute phrases pass from any voice; `jarvis init` writes `MASTER_CHECK=false` when the user
+  declines voice locking. User turns come only
   from `JarvisIntentGate` (`ExternalUserTurnStrategies`); raw room sound never starts, ends or interrupts a turn.
   `MASTER_CHECK=false` lets any voice talk to Jarvis and skips loading the speaker model.
 - **`~/.config/jarvis/SOUL.md` is the user's own setup** (`jarvis init` in `init.py`, read by `soul.py`): front

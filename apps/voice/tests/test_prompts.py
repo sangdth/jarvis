@@ -87,6 +87,12 @@ class TestGreeting(unittest.TestCase):
         self.assertNotIn("Vietnamese", prompt)
         self.assertIn("Speak Vietnamese", greeting_prompt(datetime(2026, 11, 6, 8, 5), [], "vi"))
 
+    def test_unclaimed_greeting_invites_first_speaker_without_memories(self) -> None:
+        prompt = greeting_prompt(datetime(2026, 11, 6, 8, 5), ["secret note"], unclaimed=True)
+        self.assertIn("no owner voiceprint yet", prompt)
+        self.assertNotIn("secret note", prompt)
+        self.assertIn("Do not call any tool", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

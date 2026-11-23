@@ -8,11 +8,14 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from jarvis_voice.speaker import VoiceProfile
 
 from loguru import logger
 
-from jarvis_core.soul import load_soul
+from jarvis_core.soul import load_soul, owner_name
 from jarvis_voice import telemetry
 from jarvis_voice.agent_adapter import WatchedAgentConfig
 from jarvis_voice.agent_tools import agent_tool_handlers, agent_tools
@@ -144,7 +147,8 @@ async def run_pipecat_harness(
     relay: Any = None,
     status: dict[str, Any] | None = None,
     hub_emit: Any = None,
-) -> None:
+    enroll_owner: bool = False,
+) -> VoiceProfile | None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers.
 
     `relay` is the already-built `RemoteVoiceTransport` when the shared Jarvis server owns its routes; without it,
@@ -186,15 +190,15 @@ async def run_pipecat_harness(
         last_assistant_text,
     )
 
+    checking_owner = settings.master_check or enroll_owner
     voiceprint = None
-    if settings.master_check:
-        # Asked for the master check but no voiceprint: refuse rather than let any voice give orders unannounced.
-        try:
+    if checking_owner:
+        if not enroll_owner and VOICEPRINT_PATH.exists():
             voiceprint = load_voiceprint()
-        except FileNotFoundError as exc:
-            logger.error(f"MASTER_CHECK is on: {exc}")
-            sys.exit(1)
-        check = f"master check on (threshold {settings.speaker_threshold}, voiceprint {VOICEPRINT_PATH})"
+            check = f"master check on (threshold {settings.speaker_threshold}, voiceprint {VOICEPRINT_PATH})"
+        else:
+            # No owner voiceprint yet: the first person who talks to Jarvis claims it naturally.
+            check = f"master check on (learning owner -> {VOICEPRINT_PATH}, threshold {settings.speaker_threshold})"
     else:
         check = "master check off: any voice may talk to Jarvis"
         if VOICEPRINT_PATH.exists():
@@ -276,8 +280,9 @@ async def run_pipecat_harness(
     orchestrator = AgentOrchestrator(
         state=state, personality=soul.personality, waiting_prompt=overrides.get("waiting", "")
     )
-    orchestrator.load_from_file(settings.watch_config_path)
-    thread = await pick_connection(orchestrator, connect) if connect else None
+    if not enroll_owner:
+        orchestrator.load_from_file(settings.watch_config_path)
+    thread = await pick_connection(orchestrator, connect) if (connect and not enroll_owner) else None
 
     # 1. Mic and speaker (always on, no wake word) through macOS voice processing, which cancels Jarvis's own
     # voice so the user can talk over it on speakers. A paired Mac's mic and speaker are served on the same host and
@@ -286,7 +291,7 @@ async def run_pipecat_harness(
     from jarvis_voice.remote_audio import make_transport
 
     relay_is_standalone = False
-    if relay is None:
+    if relay is None and not enroll_owner:
         relay = make_transport()
         try:
             await relay.start_server()
@@ -306,11 +311,27 @@ async def run_pipecat_harness(
     # "Meeting mode on" by voice starts hearing the call and speaking into it, without a restart.
     state.on_meeting = transport.set_meeting
 
-    # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice,
-    # known enrolled speakers, or a new speaker being enrolled (or tagging room in meetings).
-    registry = SpeakerRegistry() if voiceprint is not None else SpeakerRegistry(folder=None)
+    # 2. Local Always-On STT (MLX Whisper on the Apple GPU); with the master check, passing on only the master's voice
+    # (claiming the first speaker when no owner_voice.npy exists yet), known guests, or tagging room in meetings.
+    enrolled_owner: list[VoiceProfile] = []
+    ear_notifier: list[Any] = []
+
+    def _on_owner_enrolled(profile: VoiceProfile) -> None:
+        enrolled_owner.append(profile)
+        for fn in ear_notifier:
+            fn()
+
+    registry = (
+        SpeakerRegistry(
+            owner_voiceprint=voiceprint,
+            owner_name=None if enroll_owner else owner_name(soul.personality),
+            on_owner_enrolled=_on_owner_enrolled,
+        )
+        if checking_owner
+        else SpeakerRegistry(folder=None)
+    )
     stt = SpeakerVerifiedWhisperSTT(
-        embedder=SpeakerEmbedder() if voiceprint is not None else None,
+        embedder=SpeakerEmbedder() if checking_owner else None,
         voiceprint=voiceprint,
         threshold=settings.speaker_threshold,
         meeting=meeting,
@@ -425,13 +446,18 @@ async def run_pipecat_harness(
 
     @assistant_agg.event_handler("on_assistant_turn_stopped")
     async def _on_spoken(_agg: Any, message: Any) -> None:
-        if getattr(message, "content", ""):
+        text = getattr(message, "content", "")
+        if text:
             telemetry.emit(
                 "voice.tts",
-                text=message.content,
+                text=text,
                 mode=state.mode.value,
                 interrupted=bool(getattr(message, "interrupted", False)),
             )
+            if enroll_owner and not settings.elevenlabs_api_key:
+                print(f"\nJarvis: {text}\n")
+        if enroll_owner and enrolled_owner:
+            await task.cancel()
 
     processors.extend([transport.output(), assistant_agg])
 
@@ -471,11 +497,16 @@ async def run_pipecat_harness(
         if meeting:  # never read out personal memories in front of a meeting room
             await on_speak(LANGUAGES[settings.language]["meeting"])
             return
+        unclaimed = checking_owner and registry.owner_voiceprint is None
         if llm is None:
-            await on_speak("Jarvis here. I'm listening.")
+            await on_speak(
+                "Jarvis here. Talk to me for a moment so I can learn your voice."
+                if unclaimed
+                else "Jarvis here. I'm listening."
+            )
             return
         memories: list[str] = []
-        if memory is not None:
+        if memory is not None and not unclaimed:
             try:
                 query = f"{datetime.now():%A %B %d} today tomorrow schedule upcoming"
                 memories = [m["memory"] for m in (await memory._retrieve_memories(query))[:10]]
@@ -484,7 +515,13 @@ async def run_pipecat_harness(
         await task.queue_frame(
             # A user-role note: with no conversation yet, a trailing system message makes DeepSeek reply with junk.
             LLMMessagesAppendFrame(
-                messages=[{"role": "user", "content": greeting_prompt(datetime.now(), memories, settings.language)}], run_llm=True
+                messages=[
+                    {
+                        "role": "user",
+                        "content": greeting_prompt(datetime.now(), memories, settings.language, unclaimed=unclaimed),
+                    }
+                ],
+                run_llm=True,
             )
         )
 
@@ -498,17 +535,20 @@ async def run_pipecat_harness(
             relay=relay is not None and relay.hub.client is not None,
             language=settings.language,
             whisper=settings.whisper_model,
-            master_check=settings.master_check,
+            master_check=checking_owner,
+            owner_enrolled=not checking_owner or registry.owner_voiceprint is not None,
             executive_model=settings.executive_model,
             meeting=state.meeting,
         )
 
+    ear_notifier.append(emit_ear)
     if relay is not None:
         relay.hub.on_attach.append(emit_ear)
         relay.hub.on_detach.append(emit_ear)
     emit_ear()
     telemetry.emit("voice.mode", mode=state.mode.value, meeting=state.meeting)
-    await orchestrator.start_all()
+    if not enroll_owner:
+        await orchestrator.start_all()
     live["state"] = "listening"
     logger.info("Jarvis is listening (no wake word required). Say 'Shut up' to mute to beep-only mode.")
 
@@ -517,9 +557,11 @@ async def run_pipecat_harness(
         await runner.run(task)
     finally:
         live["state"] = "stopped"
-        await orchestrator.stop_all()
+        if not enroll_owner:
+            await orchestrator.stop_all()
         await executive_filter.aclose()
         if cleaner is not None:
             await cleaner.aclose()
         if relay is not None and relay_is_standalone:
             await relay.stop_server()
+    return enrolled_owner[-1] if enrolled_owner else None

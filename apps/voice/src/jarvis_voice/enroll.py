@@ -1,24 +1,21 @@
 """
-Record the owner's voiceprint so Jarvis acts only on your voice.
-Usage:
-    jarvis enroll   (also the last step of `jarvis init`)
+Enroll (or re-enroll) the owner's voiceprint through a short natural conversation with Jarvis.
+
+On a fresh install Jarvis already claims the first person who talks to it automatically; `jarvis enroll` resets
+`owner_voice.npy` so the next person to chat with Jarvis becomes its owner.
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
-import time
-
-import numpy as np
 
 from jarvis.init import ENV_PATH, set_env
 from jarvis_voice.config import settings
-from jarvis_voice.prompts import LANGUAGES
-from jarvis_voice.speaker import SAMPLE_RATE, SpeakerEmbedder, cosine, save_voiceprint
+from jarvis_voice.speaker import VOICEPRINT_PATH
 
-# Room for a slow start; the silence around the sentence is trimmed before it is scored.
-SECONDS_PER_CLIP = 5
-# The suggested SPEAKER_THRESHOLD sits this far below your lowest check score, capped so short 1-2 s commands pass.
+# Kept for score-tuning scripts and tests: sits just below the lowest seen owner score, capped for short commands.
 THRESHOLD_MARGIN = 0.05
 MAX_SUGGESTED_THRESHOLD = 0.40
 
@@ -29,56 +26,37 @@ def suggest_threshold(scores: list[float]) -> float:
 
 
 def main() -> None:
-    from jarvis_voice.voice_engine import MicConverter, VoiceAudio  # imported here: loads AVFoundation
+    if not settings.openrouter_api_key and not settings.laya_api_key:
+        sys.exit(f"Set OPENROUTER_API_KEY in {ENV_PATH} first (`jarvis init`) so Jarvis can chat with you.")
 
-    text = LANGUAGES[settings.language]
-    embedder = SpeakerEmbedder()
-    # Record through the same voice processing Jarvis listens through, so the voiceprint sounds like what it hears.
-    # One engine for all clips: a second voice-processing engine in one process records nothing.
-    audio, mic, clip = VoiceAudio(), MicConverter(SAMPLE_RATE), []
-    audio.on_mic(lambda samples, rate: clip.append(mic.convert(samples, rate)))
-    audio.start()
+    from jarvis_voice.main import run_pipecat_harness
+
+    previous = VOICEPRINT_PATH.read_bytes() if VOICEPRINT_PATH.is_file() else None
+    VOICEPRINT_PATH.unlink(missing_ok=True)
+    print("\n=== Jarvis owner voice enrollment ===")
+    print("Just chat naturally with Jarvis for a couple of sentences — the first voice it hears becomes its owner.\n")
+    profile = None
     try:
-
-        def record(label: str, line: str) -> bytes:
-            input(f"{label} Press Enter, then say:\n    {line}\n")
-            print(f"Recording {SECONDS_PER_CLIP} s...")
-            clip.clear()
-            time.sleep(SECONDS_PER_CLIP)
-            return b"".join(list(clip))
-
-        print("\n=== Jarvis owner voice enrollment ===")
-        print("Use the mic Jarvis will use, where you usually sit. Read each line in your normal voice.\n")
-        embeddings = []
-        for i, line in enumerate(text["enroll"], 1):
-            emb = embedder.embed(record(f"[{i}/{len(text['enroll'])}]", line))
-            if emb is None:
-                sys.exit("Recording was empty; check the mic and try again.")
-            embeddings.append(emb)
-        for i, emb in enumerate(embeddings):
-            # Each clip against the average of the others: a low number means a noisy or inconsistent recording.
-            others = np.mean([e for j, e in enumerate(embeddings) if j != i], axis=0)
-            print(f"Clip {i + 1} matches the others at {cosine(emb, others):.2f}")
-        path = save_voiceprint(embeddings)
-        voiceprint = np.load(path)
-        print(f"\nSaved owner voiceprint to {path}")
-
-        print("\nNow three new lines, to measure how Jarvis will score you.\n")
-        scores = []
-        for i, line in enumerate(text["enroll_check"], 1):
-            emb = embedder.embed(record(f"[check {i}/{len(text['enroll_check'])}]", line))
-            if emb is None:
-                sys.exit("Recording was empty; check the mic and try again.")
-            score = cosine(emb, voiceprint)
-            scores.append(score)
-            print(f"Score {score:.2f}")
+        profile = asyncio.run(run_pipecat_harness(enroll_owner=True))
+    except KeyboardInterrupt:
+        print()
     finally:
-        audio.stop()
+        if not VOICEPRINT_PATH.is_file() and previous is not None:
+            tmp = VOICEPRINT_PATH.with_name(f"{VOICEPRINT_PATH.name}.tmp")
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
+                f.write(previous)
+            os.chmod(tmp, 0o600)
+            tmp.replace(VOICEPRINT_PATH)
+            print(f"Cancelled; kept existing voiceprint at {VOICEPRINT_PATH}.")
 
-    print(f"\nYour scores: {', '.join(f'{s:.2f}' for s in scores)} (now SPEAKER_THRESHOLD={settings.speaker_threshold}).")
-    print(f"Suggested: set SPEAKER_THRESHOLD={suggest_threshold(scores):.2f} in .env, then restart Jarvis.")
+    if not VOICEPRINT_PATH.is_file():
+        sys.exit("No speech recorded; owner voiceprint was not saved.")
+
+    who = f" ({profile.name})" if profile and profile.name else ""
+    detail = f" ({profile.clips} turn(s), {profile.speech_secs:.1f}s)" if profile else ""
+    print(f"\nSaved owner voiceprint{who} to {VOICEPRINT_PATH}{detail}.")
     if not settings.master_check:
-        set_env("MASTER_CHECK", "true")  # enrolling means the user wants Jarvis to act only on this voice
+        set_env("MASTER_CHECK", "true", ENV_PATH)
         print(f"Turned on MASTER_CHECK in {ENV_PATH}: Jarvis now acts only on your voice.")
 
 

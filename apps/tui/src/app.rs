@@ -647,7 +647,11 @@ impl App {
                     (false, false) => "none".to_string(),
                 };
                 self.check_mode = if ev.bool("master_check").unwrap_or(false) {
-                    "master check".to_string()
+                    if ev.bool("owner_enrolled").unwrap_or(true) {
+                        "master check".to_string()
+                    } else {
+                        "learning owner".to_string()
+                    }
                 } else {
                     "any voice".to_string()
                 };
@@ -1417,6 +1421,15 @@ mod tests {
         })));
         assert_eq!(app.speaker_label, "Speaker 3");
         assert!(!app.speaker_known);
+
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.ear", "ts": 2.5, "master_check": true, "owner_enrolled": false
+        })));
+        assert_eq!(app.check_mode, "learning owner");
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.ear", "ts": 3.0, "master_check": true, "owner_enrolled": true
+        })));
+        assert_eq!(app.check_mode, "master check");
     }
 
     #[test]

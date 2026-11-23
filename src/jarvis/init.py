@@ -124,15 +124,11 @@ def main() -> None:
         SOUL_PATH.chmod(0o600)
         print(f"\nSaved {SOUL_PATH}. Edit it by hand any time; Jarvis reads it at startup.\n")
 
-    question = "Record your voice so Jarvis acts only on yours? (later: `jarvis enroll`) Y/n"
+    question = "Lock Jarvis to your voice? (the first person to talk to Jarvis becomes its owner; `jarvis enroll` resets it) Y/n"
     if ask(question, "y").lower().startswith("y"):
-        from jarvis.cli import paused_listening
-        from jarvis_voice.enroll import main as enroll  # imported here: loads the speaker model
-
-        with paused_listening():
-            enroll()
+        set_env("MASTER_CHECK", "true", ENV_PATH)
+        print("\nMaster check on: when Jarvis starts, the first person who chats with it becomes its owner.\n")
     else:
-        # The master check is on by default, and it refuses to start without a voiceprint: record the choice.
         set_env("MASTER_CHECK", "false", ENV_PATH)
         print("\nMaster check off for now: any voice can talk to Jarvis. `jarvis enroll` turns it on.\n")
 
