@@ -222,6 +222,10 @@ pub struct App {
     pub voice_mode: String,
     /// `master check` or `any voice`, from `voice.ear`.
     pub check_mode: String,
+    /// Peak amplitude (`0.0..=1.0`) of the latest input audio frame reaching Jarvis (`voice.level`).
+    pub mic_peak: f64,
+    pub mic_source: String,
+    pub mic_updated: Option<Instant>,
 
     pub session_path: Option<PathBuf>,
     pub turns: Vec<Turn>,
@@ -282,6 +286,9 @@ impl App {
             ear: "—".to_string(),
             voice_mode: "—".to_string(),
             check_mode: "—".to_string(),
+            mic_peak: 0.0,
+            mic_source: String::new(),
+            mic_updated: None,
             session_path: None,
             turns: Vec::new(),
             follow: true,
@@ -327,6 +334,29 @@ impl App {
 
     pub fn animating(&self) -> bool {
         self.pulses.values().any(|when| when.elapsed() < Duration::from_millis(1500))
+            || self
+                .mic_updated
+                .is_some_and(|when| (1500..1700).contains(&when.elapsed().as_millis()))
+    }
+
+    /// Latest input peak (`0.0..=1.0`), or `None` when no mic frames have arrived in the last 1.5s.
+    pub fn live_mic_peak(&self) -> Option<f64> {
+        let when = self.mic_updated?;
+        (when.elapsed() <= Duration::from_millis(1500)).then_some(self.mic_peak)
+    }
+
+    /// Input level in dBFS (`None` when offline or below `-60 dBFS`).
+    pub fn mic_db(&self) -> Option<f64> {
+        let peak = self.live_mic_peak()?;
+        (peak >= 0.001).then(|| 20.0 * peak.log10())
+    }
+
+    /// Normalized `0.0..=1.0` fill across `-55 dBFS .. -3 dBFS`.
+    pub fn mic_ratio(&self) -> f64 {
+        match self.mic_db() {
+            Some(db) => ((db + 55.0) / 52.0).clamp(0.0, 1.0),
+            None => 0.0,
+        }
     }
 
     pub fn toast_active(&self) -> bool {
@@ -737,6 +767,12 @@ impl App {
             }
             "voice.mode" => {
                 self.voice_mode = ev.text("mode");
+            }
+            "voice.level" => {
+                self.mic_peak = ev.f64("peak").unwrap_or(0.0).clamp(0.0, 1.0);
+                self.mic_source = ev.text("source");
+                self.mic_updated = Some(Instant::now());
+                return; // ~8 Hz meter sample: keep out of the event log
             }
             "brain.route" => {
                 self.pulse("route");
@@ -1379,6 +1415,19 @@ mod tests {
         })));
         assert!(app.daemon_connected);
         assert_eq!(app.daemon_pid, Some(99));
+        assert!(app.events.is_empty());
+    }
+
+    #[test]
+    fn voice_level_updates_mic_meter_without_flooding_the_log() {
+        let mut app = test_app();
+        assert_eq!(app.live_mic_peak(), None);
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.level", "peak": 0.125, "source": "local"
+        })));
+        assert_eq!(app.live_mic_peak(), Some(0.125));
+        assert!(app.mic_db().unwrap() > -19.0 && app.mic_db().unwrap() < -18.0);
+        assert!(app.mic_ratio() > 0.65);
         assert!(app.events.is_empty());
     }
 

@@ -10,6 +10,7 @@ import asyncio
 import ctypes
 import os
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -26,6 +27,7 @@ from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
+from jarvis_voice import telemetry
 from jarvis_voice.config import settings
 from jarvis_voice.meet_voice import MeetVoice
 from jarvis_voice.remote_audio import LOCAL, RELAY, Ear
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
     from jarvis_voice.remote_audio import RelayHub
 
 SILENT_MIC_SECS = 3.0  # this long after start without real sound means the mic is not reaching Jarvis
+METER_INTERVAL_SECS = 0.12  # ~8 Hz input level ticks for `jarvis top`'s header meter
 SILENT_MIC_WARNING = (
     "Mic is silent: macOS voice processing delivers no sound. Set System Settings > Sound > Output to speakers "
     "or headphones; a Multi-Output or aggregate device stops the mic."
@@ -228,6 +231,8 @@ class MacVoiceInputTransport(BaseInputTransport):
         self._mic: MicConverter | None = None
         self._silence_check: asyncio.Task | None = None
         self._remote_pump: asyncio.Task | None = None
+        self._meter_peak = 0.0
+        self._meter_at = 0.0
 
     # Same signature as Pipecat's FrameProcessor.setup, which narrows BaseObject.setup the same way.
     async def setup(self, setup: FrameProcessorSetup) -> None:  # type: ignore[override]
@@ -280,6 +285,7 @@ class MacVoiceInputTransport(BaseInputTransport):
             if audio is not None and audio.bridge is not None:
                 pcm = audio.bridge.mix_buffer.mix(pcm)  # the call, on the host where the tap runs
             if pcm and self._ear.accept(RELAY, pcm):
+                self._sample_level(pcm, RELAY)
                 await self.push_audio_frame(
                     InputAudioRawFrame(audio=pcm, sample_rate=self.sample_rate, num_channels=1)
                 )
@@ -296,11 +302,25 @@ class MacVoiceInputTransport(BaseInputTransport):
 
     def _offer_local(self, pcm: bytes) -> None:  # event loop
         if self._ear.accept(LOCAL, pcm):
+            self._sample_level(pcm, LOCAL)
             asyncio.create_task(
                 self.push_audio_frame(
                     InputAudioRawFrame(audio=pcm, sample_rate=self.sample_rate, num_channels=1)
                 )
             )
+
+    def _sample_level(self, pcm: bytes, source: str) -> None:
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        if not len(samples):
+            return
+        peak = float(np.abs(samples).max()) / 32768.0
+        if peak > self._meter_peak:
+            self._meter_peak = peak
+        now = time.monotonic()
+        if now - self._meter_at >= METER_INTERVAL_SECS:
+            telemetry.emit("voice.level", peak=round(self._meter_peak, 4), source=source)
+            self._meter_peak = 0.0
+            self._meter_at = now
 
 
 class MacVoiceOutputTransport(BaseOutputTransport):

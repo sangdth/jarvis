@@ -285,6 +285,7 @@ fn demo_voice_turn() -> Vec<model::TelemetryEvent> {
     let values = vec![
         serde_json::json!({"seq": 1, "ts": 1.0, "event": "voice.ear", "local_audio": true, "relay": true,
                            "language": "en", "whisper": "turbo", "master_check": true, "meeting": false}),
+        serde_json::json!({"seq": 1, "ts": 1.0, "event": "voice.level", "peak": 0.14, "source": "local"}),
         serde_json::json!({"seq": 2, "ts": 1.1, "event": "voice.stt", "turn_id": "t42", "text":
                            "uh check why the auth test is failing in platform v2", "score": 0.78,
                            "threshold": 0.35, "passed": true, "role": "owner", "ms": 188}),

@@ -47,6 +47,7 @@ EVENT_VOICE_RETURN = "voice.return"
 EVENT_VOICE_RETELL = "voice.retell"
 EVENT_VOICE_TTS = "voice.tts"
 EVENT_VOICE_MODE = "voice.mode"
+EVENT_VOICE_LEVEL = "voice.level"
 EVENT_BRAIN_ROUTE = "brain.route"
 
 _MAX_PREVIEW_CHARS = 280
@@ -63,6 +64,7 @@ def preview(text: str | None, limit: int = _MAX_PREVIEW_CHARS) -> str:
 
 
 _STICKY_EVENTS = frozenset({EVENT_RECONCILER_PHASE, EVENT_VOICE_EAR, EVENT_VOICE_MODE})
+_EPHEMERAL_EVENTS = frozenset({EVENT_VOICE_LEVEL})
 
 
 class TelemetryHub:
@@ -105,7 +107,8 @@ class TelemetryHub:
             "event": event,
             **fields,
         }
-        self._events.append(envelope)
+        if event not in _EPHEMERAL_EVENTS:
+            self._events.append(envelope)
         if event in _STICKY_EVENTS:
             self._sticky[event] = envelope
         self._fanout(envelope)
@@ -163,6 +166,7 @@ __all__ = [
     "EVENT_VOICE_FASTCMD",
     "EVENT_VOICE_INTENT",
     "EVENT_VOICE_LATENCY",
+    "EVENT_VOICE_LEVEL",
     "EVENT_VOICE_MEMORY",
     "EVENT_VOICE_MODE",
     "EVENT_VOICE_REQUEST",

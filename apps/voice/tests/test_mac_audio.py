@@ -379,6 +379,23 @@ class TestHybridWithAPairedMac(unittest.IsolatedAsyncioTestCase):
             transport._remote_attached()
         self.assertTrue(any("SPEAKER_THRESHOLD" in str(call) for call in warning.call_args_list))
 
+    def test_input_meter_reports_the_peak_reaching_jarvis(self) -> None:
+        from jarvis_voice import telemetry
+        from jarvis_voice.mac_audio import MacVoiceInputTransport
+
+        seen: list[dict] = []
+        telemetry.bind(lambda kind, **fields: seen.append({"kind": kind, **fields}))
+        try:
+            transport = MacVoiceInputTransport(self.audio, self.params, hub=self.hub, ear=self.ear)
+            pcm = np.array([0, 8192, -16384], dtype=np.int16).tobytes()
+            transport._sample_level(pcm, "local")
+        finally:
+            telemetry.bind(None)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["kind"], "voice.level")
+        self.assertAlmostEqual(seen[0]["peak"], 0.5, places=3)
+        self.assertEqual(seen[0]["source"], "local")
+
 
 if __name__ == "__main__":
     unittest.main()

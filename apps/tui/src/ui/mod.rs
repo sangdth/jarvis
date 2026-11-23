@@ -251,15 +251,52 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         theme::faint(),
     ));
 
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(2)]).split(inner);
+    if inner.width >= 70 {
+        let top = Layout::horizontal([Constraint::Min(10), Constraint::Length(24)]).split(rows[0]);
+        frame.render_widget(Paragraph::new(Line::from(row0)).style(theme::base()), top[0]);
+        frame.render_widget(
+            Paragraph::new(mic_meter_line(app))
+                .alignment(Alignment::Right)
+                .style(theme::base()),
+            top[1],
+        );
+    } else {
+        frame.render_widget(Paragraph::new(Line::from(row0)).style(theme::base()), rows[0]);
+    }
     frame.render_widget(
-        Paragraph::new(Text::from(vec![
-            Line::from(row0),
-            Line::from(row1),
-            Line::from(row2),
-        ]))
-        .style(theme::base()),
-        inner,
+        Paragraph::new(Text::from(vec![Line::from(row1), Line::from(row2)])).style(theme::base()),
+        rows[1],
     );
+}
+
+fn mic_meter_line(app: &App) -> Line<'static> {
+    const CELLS: usize = 10;
+    let filled = ((app.mic_ratio() * CELLS as f64).round() as usize).min(CELLS);
+    let label = if app.mic_source == "relay" { "pair " } else { "mic " };
+    let mut spans = vec![Span::styled(label, theme::faint())];
+    for idx in 0..CELLS {
+        if idx < filled {
+            let color = if idx >= 8 {
+                theme::DANGER
+            } else if idx >= 6 {
+                theme::WARN
+            } else {
+                theme::ACCENT
+            };
+            spans.push(Span::styled("█", theme::fg(color)));
+        } else {
+            spans.push(Span::styled("░", theme::faint()));
+        }
+    }
+    let readout = match (app.live_mic_peak(), app.mic_db()) {
+        (None, _) => Span::styled("   off ", theme::faint()),
+        (Some(0.0), _) => Span::styled("  dead ", theme::fg(theme::DANGER)),
+        (Some(_), None) => Span::styled(" -60dB ", theme::dim()),
+        (Some(_), Some(db)) => Span::styled(format!(" {:>3.0}dB ", db), theme::fg(theme::TEXT)),
+    };
+    spans.push(readout);
+    Line::from(spans)
 }
 
 fn budget_bar(ratio: f64, width: usize) -> String {
