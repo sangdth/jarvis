@@ -367,7 +367,7 @@
       },
       "Event": {
         "type": "object",
-        "description": "One SSE `data:` line. Brain events: run.status, approval.request, approval.responded, run.completed, run.failed, run.cancelled, http.inbound, http.completed, reconciler.phase, board.rpc, pi.progress, attempt.finished, heartbeat, pair.requested, pair.resolved, outbox.queued, brain.route. Voice turn stages (one `turn_id` groups them): voice.ear, voice.level, voice.stt, voice.intent, voice.fastcmd, voice.cleanup, voice.memory, voice.request, voice.thinking, voice.tool, voice.latency, voice.dispatch, voice.return, voice.retell, voice.tts, voice.mode. Text fields are capped at 2000 characters.",
+        "description": "One SSE `data:` line. Brain events: run.status, approval.request, approval.responded, run.completed, run.failed, run.cancelled, http.inbound, http.completed, reconciler.phase, board.rpc, pi.progress, attempt.finished, heartbeat, pair.requested, pair.resolved, outbox.queued, brain.route. Voice turn stages (one `turn_id` groups them): voice.ear, voice.level, voice.stt, voice.speaker, voice.intent, voice.fastcmd, voice.cleanup, voice.memory, voice.request, voice.thinking, voice.tool, voice.latency, voice.dispatch, voice.return, voice.retell, voice.tts, voice.mode. Text fields are capped at 2000 characters.",
         "additionalProperties": true
       },
       "Resolve": {

@@ -134,7 +134,7 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
             service = memory.create_memory_service()
         assert service is not None
         room = memory.ROOM + " Jarvis, what does Sang have planned tonight?"
-        guest = memory.SPEAKER + " David]: Jarvis, what does Sang have planned tonight?"
+        guest = memory.SPEAKER + " David? (70%)]: Jarvis, what does Sang have planned tonight?"
         transcript_room = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + room
         transcript_guest = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + guest
         for query in (room, guest, transcript_room, transcript_guest):
@@ -153,6 +153,33 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
             await service._store_messages([{"role": "user", "content": turn}, {"role": "assistant", "content": "Ok."}])
         client.add.assert_not_called()
 
+    async def test_a_confirmed_guest_has_their_own_memory_namespace(self) -> None:
+        client = MagicMock()
+        client.search.return_value = {"results": []}
+        with (
+            patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+            patch.object(memory, "MEMORY_DIR", Path("/tmp/jarvis-test-memory")),
+            patch("mem0.Memory.from_config", return_value=client),
+        ):
+            service = memory.create_memory_service()
+        assert service is not None
+
+        turn = memory.SPEAKER + " David]: I love oolong tea."
+        ctx = MagicMock()
+        ctx.get_messages.return_value = [{"role": "user", "content": turn}]
+        await service._enhance_context_with_memories(ctx, turn)
+        self.assertIn("speaker:david", str(client.search.call_args))
+
+        await service._store_messages([{"role": "user", "content": turn}])
+        self.assertEqual(client.add.call_args.kwargs["user_id"], "speaker:david")
+        self.assertEqual(service.user_id, memory.USER_ID, "the owner's namespace is restored after a guest turn")
+
+        # The pipeline stores before the reply is appended, so the newest pair starts with the assistant.
+        await service._store_messages(
+            [{"role": "assistant", "content": "What tea do you like?"}, {"role": "user", "content": turn}]
+        )
+        self.assertEqual(client.add.call_args.kwargs["user_id"], "speaker:david")
+
     async def test_owner_turn_after_guest_saves_only_owner_message(self) -> None:
         client = MagicMock()
         with (
@@ -163,7 +190,7 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
             service = memory.create_memory_service()
         assert service is not None
         for skipped, owner_msg in (
-            (memory.SPEAKER + " David]: What's the weather?", "We're switching to Postgres."),
+            (memory.SPEAKER + " David? (70%)]: What's the weather?", "We're switching to Postgres."),
             (memory.ROOM + " Anyone here?", "I prefer dark roast."),
         ):
             talk = [
@@ -224,7 +251,7 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         await service._enhance_context_with_memories(ctx, question)
         self.assertEqual([m["role"] for m in messages], ["developer", "user"])
 
-        guest_turn = memory.SPEAKER + " David]: Hello?"
+        guest_turn = memory.SPEAKER + " David? (70%)]: Hello?"
         messages.extend([{"role": "assistant", "content": "Bun."}, {"role": "user", "content": guest_turn}])
         await service._enhance_context_with_memories(ctx, guest_turn)
         self.assertFalse(any("Team uses Bun" in m["content"] for m in messages))

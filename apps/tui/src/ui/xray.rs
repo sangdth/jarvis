@@ -302,6 +302,7 @@ fn primary_field(ev: &TelemetryEvent) -> String {
 fn kind_style(event: &str) -> (String, Style) {
     let (label, style) = match event {
         "voice.stt" => ("STT", theme::fg(theme::CYAN)),
+        "voice.speaker" => ("SPK", theme::fg(theme::PURPLE)),
         "voice.intent" => ("INTENT", theme::fg(theme::ACCENT)),
         "voice.fastcmd" => ("FAST", theme::fg(theme::WARN)),
         "voice.cleanup" => ("CLEAN", theme::fg(theme::BLUE)),

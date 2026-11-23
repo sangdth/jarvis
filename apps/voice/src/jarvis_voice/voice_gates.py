@@ -47,12 +47,14 @@ from jarvis_voice.config import JARVIS_HOME, WHISPER_MODELS, settings
 from jarvis_voice.executive_filter import ExecutiveFilter
 from jarvis_voice.prompts import LANGUAGES, MEETING_TRANSCRIPT, meeting_mode
 from jarvis_voice.speaker import (
+    KNOWN_AT,
+    TENTATIVE_AT,
+    SpeakerBeliefTracker,
     SpeakerEmbedder,
     SpeakerRegistry,
     VoiceProfile,
     cosine,
-    extract_introduced_name,
-    extract_speaker_name,
+    speaker_number,
 )
 from jarvis_voice.state import JarvisMode, JarvisState, UserIntent, classify_fast_command, is_not_for_jarvis
 
@@ -72,8 +74,10 @@ SPEECH_SETTLE_SECS = 0.8
 MAX_READY_HOLD_SECS = 8.0
 # A sentence this soon after Jarvis stopped talking is judged as a possible answer to what it said.
 REPLY_WINDOW_SECS = 20.0
-# How long after the master's INTRODUCTION Jarvis waits for a new speaker to start talking or answer.
-ENROLL_TIMEOUT_SECS = 120.0
+# A voice the owner just introduced may answer for this long, then the room is background again.
+SOCIAL_WINDOW_SECS = 90.0
+# Ordinary owner speech makes the next sentence answerable by whoever the owner is talking to.
+ATTENDED_WINDOW_SECS = 30.0
 # SAVE_SEGMENTS keeps the newest sentences here, to re-run Whisper and the voice check on real misses.
 CLIPS_DIR = JARVIS_HOME / "clips"
 # How many recent meeting utterances to hold and pass as context the next time Jarvis is addressed.
@@ -84,15 +88,6 @@ ACTIVATION_SOUND_PATH = Path(__file__).parent / "defaults" / "sound-activation.w
 # Play the low activation sound right before Jarvis speaks once the conversation has stopped for at least this long.
 ACTIVATION_BOUNCE_SECS = 60.0
 ACTIVATION_VOLUME = 0.25
-
-
-@dataclass
-class _Enrollment:
-    started_at: float
-    hint_name: str | None = None
-    profile_id: str | None = None
-    questions_asked: int = 0
-    asked_name: bool = False
 
 
 def is_meeting_addressed(transcript: str) -> bool:
@@ -118,6 +113,14 @@ def _uninterruptible(frame: TranscriptionFrame, *, smart_turn_held: bool | None 
     if smart_turn_held is not None:
         frame._smart_turn_held = smart_turn_held  # type: ignore[attr-defined]
     return frame
+
+
+def _keep_speaker_audio(target: TranscriptionFrame, source: TranscriptionFrame) -> TranscriptionFrame:
+    """`replace()` drops attributes added by the STT; a joined sentence keeps its duration and pitch."""
+    for name in ("_pitch_hz", "_speech_secs"):
+        if hasattr(source, name):
+            setattr(target, name, getattr(source, name))
+    return target
 
 
 def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> Path | None:
@@ -261,10 +264,9 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         started = time.monotonic()
         held_by_turn, self._smart_turn_held = self._smart_turn_held, False
         checking = self._embedder is not None and self._voiceprint is not None
-        enrolling = self._state.enrolling if self._state is not None else False
-        score_task = asyncio.create_task(asyncio.to_thread(self._analyze, audio, enrolling)) if checking else None
+        score_task = asyncio.create_task(asyncio.to_thread(self._analyze, audio)) if checking else None
         frames = [frame async for frame in self._transcribe_mlx(audio)]
-        score, profile = await score_task if score_task else (None, None)
+        score, profile, pitch_hz, speech_secs = await score_task if score_task else (None, None, None, 0.0)
         heard = f"score={score:.2f}" if score is not None else "off"
         owner = score is None or score >= self._threshold
         # Saved before any drop: the misses worth replaying are the ones Whisper or the voice check threw away.
@@ -278,6 +280,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
             logger.info(f"[Speaker] {heard} no text{saved}")  # Whisper heard noise or nothing
         # Read live: "meeting mode on" by voice changes the tagging from the next sentence, mid-run.
         meeting = self._state.meeting if self._state is not None else self._meeting
+        social = self._state is not None and self._state.social_window_until > time.monotonic()
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
                 ms = round((time.monotonic() - started) * 1000)
@@ -289,7 +292,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                         role = "owner"
                     elif known and profile is not None and profile.name:
                         role = profile.name
-                    elif enrolling and profile is not None:
+                    elif profile is not None:
                         role = profile.id
                     else:
                         role = "room"
@@ -301,7 +304,8 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                     frame = replace(frame, user_id=role)
                 else:
                     fast = classify_fast_command(frame.text) in (UserIntent.MUTE, UserIntent.UNMUTE)
-                    passed = owner or known or (enrolling and profile is not None) or fast
+                    # An unnamed voice is heard only while the owner may be talking to it; a day of TV is dropped.
+                    passed = owner or known or (profile is not None and social) or fast
                     logger.info(f"[Speaker] {heard} {'pass' if passed else 'drop'}: {frame.text!r}{saved}")
                     telemetry.emit(
                         "voice.stt", text=frame.text, score=score, threshold=self._threshold,
@@ -312,6 +316,8 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                         continue
                     if not owner and profile is not None:
                         frame = replace(frame, user_id=profile.name if known and profile.name else profile.id)
+                setattr(frame, "_pitch_hz", pitch_hz)
+                setattr(frame, "_speech_secs", speech_secs)
                 frame = _uninterruptible(frame, smart_turn_held=held_by_turn)
             yield frame
 
@@ -335,18 +341,17 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
             await self._turn.cleanup()
         await super().cleanup()
 
-    def _analyze(self, audio: bytes, enrolling: bool) -> tuple[float, VoiceProfile | None]:
+    def _analyze(self, audio: bytes) -> tuple[float, VoiceProfile | None, float | None, float]:
         assert self._embedder is not None and self._voiceprint is not None  # only called with the master check on
-        emb = self._embedder.embed(audio)
-        score = cosine(emb, self._voiceprint)
+        stats = self._embedder.analyze(audio)
+        if stats is None:
+            return 0.0, None, None, 0.0
+        score = cosine(stats.embedding, self._voiceprint)
         if score >= self._threshold:
-            return score, None
-        # Unknown voices get a profile only while the master is enrolling one; otherwise only enrolled voices match,
-        # so a day of TV never grows the registry.
-        profile = (
-            self._registry.observe(emb, self._threshold) if enrolling else self._registry.match(emb, self._threshold)
-        )
-        return score, profile
+            return score, None, stats.pitch_hz, stats.speech_secs
+        # Every unnamed voice gets a RAM-only fingerprint that expires: recognition improves while nothing piles up.
+        profile = self._registry.observe(stats.embedding, self._threshold, stats.speech_secs)
+        return score, profile, stats.pitch_hz, stats.speech_secs
 
 
 class JarvisIntentGate(FrameProcessor):
@@ -355,8 +360,8 @@ class JarvisIntentGate(FrameProcessor):
     1. Immediately catches 'Shut up' / 'Be quiet' -> switches Jarvis to BEEP_ONLY mode.
     2. Immediately catches 'You can talk' -> restores VOICE mode and reads queued topics.
     3. When in BEEP_ONLY mode, suppresses all normal conversational responses.
-    4. When the master's intent is INTRODUCTION, starts a conversational speaker enrollment once the new speaker
-       speaks, asking a couple of questions and linking their stated name ('I'm David') to their voice profile.
+    4. When the master's intent is INTRODUCTION, offers that name to the room so the next voice to answer is matched
+       to it with a confidence, no scripted questions; a confidently named voice is remembered by itself.
     5. When in VOICE mode, runs the Always-On Turn Classifier so Jarvis only responds
        when actually needed (no wake word required; in meeting mode, buffers room talk until Jarvis is addressed).
     """
@@ -381,7 +386,7 @@ class JarvisIntentGate(FrameProcessor):
         if meeting:
             state.meeting = True
         self.registry = registry if registry is not None else SpeakerRegistry(folder=None)
-        self._enrollment: _Enrollment | None = None
+        self.tracker = SpeakerBeliefTracker()
         self._meeting_log: list[str] = []
         self._bot_speaking = False
         self._bot_stopped_at: float | None = None
@@ -472,7 +477,8 @@ class JarvisIntentGate(FrameProcessor):
             held = self._held
             if held is not None and held.user_id == frame.user_id:
                 self._cancel_hold_timer()
-                frame = _uninterruptible(replace(frame, text=f"{held.text.strip()} {transcript}"))
+                joined = replace(frame, text=f"{held.text.strip()} {transcript}")
+                frame = _uninterruptible(_keep_speaker_audio(joined, frame))
                 self._held = None
             # Hold once unless Smart Turn already waited out its silence cap: catches brief mid-thought pauses.
             elif held is None and not getattr(frame, "_smart_turn_held", False) and is_trailing_off(transcript):
@@ -507,14 +513,6 @@ class JarvisIntentGate(FrameProcessor):
             self._in_flight.cancel()
             self._in_flight = None
         await super().cleanup()
-
-    def _start_enrollment(self, hint_name: str | None = None) -> None:
-        self._enrollment = _Enrollment(started_at=time.monotonic(), hint_name=hint_name)
-        self.state.enrolling = True
-
-    def _stop_enrollment(self) -> None:
-        self._enrollment = None
-        self.state.enrolling = False
 
     def _start_hold_timer(self, direction: FrameDirection) -> None:
         self._cancel_hold_timer()
@@ -610,61 +608,33 @@ class JarvisIntentGate(FrameProcessor):
         # None for an id the registry no longer has (merged into a named profile): the sentence counts as unknown.
         return self.registry.get(user_id)
 
-    async def _handle_enrollment(self, profile: VoiceProfile) -> None:
-        """Run the conversational enrollment steps once a new speaker starts speaking to Jarvis."""
-        assert self._enrollment is not None
-        lang_text = LANGUAGES[settings.language]
+    def _speaker_tag(self, frame: TranscriptionFrame, transcript: str) -> tuple[str, float | None, str]:
+        """The `[Speaker: ...]` tag, its confidence, and the name the cockpit shows for this turn."""
+        if frame.user_id in ("owner", "u", ""):
+            return "User", None, "Owner"
+        profile = self._resolve_profile(frame.user_id)
+        if profile is None:
+            return ("Room", None, "Room") if self.state.meeting else ("Speaker: Guest", None, "Guest")
         if profile.enrolled and profile.name:
-            self._stop_enrollment()
-            profile.greeted = True
-            greeting = lang_text["speaker_greeting"].format(name=profile.name)
-            logger.info(f"[Enroll] recognized known speaker {profile.name!r}; greeting by name")
-            if self.state.on_speak:
-                await self.state.on_speak(greeting)
-            return
-
-        if self._enrollment.profile_id is None:
-            self._enrollment.profile_id = profile.id
-            if self._enrollment.hint_name and not profile.name:
-                profile.name = self._enrollment.hint_name
-        self._enrollment.started_at = time.monotonic()
-
-        questions = lang_text["enroll_questions"]
-        if self._enrollment.questions_asked == 0:
-            self._enrollment.questions_asked = 1
-            msg = f"{lang_text['enroll_start']} {questions[0]}"
-            logger.info(f"[Enroll] started chat with {profile.id} (name={profile.name!r}): {msg!r}")
-            if self.state.on_speak:
-                await self.state.on_speak(msg)
-            return
-
-        if self._enrollment.questions_asked < len(questions):
-            q = questions[self._enrollment.questions_asked]
-            self._enrollment.questions_asked += 1
-            if self._enrollment.questions_asked == len(questions) and not profile.name:
-                msg = f"{q} {lang_text['enroll_ask_name']}"
-                self._enrollment.asked_name = True
-            else:
-                msg = q
-            logger.info(f"[Enroll] follow-up question for {profile.id} (name={profile.name!r}): {msg!r}")
-            if self.state.on_speak:
-                await self.state.on_speak(msg)
-            return
-
-        if not profile.name:
-            self._enrollment.asked_name = True
-            msg = lang_text["enroll_ask_name"]
-            logger.info(f"[Enroll] asking {profile.id} for their name")
-            if self.state.on_speak:
-                await self.state.on_speak(msg)
-            return
-
-        enrolled = await asyncio.to_thread(self.registry.link_name, profile.id, profile.name, enroll=True) or profile
-        self._stop_enrollment()
-        msg = lang_text["enroll_done"].format(name=enrolled.name)
-        logger.info(f"[Enroll] completed enrollment for {enrolled.name!r} ({enrolled.id}, clips={enrolled.clips})")
-        if self.state.on_speak:
-            await self.state.on_speak(msg)
+            return f"Speaker: {profile.name}", 1.0, profile.name
+        belief = self.tracker.observe_guest(
+            profile,
+            transcript,
+            pitch_hz=getattr(frame, "_pitch_hz", None),
+            now=time.monotonic(),
+            meeting=self.state.meeting,
+            registry=self.registry,
+        )
+        display = belief.name or f"Speaker {speaker_number(profile)}"
+        if belief.name and belief.confidence >= KNOWN_AT:
+            return f"Speaker: {belief.name}", belief.confidence, belief.name
+        if belief.name and belief.confidence >= TENTATIVE_AT:
+            # One light check next turn confirms it: the executive model greets them by the guessed name.
+            self.tracker.last_asked = (profile.id, belief.name)
+            return f"Speaker: {belief.name}? ({belief.confidence * 100:.0f}%)", belief.confidence, display
+        if self.state.meeting:
+            return "Room", belief.confidence, display
+        return "Speaker: Guest", belief.confidence, display
 
     async def _gate(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
         transcript = frame.text.strip()
@@ -672,23 +642,24 @@ class JarvisIntentGate(FrameProcessor):
         profile = self._resolve_profile(frame.user_id)
         logger.info(f"[User Transcript] ({self.state.mode.value}): {transcript!r}")
 
-        if self._enrollment is not None and time.monotonic() - self._enrollment.started_at > ENROLL_TIMEOUT_SECS:
-            self._stop_enrollment()
-
+        now = time.monotonic()
         fast = classify_fast_command(transcript)
         if fast is not None and fast != UserIntent.IGNORE_BACKGROUND:
             # Mute, unmute and the meeting switch settle in code, with no model call and no latency.
             telemetry.emit("voice.fastcmd", command=fast.value, text=transcript)
-        enrolling_this = (
-            profile is not None and self._enrollment is not None and self._enrollment.profile_id in (None, profile.id)
-        )
-        # A voice that is neither the master's, enrolled, nor being enrolled never reaches the model. The STT lets
-        # it through only while enrolling; this catches late frames and any second unknown voice mid-enrollment.
-        if not is_owner and frame.user_id != "room" and (profile is None or not profile.enrolled) and not enrolling_this:
-            if fast in (UserIntent.MUTE, UserIntent.UNMUTE):
-                is_owner = True  # mute and unmute pass from any voice
-            else:
+        if is_owner:
+            # The owner speaking is what makes a nearby voice answerable: the next sentence may be theirs.
+            self.state.social_window_until = max(self.state.social_window_until, now + ATTENDED_WINDOW_SECS)
+            self.tracker.owner_turn(
+                transcript, [p.name for p in self.registry.profiles.values() if p.name], now
+            )
+        elif frame.user_id != "room" and profile is None:
+            if fast not in (UserIntent.MUTE, UserIntent.UNMUTE):
                 logger.info(f"[Speaker] dropped unknown voice {frame.user_id!r}: {transcript!r}")
+                return
+        elif profile is not None and not profile.enrolled and not self.state.meeting:
+            if now >= self.state.social_window_until and fast not in (UserIntent.MUTE, UserIntent.UNMUTE):
+                logger.info(f"[Speaker] dropped parked voice {frame.user_id!r}: {transcript!r}")
                 return
         # The same label in both modes, so memory skips a guest's words ([Speaker: David]) like it skips [Room].
         speaker = "User" if is_owner else (f"Speaker: {profile.name}" if profile and profile.name else "Room")
@@ -708,29 +679,6 @@ class JarvisIntentGate(FrameProcessor):
         # "Not you": Jarvis took room talk as a turn, so it stops answering it. The filter logs the correction.
         if is_not_for_jarvis(transcript) and self.state.on_interrupt:
             await self.state.on_interrupt()
-
-        # A name counts only while enrolling this voice: "It's Friday" from a known guest must not rename them.
-        if (
-            enrolling_this
-            and profile is not None
-            and not profile.enrolled
-            and fast != UserIntent.IGNORE_BACKGROUND
-            and not is_not_for_jarvis(transcript)
-        ):
-            assert self._enrollment is not None
-            stated_name = extract_speaker_name(transcript, allow_bare=self._enrollment.asked_name)
-            if stated_name:
-                profile = self.registry.link_name(profile.id, stated_name, enroll=False) or profile
-
-        if (
-            enrolling_this
-            and profile is not None
-            and fast not in (UserIntent.MUTE, UserIntent.UNMUTE, UserIntent.IGNORE_BACKGROUND)
-            and not is_not_for_jarvis(transcript)
-        ):
-            await self._flush_ready_now(direction)
-            await self._handle_enrollment(profile)
-            return
 
         question = self._recent_jarvis_question()
         open_question = question is not None and (bool(self.state.active_agent_context) or "?" in question)
@@ -789,11 +737,13 @@ class JarvisIntentGate(FrameProcessor):
                 # Without the master check voices are not told apart, so the conversation model just says hello.
                 intent = UserIntent.ADDRESSED_TO_JARVIS
             elif is_owner:
-                await self._flush_ready_now(direction)
-                hint_name = extract_introduced_name(transcript)
-                self._start_enrollment(hint_name=hint_name)
-                logger.info(f"[Enroll] master introduced a new speaker (hint={hint_name!r}); waiting for their voice.")
-                return
+                # The tracker already took the name; the turn still reaches the model, which greets the newcomer.
+                self.state.social_window_until = max(
+                    self.state.social_window_until, time.monotonic() + SOCIAL_WINDOW_SECS
+                )
+                if not any(p.name for p in self.tracker.pending):
+                    self.tracker.note_intro(None, None)
+                logger.info("[Speaker] master introduced someone; the next new voice may claim the name.")
             else:
                 return
 
@@ -825,11 +775,11 @@ class JarvisIntentGate(FrameProcessor):
                 "voice.cleanup", raw=heard_text, text=cleaned, ms=round(ms), changed=cleaned != heard_text
             )
             transcript = cleaned
-            frame = _uninterruptible(replace(frame, text=transcript))
+            frame = _uninterruptible(_keep_speaker_audio(replace(frame, text=transcript), frame))
 
         if self._ready is not None:
             transcript = f"{self._ready.text.strip()} {transcript}"
-            frame = _uninterruptible(replace(frame, text=transcript))
+            frame = _uninterruptible(_keep_speaker_audio(replace(frame, text=transcript), self._ready))
         else:
             self._ready_started_at = time.monotonic()
 
@@ -851,9 +801,18 @@ class JarvisIntentGate(FrameProcessor):
         transcript = frame.text.strip()
         is_owner = frame.user_id in ("owner", "u", "")
         profile = self._resolve_profile(frame.user_id)
-        speaker = "User" if is_owner else (f"Speaker: {profile.name}" if profile and profile.name else "Room")
+        tag, confidence, display = self._speaker_tag(frame, transcript)
+        speaker = "User" if is_owner else (f"Speaker: {display}" if display not in ("Room", "Guest") else tag)
         self.state.room_turn = not is_owner
         self.state.current_speaker = speaker
+        telemetry.emit(
+            "voice.speaker",
+            label=display,
+            confidence=confidence,
+            known=is_owner or (confidence is not None and confidence >= KNOWN_AT),
+            voice_id=frame.user_id,
+        )
+        profile = self._resolve_profile(frame.user_id) or profile
         if profile is not None and profile.enrolled and profile.name and not profile.greeted:
             # Once per run; the request itself still goes on to the model below.
             profile.greeted = True
@@ -864,9 +823,9 @@ class JarvisIntentGate(FrameProcessor):
             history = "\n".join(self._meeting_log)
             self._meeting_log.clear()
             prefix = f"{MEETING_TRANSCRIPT}\n{history}]\n" if history else ""
-            frame = _uninterruptible(replace(frame, text=f"{prefix}[{speaker}]: {transcript}"))
+            frame = _uninterruptible(replace(frame, text=f"{prefix}[{tag}]: {transcript}"))
         elif not is_owner:
-            frame = _uninterruptible(replace(frame, text=f"[{speaker}]: {transcript}"))
+            frame = _uninterruptible(replace(frame, text=f"[{tag}]: {transcript}"))
 
         # User is addressing Jarvis: this sentence is the whole user turn. The aggregator runs on
         # ExternalUserTurnStrategies, so only these frames start a turn (and interrupt Jarvis).

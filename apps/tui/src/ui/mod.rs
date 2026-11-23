@@ -132,6 +132,23 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, show_mic: bool) {
         Span::styled(app.check_mode.clone(), theme::dim()),
         Span::styled("  ear ", theme::faint()),
         Span::styled(app.ear.clone(), theme::fg(theme::CYAN)),
+        Span::styled("  speaker ", theme::faint()),
+        Span::styled(
+            app.speaker_label.clone(),
+            if app.speaker_known {
+                theme::bold(theme::ACCENT)
+            } else {
+                theme::fg(theme::WARN)
+            },
+        ),
+        Span::styled(
+            if app.speaker_confidence > 0.0 && !app.speaker_known {
+                format!(" {:.0}%", app.speaker_confidence * 100.0)
+            } else {
+                String::new()
+            },
+            theme::faint(),
+        ),
         Span::styled(format!("  {}:{} ", app.cfg.host, app.cfg.port), theme::faint()),
         daemon,
         Span::styled("  phase ", theme::faint()),

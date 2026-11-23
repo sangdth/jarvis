@@ -240,6 +240,11 @@ pub struct App {
     pub mic_peak: f64,
     pub mic_source: String,
     pub mic_updated: Option<Instant>,
+    /// Who the gate heard last (`voice.speaker`): a known name, `Speaker <n>` for an unnamed voice, or `Room`.
+    pub speaker_label: String,
+    pub speaker_known: bool,
+    pub speaker_confidence: f64,
+    pub speaker_updated: Option<Instant>,
 
     pub session_path: Option<PathBuf>,
     pub turns: Vec<Turn>,
@@ -303,6 +308,10 @@ impl App {
             mic_peak: 0.0,
             mic_source: String::new(),
             mic_updated: None,
+            speaker_label: "—".to_string(),
+            speaker_known: false,
+            speaker_confidence: 0.0,
+            speaker_updated: None,
             session_path: None,
             turns: Vec::new(),
             follow: true,
@@ -675,6 +684,12 @@ impl App {
                 };
                 let detail = format!("{}ms · {}", ev.i64("ms").unwrap_or(0), ev.text("speaker"));
                 self.push_stage(&ev, "INTENT", tone, intent, detail);
+            }
+            "voice.speaker" => {
+                self.speaker_label = ev.text("label");
+                self.speaker_known = ev.bool("known").unwrap_or(false);
+                self.speaker_confidence = ev.f64("confidence").unwrap_or(0.0);
+                self.speaker_updated = Some(Instant::now());
             }
             "voice.fastcmd" => {
                 self.pulse("intent");
@@ -1385,6 +1400,23 @@ mod tests {
         assert!(trace.done);
         assert_eq!(trace.headline(), "fix the bug");
         assert_eq!(trace.spoken().map(|s| s.text.as_str()), Some("Done."));
+    }
+
+    #[test]
+    fn a_speaker_event_names_who_the_gate_heard() {
+        let mut app = test_app();
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.speaker", "turn_id": "t10", "ts": 1.0, "label": "John", "known": true, "confidence": 0.99
+        })));
+        assert_eq!(app.speaker_label, "John");
+        assert!(app.speaker_known);
+        assert!((app.speaker_confidence - 0.99).abs() < 1e-9);
+
+        app.apply(voice_event(serde_json::json!({
+            "event": "voice.speaker", "turn_id": "t11", "ts": 2.0, "label": "Speaker 3", "known": false, "confidence": 0.42
+        })));
+        assert_eq!(app.speaker_label, "Speaker 3");
+        assert!(!app.speaker_known);
     }
 
     #[test]

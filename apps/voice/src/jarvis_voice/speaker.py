@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +39,51 @@ VOICEPRINT_PATH = JARVIS_HOME / "owner_voice.npy"
 SPEAKERS_DIR = JARVIS_HOME / "speakers"
 MAX_PROFILE_CLIPS = 10
 FRAME = SAMPLE_RATE // 50  # 20 ms
+# An unnamed voice heard in the room lives in RAM only: it is dropped after this idle time, or when a ninth voice
+# needs its slot, so a day of TV never reaches the disk.
+EPHEMERAL_TTL_SECS = 600.0
+MAX_EPHEMERAL = 8
+# Two stored profiles this close are the same voice unless the margin picks one clearly.
+MATCH_MARGIN = 0.04
+# A voiceprint needs about 4 s of clean speech to generalize (1 s clips cost ~13% EER, 4 s clips under 1%).
+ENOUGH_SPEECH_SECS = 4.0
+# Log-odds the belief loop starts from: one person in ten in the room is the name just introduced.
+BASE_LOG_ODDS = -2.20
+INTRO_BOOST = 2.40
+INTRO_FLAT_SECS = 10.0
+INTRO_TAU_SECS = 30.0
+INTRO_WINDOW_SECS = 90.0
+# "Jarvis, meet my friend" without a name still makes the next voice's stated name much more likely.
+UNNAMED_INTRO_BOOST = 0.90
+PITCH_MATCH_BOOST = 0.65
+PITCH_MISMATCH_BOOST = -2.50
+SELF_ID_BOOST = 3.80
+VOCATIVE_BOOST = 1.50
+CONFIRM_BOOST = 1.20
+CORRECTION_PENALTY = -4.50
+# Told to the model as `[Speaker: John? (70%)]`, never spoken as a percentage.
+TENTATIVE_AT = 0.50
+KNOWN_AT = 0.85
+MALE_MAX_HZ = 155.0
+FEMALE_MIN_HZ = 180.0
+
+_GENDER_WORDS = {
+    "male": {"he", "him", "his", "brother", "husband", "boyfriend", "son", "anh", "ông", "chú", "bác"},
+    "female": {"she", "her", "hers", "sister", "wife", "girlfriend", "daughter", "chị", "cô", "bà", "em gái"},
+}
+_AFFIRMATIVE_RE = re.compile(r"^\s*(?:yes|yeah|yep|yup|correct|right|sure|that'?s me|speaking)\b", re.IGNORECASE)
+# "No, I'm Mike" / "Actually I'm Mike" changes the name; "not John" takes the old one away.
+_CORRECTION_RE = re.compile(
+    r"\b(?:no|actually|sorry|not)\b[,.! ]+(?:i'?m|i am|my name is|it'?s)\s+([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)",
+    re.IGNORECASE,
+)
+_WRONG_NAME_RE = re.compile(r"\b(?:i'?m not|not|isn'?t)\s+([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)", re.IGNORECASE)
+_SELF_INTRO_SHORT_RE = re.compile(
+    r"^\s*(?:hi|hello|hey|good morning|good afternoon|good evening)\b[^.!?]*?\b(?:i'?m|i am)\s+"
+    r"([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)",
+    re.IGNORECASE,
+)
+_BARE_SELF_INTRO_RE = re.compile(r"^\s*(?:i'?m|i am|my name is)\s+([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)", re.IGNORECASE)
 
 # Words that follow "I'm ..." or "this is ..." in normal speech and are never a person's name.
 _NON_NAMES = {
@@ -66,8 +113,10 @@ _SELF_INTRO_CI_RE = re.compile(
     re.IGNORECASE,
 )
 _INTRODUCED_NAME_RE = re.compile(
-    r"\b(?:this\s+is|meet|say\s+(?:hi|hello)\s+to|introduce(?:\s+you\s+to)?|đây\s+là|làm\s+quen\s+với|giới\s+thiệu(?:\s+với\s+\w+)?)"
-    r"(?:\s+(?:my|our|a|the)?\s*(?:good\s+|best\s+|new\s+|close\s+)?(?:friend|brother|sister|wife|husband|partner|colleague|coworker|guest|son|daughter|bạn|anh|em|chị)?)*"
+    r"\b(?i:this\s+is|meet|say\s+(?:hi|hello)\s+to|introduce(?:\s+you\s+to)?|đây\s+là|làm\s+quen\s+với|giới\s+thiệu(?:\s+với\s+\w+)?)"
+    r"(?:\s+(?:my|our|a|the))?"
+    r"(?:\s+(?:good|best|new|close))?"
+    r"(?:\s+(?:friend|brother|sister|wife|husband|partner|colleague|coworker|guest|son|daughter|bạn|anh|em|chị))?"
     r"\s*,?\s*([A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ][\wÀ-ỹ'-]*)"
 )
 
@@ -109,6 +158,63 @@ def extract_introduced_name(transcript: str) -> str | None:
     return None
 
 
+def extract_gender_hint(transcript: str) -> str | None:
+    """`male` / `female` from the pronouns and kinship words in an introduction, else None."""
+    words = set(re.findall(r"[A-Za-zÀ-ỹ']+", transcript.lower()))
+    male = len(words & _GENDER_WORDS["male"])
+    female = len(words & _GENDER_WORDS["female"])
+    if male == female:
+        return None
+    return "male" if male > female else "female"
+
+
+def extract_intro_cue(transcript: str) -> tuple[str | None, str | None]:
+    """The name and gender an introduction suggests ('This is John, he's my friend')."""
+    name = extract_introduced_name(transcript)
+    if name is None:
+        return None, None
+    return name, extract_gender_hint(transcript)
+
+
+def extract_vocative_name(transcript: str, names: list[str]) -> str | None:
+    """The guest the master hands the turn to ('What do you think, John?')."""
+    text = transcript.strip()
+    if not text.endswith("?"):
+        return None
+    for name in names:
+        if re.search(rf"(?:^|,\s*|hey\s+){re.escape(name)}\s*\??,?\s*$", text, re.IGNORECASE):
+            return name
+    return None
+
+
+def extract_correction(transcript: str) -> tuple[str | None, str | None]:
+    """A name correction: the right name ('No, I'm Mike') and the wrong one ('I'm not John')."""
+    right, wrong = _CORRECTION_RE.search(transcript), _WRONG_NAME_RE.search(transcript)
+    return (
+        _clean_name(right.group(1)) if right else None,
+        _clean_name(wrong.group(1)) if wrong else None,
+    )
+
+
+def extract_claimed_name(transcript: str, expected: list[str], *, allow_bare: bool = False) -> str | None:
+    """A name a speaker states about themselves, without turning 'It's Friday' into a person.
+
+    Accepted: an explicit 'my name is ...' / 'call me ...', a name the room is already expecting, and a short
+    greeting ('Hi, I'm John'). `allow_bare` also takes a bare reply to an introduction ("I'm David").
+    """
+    explicit = extract_speaker_name(transcript)
+    if explicit and (_EXPLICIT_NAME_RE.search(transcript) or explicit in expected):
+        return explicit
+    m = _SELF_INTRO_SHORT_RE.search(transcript)
+    if m and len(transcript.split()) <= 8:
+        return _clean_name(m.group(1))
+    if allow_bare and len(transcript.split()) <= 4:
+        m = _BARE_SELF_INTRO_RE.search(transcript)
+        if m:
+            return _clean_name(m.group(1))
+    return None
+
+
 def ensure_model(path: Path = MODEL_PATH) -> Path:
     """Download the model once; a file with the wrong checksum is never loaded."""
     if path.exists() and _sha256(path) in _VALID_MODEL_SHA256S:
@@ -134,6 +240,53 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+@dataclass
+class AudioStats:
+    """What one sentence tells us about its speaker, computed alongside Whisper."""
+
+    embedding: np.ndarray
+    speech_secs: float
+    pitch_hz: float | None
+
+
+def estimate_pitch(samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> float | None:
+    """Median F0 of the voiced frames (autocorrelation, 80-300 Hz); None when too short or too quiet.
+
+    Only a soft cue: a deep female and a high male overlap around 155-180 Hz, so callers must not treat it as proof.
+    """
+    frame = int(0.03 * sample_rate)
+    hop = int(0.01 * sample_rate)
+    min_lag = int(sample_rate / 300)
+    max_lag = int(sample_rate / 80)
+    if len(samples) < frame * 3 or max_lag >= frame:
+        return None
+    frames = [samples[i : i + frame] for i in range(0, len(samples) - frame + 1, hop)]
+    levels = [float(np.sqrt(np.mean(f**2))) for f in frames]
+    peak = max(levels, default=0.0)
+    if peak < 1e-4:
+        return None
+    voiced: list[tuple[float, float]] = []
+    for chunk, rms in zip(frames, levels):
+        if rms < peak * 0.12:
+            continue
+        centered = chunk - chunk.mean()
+        corr = np.correlate(centered, centered, mode="full")[frame - 1 :]
+        if corr[0] <= 0:
+            continue
+        lags = corr[min_lag : max_lag + 1]
+        lag = int(np.argmax(lags)) + min_lag
+        if lags[lag - min_lag] / corr[0] >= 0.45:
+            voiced.append((sample_rate / lag, rms))
+    if len(voiced) < 3:
+        return None
+    freqs = np.array([f for f, _ in voiced])
+    weights = np.array([w for _, w in voiced])
+    order = np.argsort(freqs)
+    freqs, weights = freqs[order], weights[order]
+    cumulative = np.cumsum(weights)
+    return float(freqs[np.searchsorted(cumulative, cumulative[-1] / 2)])
+
+
 class SpeakerEmbedder:
     def __init__(self, model_path: Path | None = None) -> None:
         import sherpa_onnx
@@ -141,15 +294,25 @@ class SpeakerEmbedder:
         config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(model_path or ensure_model()), num_threads=2)
         self._extractor = sherpa_onnx.SpeakerEmbeddingExtractor(config)
 
-    def embed(self, pcm16: bytes) -> np.ndarray | None:
-        """Embedding of 16 kHz mono 16-bit PCM; None when the audio is too short to score."""
+    def analyze(self, pcm16: bytes) -> AudioStats | None:
+        """Embedding, voiced seconds and pitch for 16 kHz mono 16-bit PCM; None when too short to score."""
         stream = self._extractor.create_stream()
         samples = trim_silence(np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0)
         stream.accept_waveform(SAMPLE_RATE, samples)
         stream.input_finished()
         if not self._extractor.is_ready(stream):
             return None
-        return np.array(self._extractor.compute(stream), dtype=np.float32)
+        embedding = np.array(self._extractor.compute(stream), dtype=np.float32)
+        return AudioStats(
+            embedding=embedding,
+            speech_secs=len(samples) / SAMPLE_RATE,
+            pitch_hz=estimate_pitch(samples),
+        )
+
+    def embed(self, pcm16: bytes) -> np.ndarray | None:
+        """Embedding only; kept for callers that don't need the duration or pitch."""
+        stats = self.analyze(pcm16)
+        return stats.embedding if stats is not None else None
 
 
 def trim_silence(samples: np.ndarray) -> np.ndarray:
@@ -186,16 +349,30 @@ class VoiceProfile:
     clips: int = 1
     enrolled: bool = False
     greeted: bool = False
+    speech_secs: float = 0.0
+    # Log-odds that this voice is each offered name; only the tracker writes it.
+    beliefs: dict[str, float] = field(default_factory=dict)
+    # Set when the master introduced this voice: enough trust to keep the fingerprint on disk.
+    owner_vouched: bool = False
+    last_seen: float = 0.0
     _embeddings: list[np.ndarray] = field(default_factory=list, repr=False)
+    _weights: list[float] = field(default_factory=list, repr=False)
 
-    def add_embedding(self, emb: np.ndarray) -> None:
+    def add_embedding(self, emb: np.ndarray, speech_secs: float = 0.0) -> None:
         unit = _unit(emb)
         if not self._embeddings:
             self._embeddings = [_unit(self.voiceprint)] * max(1, self.clips)
+            self._weights = [1.0] * len(self._embeddings)
         if len(self._embeddings) < MAX_PROFILE_CLIPS:
+            # A sentence of a few seconds says more about a voice than a one-word greeting does.
             self._embeddings.append(unit)
-        self.voiceprint = np.mean(self._embeddings, axis=0).astype(np.float32)
+            self._weights.append(max(0.5, min(speech_secs, 4.0)))
+            stacked = np.stack(self._embeddings)
+            weighted = np.average(stacked, axis=0, weights=np.array(self._weights))
+            self.voiceprint = _unit(weighted.astype(np.float32))
+        self.speech_secs += speech_secs
         self.clips += 1
+        self.last_seen = time.monotonic()
 
 
 class SpeakerRegistry:
@@ -210,20 +387,23 @@ class SpeakerRegistry:
             self._load()
 
     def match(self, emb: np.ndarray | None, threshold: float) -> VoiceProfile | None:
-        """Return the closest profile at or above `threshold`, or None."""
+        """Return the closest profile at or above `threshold`, or None when two profiles are too close to tell."""
         with self._lock:
             if emb is None or not self.profiles:
                 return None
-            best_profile: VoiceProfile | None = None
-            best_score = threshold
-            for profile in self.profiles.values():
-                score = cosine(emb, profile.voiceprint)
-                if score >= best_score:
-                    best_score = score
-                    best_profile = profile
-            return best_profile
+            scored = sorted(((cosine(emb, p.voiceprint), p) for p in self.profiles.values()), key=lambda t: t[0])
+            if not scored or scored[-1][0] < threshold:
+                return None
+            best_score, best = scored[-1]
+            if len(scored) > 1 and not best.enrolled:
+                runner_score = scored[-2][0]
+                if best_score - runner_score < MATCH_MARGIN:
+                    return None
+            return best
 
-    def observe(self, emb: np.ndarray | None, threshold: float) -> VoiceProfile | None:
+    def observe(
+        self, emb: np.ndarray | None, threshold: float, speech_secs: float = 0.0, now: float | None = None
+    ) -> VoiceProfile | None:
         """Match a heard voice embedding to an existing profile (refining it) or create a new fingerprint profile."""
         with self._lock:
             if emb is None:
@@ -231,21 +411,36 @@ class SpeakerRegistry:
             norm = float(np.linalg.norm(emb))
             if norm == 0.0 or not np.isfinite(norm):
                 return None
+            now = time.monotonic() if now is None else now
+            self._prune(now)
             matched = self.match(emb, threshold)
             if matched is not None:
                 was_under_cap = len(matched._embeddings) < MAX_PROFILE_CLIPS
-                matched.add_embedding(emb)
+                matched.add_embedding(emb, speech_secs)
                 if matched.enrolled and was_under_cap:
                     self._save()
                 return matched
+            anonymous = [p for p in self.profiles.values() if not p.enrolled]
+            while len(anonymous) >= MAX_EPHEMERAL:
+                oldest = min(anonymous, key=lambda p: p.last_seen)
+                self.profiles.pop(oldest.id, None)
+                anonymous.remove(oldest)
             while f"voice_{self._next_id}" in self.profiles:
                 self._next_id += 1
             pid = f"voice_{self._next_id}"
             self._next_id += 1
             unit = _unit(emb)
-            profile = VoiceProfile(id=pid, voiceprint=unit, clips=1, _embeddings=[unit])
+            profile = VoiceProfile(
+                id=pid, voiceprint=unit, clips=1, speech_secs=speech_secs, last_seen=now, _embeddings=[unit], _weights=[1.0]
+            )
             self.profiles[pid] = profile
             return profile
+
+    def _prune(self, now: float) -> None:
+        """Drop unnamed voices that have been quiet for a while: RAM-only fingerprints, never disk."""
+        for pid, profile in list(self.profiles.items()):
+            if not profile.enrolled and now - profile.last_seen > EPHEMERAL_TTL_SECS:
+                self.profiles.pop(pid, None)
 
     def get(self, key: str | None) -> VoiceProfile | None:
         """Look up a profile by its id ('voice_1') or linked speaker name ('David')."""
@@ -267,7 +462,11 @@ class SpeakerRegistry:
             existing = self.get(cleaned)
             if existing is not None and existing is not profile:
                 for emb in profile._embeddings or [_unit(profile.voiceprint)]:
-                    existing.add_embedding(emb)
+                    existing.add_embedding(emb, 1.0)
+                existing.speech_secs += profile.speech_secs
+                existing.owner_vouched = existing.owner_vouched or profile.owner_vouched
+                for name, value in profile.beliefs.items():
+                    existing.beliefs[name] = max(existing.beliefs.get(name, BASE_LOG_ODDS), value)
                 self.profiles.pop(profile.id, None)
                 profile = existing
             profile.name = cleaned
@@ -299,13 +498,18 @@ class SpeakerRegistry:
                     continue
                 clips = int(meta.get("clips", 1))
                 name = str(meta["name"]) if meta.get("name") else None
+                speech_secs = float(meta.get("speech_secs", 0.0))
                 self.profiles[pid] = VoiceProfile(
                     id=pid,
                     voiceprint=vec,
                     name=name,
                     clips=clips,
+                    speech_secs=speech_secs,
                     enrolled=True,
+                    owner_vouched=bool(meta.get("vouched", False)),
+                    last_seen=time.monotonic(),
                     _embeddings=[_unit(vec)] * max(1, min(clips, MAX_PROFILE_CLIPS)),
+                    _weights=[1.0] * max(1, min(clips, MAX_PROFILE_CLIPS)),
                 )
 
     def _save(self) -> None:
@@ -314,7 +518,7 @@ class SpeakerRegistry:
                 return
             try:
                 self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-                index: dict[str, dict[str, str | int]] = {}
+                index: dict[str, dict[str, str | int | float | bool]] = {}
                 for pid, profile in self.profiles.items():
                     if not profile.enrolled or not profile.name:
                         continue
@@ -324,7 +528,12 @@ class SpeakerRegistry:
                         np.save(f, profile.voiceprint)
                     os.chmod(npy_tmp, 0o600)
                     npy_tmp.replace(npy_path)
-                    index[pid] = {"name": profile.name, "clips": profile.clips}
+                    index[pid] = {
+                        "name": profile.name,
+                        "clips": profile.clips,
+                        "speech_secs": round(profile.speech_secs, 2),
+                        "vouched": profile.owner_vouched,
+                    }
                 index_path = self.folder / "speakers.json"
                 index_tmp = index_path.with_suffix(".tmp")
                 with os.fdopen(os.open(index_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
@@ -333,6 +542,159 @@ class SpeakerRegistry:
                 index_tmp.replace(index_path)
             except OSError as exc:
                 logger.warning(f"Could not save speaker profiles to {self.folder} ({exc!r}).")
+
+
+@dataclass
+class PendingIntro:
+    """A name the master just offered the room, waiting for one voice to claim it."""
+
+    name: str | None
+    gender_hint: str | None
+    created_at: float
+    claimed_by: set[str] = field(default_factory=set)
+    pitch_scored: set[str] = field(default_factory=set)
+
+
+@dataclass
+class GuestBelief:
+    name: str | None
+    confidence: float
+    graduated: bool = False
+
+
+class SpeakerBeliefTracker:
+    """Which voice is which name: independence-assuming log-odds updated from conversation, not a script.
+
+    An introduction offers a name with a decaying boost (+2.4, 30 s half-life); a plausible pitch match adds a
+    little, a clear mismatch takes a lot away; "I'm John" adds a lot. For one voice the score is a sigmoid; when
+    two voices compete, each name is normalized across them, so only one can be John.
+    """
+
+    def __init__(self) -> None:
+        self.pending: list[PendingIntro] = []
+        self.vocative: tuple[str, float] | None = None
+        self.last_asked: tuple[str, str] | None = None  # (profile id, name) Jarvis used tentatively
+
+    def note_intro(self, name: str | None, gender_hint: str | None, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        self._expire(now)
+        self.pending.append(PendingIntro(name=name, gender_hint=gender_hint, created_at=now))
+
+    def owner_turn(self, transcript: str, known_names: list[str], now: float | None = None) -> str | None:
+        """Read the master's sentence: a new introduction, or a handoff to a guest already known."""
+        now = time.monotonic() if now is None else now
+        name, gender = extract_intro_cue(transcript)
+        if name:
+            self.note_intro(name, gender, now)
+        else:
+            vocative = extract_vocative_name(transcript, known_names)
+            if vocative:
+                self.vocative = (vocative, now)
+        return name
+
+    def observe_guest(
+        self,
+        profile: VoiceProfile,
+        transcript: str,
+        *,
+        pitch_hz: float | None,
+        now: float | None,
+        meeting: bool,
+        registry: SpeakerRegistry,
+    ) -> GuestBelief:
+        """Update this voice's beliefs and return the best name with its probability."""
+        now = time.monotonic() if now is None else now
+        self._expire(now)
+        if profile.enrolled and profile.name:
+            return GuestBelief(profile.name, 1.0)
+
+        expected = [p.name for p in self.pending if p.name]
+        unnamed_intro = any(p.name is None for p in self.pending)
+        for pending in self.pending:
+            if not pending.name:
+                if unnamed_intro:
+                    profile.owner_vouched = True
+                continue
+            elapsed = now - pending.created_at
+            inner = max(0.0, elapsed - INTRO_FLAT_SECS)
+            boost = INTRO_BOOST * math.exp(-inner / INTRO_TAU_SECS)
+            first = profile.id not in pending.claimed_by
+            pending.claimed_by.add(profile.id)
+            if not first:
+                boost *= 0.5  # the first voice to answer the introduction is the likely one
+            score = profile.beliefs.get(pending.name, BASE_LOG_ODDS) + boost
+            if pending.gender_hint and pitch_hz and profile.id not in pending.pitch_scored:
+                pending.pitch_scored.add(profile.id)
+                if pending.gender_hint == "male":
+                    score += PITCH_MATCH_BOOST if pitch_hz < MALE_MAX_HZ else (
+                        PITCH_MISMATCH_BOOST if pitch_hz > FEMALE_MIN_HZ else 0.0
+                    )
+                else:
+                    score += PITCH_MATCH_BOOST if pitch_hz > FEMALE_MIN_HZ else (
+                        PITCH_MISMATCH_BOOST if pitch_hz < MALE_MAX_HZ else 0.0
+                    )
+            profile.beliefs[pending.name] = score
+            profile.owner_vouched = True
+
+        known_names = {p.name for p in registry.profiles.values() if p.name}
+        if self.vocative and now - self.vocative[1] <= 15.0 and self.vocative[0] in (set(expected) | known_names):
+            name = self.vocative[0]
+            profile.beliefs[name] = profile.beliefs.get(name, BASE_LOG_ODDS) + VOCATIVE_BOOST
+            profile.owner_vouched = True
+            self.vocative = None
+
+        claimed = extract_claimed_name(transcript, expected, allow_bare=bool(self.pending))
+        if claimed:
+            boost = SELF_ID_BOOST + (UNNAMED_INTRO_BOOST if unnamed_intro else 0.0)
+            profile.beliefs[claimed] = min(profile.beliefs.get(claimed, BASE_LOG_ODDS) + boost, 8.0)
+
+        new_name, wrong_name = extract_correction(transcript)
+        if wrong_name:
+            profile.beliefs[wrong_name] = profile.beliefs.get(wrong_name, BASE_LOG_ODDS) + CORRECTION_PENALTY
+            for other in registry.profiles.values():
+                if other is not profile and wrong_name in other.beliefs:
+                    other.beliefs[wrong_name] -= 2.0
+        if new_name and not claimed:
+            profile.beliefs[new_name] = min(profile.beliefs.get(new_name, BASE_LOG_ODDS) + SELF_ID_BOOST, 8.0)
+
+        if self.last_asked and self.last_asked[0] == profile.id and _AFFIRMATIVE_RE.search(transcript):
+            name = self.last_asked[1]
+            profile.beliefs[name] = profile.beliefs.get(name, BASE_LOG_ODDS) + CONFIRM_BOOST
+        self.last_asked = None
+
+        best_name, confidence = self._probability(profile.beliefs)
+        graduated = False
+        if (
+            best_name
+            and confidence >= KNOWN_AT
+            and profile.speech_secs >= ENOUGH_SPEECH_SECS
+            and not profile.enrolled
+            and (profile.owner_vouched or meeting)
+        ):
+            linked = registry.link_name(profile.id, best_name, enroll=True)
+            if linked is not None:
+                graduated = True
+                best_name = linked.name or best_name
+        return GuestBelief(best_name, confidence, graduated)
+
+    def _expire(self, now: float) -> None:
+        self.pending = [p for p in self.pending if now - p.created_at <= INTRO_WINDOW_SECS]
+        if self.vocative and now - self.vocative[1] > 15.0:
+            self.vocative = None
+
+    @staticmethod
+    def _probability(beliefs: dict[str, float]) -> tuple[str | None, float]:
+        if not beliefs:
+            return None, 0.0
+        weights = {name: math.exp(min(score, 20.0)) for name, score in beliefs.items()}
+        total = 1.0 + sum(weights.values())
+        best = max(weights, key=lambda k: weights[k])
+        return best, min(weights[best] / total, 0.999)
+
+
+def speaker_number(profile: VoiceProfile) -> int:
+    """`voice_3` -> 3, for the cockpit and logs."""
+    return int(profile.id.rsplit("_", 1)[-1]) if profile.id.rsplit("_", 1)[-1].isdigit() else 0
 
 
 def save_voiceprint(embeddings: list[np.ndarray], path: Path = VOICEPRINT_PATH) -> Path:

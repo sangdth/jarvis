@@ -11,14 +11,23 @@ import numpy as np
 
 from jarvis_voice.enroll import suggest_threshold
 from jarvis_voice.speaker import (
+    EPHEMERAL_TTL_SECS,
     FRAME,
+    MAX_EPHEMERAL,
     SAMPLE_RATE,
+    SpeakerBeliefTracker,
     SpeakerRegistry,
+    VoiceProfile,
     cosine,
     ensure_model,
+    estimate_pitch,
+    extract_claimed_name,
+    extract_correction,
+    extract_intro_cue,
     extract_introduced_name,
     extract_speaker_name,
     save_voiceprint,
+    speaker_number,
     trim_silence,
 )
 
@@ -69,6 +78,110 @@ class TestSpeaker(unittest.TestCase):
         self.assertEqual(extract_introduced_name("Hey Jarvis, meet Minh."), "Minh")
         self.assertIsNone(extract_introduced_name("Jarvis, let me introduce my friend."))
         self.assertIsNone(extract_introduced_name("Jarvis, I want to introduce someone to you."))
+
+    def test_intro_cue_reads_the_name_and_the_pronoun(self) -> None:
+        self.assertEqual(extract_intro_cue("This is John, he is my friend."), ("John", "male"))
+        self.assertEqual(extract_intro_cue("Jarvis, this is my sister Sarah."), ("Sarah", "female"))
+        self.assertEqual(extract_intro_cue("Jarvis, meet Minh."), ("Minh", None))
+
+    def test_claimed_name_avoids_weekdays_and_other_idioms(self) -> None:
+        self.assertEqual(extract_claimed_name("Hi, I'm John, nice to meet you.", []), "John")
+        self.assertEqual(extract_claimed_name("My name is David.", []), "David")
+        self.assertEqual(extract_claimed_name("I'm David.", [], allow_bare=True), "David")
+        self.assertIsNone(extract_claimed_name("I'm David.", []))
+        self.assertIsNone(extract_claimed_name("It's Friday, I'm Vietnamese by the way.", []))
+
+    def test_correction_reads_the_new_and_the_wrong_name(self) -> None:
+        self.assertEqual(extract_correction("No, actually, I'm Mike."), ("Mike", None))
+        self.assertEqual(extract_correction("I'm not John."), (None, "John"))
+
+    def test_pitch_separates_a_low_and_a_high_voice(self) -> None:
+        rate = SAMPLE_RATE
+        t = np.arange(rate) / rate
+        low = (0.3 * np.sin(2 * np.pi * 120 * t)).astype(np.float32)
+        high = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        self.assertAlmostEqual(estimate_pitch(low), 120.0, delta=4.0)
+        self.assertAlmostEqual(estimate_pitch(high), 220.0, delta=4.0)
+        self.assertIsNone(estimate_pitch(np.zeros(rate, dtype=np.float32)))
+
+    def test_a_natural_introduction_scores_the_new_voice(self) -> None:
+        registry = SpeakerRegistry(folder=None)
+
+        def belief(transcript: str, pitch: float | None, speech_secs: float):
+            tracker = SpeakerBeliefTracker()
+            tracker.note_intro("John", "male", now=1000.0)
+            profile = VoiceProfile(
+                id="voice_1", voiceprint=np.array([0.0, 1.0], dtype=np.float32), speech_secs=speech_secs
+            )
+            registry.profiles = {profile.id: profile}
+            return tracker.observe_guest(
+                profile, transcript, pitch_hz=pitch, now=1005.0, meeting=False, registry=registry
+            )
+
+        # "This is John, he is my friend" then "Hi, nice to meet you": a good guess, not certainty yet.
+        guess = belief("Hi, nice to meet you, Jarvis.", 120.0, 2.0)
+        self.assertEqual(guess.name, "John")
+        self.assertGreater(guess.confidence, 0.65)
+        self.assertLess(guess.confidence, 0.75)
+
+        # "Hi, I'm John" confirms it.
+        stated = belief("Hi, I'm John, nice to meet you.", 120.0, 2.0)
+        self.assertEqual(stated.name, "John")
+        self.assertGreater(stated.confidence, 0.98)
+
+    def test_a_pitch_mismatch_beats_the_introduction_hint(self) -> None:
+        registry = SpeakerRegistry(folder=None)
+        tracker = SpeakerBeliefTracker()
+        tracker.note_intro("John", "male", now=1000.0)
+        profile = VoiceProfile(id="voice_1", voiceprint=np.array([0.0, 1.0], dtype=np.float32), speech_secs=2.0)
+        registry.profiles = {profile.id: profile}
+        belief = tracker.observe_guest(
+            profile, "Hi, nice to meet you.", pitch_hz=230.0, now=1005.0, meeting=False, registry=registry
+        )
+        self.assertLess(belief.confidence, 0.50)
+
+    def test_a_correction_moves_the_name_to_the_right_voice(self) -> None:
+        registry = SpeakerRegistry(folder=None)
+        tracker = SpeakerBeliefTracker()
+        tracker.note_intro("John", "male", now=1000.0)
+        profile = VoiceProfile(id="voice_1", voiceprint=np.array([0.0, 1.0], dtype=np.float32), speech_secs=2.0)
+        registry.profiles = {profile.id: profile}
+        tracker.observe_guest(profile, "Hi, I'm Mike.", pitch_hz=120.0, now=1005.0, meeting=False, registry=registry)
+        belief = tracker.observe_guest(
+            profile, "No, actually, I'm John.", pitch_hz=120.0, now=1006.0, meeting=False, registry=registry
+        )
+        self.assertEqual(belief.name, "John")
+        self.assertGreater(belief.confidence, 0.95)
+
+    def test_unnamed_voices_expire_and_stay_bounded(self) -> None:
+        registry = SpeakerRegistry(folder=None)
+        first = registry.observe(np.eye(12)[0].astype(np.float32), 0.5, now=1000.0)
+        assert first is not None
+        registry.observe(np.eye(12)[1].astype(np.float32), 0.5, now=1000.0 + EPHEMERAL_TTL_SECS + 1)
+        self.assertNotIn(first.id, registry.profiles, "an idle unnamed voice is dropped")
+
+        for index in range(MAX_EPHEMERAL + 3):
+            registry.observe(np.eye(12)[index].astype(np.float32), 0.5, now=2000.0 + index)
+        anonymous = [p for p in registry.profiles.values() if not p.enrolled]
+        self.assertEqual(len(anonymous), MAX_EPHEMERAL)
+
+    def test_a_confident_name_is_persisted_only_with_enough_speech(self) -> None:
+        def graduate(speech_secs: float) -> bool:
+            registry = SpeakerRegistry(folder=None)
+            tracker = SpeakerBeliefTracker()
+            tracker.note_intro("John", "male", now=1000.0)
+            profile = VoiceProfile(
+                id="voice_1", voiceprint=np.array([0.0, 1.0], dtype=np.float32), speech_secs=speech_secs
+            )
+            registry.profiles = {profile.id: profile}
+            belief = tracker.observe_guest(
+                profile, "Hi, I'm John.", pitch_hz=120.0, now=1005.0, meeting=False, registry=registry
+            )
+            return belief.graduated
+
+        self.assertFalse(graduate(1.0), "99% on a short 'Hi' names this session but does not write a voiceprint")
+        self.assertTrue(graduate(5.0))
+        self.assertEqual(speaker_number(VoiceProfile(id="voice_7", voiceprint=np.zeros(2))), 7)
 
     def test_speaker_registry_creates_profiles_links_identity_and_persists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

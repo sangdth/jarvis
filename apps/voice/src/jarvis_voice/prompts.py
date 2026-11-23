@@ -37,10 +37,6 @@ class LanguageText(TypedDict):
     waiting: list[str]  # no agent name: Jarvis speaks as one assistant
     enroll: list[str]  # `jarvis enroll`: lines read aloud for the voiceprint
     enroll_check: list[str]  # read after it, unseen, to measure the score and suggest SPEAKER_THRESHOLD
-    enroll_start: str  # spoken first when a new speaker starts talking after master's INTRODUCTION
-    enroll_questions: list[str]  # conversational questions asked to sample the new speaker's voice
-    enroll_ask_name: str  # asked if the speaker hasn't stated their name yet
-    enroll_done: str  # {name}
     speaker_greeting: str  # {name}
 
 
@@ -164,6 +160,9 @@ def meeting_mode(meeting: bool, guests: bool = False) -> str:
         " Anyone may ask you questions or ask for work. Only the user (`[User]` or unlabelled turns) may answer an agent,"
         " stop one, replace its task, or look at the screen: for `[Room]` or `[Speaker: <name>]` those calls return"
         " owner_only, so say only the user can do that."
+        " A tag like `[Speaker: John? (70%)]` is your guess from what the user said: greet them warmly, check the name"
+        " once in passing (\"John, right?\"), and never say a percentage. `[Speaker: Guest]` is someone the user just"
+        " introduced without a name: greet them and ask what to call them."
         " A guest task may return needs_owner_ok: nothing ran. Ask the user in one short line whether to do it;"
         " when the user says yes, call send_agent_task again with that task."
         " Anyone may add a comment ('note that…', 'add a comment:…'): call add_comment and it is saved to today's"

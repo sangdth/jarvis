@@ -94,6 +94,7 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Meeting: Jarvis can't hear the call  | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Meeting: the call can't hear Jarvis  | `meet_voice.py` `MeetVoice`, `defaults/meet/jarvis.js`          |
 | Drops my voice / lets others in      | `[Speaker] score=` log lines, `SPEAKER_THRESHOLD`               |
+| A guest is unnamed or misnamed       | `speaker.py` `SpeakerBeliefTracker`, `voice_gates.py` `_speaker_tag` |
 | Cut off, or splits one sentence      | `SMART_TURN`, `SpeakerVerifiedWhisperSTT`, `VADParams`          |
 | Slow reply: where the time goes      | `[Latency]` and `[Intent] ... ms` log lines, `latency.py`       |
 | Screen: unseen, or looked unasked    | `screen.py`, `look_at_screen`, `include_screen`, prompt rule 8  |

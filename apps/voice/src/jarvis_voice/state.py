@@ -213,8 +213,9 @@ class JarvisState:
         # Meeting mode, toggled by `jarvis meeting` or by voice ("meeting mode on"). One source of truth: the
         # gate, the STT and the meeting tools all read this, so a toggle takes effect on the next sentence.
         self.meeting = meeting
-        # True after the master's INTRODUCTION intent while Jarvis is enrolling a new speaker's voice.
-        self.enrolling = False
+        # Until this monotonic time someone may be answering the owner: a voice the owner just introduced (or
+        # talked beside) is allowed to reach the model while its fingerprint is still being learned.
+        self.social_window_until = 0.0
         self.on_speak = on_speak
         self.on_beep = on_beep
         self.on_interrupt = on_interrupt

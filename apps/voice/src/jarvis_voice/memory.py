@@ -8,6 +8,7 @@ too slow (gemma3:4b 27 s a save) or lost facts (gemma3:1b).
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,28 @@ os.environ.setdefault("MEM0_TELEMETRY", "False")
 
 MEMORY_DIR = JARVIS_HOME / "memory"
 USER_ID = "sang"  # one user; Mem0 needs an id to file memories under
-_SKIP_STORE = (NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, SPEAKER, USER)
+# A confidently named guest keeps their own memories; a guess (`John? (70%)`) or the room keeps none.
+_CONFIRMED_SPEAKER_RE = re.compile(r"^\[Speaker: ([^?\]]+)\]:", re.MULTILINE)
+
+
+def memory_user(text: str) -> str | None:
+    """The Mem0 namespace this turn belongs to: the owner, a confirmed guest, or None for room/guesses."""
+    last = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+    if last.startswith(ROOM):
+        return None
+    match = _CONFIRMED_SPEAKER_RE.match(last)
+    if match:
+        return f"speaker:{match.group(1).strip().lower()}"
+    if last.startswith(SPEAKER):
+        return None
+    return USER_ID
+
+
+def _skip_text(text: str) -> bool:
+    """True for turns that never enter long-term memory (Jarvis's notes, room, a guessed or owner-tagged line)."""
+    return text.startswith((NOT_THE_USER, MEETING_TRANSCRIPT, ROOM, USER)) or (
+        text.startswith(SPEAKER) and memory_user(text) is None
+    )
 
 
 def mem0_config(memory_dir: Path | None = None) -> dict[str, Any]:
@@ -103,13 +125,19 @@ def create_memory_service() -> Any | None:
             ]
             if len(messages) != len(raw):
                 context.set_messages(messages)
-            # Jarvis's own notes (the greeting) are not a memory query; someone else in a meeting or guest gets no memories.
-            last_line = next((line for line in reversed(query.splitlines()) if line.strip()), "")
-            if query.startswith((NOT_THE_USER, ROOM, SPEAKER)) or last_line.lstrip().startswith((ROOM, SPEAKER)):
+            # Jarvis's own notes (the greeting) and meeting context are not a memory query.
+            if query.startswith((NOT_THE_USER, MEETING_TRANSCRIPT)):
+                return
+            user = memory_user(query)
+            if user is None:
                 return
             self.last_query = query
             started = time.monotonic()
-            memories = await self._retrieve_memories(query)
+            previous, self.user_id = self.user_id, user
+            try:
+                memories = await self._retrieve_memories(query)
+            finally:
+                self.user_id = previous
             telemetry.emit(
                 "voice.memory",
                 hits=len(memories),
@@ -139,23 +167,33 @@ def create_memory_service() -> Any | None:
             # process_frame runs before the LLM responds, so a new user turn ends with "user"; agent reports do not.
             if not messages or messages[-1].get("role") != "user":
                 return
-            if str(messages[-1].get("content", "")).startswith(_SKIP_STORE):
+            if _skip_text(str(messages[-1].get("content", ""))):
                 return
             if (
                 len(messages) >= 3
                 and messages[-2].get("role") == "assistant"
                 and messages[-3].get("role") == "user"
-                and str(messages[-3].get("content", "")).startswith(_SKIP_STORE)
+                and _skip_text(str(messages[-3].get("content", "")))
             ):
                 newest = messages[-1:]
             else:
                 newest = messages[-2:]
             if newest == self._last_saved or any(
-                m.get("role") == "user" and str(m.get("content", "")).startswith(_SKIP_STORE) for m in newest
+                m.get("role") == "user" and _skip_text(str(m.get("content", ""))) for m in newest
             ):
                 return
+            user_text = next(
+                (str(m.get("content", "")) for m in reversed(newest) if m.get("role") == "user"), ""
+            )
+            user = memory_user(user_text)
+            if user is None:
+                return
             self._last_saved = newest
-            await super()._store_messages(newest)
+            previous, self.user_id = self.user_id, user
+            try:
+                await super()._store_messages(newest)
+            finally:
+                self.user_id = previous
 
     MEMORY_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(MEMORY_DIR, 0o700)

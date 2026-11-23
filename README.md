@@ -343,9 +343,11 @@ Postgres." It goes to today's notes file with who said it and when —
 and it never reaches memory. Ask "what did we note?" and it summarizes the day so far. The file is plain Markdown:
 read it, edit it, or delete it.
 
-With the master check on you can also introduce someone: "Jarvis, this is David." Jarvis chats with the new voice
-for two questions, learns the name, and next time greets them by name and treats them as a guest. Off, it just
-says hello. Profiles live in `JARVIS_HOME/speakers/`; delete a file there to forget a voice.
+With the master check on you can also introduce someone: "Jarvis, this is David, he's my friend." Jarvis does not
+interview them: the next new voice to answer is taken as David with a confidence shown in `jarvis top` (about 70%
+from the introduction alone, over 99% once they say "I'm David"), and a confidently named voice is remembered after
+a few seconds of speech. "Jarvis, meet my friend" without a name works too: Jarvis greets them and asks. Profiles
+live in `JARVIS_HOME/speakers/`; delete a file there to forget a voice. Off, it just says hello.
 
 ### Tuning and Troubleshooting
 - **Read the log first.** `[User Transcript]` is what Whisper heard; the lines after it show whether the sentence

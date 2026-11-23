@@ -59,6 +59,12 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   paired Mac is the mic the scores compare that voiceprint with that Mac's mic; the relay logs the warning when it
   connects. Usually close enough; the `[Speaker] score=` lines say so, and `SPEAKER_THRESHOLD` is the fix. Enrolling
   through the relay is not built.
+- **Speaker names are inferred from conversation, not enrolled by interview.** An introduction offers a name to the
+  room; the next unknown voice to answer gets it with a confidence (about 70% from adjacency alone, about 99% once it
+  says "I'm David"), and only a name at 85% or more with at least 4 s of speech is written to `speakers/`. Unknown
+  voices live in RAM for ten minutes, so TV never reaches the disk. Limits: one label per sentence (no diarization),
+  pitch only separates clear cases (~155–180 Hz overlaps), and a voice confidently naming itself while the owner is
+  absent is treated as a guest, not trusted with owner-only tools.
 
 - **The brain moved into this repository and was renamed.** Superbrain became `apps/brain` (package `brain`) with its
   full history via `git subtree`; the Rust cockpit came out to `apps/tui` and the two histories join at one merge.
