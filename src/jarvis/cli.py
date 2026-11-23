@@ -16,13 +16,15 @@ needs no `jarvis` install at all (`jarvis health --url http://<mac-mini>:8643`).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, Iterator
 
 import httpx
 from loguru import logger
@@ -69,7 +71,7 @@ over the network (one HTTP/SSE/WebSocket server, one token):
 once:
   top             open the cockpit (the Rust TUI, built from this checkout)
   init            set up the state home, then offer to record your voiceprint
-  enroll          record your voiceprint again
+  enroll          record your voiceprint again (pauses the running service while you record)
   --version       the running checkout's branch and commit
 """
 
@@ -133,6 +135,39 @@ def hold_lock(home: Path = IPC_HOME) -> IO[str]:
     return lock
 
 
+def lock_owner(home: Path = IPC_HOME) -> str | None:
+    """The pid of the Jarvis holding the one-mic lock, or `None` when nobody is listening."""
+    home.mkdir(parents=True, exist_ok=True)
+    with (home / "jarvis.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.seek(0)
+            return lock.read().strip() or "?"
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    return None
+
+
+@contextlib.contextmanager
+def paused_listening() -> Iterator[None]:
+    """`jarvis enroll` needs the mic to itself: a live Jarvis keeps answering every sentence it hears."""
+    running = launchd_loaded()
+    if running:
+        subprocess.run(["launchctl", "bootout", launchd_domain()], capture_output=True)
+        deadline = time.monotonic() + 10.0  # the job is gone, but the process may still be releasing the mic
+        while lock_owner() is not None and time.monotonic() < deadline:
+            time.sleep(0.2)
+        print("Jarvis is paused while you record; it starts again when this ends.")
+    elif (owner := lock_owner()) is not None:
+        sys.exit(f"Jarvis is listening in another terminal (pid {owner}): stop it, then run `jarvis enroll` again.")
+    try:
+        yield
+    finally:
+        if running:
+            launchd_start()
+            print("Jarvis is listening again.")
+
+
 def plist_serve_args() -> list[str]:
     """The mode the installed LaunchAgent already runs, so `jarvis start` never silently changes it."""
     import re
@@ -186,13 +221,17 @@ def launchd_kick() -> None:
         sys.exit(f"`launchctl kickstart -k {launchd_domain()}` failed: {kick.stderr.strip() or kick.stdout.strip()}")
 
 
-def launchd_boot() -> None:
-    subprocess.run(["launchctl", "bootout", launchd_domain()], capture_output=True)
+def launchd_start() -> None:
     boot = subprocess.run(
         ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(PLIST_PATH)], capture_output=True, text=True
     )
     if boot.returncode != 0:
         sys.exit(f"`launchctl bootstrap` failed: {boot.stderr.strip() or boot.stdout.strip()}")
+
+
+def launchd_boot() -> None:
+    subprocess.run(["launchctl", "bootout", launchd_domain()], capture_output=True)
+    launchd_start()
 
 
 def needs_sync() -> bool:
@@ -471,7 +510,8 @@ def dispatch(argv: list[str]) -> None:
     if cmd == "enroll":
         from jarvis_voice.enroll import main as enroll
 
-        return enroll()
+        with paused_listening():
+            return enroll()
 
     # Foreground flags, in any order: `jarvis --meeting`, `jarvis connect pi`, `jarvis --remote` (an old no-op).
     return run_foreground(argv)

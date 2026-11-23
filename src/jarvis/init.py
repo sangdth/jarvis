@@ -126,9 +126,11 @@ def main() -> None:
 
     question = "Record your voice so Jarvis acts only on yours? (later: `jarvis enroll`) Y/n"
     if ask(question, "y").lower().startswith("y"):
+        from jarvis.cli import paused_listening
         from jarvis_voice.enroll import main as enroll  # imported here: loads the speaker model
 
-        enroll()
+        with paused_listening():
+            enroll()
     else:
         # The master check is on by default, and it refuses to start without a voiceprint: record the choice.
         set_env("MASTER_CHECK", "false", ENV_PATH)

@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,37 @@ class LockTest(unittest.TestCase):
             self.assertIn("already running", str(stopped.exception))
             first.close()  # released: the next one starts
             cli.hold_lock(Path(tmp)).close()
+
+    def test_lock_owner_names_the_listening_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = cli.hold_lock(Path(tmp))
+            try:
+                self.assertIsNotNone(cli.lock_owner(Path(tmp)))
+            finally:
+                first.close()
+            self.assertIsNone(cli.lock_owner(Path(tmp)))
+
+
+class EnrollTest(unittest.TestCase):
+    def test_enroll_pauses_the_service_and_starts_it_again(self) -> None:
+        # Recording a voiceprint needs the mic to itself: a live Jarvis answers every sentence it hears.
+        order: list[object] = []
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(cli, "launchd_loaded", return_value=True), \
+                patch.object(cli, "lock_owner", return_value=None), \
+                patch.object(cli.subprocess, "run", side_effect=lambda *a, **k: order.append(a[0]) or done), \
+                patch("jarvis_voice.enroll.main", side_effect=lambda: order.append("enroll")), \
+                patch("builtins.print"):
+            cli.dispatch(["enroll"])
+        self.assertEqual([cmd[1] for cmd in order if isinstance(cmd, list)], ["bootout", "bootstrap"])
+        self.assertEqual(order.index("enroll"), 1)
+
+    def test_enroll_refuses_while_a_foreground_jarvis_listens(self) -> None:
+        with patch.object(cli, "launchd_loaded", return_value=False), \
+                patch.object(cli, "lock_owner", return_value="4321"):
+            with self.assertRaises(SystemExit) as stopped:
+                cli.dispatch(["enroll"])
+        self.assertIn("4321", str(stopped.exception))
 
 
 class ForegroundTest(unittest.TestCase):

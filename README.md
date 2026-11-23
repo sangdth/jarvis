@@ -16,7 +16,8 @@ React client without moving anything.
 What it does:
 - **Can talk only with you.** The master check is on by default: Jarvis checks every sentence against your voice
   and drops other people, the TV and its own voice, so they can't interrupt Jarvis or keep it waiting.
-  `jarvis enroll` records the voiceprint; `MASTER_CHECK=false` lets any voice talk to it.
+  `jarvis enroll` records the voiceprint (it stops the running Jarvis first, so it cannot answer while you record);
+  `MASTER_CHECK=false` lets any voice talk to it.
 - **Answers only when you mean it.** A decision model tells talk aimed at Jarvis from talk around it.
 - **Opens your projects by name.** "Continue working on the Hugger Hustle platform" picks up your newest T3 Code
   thread in that repo, or starts one that syncs with master, and tells you which. Questions about the list itself ("how many projects in
