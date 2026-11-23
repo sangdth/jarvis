@@ -17,7 +17,8 @@ use crate::model::{
     TraceStage, Turn,
 };
 
-/// Mirrors `MAX_EPHEMERAL` in `apps/voice/src/jarvis_voice/speaker.py` so background chatter never leaks RAM.
+// shortcut: mirrors `MAX_EPHEMERAL` in `apps/voice/src/jarvis_voice/speaker.py`; the two must change together,
+// or `jarvis top` evicts real voices the voice still keeps. Upgrade to a shared value if the cap ever moves.
 const MAX_EPHEMERAL_SPEAKERS: usize = 8;
 
 #[derive(Debug)]
@@ -1011,6 +1012,7 @@ impl App {
             row.vouched = guest.vouched;
             row.clips = guest.clips;
             row.speech_secs = guest.speech_secs;
+            row.clear_sim();
         }
 
         // A guest deleted from speakers.json drops its enrolled flag; quiet deleted rows disappear.
@@ -1057,15 +1059,20 @@ impl App {
         } else {
             row.dropped += 1;
         }
-        if let Some(sim) = score {
-            row.record_sim(sim);
-        }
         if ts > 0.0 {
             row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
         }
         if !row.is_owner && !is_generic_role(&role) {
             row.label = role;
             row.known = true;
+        }
+        // Cosine vs the owner means nothing once a voice has a name; only the owner and unknown voices keep it.
+        if row.is_owner || !row.is_identified() {
+            if let Some(sim) = score {
+                row.record_sim(sim);
+            }
+        } else {
+            row.clear_sim();
         }
         self.normalize_speakers();
     }
@@ -1130,6 +1137,7 @@ impl App {
                     if ts > 0.0 {
                         row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
                     }
+                    row.clear_sim();
                     self.normalize_speakers();
                     return;
                 }
@@ -1147,6 +1155,9 @@ impl App {
         }
         if ts > 0.0 {
             row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
+        }
+        if !row.is_owner && row.is_identified() {
+            row.clear_sim();
         }
         self.normalize_speakers();
     }
@@ -2026,9 +2037,45 @@ mod tests {
         assert_eq!(david.heard, 2);
         assert_eq!(david.dropped, 1);
         assert_eq!(david.turns, 2);
-        assert_eq!(david.min_sim, Some(0.15));
-        assert_eq!(david.max_sim, Some(0.22));
+        // David is enrolled, so owner-cosine samples (recorded while voice_3 was still unnamed) are dropped.
+        assert_eq!(david.last_sim, None);
+        assert_eq!(david.min_sim, None);
+        assert_eq!(david.max_sim, None);
         assert!(app.speaker_by_id("voice_3").is_none());
+    }
+
+    #[test]
+    fn owner_and_unnamed_keep_owner_cosine_but_named_guests_drop_it() {
+        let mut app = test_app();
+        app.apply(AppEvent::Snapshot(Box::new(Snapshot {
+            speakers: DiskSpeakers {
+                owner_name: Some("Sang".to_string()),
+                owner_voiceprint: true,
+                guests: Vec::new(),
+            },
+            ..Default::default()
+        })));
+        // Owner: keeps cosine samples (the metric is defined against the owner).
+        app.apply(voice_event(serde_json::json!({
+            "seq": 1, "ts": 1.0, "event": "voice.stt", "turn_id": "t1",
+            "text": "hi", "passed": true, "score": 0.83, "role": "owner", "profile_id": "owner"
+        })));
+        // Unnamed guest: keeps samples while unidentified (this is the useful "is it the owner?" signal).
+        app.apply(voice_event(serde_json::json!({
+            "seq": 2, "ts": 2.0, "event": "voice.stt", "turn_id": "t2",
+            "text": "tv", "passed": false, "score": 0.21, "role": "guest", "profile_id": "voice_4"
+        })));
+        // Named guest: owner-cosine is meaningless, so nothing is stored.
+        app.apply(voice_event(serde_json::json!({
+            "seq": 3, "ts": 3.0, "event": "voice.stt", "turn_id": "t3",
+            "text": "hello", "passed": true, "score": 0.05, "role": "David", "profile_id": "voice_1"
+        })));
+
+        assert_eq!(app.speaker_by_id("owner").unwrap().last_sim, Some(0.83));
+        assert_eq!(app.speaker_by_id("voice_4").unwrap().last_sim, Some(0.21));
+        let david = app.speaker_by_id("voice_1").expect("David row");
+        assert!(david.known);
+        assert_eq!(david.last_sim, None);
     }
 
     #[test]

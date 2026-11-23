@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{App, LedgerTab, Pane};
-use crate::ui::grid::wrap_text;
+use crate::ui::grid::{scroll_offset, wrap_text};
 use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -324,17 +324,6 @@ fn draw_database(frame: &mut Frame, app: &mut App, area: Rect) {
             .scroll((offset.min(u16::MAX as usize) as u16, 0)),
         area,
     );
-}
-
-fn scroll_offset(selected: usize, len: usize, height: usize) -> usize {
-    if len <= height || height == 0 {
-        return 0;
-    }
-    if selected < height {
-        0
-    } else {
-        (selected + 1).saturating_sub(height)
-    }
 }
 
 /// Skill detail modal with a unified diff against the previous version.

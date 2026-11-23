@@ -188,6 +188,19 @@ impl Speaker {
         self.max_sim = Some(self.max_sim.map_or(sim, |m| m.max(sim)));
     }
 
+    /// Drops owner-cosine samples that were collected before this voice was identified: they measure
+    /// similarity to the owner, which says nothing about a named guest.
+    pub fn clear_sim(&mut self) {
+        self.last_sim = None;
+        self.min_sim = None;
+        self.max_sim = None;
+    }
+
+    /// True once this voice has a name: enrolled on disk, confirmed by the tracker, or matched to one.
+    pub fn is_identified(&self) -> bool {
+        self.is_owner || self.enrolled || self.known
+    }
+
     pub fn is_ephemeral(&self) -> bool {
         !self.is_owner && !self.enrolled && self.id != "room"
     }
