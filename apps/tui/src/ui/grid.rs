@@ -1,5 +1,13 @@
 //! Text helpers shared by the panes.
 
+/// First visible row so the selected row stays on screen (the row itself is the last visible one).
+pub fn scroll_offset(selected: usize, len: usize, height: usize) -> usize {
+    if len <= height || height == 0 || selected < height {
+        0
+    } else {
+        (selected + 1).saturating_sub(height)
+    }
+}
 
 /// Word-wraps `text` into lines no wider than `width` columns.
 pub fn wrap_text(text: &str, width: usize) -> Vec<String> {

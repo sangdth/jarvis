@@ -6,7 +6,7 @@ use ratatui::widgets::{Paragraph, Sparkline};
 use ratatui::Frame;
 
 use crate::app::{flat_tasks, App, Pane};
-use crate::ui::grid::wrap_text;
+use crate::ui::grid::{scroll_offset, wrap_text};
 use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
@@ -179,17 +179,6 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             ..area
         },
     );
-}
-
-fn scroll_offset(selected: usize, len: usize, height: usize) -> usize {
-    if len <= height || height == 0 {
-        return 0;
-    }
-    if selected < height {
-        0
-    } else {
-        (selected + 1).saturating_sub(height)
-    }
 }
 
 /// Renders the task detail modal.

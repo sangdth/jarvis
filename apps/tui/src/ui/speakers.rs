@@ -8,6 +8,7 @@ use ratatui::Frame;
 
 use crate::app::{now_unix, App, Pane};
 use crate::model::Speaker;
+use crate::ui::grid::scroll_offset;
 use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
@@ -257,9 +258,4 @@ fn format_last(speaker: &Speaker, now: f64) -> String {
     }
 }
 
-fn scroll_offset(selected: usize, total: usize, height: usize) -> usize {
-    if total == 0 || height == 0 || selected < height {
-        return 0;
-    }
-    selected + 1 - height
-}
+
