@@ -2,6 +2,16 @@
 
 Choices that look like bugs but were made on purpose, with their known limits. Revisit one when its limit bites.
 
+- **A pairing code is never sent to the client that asked for it.** The mac app has no secret before it pairs, so
+  `POST /v1/pair/request` is open like `GET /client.py`; it answers only `{"ok": true, "expires_in": ...}` and the
+  digits go to the cockpit's telemetry instead. That is why `/v1/telemetry/*` is now the owner's token alone (a
+  paired device reads nothing there), and why a second request reuses the live code rather than minting another:
+  a double click, or asking twice while you type, cannot steal the digits off the screen. Limits: whoever can read
+  `jarvis top` can pair a device; with no cockpit open, `jarvis pair` in a terminal is the way to see a code.
+- **The mac client is a download from the gateway, not a release.** `apps/mac/build.sh` builds `Jarvis.app` on the
+  checkout and the gateway serves it at `/Jarvis.app.zip` with `/install-app` beside it, so the app is never older
+  than the code running on the Mac mini. Limits: `swiftc` is needed to build it; the bundle is signed ad-hoc when no
+  Apple Development identity is in the keychain, so macOS can ask for the Microphone again after an in-app update.
 - **One pending request per client** (T3 `runtime-request`, OpenCode `_pending_permission` / `_pending_form`).
   A second request before the first is answered replaces it. With one user answering by voice this has not
   happened; Claude Code serializes its own prompts with `_ask_lock`.

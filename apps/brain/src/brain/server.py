@@ -27,6 +27,8 @@ from brain.telemetry import (
     EVENT_APPROVAL_RESPONDED,
     EVENT_HTTP_COMPLETED,
     EVENT_HTTP_INBOUND,
+    EVENT_PAIR_REQUESTED,
+    EVENT_PAIR_RESOLVED,
     EVENT_RUN_STATUS,
     TelemetryHub,
     preview,
@@ -140,6 +142,7 @@ class BrainServer:
         self._last_project_by_session: dict[str, str] = {}
         # One pairing code at a time, in memory: a restart clears it, which is what we want.
         self._pair_codes: dict[str, float] = {}
+        self._pair_name = ""  # who asked, for the cockpit's banner; the app that asked first keeps it
         self._pair_failures: deque[float] = deque(maxlen=PAIR_MAX_FAILURES * 2)
         self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
         self._started_at = started_at if started_at is not None else time.time()
@@ -150,6 +153,7 @@ class BrainServer:
             [
                 web.get("/health", self.handle_health),
                 web.post("/v1/pair/start", self.handle_pair_start),
+                web.post("/v1/pair/request", self.handle_pair_request),
                 web.post("/v1/pair", self.handle_pair),
                 web.get("/v1/devices", self.handle_devices),
                 web.post("/v1/devices/{device_id}/revoke", self.handle_revoke),
@@ -199,15 +203,21 @@ class BrainServer:
     ) -> web.StreamResponse:
         if request.path == "/health":
             return await handler(request)  # the liveness probe: no secret, and no state
-        if request.method == "POST" and request.path == "/v1/pair":
-            return await handler(request)  # the bootstrap: the pairing code is the credential
+        if request.method == "POST" and request.path in ("/v1/pair", "/v1/pair/request"):
+            return await handler(request)  # the bootstrap: a client with no secret yet, and the handler guards itself
         if request.path == "/client.py":
             return await handler(request)  # the script that pairs: it carries no secret, only this server's address
+        if request.path in ("/Jarvis.app.zip", "/install-app"):
+            return await handler(request)  # the mac app and its installer: a binary and a bootstrap, no secret in either
         if request.path == "/ws":
             return await handler(request)  # the relay checks its own credential, shared token or device secret
         token = self.request_token(request)
         if self._is_owner(token):
             return await handler(request)
+        if request.path.startswith("/v1/telemetry/"):
+            # The pairing code rides the telemetry stream, so a paired device must not read it: only the owner's
+            # token does, which is the one `jarvis top` already uses.
+            return web.json_response({"error": "owner token required"}, status=401)
         if request.path.startswith(("/v1/pair/", "/v1/devices")):
             # Minting and revoking devices is the owner's business; a paired device cannot do it.
             return web.json_response({"error": "owner token required"}, status=401)
@@ -553,15 +563,56 @@ class BrainServer:
         """The shared token, or a paired device's secret. Used by the relay for `/ws` and `/client.py`."""
         return self._is_owner(token) or self.devices.verify(token) is not None
 
+    def _reveal_pair_code(self, name: str) -> tuple[str, float]:
+        """
+        One pending code at a time, and it shows where the owner can see it: the cockpit's telemetry, or `jarvis pair`.
+
+        A second request reuses the code that is still live instead of minting a new one, so a double click, or an app
+        asking again while you type, never steals the digits on your screen.
+        """
+        now = time.time()
+        active = {code: expires for code, expires in self._pair_codes.items() if expires > now}
+        if active:
+            code, expires = next(iter(active.items()))
+            label = name or self._pair_name
+        else:
+            code, expires = f"{secrets.randbelow(1_000_000):06d}", now + PAIR_TTL_SECS
+            self._pair_codes = {code: expires}
+            self._pair_failures.clear()
+            self._pair_name = label = name
+            logger.info("[Pair] a pairing code was issued (single use, 5 minutes); `jarvis top` shows it.")
+        self.hub.emit(
+            EVENT_PAIR_REQUESTED,
+            code=code,
+            name=label or "A device",
+            expires_at=round(expires, 3),
+            ttl_s=max(0, int(expires - now)),
+        )
+        return code, expires
+
     async def handle_pair_start(self, request: web.Request) -> web.Response:
-        """`jarvis pair`: mint a short code. One at a time, single use, five minutes."""
-        code = f"{secrets.randbelow(1_000_000):06d}"
-        self._pair_codes = {code: time.time() + PAIR_TTL_SECS}
-        self._pair_failures.clear()
-        logger.info("[Pair] a pairing code was issued (single use, 5 minutes).")
+        """`jarvis pair`: mint a short code and print it here, on the one terminal only the owner reads."""
+        code, expires = self._reveal_pair_code("")
         hosts = advertised_hosts()
         server = f"http://{hosts[0]}:{self.cfg.brain_port}" if hosts else self.cfg.endpoint_url
-        return web.json_response({"code": code, "expires_in": PAIR_TTL_SECS, "server": server})
+        return web.json_response(
+            {"code": code, "expires_in": max(0, int(expires - time.time())), "server": server}
+        )
+
+    async def handle_pair_request(self, request: web.Request) -> web.Response:
+        """
+        An unpaired client asks for a code; the code goes to the cockpit, never back down this connection.
+
+        Open on purpose, like `GET /client.py`: an app that has never paired holds no secret yet. Asking costs
+        nothing and reveals nothing — reading the digits takes the owner's token, or the screen of the Mac it runs on.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        name = " ".join(str(body.get("name") or "").split())[:60] if isinstance(body, dict) else ""
+        _, expires = self._reveal_pair_code(name)
+        return web.json_response({"ok": True, "expires_in": max(0, int(expires - time.time()))})
 
     async def handle_pair(self, request: web.Request) -> web.Response:
         """A device trades the code for its own secret; the code is consumed by the attempt."""
@@ -574,6 +625,7 @@ class BrainServer:
         if len(recent) >= PAIR_MAX_FAILURES:
             self._pair_codes.clear()  # stop the guessing: a new code has to be minted
             logger.warning("[Pair] too many wrong codes; pending codes cleared.")
+            self.hub.emit(EVENT_PAIR_RESOLVED, ok=False, reason="too many wrong codes")
             return web.json_response({"error": "too many attempts; start pairing again"}, status=429)
         self._pair_codes = {c: expires for c, expires in self._pair_codes.items() if expires > now}
         match = next((known for known in self._pair_codes if hmac.compare_digest(known, code)), None)
@@ -584,6 +636,7 @@ class BrainServer:
         self._pair_codes.pop(match, None)  # single use
         device, secret = self.devices.add(str(body.get("name") or ""))
         logger.info(f"[Pair] paired {device.name!r} ({device.id}); its secret is shown once and kept by that device.")
+        self.hub.emit(EVENT_PAIR_RESOLVED, ok=True, device=device.name, device_id=device.id)
         self.hub.emit(EVENT_HTTP_INBOUND, source="pair", route="/v1/pair", device_id=device.id, name=device.name)
         return web.json_response({"device": device.public(), "secret": secret})
 

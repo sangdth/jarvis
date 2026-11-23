@@ -227,6 +227,25 @@ impl TelemetryEvent {
     }
 }
 
+/// One pairing code waiting to be typed into a client, from `pair.requested` on the telemetry stream.
+#[derive(Debug, Clone, Default)]
+pub struct PendingPair {
+    pub code: String,
+    pub name: String,
+    /// Unix epoch seconds on the daemon's clock; the cockpit runs on the same Mac.
+    pub expires_at: f64,
+}
+
+impl PendingPair {
+    /// `123 456`, the way `jarvis pair` prints it.
+    pub fn spaced(&self) -> String {
+        match self.code.len() {
+            6 => format!("{} {}", &self.code[..3], &self.code[3..]),
+            _ => self.code.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnKind {
     User,

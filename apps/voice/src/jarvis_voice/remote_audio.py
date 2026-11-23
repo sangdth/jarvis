@@ -31,12 +31,15 @@ from aiohttp import WSMsgType, web
 from loguru import logger
 
 from jarvis_core.devices import DeviceStore
-from jarvis_core.home import brain_token
+from jarvis_core.home import REPO_ROOT, brain_token
 from jarvis_core.net import advertised_hosts
 from jarvis_voice.config import settings
 
 SAMPLE_RATE = 16000  # 16-bit mono both ways, the rate the pipeline runs at; the client resamples to it
 CLIENT_SCRIPT = Path(__file__).parent / "defaults" / "remote" / "client.py"
+# The mac app, built by `apps/mac/build.sh` on this checkout and served like the client script: no secret inside.
+MAC_APP_ZIP = REPO_ROOT / "target" / "mac" / "Jarvis.app.zip"
+MAC_APP_NAME = "Jarvis.app"
 # Mic audio waiting for the pipeline, in 20 ms blocks: past a second behind, the oldest goes rather than lag.
 MIC_QUEUE_BLOCKS = 50
 # A write that takes this long means the other Mac stopped reading: drop that client, never mark the transport broken
@@ -341,8 +344,13 @@ class RemoteVoiceTransport:
         self._runner: web.AppRunner | None = None
 
     def routes(self) -> list[web.RouteDef]:
-        """The relay's two routes, to register on the shared Jarvis app."""
-        return [web.get("/client.py", self.handle_client_script), web.get("/ws", self.handle_ws)]
+        """The relay's routes, to register on the shared Jarvis app: the script, the app, and the socket."""
+        return [
+            web.get("/client.py", self.handle_client_script),
+            web.get("/Jarvis.app.zip", self.handle_app_zip),
+            web.get("/install-app", self.handle_install_script),
+            web.get("/ws", self.handle_ws),
+        ]
 
     def web_app(self) -> web.Application:
         app = web.Application()
@@ -430,6 +438,67 @@ class RemoteVoiceTransport:
             charset="utf-8",
             headers={"Cache-Control": "no-store", "Content-Disposition": 'inline; filename="jarvis-remote.py"'},
         )
+
+    async def handle_app_zip(self, request: web.Request) -> web.StreamResponse:
+        """
+        The mac app itself, built on this checkout, as a plain `.app.zip`.
+
+        Open like `/client.py`, and for the same reason: it arrives before the client has a secret and carries none.
+        The bundle is signed as it ships, so nothing is patched per request.
+        """
+        if not MAC_APP_ZIP.is_file():
+            return web.Response(
+                status=404,
+                text="No mac app built on this checkout yet: run `jarvis restart` (or `just build`) on the Mac "
+                "running Jarvis, then download again.\n",
+            )
+        return web.FileResponse(
+            MAC_APP_ZIP,
+            headers={
+                "Content-Disposition": f'attachment; filename="{MAC_APP_NAME}.zip"',
+                "Cache-Control": "no-store",
+            },
+        )
+
+    async def handle_install_script(self, request: web.Request) -> web.Response:
+        """`curl -fsSL http://<mac-mini>:8643/install-app | sh`: install into /Applications and open it."""
+        body = self.install_script(request.url.host)
+        return web.Response(
+            text=body,
+            content_type="text/x-shellscript",
+            charset="utf-8",
+            headers={"Cache-Control": "no-store", "Content-Disposition": 'inline; filename="install-app.sh"'},
+        )
+
+    def install_script(self, fetched_from: str | None = None) -> str:
+        """The installer, with this Mac's address baked in; only `server` is written, never a secret."""
+        base = f"http://{self.public_host(fetched_from)}:{self.port}"
+        return f"""#!/bin/sh
+# Installs the Jarvis mac app from {base}, then opens it.
+# No credential is written here: the app asks for a pairing code, and keeps its own secret after that.
+set -eu
+if [ "$(uname -s)" != "Darwin" ]; then
+  echo "The Jarvis app runs on a Mac." >&2
+  exit 1
+fi
+TARGET="$HOME/Applications"
+if [ -d /Applications ] && [ -w /Applications ]; then TARGET=/Applications; fi
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+echo "Downloading {MAC_APP_NAME} from {base}..."
+curl -fsSL '{base}/Jarvis.app.zip' -o "$TMP/app.zip"
+ditto -xk "$TMP/app.zip" "$TMP/out"
+mkdir -p "$TARGET"
+rm -rf "$TARGET/{MAC_APP_NAME}"
+ditto "$TMP/out/{MAC_APP_NAME}" "$TARGET/{MAC_APP_NAME}"
+xattr -dr com.apple.quarantine "$TARGET/{MAC_APP_NAME}" 2>/dev/null || true
+mkdir -p "$HOME/.config/jarvis-remote"
+chmod 700 "$HOME/.config/jarvis-remote"
+printf '%s\\n' '{base}' > "$HOME/.config/jarvis-remote/server"
+chmod 600 "$HOME/.config/jarvis-remote/server"
+open "$TARGET/{MAC_APP_NAME}"
+echo "Installed $TARGET/{MAC_APP_NAME}; it points at {base}."
+"""
 
     async def handle_ws(self, request: web.Request) -> web.StreamResponse:
         """One WebSocket per listening Jarvis: binary audio down, binary audio up, JSON control both ways."""

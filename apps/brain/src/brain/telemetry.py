@@ -26,6 +26,8 @@ EVENT_RECONCILER_PHASE = "reconciler.phase"
 EVENT_BOARD_RPC = "board.rpc"
 EVENT_PI_PROGRESS = "pi.progress"
 EVENT_ATTEMPT_FINISHED = "attempt.finished"
+EVENT_PAIR_REQUESTED = "pair.requested"
+EVENT_PAIR_RESOLVED = "pair.resolved"
 EVENT_HEARTBEAT = "heartbeat"
 
 _MAX_PREVIEW_CHARS = 280
@@ -113,6 +115,8 @@ __all__ = [
     "EVENT_HEARTBEAT",
     "EVENT_HTTP_COMPLETED",
     "EVENT_HTTP_INBOUND",
+    "EVENT_PAIR_REQUESTED",
+    "EVENT_PAIR_RESOLVED",
     "EVENT_PI_PROGRESS",
     "EVENT_RECONCILER_PHASE",
     "EVENT_RUN_STATUS",

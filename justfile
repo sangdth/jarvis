@@ -24,9 +24,14 @@ fmt:
     uv run ruff check --fix src apps packages tests scripts
     cargo fmt --all
 
-# The cockpit binary (Rust is the one part that compiles; Python code is live as written).
+# The cockpit and the mac client (the one compiled artifact per language; Python is live as written).
 build:
     cargo build --release --workspace
+    sh apps/mac/build.sh
+
+# The mac client alone: Jarvis.app, served at /Jarvis.app.zip, needs only swiftc.
+mac:
+    sh apps/mac/build.sh
 
 # Listen in this terminal with this Mac's mic and speaker.
 run:

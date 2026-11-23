@@ -516,8 +516,69 @@ async def test_pairing_stops_the_guessing(tmp_path: Path) -> None:
     db.close()
 
 
+async def test_a_client_that_has_never_paired_asks_for_a_code_without_reading_it(tmp_path: Path) -> None:
+    """The app holds no secret yet, so asking is open; the digits themselves only reach the owner's cockpit."""
+    from jarvis_core.devices import DeviceStore
+
+    store = DeviceStore(tmp_path / "devices.json")
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        sandbox_enabled=False,
+    )
+    (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    server = BrainServer(db, reconciler, cfg, devices=store)
+    owner = {"Authorization": "Bearer secret-token"}
+
+    async with TestClient(TestServer(server.app)) as client:
+        # 1. Asking is open, and the answer never carries the code.
+        asked = await client.post("/v1/pair/request", json={"name": "Sang's MacBook"})
+        assert asked.status == 200
+        body = await asked.json()
+        assert body["ok"] is True and body["expires_in"] > 0
+        assert "code" not in body
+
+        # 2. Asking again keeps the code that is already pending, so a double click cannot steal it.
+        shown = (await (await client.post("/v1/pair/start", headers=owner)).json())["code"]
+        again = await client.post("/v1/pair/request", json={"name": "Sang's MacBook"})
+        assert again.status == 200
+        assert (await again.json())["expires_in"] > 0
+        assert (await (await client.post("/v1/pair/start", headers=owner)).json())["code"] == shown
+
+        # 3. The cockpit is where it can be read: `pair.requested` rides the owner's telemetry.
+        snapshot = await (await client.get("/v1/telemetry/snapshot", headers=owner)).json()
+        requests = [e for e in snapshot["events"] if e["event"] == "pair.requested"]
+        assert requests, "pair.requested must be on the telemetry stream"
+        assert requests[-1]["code"] == shown
+        assert requests[-1]["name"] == "Sang's MacBook"
+
+        # 4. The code the app was told about is the one that pairs.
+        paired = await client.post("/v1/pair", json={"code": shown, "name": "Sang's MacBook"})
+        assert paired.status == 200
+        secret = (await paired.json())["secret"]
+
+        # 5. A paired device can no longer read the stream, so it can never pick a code out of it.
+        device = {"Authorization": f"Bearer {secret}"}
+        assert (await client.get("/v1/telemetry/snapshot", headers=device)).status == 401
+        assert (await client.get("/v1/telemetry/events", headers=device)).status == 401
+        assert (await client.get("/v1/telemetry/snapshot", headers=owner)).status == 200
+
+        # 6. Pairing is announced too, so the cockpit can clear the code.
+        snapshot = await (await client.get("/v1/telemetry/snapshot", headers=owner)).json()
+        resolved = [e for e in snapshot["events"] if e["event"] == "pair.resolved"]
+        assert resolved and resolved[-1]["ok"] is True
+        assert resolved[-1]["device"] == "Sang's MacBook"
+
+    await reconciler.stop()
+    db.close()
+
+
 async def test_the_bootstrap_routes_bypass_the_shared_token(tmp_path: Path) -> None:
-    """`/client.py` (the pairing script) and `/ws` (the relay) answer before any credential: they check their own."""
+    """`/client.py`, `/Jarvis.app.zip`, `/install-app` and `/ws` answer before any credential: they check their own."""
     from aiohttp import web
 
     cfg = Settings(
@@ -538,10 +599,17 @@ async def test_the_bootstrap_routes_bypass_the_shared_token(tmp_path: Path) -> N
         db,
         reconciler,
         cfg,
-        extra_routes=[web.get("/client.py", ok), web.get("/ws", ok)],
+        extra_routes=[
+            web.get("/client.py", ok),
+            web.get("/Jarvis.app.zip", ok),
+            web.get("/install-app", ok),
+            web.get("/ws", ok),
+        ],
     )
     async with TestClient(TestServer(server.app)) as client:
         assert (await client.get("/client.py")).status == 200  # no token: the laptop has not paired yet
+        assert (await client.get("/Jarvis.app.zip")).status == 200  # the app arrives before there is a secret
+        assert (await client.get("/install-app")).status == 200
         assert (await client.get("/ws")).status == 200  # the relay's own handler rejects a bad credential
         assert (await client.get("/v1/status")).status == 401  # everything else still needs one
 

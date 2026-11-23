@@ -41,6 +41,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 | `apps/voice/src/jarvis_voice/` | the voice layer (`jarvis-voice`): ear, speech check, executive model, agent watchers |
 | `apps/brain/src/brain/` | the brain (`brain`): board, reconciler, `pi` workers, HTTP/SSE server |
 | `apps/tui/` | the cockpit (`jarvis-top`, Rust + Ratatui) |
+| `apps/mac/` | the mac client (`Jarvis.app`, SwiftUI): one Connect button, served at `/Jarvis.app.zip` |
 | `packages/jarvis-core/` | what all three share: `REPO_ROOT`/`JARVIS_HOME`, the `.env` settings base, the tokens, paired devices, `SOUL.md` |
 | `src/jarvis/` | the `jarvis` command: dispatch, `init`, `top`, the launchd service, and the supervisor that runs the stack |
 | `schemas/` | cross-language contracts (the gateway's HTTP/SSE/WS API, see `schemas/README.md`) |
@@ -87,6 +88,7 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Hears itself through the speakers    | `mac_audio.py` `MacVoiceAudio` (macOS voice processing)         |
 | Hears nothing, "Mic is silent" log   | Output is Multi-Output; `mac_audio.py` `SILENT_MIC_WARNING`     |
 | Other Mac: no sound, or not heard    | `remote_audio.py` (token, one client), `mac_audio.py` (handoff), `defaults/remote/client.py` |
+| The mac app: no mic, or won't connect | `apps/mac/src/AudioRelay.swift` (prime, 1013), `ApiClient.swift`, `remote_audio.py` `/ws` |
 | Answers on the wrong Mac             | `remote_audio.py` `Ear.accept` (`SPEECH_PEAK`, `HANDOVER_SECS`), `[Ear]` lines |
 | Meeting: Jarvis can't hear the call  | `mac_audio.py` `MeetingAudioBridge`, `TAP_FAILED` log           |
 | Meeting: the call can't hear Jarvis  | `meet_voice.py` `MeetVoice`, `defaults/meet/jarvis.js`          |

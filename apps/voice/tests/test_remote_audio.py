@@ -513,6 +513,55 @@ class TestClientScript(unittest.IsolatedAsyncioTestCase):
             return client.AudioBridge(asyncio.Queue(maxsize=client.BLOCKS), loop)
 
 
+class TestMacApp(unittest.IsolatedAsyncioTestCase):
+    """`/Jarvis.app.zip` and `/install-app`: open like `/client.py`, and carrying no secret either."""
+
+    async def asyncSetUp(self) -> None:
+        import tempfile
+
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.transport = RemoteVoiceTransport(port=0, token="test-token")
+        await self.transport.start_server()
+        self.port = self.transport.port
+
+    async def asyncTearDown(self) -> None:
+        await self.transport.stop_server()
+
+    def _get(self, path: str):
+        import urllib.request
+
+        return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5)
+
+    async def test_the_installer_names_this_server_and_never_touches_the_secret(self) -> None:
+        body = await asyncio.to_thread(self.transport.install_script, "127.0.0.1")
+        self.assertIn(f"http://127.0.0.1:{self.port}", body)
+        self.assertIn("/Jarvis.app.zip", body)
+        self.assertIn("jarvis-remote/server", body)  # the server URL only
+        self.assertNotIn("credentials.json", body)  # the pairing secret is the app's alone
+        self.assertNotIn("token", body)
+        self.assertIn("xattr -dr com.apple.quarantine", body)  # a curl install is not quarantined, a download is
+
+    async def test_the_zip_is_served_when_built_and_explained_when_not(self) -> None:
+        import urllib.error
+
+        missing = self.dir / "Jarvis.app.zip"
+        with mock.patch.object(remote_audio, "MAC_APP_ZIP", missing):
+            with self.assertRaises(urllib.error.HTTPError) as refused:
+                await asyncio.to_thread(self._get, "/Jarvis.app.zip")  # never on the server's own loop
+            self.assertEqual(refused.exception.code, 404)
+            self.assertIn("just build", refused.exception.read().decode())
+
+        built = self.dir / "built.zip"
+        built.write_bytes(b"PK\x03\x04 a bundle")
+        with mock.patch.object(remote_audio, "MAC_APP_ZIP", built):
+            response = await asyncio.to_thread(self._get, "/Jarvis.app.zip")
+            try:
+                self.assertEqual(response.read(), b"PK\x03\x04 a bundle")
+                self.assertIn("attachment", response.headers["Content-Disposition"])
+            finally:
+                response.close()
+
+
 class TestToken(unittest.TestCase):
     def test_the_relay_uses_the_one_gateway_token(self) -> None:
         with mock.patch.object(remote_audio.settings, "remote_token", ""), \

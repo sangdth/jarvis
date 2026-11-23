@@ -49,6 +49,14 @@ macos-non-native-fullscreen = true
 The dashboard never writes to `state.db`. Operator actions go through the authenticated loopback API
 (`/v1/ask`, `/v1/outbox/{id}/resolve`, `/v1/runs/{id}/stop`).
 
+### Pairing codes
+
+When a client asks to pair (`POST /v1/pair/request`, which the mac app does on its first Connect), the daemon puts
+`pair.requested` on the telemetry stream and the cockpit shows the six digits in its header and in a banner over the
+panes, with a countdown, until the code is used (`pair.resolved`) or expires. The banner survives opening the cockpit
+late, because the stream replays its ring buffer. Telemetry is the owner's token alone, which is what keeps a paired
+device from reading a code out of it.
+
 ## Keys
 
 | Key | Action |

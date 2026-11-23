@@ -6,13 +6,13 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::config::Config;
 use crate::http;
-use crate::model::{Outbox, Snapshot, Task, TelemetryEvent, Turn};
+use crate::model::{Outbox, PendingPair, Snapshot, Task, TelemetryEvent, Turn};
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -160,6 +160,8 @@ pub struct App {
     pub command: Option<String>,
     pub toast: Option<(String, Instant)>,
     pub pulses: HashMap<String, Instant>,
+    /// A client asked to pair: the code stays on screen until it is used, expires, or too many tries.
+    pub pending_pair: Option<PendingPair>,
 
     pub should_quit: bool,
     pub dirty: bool,
@@ -206,6 +208,7 @@ impl App {
             command: None,
             toast: None,
             pulses: HashMap::new(),
+            pending_pair: None,
             should_quit: false,
             dirty: true,
             tick: 0,
@@ -243,6 +246,13 @@ impl App {
 
     pub fn toast_text(&self) -> Option<&str> {
         self.toast.as_ref().map(|(msg, _)| msg.as_str())
+    }
+
+    /// Seconds until the pending pairing code expires; `None` when nothing is pending, or it already has.
+    pub fn pair_seconds_left(&self) -> Option<i64> {
+        let pair = self.pending_pair.as_ref()?;
+        let left = (pair.expires_at - now_unix()).round() as i64;
+        (left > 0).then_some(left)
     }
 
     pub fn is_running(&self) -> bool {
@@ -416,6 +426,40 @@ impl App {
                 self.daemon_connected = true;
                 self.daemon_pid = ev.i64("pid");
                 self.daemon_uptime = ev.f64("uptime_s").unwrap_or(0.0);
+            }
+            "pair.requested" => {
+                let code = ev.text("code");
+                let expires_at = ev.f64("expires_at").unwrap_or(0.0);
+                // The stream replays its ring buffer, so an old code can arrive on connect: keep only a live one.
+                if !code.is_empty() && expires_at > now_unix() {
+                    if matches!(self.pending_pair.as_ref(), Some(pair) if pair.code == code) {
+                        if let Some(pair) = self.pending_pair.as_mut() {
+                            pair.expires_at = expires_at; // asked for again: the same digits stay on screen
+                        }
+                    } else {
+                        let pair = PendingPair {
+                            code,
+                            name: ev.text("name"),
+                            expires_at,
+                        };
+                        self.toast = Some((format!("Pairing code {}", pair.spaced()), Instant::now()));
+                        self.pending_pair = Some(pair);
+                    }
+                    self.pulse("server");
+                }
+            }
+            "pair.resolved" => {
+                let ok = ev.bool("ok").unwrap_or(false);
+                self.pending_pair = None;
+                self.toast = Some((
+                    if ok {
+                        format!("Paired {}", ev.text("device"))
+                    } else {
+                        format!("Pairing reset: {}", ev.text("reason"))
+                    },
+                    Instant::now(),
+                ));
+                self.pulse("server");
             }
             _ => {}
         }
@@ -798,6 +842,14 @@ fn step(current: usize, delta: isize, len: usize) -> usize {
     next.clamp(0, len as isize - 1) as usize
 }
 
+/// Unix epoch seconds; the daemon stamps `expires_at` with the same clock on the same Mac.
+pub fn now_unix() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 /// Flattens the task DAG into `(snapshot_index, depth)` rows for tree rendering.
 pub fn flat_tasks(snapshot: &Snapshot) -> Vec<(usize, usize)> {
     let mut children: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -851,6 +903,74 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::model::Task;
+
+    fn test_app() -> App {
+        let cfg = Config {
+            home: PathBuf::from("/tmp"),
+            db_path: PathBuf::from("/tmp/state.db"),
+            sessions_dir: PathBuf::from("/tmp/sessions"),
+            traces_dir: PathBuf::from("/tmp/traces"),
+            skills_dir: PathBuf::from("/tmp/skills"),
+            notes_dir: PathBuf::from("/tmp/notes"),
+            logs_dir: PathBuf::from("/tmp/logs"),
+            host: "127.0.0.1".to_string(),
+            port: 1,
+            api_key: "test".to_string(),
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        App::new(cfg, tx, Arc::new(Mutex::new(None)))
+    }
+
+    fn pair_event(value: serde_json::Value) -> AppEvent {
+        AppEvent::Telemetry(TelemetryEvent::from_value(value))
+    }
+
+    #[test]
+    fn a_pairing_code_stays_until_it_is_used() {
+        let mut app = test_app();
+        app.apply(pair_event(serde_json::json!({
+            "event": "pair.requested",
+            "code": "123456",
+            "name": "MacBook",
+            "expires_at": now_unix() + 120.0,
+            "ttl_s": 120
+        })));
+        let pair = app.pending_pair.as_ref().expect("a live code is shown");
+        assert_eq!(pair.spaced(), "123 456");
+        assert!(app.pair_seconds_left().unwrap() > 100);
+
+        app.apply(pair_event(serde_json::json!({
+            "event": "pair.resolved", "ok": true, "device": "MacBook"
+        })));
+        assert!(app.pending_pair.is_none());
+        assert_eq!(app.pair_seconds_left(), None);
+    }
+
+    #[test]
+    fn a_replayed_expired_code_is_never_shown() {
+        let mut app = test_app();
+        app.apply(pair_event(serde_json::json!({
+            "event": "pair.requested",
+            "code": "654321",
+            "name": "old",
+            "expires_at": now_unix() - 5.0
+        })));
+        assert!(app.pending_pair.is_none());
+    }
+
+    #[test]
+    fn asking_again_keeps_the_same_digits() {
+        let mut app = test_app();
+        for _ in 0..3 {
+            app.apply(pair_event(serde_json::json!({
+                "event": "pair.requested",
+                "code": "111222",
+                "name": "MacBook",
+                "expires_at": now_unix() + 300.0
+            })));
+        }
+        assert_eq!(app.pending_pair.as_ref().unwrap().code, "111222");
+    }
 
     fn task(id: &str, parent: Option<&str>) -> Task {
         Task {

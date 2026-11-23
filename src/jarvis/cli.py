@@ -236,9 +236,10 @@ def service_stop() -> None:
 
 
 def service_restart(serve_args: list[str] | None = None) -> None:
-    """`jarvis restart`: best-effort sync, build cockpit, refresh the LaunchAgent, restart, and open `top`."""
+    """`jarvis restart`: best-effort sync, build cockpit and mac client, refresh the LaunchAgent, restart, and open `top`."""
     sync_dependencies()
     build_cockpit()
+    build_mac_app()
     write_plist(serve_args if serve_args is not None else plist_serve_args())
     if sys.platform != "darwin":
         sys.exit("`jarvis restart` uses launchd; on another system stop and re-run `jarvis serve`.")
@@ -278,6 +279,22 @@ def build_cockpit() -> None:
         sys.exit("`cargo build --release --workspace` failed; the running code was not restarted.")
 
 
+def build_mac_app() -> None:
+    """Build the mac client (`apps/mac`) so `/Jarvis.app.zip` serves this checkout's code. Needs only `swiftc`."""
+    import shutil
+
+    script = REPO_ROOT / "apps" / "mac" / "build.sh"
+    if not script.is_file():
+        return
+    if sys.platform != "darwin" or shutil.which("swiftc") is None:
+        print("`swiftc` is not on PATH; skipping the mac client build (the gateway keeps the last bundle it has).")
+        return
+    proc = subprocess.run(["/bin/sh", str(script)], cwd=str(REPO_ROOT))
+    if proc.returncode != 0:
+        # A broken client must not stop the daemon from restarting: the app is a download, not the runtime.
+        print("The mac client did not build; `/Jarvis.app.zip` keeps serving the last bundle.", file=sys.stderr)
+
+
 def cockpit_binary() -> Path | None:
     """The built `jarvis-top`: a cargo `target/` in this checkout, or PATH."""
     import shutil
@@ -303,7 +320,9 @@ def run_cockpit(args: list[str]) -> int:
     env = dict(os.environ)
     env["JARVIS_HOME"] = str(JARVIS_HOME)
     env.setdefault("BRAIN_HOME", str(brain_home()))
-    env.setdefault("BRAIN_API_KEY", brain_token())
+    # The owner token, the same one this CLI sends: `jarvis top` now reads the telemetry stream, and `.env` wins
+    # over brain_token() there, so handing it brain_token() alone would be a 401 for a checkout with its own key.
+    env["BRAIN_API_KEY"] = token()
     try:
         return subprocess.call([str(binary), *args], env=env)
     except KeyboardInterrupt:
@@ -324,11 +343,13 @@ def pair_device(args: list[str]) -> None:
     host = str(body.get("server") or "").split("://", 1)[-1] or endpoint().split("://", 1)[-1]
     named = f' --name "{name}"' if name else ""
     print(f"Pairing code: {code[:3]} {code[3:]}   (single use, {minutes} minutes)")
-    print("\nOn the other Mac (needs only uv, https://docs.astral.sh/uv/):")
+    print("\nOn the other Mac, pick one:")
+    print(f"  curl -fsSL 'http://{host}/install-app' | sh      # the Jarvis app: one Connect button")
+    print("  ... or, with nothing but uv (https://docs.astral.sh/uv/):")
     print(f"  curl -fsSL 'http://{host}/client.py' -o ~/.local/bin/jarvis-remote.py")
     print(f"  uv run ~/.local/bin/jarvis-remote.py --pair {code}{named}")
-    print("\nThat Mac keeps its own secret; `jarvis devices revoke <id>` ends it without touching the others.")
-    print("While it runs, it is Jarvis's mic and speaker; nothing else has to be started here and nothing restarted.")
+    print("\nEither way the code goes into that Mac once; it keeps its own secret after that.")
+    print("`jarvis top` shows the code too. `jarvis devices revoke <id>` ends one Mac without touching the others.")
 
 
 def list_devices(args: list[str]) -> None:

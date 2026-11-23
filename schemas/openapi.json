@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Jarvis gateway: HTTP, SSE and WebSocket",
-    "version": "2.1.0",
-    "description": "The one network surface of a Jarvis instance: the brain's run protocol (which routes each turn to a T3 Code thread, a one-shot pi answer, a minimal Claude/OpenCode turn, or the board), the cockpit's telemetry, the small operator API, device pairing, and the thin client's mic and speaker. Every route except `/health`, `GET /client.py` and `POST /v1/pair` needs a credential: the shared token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`), or a paired device's secret from `POST /v1/pair`. The shared token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; paired devices live in `JARVIS_HOME/devices.json` as hashes, and only the shared token can mint or revoke them. Questions and approvals travel verbatim (`approval.request`, `question.request`) and are answered with `POST /v1/runs/{run_id}/answer`; no model decides them. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`); `GET /client.py` serves the zero-install thin client with this server's address filled in."
+    "version": "2.2.0",
+    "description": "The one network surface of a Jarvis instance: the brain's run protocol (which routes each turn to a T3 Code thread, a one-shot pi answer, a minimal Claude/OpenCode turn, or the board), the cockpit's telemetry, the small operator API, device pairing, the mac client (`/Jarvis.app.zip`, `/install-app`), and the thin client's mic and speaker. Every route except `/health`, `GET /client.py`, `GET /Jarvis.app.zip`, `GET /install-app`, `POST /v1/pair` and `POST /v1/pair/request` needs a credential: the shared token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`), or a paired device's secret from `POST /v1/pair`. The shared token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; paired devices live in `JARVIS_HOME/devices.json` as hashes, and only the shared token can mint or revoke them. `/v1/telemetry/*` is the owner's alone, because a pending pairing code rides it. Questions and approvals travel verbatim (`approval.request`, `question.request`) and are answered with `POST /v1/runs/{run_id}/answer`; no model decides them. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`, `ear`); `GET /client.py` serves the zero-install thin client with this server's address filled in."
   },
   "servers": [
     {
@@ -735,6 +735,50 @@
         }
       }
     },
+    "/v1/pair/request": {
+      "post": {
+        "summary": "Ask for a pairing code without being able to read it (no credential needed)",
+        "description": "An app that has never paired holds no secret, so this is open like `GET /client.py`. The answer never carries the code: it goes to the owner's telemetry, which `jarvis top` draws, and only the owner's token can read that. Asking again while a code is still live reuses it, so a double click cannot steal the digits off the screen.",
+        "security": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "What this device is called in `jarvis devices`."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A code is pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "description": "Seconds left on the pending code."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/pair": {
       "post": {
         "summary": "Trade a pairing code for this device's own secret (no credential needed)",
@@ -1227,6 +1271,48 @@
             "description": "text/x-python",
             "content": {
               "text/x-python": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Jarvis.app.zip": {
+      "get": {
+        "summary": "The mac client, built on this checkout (`Jarvis.app.zip`)",
+        "description": "Open for the same reason as `/client.py`: it arrives before there is a secret and carries none. The bundle is signed as it is built (`apps/mac/build.sh`), so nothing is patched per request; `jarvis restart` rebuilds it. 404 with the fix when the app has not been built yet.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "application/zip",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No bundle built on this checkout"
+          }
+        }
+      }
+    },
+    "/install-app": {
+      "get": {
+        "summary": "The mac client's installer, with this server's address baked in",
+        "description": "`curl -fsSL 'http://<host>:8643/install-app' | sh`: downloads the zip, installs `/Applications/Jarvis.app`, clears macOS's quarantine flag, writes only the server URL to `~/.config/jarvis-remote/server`, and opens it. No secret is written: the app asks for a pairing code.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "text/x-shellscript",
+            "content": {
+              "text/x-shellscript": {
                 "schema": {
                   "type": "string"
                 }

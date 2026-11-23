@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, Modal, Pane};
+use crate::model::PendingPair;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -73,6 +74,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ledger::draw(frame, app, chunks[2]);
     }
 
+    // A pending pairing code sits over the panes: it is the one thing to read, and it is gone once it is used.
+    if let (Some(pair), Some(left)) = (app.pending_pair.clone(), app.pair_seconds_left()) {
+        draw_pair_banner(frame, chunks[1], &pair, left);
+    }
+
     draw_footer(frame, app, chunks[3]);
 
     if let Some(modal) = app.modal.clone() {
@@ -112,6 +118,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("  phase ", theme::faint()),
         Span::styled(app.phase.clone(), phase_style),
     ];
+    if let (Some(pair), Some(left)) = (&app.pending_pair, app.pair_seconds_left()) {
+        row0.push(Span::styled(
+            format!("   [PAIR {} · {}s] ", pair.spaced(), left),
+            theme::bold(theme::WARN),
+        ));
+    }
     if let Some(task) = &app.phase_task {
         row0.push(Span::styled(format!(" · {task}"), theme::fg(theme::CYAN)));
     }
@@ -294,6 +306,46 @@ fn centered(percent_x: u16, height: u16, area: Rect) -> Rect {
         Constraint::Percentage((100 - percent_x) / 2),
     ])
     .split(vertical[1])[1]
+}
+
+fn draw_pair_banner(frame: &mut Frame, area: Rect, pair: &PendingPair, seconds_left: i64) {
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("{} · {}:{:02} left", pair.name, seconds_left / 60, seconds_left % 60),
+            theme::fg(theme::TEXT),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(pair.spaced(), theme::bold(theme::CYAN))),
+        Line::from(""),
+        Line::from(Span::styled("type it into the Jarvis app", theme::faint())),
+    ];
+    let rect = centered_fixed(40, lines.len() as u16 + 2, area);
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::bold(theme::WARN))
+        .title(Line::from(Span::styled(
+            " pairing ",
+            theme::bold(theme::WARN),
+        )))
+        .style(Style::default().bg(theme::BG));
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .alignment(Alignment::Center),
+        rect,
+    );
+}
+
+fn centered_fixed(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width.saturating_sub(4)).max(16);
+    let height = height.min(area.height.saturating_sub(2)).max(5);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
 }
 
 fn draw_modal(frame: &mut Frame, app: &App, area: Rect, modal: Modal) {

@@ -213,6 +213,21 @@ Everything above is an HTTP call to the one server, so the same commands work fr
 `jarvis status --url http://mac-mini.local:8643`. Both apps share one state: `.env`, `SOUL.md` (its `projects_dir`
 decides where the brain may work), the board, and the token in `JARVIS_HOME/brain_token`.
 
+### The mac app: one Connect button
+
+[`apps/mac/`](apps/mac/) is a small SwiftUI app (under a megabyte, no dependencies) for the Mac in front of you:
+```bash
+curl -fsSL 'http://<mac-mini>:8643/install-app' | sh
+```
+It installs `/Applications/Jarvis.app` and opens it. One big **Connect** button in the middle: the first press asks the
+Mac mini for a pairing code, `jarvis top` shows it in its header and as a banner, you type the six digits, and from
+then on the button just connects (Disconnect hands the mic back). Settings shows the app's version beside the
+server's, an **Update** button that pulls the newer bundle from the Mac mini, the server address, and Unpair.
+
+Nothing heavy moves: the app is a mic, a speaker and a socket, with macOS voice processing doing the echo
+cancellation so "shut up" and talking over Jarvis still work. `jarvis restart` rebuilds the bundle (`apps/mac/build.sh`,
+needs only `swiftc`), so the app always matches the code running there.
+
 ### Listen from another Mac (thin client, no install)
 
 The thin client is always on: a paired Mac's mic and speaker reach Jarvis on the same host and port as everything

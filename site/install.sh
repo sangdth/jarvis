@@ -53,6 +53,15 @@ else
   echo "No Rust toolchain, so the cockpit is skipped: \`cargo build --release --workspace\` in $TARGET later."
 fi
 
+# The mac client app, served at /Jarvis.app.zip so another Mac can install it with one command.
+if command -v swiftc >/dev/null 2>&1; then
+  echo "Building the mac client (Jarvis.app)..."
+  (cd "$TARGET" && sh apps/mac/build.sh >/dev/null 2>&1) ||
+    echo "The mac client did not build; \`jarvis restart\` tries again."
+else
+  echo "No swiftc, so the mac client is skipped (xcode-select --install, then \`just mac\`)."
+fi
+
 echo
 echo "Jarvis is installed in $TARGET. Setting it up now (open a new terminal later to use the jarvis command)."
 # stdin is this script when piped from curl, so the questions read from the terminal.

@@ -168,7 +168,7 @@ fn event_loop(
         while let Ok(event) = rx.try_recv() {
             app.apply(event);
         }
-        if app.animating() {
+        if app.animating() || app.pending_pair.is_some() {
             app.dirty = true;
         }
         if app.dirty {
@@ -350,6 +350,13 @@ fn render_check(cfg: Config) -> std::io::Result<()> {
     }
     if std::env::var("SB_DEMO_ZOOM").is_ok() {
         app.zoomed = Some(app.focus);
+    }
+    if let Ok(code) = std::env::var("SB_DEMO_PAIR") {
+        app.pending_pair = Some(model::PendingPair {
+            code,
+            name: "Sang's MacBook".to_string(),
+            expires_at: app::now_unix() + 288.0,
+        });
     }
 
     let backend = TestBackend::new(190, 52);
