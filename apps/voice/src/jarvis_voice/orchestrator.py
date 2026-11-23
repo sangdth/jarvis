@@ -29,11 +29,13 @@ ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
 class AgentOrchestrator:
     """Manages all coding agent watchers and routes user verbal decisions back to the right agent."""
 
-    def __init__(self, state: JarvisState, personality: str = "") -> None:
+    def __init__(self, state: JarvisState, personality: str = "", waiting_prompt: str = "") -> None:
         self.state = state
         self.adapters: dict[str, BaseAgentAdapter] = {}
         self._reminders: dict[str, tuple[asyncio.Task, WaitingLines]] = {}
         self._personality = personality  # SOUL.md, the tone of the waiting lines
+        # SYSTEM.md's `## Waiting`, when the user wrote one; it must keep {count} and {personality}.
+        self._waiting_prompt = waiting_prompt
         # Writes the waiting lines; without a key there is none, and the base lines are used as they are.
         self._http = (
             httpx.AsyncClient(
@@ -91,7 +93,7 @@ class AgentOrchestrator:
             old[0].cancel()
             old[1].stop()
         # Written from the user's task only, never from what an agent wrote
-        lines = WaitingLines(task, self._personality, self._http)
+        lines = WaitingLines(task, self._personality, self._http, self._waiting_prompt or None)
         lines.start()
         self._reminders[agent.config.id] = (asyncio.create_task(self._remind(agent, lines)), lines)
 

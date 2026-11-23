@@ -122,6 +122,20 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `queued` and gets one line in `memory/reported.md` at that point; in `AUTONOMOUS` mode nothing is spoken until
   the owner switches back or asks for the brief. Limits: a crash between the acknowledgement and the speaker can
   lose one line (the alternative, repeated overnight speech, is worse).
+- **The Improver may queue one bounded harness fix, never apply it or touch a protected file.** Its reflection
+  prompt now carries the deterministic failure summary (`skills.mine_failure_patterns`: failed traces grouped by
+  harness surface, plus `feedback/intent.jsonl` corrections), and `propose_harness_task` files one `repo='jarvis'`
+  problem under `dedupe_key='harness-proposal'` with evidence and a reproduce-first `verify_cmd`. It stays a
+  `draft` unless `AUTONOMOUS_HARNESS_UPGRADES=true`, so the owner still decides. Limits: one open proposal at a
+  time; a fix that needs a protected file is refused and must be asked for by voice.
+- **A self-upgrade that touches the voice runs its benchmark.** `_changed_files` + `_run_voice_benchmarks` run
+  `scripts/bench_intent.py 1` (≥97%) for `executive_filter.py` / `languages.json`, and `scripts/bench_routing.py 1`
+  (≥95%) for `prompts.py`, `agent_tools.py` or `orchestrator.py`. The script is read from the checkout, not the
+  candidate, so a worker cannot rewrite the gate it is measured by; the candidate's voice modules load through
+  `PYTHONPATH`. Both benchmarks and the scripts themselves are in `PROTECTED_SELF_PATHS`. Limits: the benchmark
+  process gets `OPENROUTER_API_KEY` (it makes paid model calls that the worker's cost ledger does not see), a
+  failing gate is reported as sealed output like the held-out suite, and without a key the gate is skipped with a
+  blocker rather than blocking the daemon.
 
 ## Open risks
 

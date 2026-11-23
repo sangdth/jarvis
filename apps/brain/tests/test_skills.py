@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import stat
 from pathlib import Path
 
@@ -8,8 +9,14 @@ import pytest
 
 from brain.config import Settings
 from brain.db import BrainDB
-from brain.reconciler import Reconciler
-from brain.skills import SkillProposal, apply_skill_proposal, record_skill_outcome
+from brain.reconciler import PROTECTED_SELF_PATHS, Reconciler, spec_similarity
+from brain.skills import (
+    SkillProposal,
+    apply_skill_proposal,
+    mine_failure_patterns,
+    record_skill_outcome,
+    render_failure_patterns,
+)
 
 
 async def _init_demo_repo(tmp_path: Path) -> Path:
@@ -439,3 +446,63 @@ print(json.dumps({"role": "assistant", "content": "Tried 99", "cost_usd": 0.01})
     finally:
         await reconciler.stop()
         db.close()
+
+
+def test_mine_failure_patterns_groups_by_harness_surface(tmp_path: Path) -> None:
+    traces_dir = tmp_path / "traces"
+    traces_dir.mkdir()
+    records = [
+        {"attempt_id": 1, "outcome": "failed_verify", "summary": "tests red", "oracle": {}},
+        {"attempt_id": 2, "outcome": "pushed", "summary": "shipped", "oracle": {}},
+        {
+            "attempt_id": 3,
+            "outcome": "errored",
+            "summary": "loop",
+            "oracle": {"repeated_error_tools": ["bash"]},
+        },
+        {"attempt_id": 4, "outcome": "timed_out", "summary": "slow", "oracle": {}},
+    ]
+    for record in records:
+        (traces_dir / f"attempt-{record['attempt_id']}.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+    feedback = tmp_path / "intent.jsonl"
+    feedback.write_text(
+        "\n".join(
+            [
+                json.dumps({"id": "d1", "acted": {"intent": "addressed_to_jarvis"}}),
+                json.dumps({"correction_of": "d1", "signal": "said again", "strength": "medium"}),
+                json.dumps({"correction_of": "d2", "signal": "not you", "strength": "strong"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    patterns = mine_failure_patterns(traces_dir, feedback)
+    by_surface = {p["surface"]: p["count"] for p in patterns}
+
+    assert "pushed" not in " ".join(by_surface)  # a good run is not a weakness
+    assert by_surface["speech check"] == 2
+    assert by_surface["verify_cmd / gate"] == 1
+    assert by_surface["tool interface"] == 1
+    assert by_surface["runtime / prompt"] == 1
+    assert patterns[0]["surface"] == "speech check"  # most frequent first
+    assert any("said again" in item for item in patterns[0]["evidence"])
+
+    rendered = render_failure_patterns(patterns)
+    assert "speech check x2" in rendered
+    assert render_failure_patterns([]) == "(no failure patterns recorded)"
+
+
+def test_spec_similarity_flags_a_reworded_hypothesis() -> None:
+    same = "cache the rendered board in SQLite instead of rebuilding it each tick"
+    reworded = "Cache the rendered board in SQLite instead of rebuilding it on each tick"
+    distinct = "move the reconciler tick to a background worker thread"
+    assert spec_similarity(same, reworded) >= 0.8
+    assert spec_similarity(same, distinct) < 0.8
+
+
+def test_voice_benchmarks_are_protected_from_workers() -> None:
+    assert "scripts/bench_intent.py" in PROTECTED_SELF_PATHS
+    assert "scripts/bench_routing.py" in PROTECTED_SELF_PATHS

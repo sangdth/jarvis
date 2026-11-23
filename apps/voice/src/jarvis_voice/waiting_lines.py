@@ -28,10 +28,17 @@ def keep_line(line: str, spoken: list[str]) -> bool:
 class WaitingLines:
     """Lines for one task. Generated ones come first; the base lines from languages.json only when generation fails."""
 
-    def __init__(self, task: str, personality: str = "", http: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        task: str,
+        personality: str = "",
+        http: httpx.AsyncClient | None = None,
+        prompt: str | None = None,
+    ) -> None:
         self._task = task
         self._personality = personality
         self._http = http  # None: no API key, so the base lines are all there is
+        self._prompt = prompt or WAITING_PROMPT  # SYSTEM.md's `## Waiting`, else the shipped one
         self._base = LANGUAGES[settings.language]["waiting"]
         self._pool: list[str] = []  # generated, not said yet
         self._spoken: list[str] = []
@@ -77,7 +84,7 @@ class WaitingLines:
                     "messages": [
                         {
                             "role": "system",
-                            "content": WAITING_PROMPT.format(count=BATCH, personality=self._personality or "calm"),
+                            "content": self._prompt.format(count=BATCH, personality=self._personality or "calm"),
                         },
                         {"role": "user", "content": f"Task: {self._task}\n\nExamples:\n{examples}\n\nAlready said:\n{said}"},
                     ],

@@ -34,7 +34,9 @@ from brain.skills import (
     SkillProposal,
     apply_skill_proposal,
     inspect_attempt_trajectory,
+    mine_failure_patterns,
     record_skill_outcome,
+    render_failure_patterns,
     sync_skills_on_disk,
     validate_evidence_receipt,
     write_attempt_trace,
@@ -48,6 +50,7 @@ from brain.telemetry import (
     preview,
 )
 from brain.upgrade import GitState, classify_git_state
+from jarvis_core.home import JARVIS_HOME
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
 
@@ -59,10 +62,13 @@ BUILDER_TOOLS = (
     "read,edit,write,edit_and_run,bash,grep,find,ls,research_scout,"
     "record_note,report_diagnostic,defer_for_approval,schedule_followup"
 )
-IMPROVER_TOOLS = "read,grep,find,ls,propose_skill_change,propose_memory_update"
+IMPROVER_TOOLS = (
+    "read,grep,find,ls,propose_skill_change,propose_memory_update,propose_harness_task"
+)
 SCOUT_TOOLS = "read,grep,find,ls"
 _METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
 _METRIC_CMD_RE = re.compile(r"\bMETRIC\b", re.IGNORECASE)
+_WORD_RE = re.compile(r"\w+")
 PROTECTED_SELF_PATHS = {
     # the workspace and its locks: a change here alters everyone's toolchain and dependencies
     "pyproject.toml",
@@ -78,7 +84,29 @@ PROTECTED_SELF_PATHS = {
     "apps/voice/src/jarvis_voice/voice_gates.py",
     "src/jarvis/cli.py",
     "src/jarvis/supervisor.py",
+    # the benchmarks that decide whether a voice change is safe to keep
+    "scripts/bench_intent.py",
+    "scripts/bench_routing.py",
 }
+# A self-upgrade touching these runs the matching benchmark in `scripts/` before it can land.
+VOICE_INTENT_PATHS = {
+    "apps/voice/src/jarvis_voice/executive_filter.py",
+    "apps/voice/src/jarvis_voice/languages.json",
+}
+VOICE_ROUTING_PATHS = {
+    "apps/voice/src/jarvis_voice/prompts.py",
+    "apps/voice/src/jarvis_voice/agent_tools.py",
+    "apps/voice/src/jarvis_voice/orchestrator.py",
+}
+HARNESS_DEDUPE_KEY = "harness-proposal"
+
+
+def spec_similarity(left: str, right: str) -> float:
+    """Jaccard overlap of two specs' words: 1.0 means a reworded copy of the same hypothesis."""
+    left_words, right_words = set(_WORD_RE.findall(left.lower())), set(_WORD_RE.findall(right.lower()))
+    if not left_words or not right_words:
+        return 0.0
+    return len(left_words & right_words) / len(left_words | right_words)
 
 
 def extract_metric_value(output: str | None) -> float | None:
@@ -655,6 +683,21 @@ class Reconciler:
                     f"Metric {metric_val} did not satisfy metric_target {task.metric_target!r}"
                 ).strip()
             if verified and task.repo in SELF_REPOS:
+                changed = await self._changed_files(worktree_dir, base_sha)
+                verified, bench_out = await self._run_voice_benchmarks(
+                    repo_dir, worktree_dir, changed, session_dir
+                )
+                if not verified:
+                    verify_output = (
+                        "Voice benchmark regressed (details sealed to prevent overfitting)."
+                    )
+                    self.db.queue_outbox(
+                        kind="report",
+                        task_id=task.id,
+                        summary_spoken=f"Task {task.id} failed the voice benchmarks.",
+                        details={"benchmark_output": bench_out},
+                    )
+            if verified and task.repo in SELF_REPOS:
                 verified, baseline_out = await self._run_held_out_baseline_tests(
                     repo_dir, worktree_dir, session_dir
                 )
@@ -910,6 +953,9 @@ class Reconciler:
             f"- {path.name} sha256={memory.file_sha(path) or ''} path={path}"
             for path in memory.repo_note_files(self.cfg.home_dir)
         ]
+        patterns = mine_failure_patterns(
+            self.cfg.traces_dir, JARVIS_HOME / "feedback" / "intent.jsonl"
+        )
         prompt = (
             "You are Brain Skill Improver and memory curator. Use `read` and `grep` to inspect the trace "
             "files, skill files, standing instructions and memory index below before deciding anything.\n"
@@ -922,6 +968,12 @@ class Reconciler:
             f"- If active skills == {self.cfg.max_personal_skills}, creating a skill requires "
             "`retire_slug` and `retire_reason`.\n"
             "- Propose at most ONE skill change via `propose_skill_change`, or abstain.\n"
+            "- If a fault recurs in the failure patterns below, you may instead queue at most ONE bounded "
+            "harness fix via `propose_harness_task`: name the trace ids or corrections as evidence, a "
+            "`verify_cmd` that fails today, and the files you expect to change. A fix that needs a "
+            "protected file is the owner's call, not yours.\n"
+            "- A speech-check correction that keeps coming back is training data for the intent model, "
+            "not a prompt edit; say so in the task spec instead of proposing a skill.\n"
             "- You may also propose at most ONE memory change via `propose_memory_update`:\n"
             "  - `name='MEMORY.md'` is the small index loaded into every run (150 lines max). Keep only "
             "standing facts, verified commands, and pointers; push repository detail into "
@@ -936,7 +988,9 @@ class Reconciler:
             f"Active skills ({len(active_skills)}/{self.cfg.max_personal_skills}):\n"
             f"{chr(10).join(skill_index_lines) or '(none)'}\n\n"
             f"Unreflected attempt traces ({len(unreflected)}):\n"
-            f"{chr(10).join(attempt_index_lines)}"
+            f"{chr(10).join(attempt_index_lines)}\n\n"
+            "Recurring failure patterns (grouped by harness surface; a narrow change should resolve one):\n"
+            f"{render_failure_patterns(patterns)}"
         )
         res = await self._run_pi(
             role="improver",
@@ -997,7 +1051,9 @@ class Reconciler:
             "2. Instead of repeating a failed single-lineage approach, fan out 2-3 distinct competing "
             f"hypothesis child tasks via `upsert_task` with `parent_id={task.id!r}`, `repo={task.repo!r}`, "
             "a concrete hypothesis in `spec`, a deterministic `verify_cmd` (printing `METRIC: <number>` "
-            "when optimizing a numeric metric), `metric_target`, and `ready=true`.\n"
+            "when optimizing a numeric metric), `metric_target`, and `ready=true`. Each child must pursue a "
+            "different mechanism or file: a reworded sibling is rejected, and the parent's `verify_cmd` is "
+            "inherited when a child leaves it out.\n"
             "3. Summarize the competing hypotheses in 1-2 sentences."
         )
         res = await self._run_pi(
@@ -1008,6 +1064,7 @@ class Reconciler:
             task=task,
             prompt=prompt,
             run_key=run_key or f"research-{task.id}",
+            hypothesis_mode=True,
         )
         if res.cost_usd > 0:
             self.db.add_spend(res.cost_usd)
@@ -1035,6 +1092,8 @@ class Reconciler:
             f"(or 2-3 competing auto-research hypothesis tasks when exploring an optimization or uncertain root cause) "
             f"using `upsert_task` with `parent_id={task.id!r}`, each with a deterministic `verify_cmd` "
             f"(which may print `METRIC: <float>` for quantitative goals), `metric_target`, and `ready=true`. "
+            "Competing hypotheses must name a different mechanism or file each: a reworded copy of a "
+            "sibling is rejected, and the parent's `verify_cmd` is inherited when a child leaves it out. "
             f"Use `research_scout` first when you need byte-verified codebase evidence. "
             f"Use `schedule_followup` only for a check that cannot run now (delay >= 5 minutes); "
             f"at most {self.cfg.max_agent_followups_per_task} follow-ups per task. "
@@ -1087,6 +1146,7 @@ class Reconciler:
         run_key: str,
         resume_session_id: str | None = None,
         approval_cb: ApprovalCallback | None = None,
+        hypothesis_mode: bool = False,
     ) -> PiRunResult:
         self._set_phase(
             "pi_running",
@@ -1126,10 +1186,31 @@ class Reconciler:
                 if method == "upsert_task":
                     if role != "planner":
                         raise ValueError("upsert_task is only permitted for the planner role.")
+                    parent_id = params.get("parent_id") or (task.id if task else None)
+                    parent_row = self.db.get_task(str(parent_id)) if parent_id else None
+                    competing = hypothesis_mode or (
+                        parent_row is not None and parent_row.child_strategy == "any"
+                    )
+                    if competing and parent_id:
+                        # Competing hypotheses: no reworded copies, and one gate for all of them.
+                        for sibling in self.db.list_tasks():
+                            if sibling.parent_id != parent_id or sibling.id == params.get("id"):
+                                continue
+                            if spec_similarity(str(params.get("spec") or ""), sibling.spec) >= 0.8:
+                                raise ValueError(
+                                    f"Hypothesis duplicates sibling {sibling.id}; "
+                                    "take a distinct mechanism, not a reworded one."
+                                )
+                        if (
+                            parent_row is not None
+                            and parent_row.verify_cmd
+                            and not str(params.get("verify_cmd") or "").strip()
+                        ):
+                            params["verify_cmd"] = parent_row.verify_cmd
                     raw_mode = params.get("mode")
                     t = self.db.upsert_task(
                         task_id=params.get("id"),
-                        parent_id=params.get("parent_id") or (task.id if task else None),
+                        parent_id=parent_id,
                         kind=params["kind"],
                         mode=str(raw_mode) if raw_mode is not None else (task.mode if task else None),
                         repo=params["repo"],
@@ -1277,6 +1358,51 @@ class Reconciler:
                         "ok": True,
                         "result": {"name": written, "sha256": new_sha},
                     }
+                elif method == "propose_harness_task":
+                    if role != "improver":
+                        raise ValueError(
+                            "propose_harness_task is only permitted for the improver role."
+                        )
+                    title = str(params.get("title") or "").strip()
+                    spec = str(params.get("spec") or "").strip()
+                    verify_cmd = str(params.get("verify_cmd") or "").strip()
+                    evidence = str(params.get("evidence") or "").strip()
+                    raw_targets = params.get("target_files") or []
+                    targets = (
+                        [str(p).strip() for p in raw_targets if str(p).strip()]
+                        if isinstance(raw_targets, list)
+                        else []
+                    )
+                    if not title or not spec or not verify_cmd:
+                        raise ValueError(
+                            "A harness task needs a title, a spec and a reproduce-first verify_cmd."
+                        )
+                    if len(evidence) < 40:
+                        raise ValueError(
+                            "A harness task needs evidence: name the trace ids or corrections."
+                        )
+                    protected = sorted(set(targets) & PROTECTED_SELF_PATHS)
+                    if protected:
+                        raise ValueError(
+                            f"Protected files belong to the owner: {', '.join(protected)}."
+                        )
+                    queued_task = self.db.upsert_task(
+                        kind="problem",
+                        repo="jarvis",
+                        title=title[:120],
+                        spec=(
+                            f"{spec}\n\nEvidence:\n{evidence}\n\n"
+                            f"Predicted fix: {params.get('predicted_fix') or '(not stated)'}\n"
+                            f"At risk: {params.get('at_risk_regressions') or '(not stated)'}"
+                        ),
+                        verify_cmd=verify_cmd,
+                        dedupe_key=HARNESS_DEDUPE_KEY,
+                        ready=self.cfg.autonomous_harness_upgrades,
+                    )
+                    resp = {
+                        "ok": True,
+                        "result": {"id": queued_task.id, "status": queued_task.status},
+                    }
                 elif method == "schedule_followup":
                     if role not in ("planner", "builder"):
                         raise ValueError("schedule_followup is only permitted for planner or builder roles.")
@@ -1355,6 +1481,8 @@ class Reconciler:
                 detail = f"{result.get('slug')} v{result.get('version')}"
             elif method == "propose_memory_update":
                 detail = str(result.get("name") or "")
+            elif method == "propose_harness_task":
+                detail = str(result.get("id") or "")
             elif method == "schedule_followup":
                 detail = str(result.get("timer_id") or "")
             elif method == "defer_for_approval":
@@ -1754,6 +1882,8 @@ class Reconciler:
         session_dir: Path,
         label: str,
         extra_pythonpath: list[str] | None = None,
+        timeout_seconds: float | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> tuple[bool, str]:
         cmd = wrap_with_sandbox(
             raw_cmd,
@@ -1765,6 +1895,7 @@ class Reconciler:
             deny_env_file=False,  # pytest imports the settings that read `JARVIS_HOME/.env`
         )
         env = self._build_sandbox_env(session_dir)
+        env.update(extra_env or {})
         if extra_pythonpath:
             py_parts = list(extra_pythonpath)
             if env.get("PYTHONPATH"):
@@ -1779,14 +1910,13 @@ class Reconciler:
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
+        budget = timeout_seconds or self.cfg.verify_timeout_seconds
         try:
-            out_bytes, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=self.cfg.verify_timeout_seconds
-            )
+            out_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=budget)
         except asyncio.TimeoutError:
             _terminate_proc_group(proc, signal.SIGKILL)
             await proc.wait()
-            return False, f"{label} timed out after {self.cfg.verify_timeout_seconds}s"
+            return False, f"{label} timed out after {budget}s"
         output = out_bytes.decode("utf-8", errors="replace").strip()[-4000:]
         return proc.returncode == 0, output
 
@@ -1799,6 +1929,59 @@ class Reconciler:
             session_dir=session_dir,
             label="verify_cmd",
         )
+
+    async def _changed_files(self, worktree_dir: Path, base_sha: str) -> set[str]:
+        """Paths the candidate changed, relative to the checkout root."""
+        await self._git_out(worktree_dir, "add", "-A", check=False)
+        out = await self._git_out(
+            worktree_dir, "diff", "--cached", "--name-only", base_sha, check=False
+        )
+        return {line.strip() for line in out.splitlines() if line.strip()}
+
+    async def _run_voice_benchmarks(
+        self, repo_dir: Path, worktree_dir: Path, changed: set[str], session_dir: Path
+    ) -> tuple[bool, str]:
+        """The mandatory benchmarks when a self-upgrade touches the speech check or the router.
+
+        The script comes from the checkout, never from the candidate, so a worker cannot rewrite the gate
+        it is measured by; `PYTHONPATH` still loads the candidate's voice modules.
+        """
+        gates: list[str] = []
+        if changed & VOICE_INTENT_PATHS:
+            gates.append("scripts/bench_intent.py")
+        if changed & VOICE_ROUTING_PATHS:
+            gates.append("scripts/bench_routing.py")
+        if not gates:
+            return True, ""
+        if not self.cfg.openrouter_api_key:
+            self.db.queue_outbox(
+                kind="blocker",
+                summary_spoken=(
+                    "A voice change needs the speech benchmarks, but no OPENROUTER_API_KEY is set, "
+                    "so the gate was skipped."
+                ),
+                details={"changed": sorted(changed)},
+            )
+            return True, ""
+        sources = [
+            worktree_dir / "apps" / "voice" / "src",
+            worktree_dir / "packages" / "jarvis-core" / "src",
+        ]
+        outputs: list[str] = []
+        for script in gates:
+            ok, output = await self._run_sandboxed_cmd(
+                [sys.executable, str(repo_dir / script), "1"],
+                worktree_dir=worktree_dir,
+                session_dir=session_dir,
+                label=script,
+                extra_pythonpath=[str(path) for path in sources if path.is_dir()],
+                timeout_seconds=self.cfg.verify_timeout_seconds * 6,
+                extra_env={"OPENROUTER_API_KEY": self.cfg.openrouter_api_key},
+            )
+            outputs.append(f"{script}: {'pass' if ok else 'FAIL'}\n{output[-1500:]}")
+            if not ok:
+                return False, "\n\n".join(outputs)
+        return True, "\n\n".join(outputs)
 
     async def _run_held_out_baseline_tests(
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path

@@ -414,6 +414,82 @@ def validate_evidence_receipt(root_dir: Path, raw_output: str) -> dict[str, Any]
     }
 
 
+def _surface_for_trace(record: dict[str, Any]) -> str | None:
+    """Which harness component a failed attempt points at; None for a run that went fine."""
+    outcome = str(record.get("outcome") or "")
+    if outcome in ("pushed", "decomposed"):
+        return None
+    oracle = record.get("oracle") or {}
+    if oracle.get("repeated_error_tools"):
+        return "tool interface"
+    if outcome == "failed_verify":
+        return "verify_cmd / gate"
+    if outcome in ("timed_out", "errored"):
+        return "runtime / prompt"
+    if record.get("skills_used"):
+        return "skill guidance"
+    return "prompt / plan"
+
+
+def mine_failure_patterns(
+    traces_dir: Path,
+    feedback_path: Path | None = None,
+    *,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    """Clusters failed attempt traces and speech-check corrections by harness surface.
+
+    The Improver gets counts and a few examples per surface instead of every raw trace, which keeps the
+    proposal context small and points each edit at one component (AHE's experience observability).
+    """
+    groups: dict[str, list[str]] = {}
+    for path in sorted(traces_dir.glob("attempt-*.json"))[-limit:]:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        surface = _surface_for_trace(record)
+        if surface is None:
+            continue
+        detail = str(record.get("diagnostic") or record.get("summary") or "").strip()[:160]
+        groups.setdefault(surface, []).append(f"attempt #{record.get('attempt_id')}: {detail}")
+    # shortcut: the feedback file is re-read whole each run; corrections are rare, split by day if it grows.
+    if feedback_path is not None and feedback_path.is_file():
+        try:
+            lines = feedback_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        for line in lines[-limit:]:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(record, dict) or not record.get("correction_of"):
+                continue
+            signal = str(record.get("signal") or "correction")
+            groups.setdefault("speech check", []).append(
+                f"correction {record.get('correction_of')}: {signal}"
+            )
+    patterns: list[dict[str, Any]] = [
+        {"surface": surface, "count": len(items), "evidence": items[-5:]}
+        for surface, items in groups.items()
+    ]
+    patterns.sort(key=lambda p: int(p["count"]), reverse=True)
+    return patterns
+
+
+def render_failure_patterns(patterns: list[dict[str, Any]]) -> str:
+    """One line per surface, with its freshest evidence under it."""
+    if not patterns:
+        return "(no failure patterns recorded)"
+    return "\n".join(
+        f"- {p['surface']} x{p['count']}:\n" + "\n".join(f"    {item}" for item in p["evidence"])
+        for p in patterns
+    )
+
+
 def write_attempt_trace(
     traces_dir: Path, attempt: AttemptRow, *, diff_stat: str = ""
 ) -> Path:

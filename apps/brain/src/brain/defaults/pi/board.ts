@@ -176,6 +176,37 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "propose_harness_task",
+		label: "Propose a Harness Fix",
+		description:
+			"Queue one bounded Brain fix for a recurring harness fault found in the traces. Requires evidence and a reproduce-first verify_cmd.",
+		promptSnippet: "Propose one bounded fix for a recurring harness fault, with evidence.",
+		parameters: {
+			type: "object",
+			properties: {
+				title: { type: "string" },
+				spec: { type: "string", description: "The fault, the narrow fix, and how to reproduce it" },
+				evidence: { type: "string", description: "Trace ids or corrections showing it recurs" },
+				target_files: { type: "array", items: { type: "string" }, description: "Files the fix touches" },
+				predicted_fix: { type: "string" },
+				at_risk_regressions: { type: "string" },
+				verify_cmd: {
+					type: "string",
+					description: "Reproduce-first command: fails today, passes after the fix",
+				},
+			},
+			required: ["title", "spec", "evidence", "verify_cmd"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("propose_harness_task", params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(res) }],
+				details: res,
+			};
+		},
+	});
+
+	pi.registerTool({
 		name: "defer_for_approval",
 		label: "Request Owner Yes/No Approval",
 		description:
