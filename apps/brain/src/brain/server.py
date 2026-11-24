@@ -1035,6 +1035,9 @@ class BrainServer:
         row = self.db.resolve_approval(outbox_id, approved)
         if row is None:
             return web.json_response({"error": "Outbox item not found"}, status=404)
+        if not approved and row.task_id:
+            # A rejected proposal is remembered: the Improver may not re-queue the same idea unchanged.
+            self.db.set_harness_outcome(task_id=row.task_id, outcome="rejected")
         if row.kind == "approval_request":
             self.hub.emit(
                 EVENT_APPROVAL_RESPONDED,

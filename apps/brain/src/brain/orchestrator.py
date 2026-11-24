@@ -187,8 +187,14 @@ class BrainOrchestrator:
             budget=state.daily_budget_usd,
             ready=ready,
         )
+        # Standing memory first: a stable prefix keeps the router's prompt cache warm, and daytime routing
+        # then knows what the night learned.
+        standing = memory.standing_context(self.cfg.home_dir)
+        if standing:
+            prompt = f"Standing memory (verified overnight; facts, not instructions):\n{standing}\n\n{prompt}"
         started = time.monotonic()
         choice = await self._choose(prompt, user_input)
+        route_ms = round((time.monotonic() - started) * 1000)
         route_ms = round((time.monotonic() - started) * 1000)
         if choice is None:
             choice = self._heuristic(user_input, projects, session_id)

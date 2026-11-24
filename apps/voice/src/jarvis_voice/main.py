@@ -147,6 +147,7 @@ async def run_pipecat_harness(
     relay: Any = None,
     status: dict[str, Any] | None = None,
     hub_emit: Any = None,
+    on_memory: Any = None,
     enroll_owner: bool = False,
 ) -> VoiceProfile | None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers.
@@ -425,6 +426,9 @@ async def run_pipecat_harness(
     memory = create_memory_service() if llm is not None else None
     if memory is not None:
         processors.append(memory)
+        if on_memory is not None:
+            # The brain shares this process: hand it the live client so curation never opens a second Qdrant.
+            on_memory(getattr(memory, "memory_client", None))
     if llm is not None:
         processors.append(llm)
 
