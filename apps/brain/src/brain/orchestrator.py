@@ -171,6 +171,29 @@ class BrainOrchestrator:
 
     # ------------------------------------------------------------------ routing
 
+    async def decide(self, user_input: str, *, session_id: str = "") -> tuple[dict[str, Any], int]:
+        """The route choice and the router's latency in ms: `route` dispatches this, the benchmark scores it."""
+        label, _ = self._projects()
+        projects = list_projects()
+        sessions = await self._session_lines()
+        state = self.db.get_state()
+        ready = sum(1 for t in self.db.list_tasks(status="ready"))
+        prompt = ROUTER_PROMPT.format(
+            projects_label=label,
+            projects="\n".join(f"- {p}" for p in projects) or "(none)",
+            sessions="\n".join(sessions) or "(none)",
+            mode=state.mode,
+            spent=state.spent_today_usd,
+            budget=state.daily_budget_usd,
+            ready=ready,
+        )
+        started = time.monotonic()
+        choice = await self._choose(prompt, user_input)
+        route_ms = round((time.monotonic() - started) * 1000)
+        if choice is None:
+            choice = self._heuristic(user_input, projects, session_id)
+        return choice, route_ms
+
     async def route(
         self,
         *,
@@ -187,25 +210,7 @@ class BrainOrchestrator:
         trace_id: str = "",
         turn_id: str = "",
     ) -> RunResult:
-        label, _ = self._projects()
-        projects = list_projects()
-        sessions = await self._session_lines()
-        state = self.db.get_state()
-        ready = sum(1 for t in self.db.list_tasks(status="ready"))
-        prompt = ROUTER_PROMPT.format(
-            projects_label=label,
-            projects="\n".join(f"- {p}" for p in projects) or "(none)",
-            sessions="\n".join(sessions) or "(none)",
-            mode=state.mode,
-            spent=state.spent_today_usd,
-            budget=state.daily_budget_usd,
-            ready=ready,
-        )
-        routed_at = time.monotonic()
-        choice = await self._choose(prompt, user_input)
-        route_ms = round((time.monotonic() - routed_at) * 1000)
-        if choice is None:
-            choice = self._heuristic(user_input, projects, session_id)
+        choice, route_ms = await self.decide(user_input, session_id=session_id)
         logger.info(f"[Brain] route {choice['name']} for {user_input[:80]!r}")
         args = choice.get("arguments") or {}
         self._telemetry(

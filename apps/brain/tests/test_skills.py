@@ -484,11 +484,15 @@ def test_mine_failure_patterns_groups_by_harness_surface(tmp_path: Path) -> None
 
     assert "pushed" not in " ".join(by_surface)  # a good run is not a weakness
     assert by_surface["speech check"] == 2
-    assert by_surface["verify_cmd / gate"] == 1
-    assert by_surface["tool interface"] == 1
-    assert by_surface["runtime / prompt"] == 1
-    assert patterns[0]["surface"] == "speech check"  # most frequent first
-    assert any("said again" in item for item in patterns[0]["evidence"])
+    # One component, three causes: the mechanism keeps them apart inside the same surface.
+    assert by_surface["builder_harness"] == 3
+    evidence = " ".join(item for p in patterns for item in p["evidence"])
+    assert "(wrong_or_incomplete_fix)" in evidence
+    assert "(tool_interface)" in evidence
+    assert "(budget_or_prompt)" in evidence
+    assert patterns[0]["surface"] == "builder_harness"  # most frequent first
+    speech = next(p for p in patterns if p["surface"] == "speech check")
+    assert any("said again" in item for item in speech["evidence"])
 
     rendered = render_failure_patterns(patterns)
     assert "speech check x2" in rendered
@@ -504,5 +508,13 @@ def test_spec_similarity_flags_a_reworded_hypothesis() -> None:
 
 
 def test_voice_benchmarks_are_protected_from_workers() -> None:
-    assert "scripts/bench_intent.py" in PROTECTED_SELF_PATHS
-    assert "scripts/bench_routing.py" in PROTECTED_SELF_PATHS
+    for script in (
+        "scripts/bench_intent.py",
+        "scripts/bench_routing.py",
+        "scripts/bench_brain_route.py",
+        "scripts/bench_voice_prompts.py",
+    ):
+        assert script in PROTECTED_SELF_PATHS
+    # The tracer and the harvester: a worker that edits either can fake what the gate measures.
+    assert "apps/brain/src/brain/traces.py" in PROTECTED_SELF_PATHS
+    assert "apps/brain/src/brain/evals.py" in PROTECTED_SELF_PATHS

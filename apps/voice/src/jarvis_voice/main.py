@@ -26,10 +26,10 @@ from jarvis_voice.feedback import FeedbackLog
 from jarvis_voice.memory import create_memory_service
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.pi_adapter import PiAdapter, install_extension
-from jarvis_voice.prompts import AGENT_REPORT_PROMPT, LANGUAGES, NOT_THE_USER, greeting_prompt, system_prompt
+from jarvis_voice.prompts import LANGUAGES, greeting_prompt, system_prompt
 from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
 from jarvis_voice.state import JarvisState
-from jarvis_voice.system_prompts import load_overrides
+from jarvis_voice.system_prompts import build_retell_prompt, load_overrides
 from jarvis_voice.t3_adapter import current_thread, recent_threads
 
 
@@ -219,10 +219,7 @@ async def run_pipecat_harness(
         logger.info(f"SYSTEM.md overrides: {', '.join(name.capitalize() for name in overrides)}")
     use_cleanup = settings.transcript_cleanup and settings.openrouter_api_key
     cleaner = TranscriptCleaner(prompt=overrides.get("cleanup")) if use_cleanup else None
-    retell_prompt = overrides.get("retell") or AGENT_REPORT_PROMPT
-    if not retell_prompt.startswith(NOT_THE_USER):
-        # The marker keeps agent output out of the user's voice; an override may add rules, not drop it.
-        retell_prompt = f"{NOT_THE_USER} an agent finished its turn.] {retell_prompt}"
+    retell_prompt = build_retell_prompt(overrides)
     if cleaner is not None:
         logger.info(f"Cleaning up sentences with {cleaner.model}")
     task_ref: dict[str, PipelineTask] = {}

@@ -101,7 +101,7 @@ HARNESS_SURFACES: dict[str, HarnessSurface] = {
         "brain_router",
         "router",
         ("apps/brain/src/brain/orchestrator.py",),
-        "uv run pytest apps/brain/tests/test_orchestrator.py",
+        "uv run python scripts/bench_brain_route.py 1",
     ),
     "builder_harness": HarnessSurface(
         "builder_harness",
@@ -163,6 +163,11 @@ def word_change_ratio(left: str, right: str) -> float:
 
 def _secret_values() -> list[str]:
     return [value for name in SECRET_ENV if (value := os.environ.get(name)) and len(value) >= 6]
+
+
+def scrub_text(text: str) -> str:
+    """The sink's redaction, for callers that write elsewhere (harvested eval cases): one rule, one place."""
+    return _scrub(text, _secret_values())
 
 
 def _scrub(text: str, secrets: list[str]) -> str:

@@ -1,6 +1,7 @@
 # Closing the self-improvement gap (plan, 2026-11-24)
 
-Status: proposal, nothing implemented. Baseline: Lilian Weng, *Harness Engineering for Self-Improvement*
+Status: Phase 1 built (2026-11-24); Phases 2–5 specified in `docs/self-improvement-phases-2-5-plan.md`, not started.
+Baseline: Lilian Weng, *Harness Engineering for Self-Improvement*
 (2026-07-04, <https://lilianweng.github.io/posts/2026-07-04-harness/>) compared against this checkout at
 `6a77d89`. Read `docs/architecture.md` and `apps/brain/AGENTS.md` first; this plan only adds to them.
 
@@ -88,6 +89,8 @@ still in `ASSIST`.
 
 ### Phase 2 — Evaluator coverage and held-in / held-out splits
 
+Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 2).
+
 Goal: nothing that can change behaviour ships without a number.
 
 1. `scripts/bench_brain_route.py`: `BrainOrchestrator.route` over `delegate_project`, `ask_ephemeral_pi`,
@@ -109,6 +112,8 @@ Gate: a deliberately bad router edit fails Phase 2 in CI, and a good one passes.
 
 ### Phase 3 — Closed decision loop and one memory
 
+Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 3).
+
 Goal: the Improver remembers its own history, and Voice and Brain stop disagreeing.
 
 1. Per-surface dedupe `harness:<surface>` instead of the single `HARNESS_DEDUPE_KEY`, with the manifesto
@@ -129,6 +134,8 @@ namespaces (`sang` vs `speaker:*`).
 
 ### Phase 4 — Skills that earn their keep, and a Pareto tournament
 
+Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 4).
+
 Goal: measure skills, then choose between candidates on more than accuracy.
 
 1. MCE-lite: `skills/<slug>/` may hold a read-only `context.py` or `check.sh` beside `SKILL.md`, run inside
@@ -144,6 +151,8 @@ Goal: measure skills, then choose between candidates on more than accuracy.
 Gate: a candidate that buys 0.5% accuracy for >150 ms of voice latency is rejected by the tournament.
 
 ### Phase 5 — Weights, and a metric for the Improver itself
+
+Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 5).
 
 Goal: close the parametric half and stop trusting the loop because it looks busy.
 

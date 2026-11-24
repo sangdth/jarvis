@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from brain.db import AttemptRow, BrainDB, SkillRow
 from brain.memory import FORBIDDEN_PATTERNS
+from brain.traces import classify_surface
 
 ProposalAction = Literal["create", "update", "append", "retire"]
 
@@ -414,21 +415,21 @@ def validate_evidence_receipt(root_dir: Path, raw_output: str) -> dict[str, Any]
     }
 
 
-def _surface_for_trace(record: dict[str, Any]) -> str | None:
-    """Which harness component a failed attempt points at; None for a run that went fine."""
-    outcome = str(record.get("outcome") or "")
-    if outcome in ("pushed", "decomposed"):
-        return None
+def _surface_for_trace(record: dict[str, Any]) -> tuple[str, str] | None:
+    """`(surface, mechanism)` for a failed attempt; None for a run that went fine.
+
+    Delegates to `traces.classify_surface` so the Improver's digest and `traces/analysis/` name the same
+    `HARNESS_SURFACES` component; the mechanism keeps two different causes on one component apart.
+    """
     oracle = record.get("oracle") or {}
-    if oracle.get("repeated_error_tools"):
-        return "tool interface"
-    if outcome == "failed_verify":
-        return "verify_cmd / gate"
-    if outcome in ("timed_out", "errored"):
-        return "runtime / prompt"
-    if record.get("skills_used"):
-        return "skill guidance"
-    return "prompt / plan"
+    surface, causal = classify_surface(
+        str(record.get("outcome") or ""),
+        repeated_error_tools=tuple(oracle.get("repeated_error_tools") or ()),
+        used_skills=bool(record.get("skills_used")),
+    )
+    if not surface:
+        return None
+    return surface, causal.rsplit("|", 1)[-1]
 
 
 def mine_failure_patterns(
@@ -450,11 +451,12 @@ def mine_failure_patterns(
             continue
         if not isinstance(record, dict):
             continue
-        surface = _surface_for_trace(record)
-        if surface is None:
+        found = _surface_for_trace(record)
+        if found is None:
             continue
+        surface, mechanism = found
         detail = str(record.get("diagnostic") or record.get("summary") or "").strip()[:160]
-        groups.setdefault(surface, []).append(f"attempt #{record.get('attempt_id')}: {detail}")
+        groups.setdefault(surface, []).append(f"attempt #{record.get('attempt_id')} ({mechanism}): {detail}")
     # shortcut: the feedback file is re-read whole each run; corrections are rare, split by day if it grows.
     if feedback_path is not None and feedback_path.is_file():
         try:
