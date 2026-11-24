@@ -7,6 +7,7 @@ import re
 import shutil
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -229,7 +230,57 @@ def record_skill_outcome(
                 summary_spoken=f"Skill {skill.slug} was automatically {action_note} after 2 failed attempts.",
                 details={"slug": skill.slug, "status": skill.status, "version": skill.version},
             )
+    # Lin et al.: a skill that never helps is not neutral, it is noise in the worker's context.
+    retired = False
+    for slug in dict.fromkeys(slugs):
+        current = db.get_skill(slug)
+        if current is None or current.status != "active" or not has_no_lift(db, current):
+            continue
+        db.retire_skill(slug)
+        _remove_skill_dir(skills_dir, slug)
+        retired = True
+        db.queue_outbox(
+            kind="report",
+            summary_spoken=(
+                f"Retired skill {slug}: {current.loads_since_update} loads and no lift over the baseline."
+            ),
+            details={"slug": slug, "action": "retire", "reason": "no_marginal_lift",
+                     "lift": skill_lift(db, slug)},
+        )
+    if rolled_back or retired:
+        sync_skills_on_disk(db, skills_dir)
     return rolled_back
+
+
+LIFT_MIN_LOADS = 10  # the plan's "after 10 loads with no lift, retire it"
+LIFT_MIN_BASELINE = 3  # fewer runs than this on the same repos and the comparison says nothing
+LIFT_WINDOW_DAYS = 60
+LIFT_COST_RATIO = 0.95  # a skill that made work 5% cheaper has earned its place
+
+
+def skill_lift(db: BrainDB, slug: str) -> dict[str, float]:
+    """Pass-rate lift and cost ratio against the same repositories with the skill not loaded."""
+    since = (datetime.now(timezone.utc) - timedelta(days=LIFT_WINDOW_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    (ok_w, total_w, cost_w), (ok_b, total_b, cost_b) = db.skill_lift_counts(slug, since=since)
+    pass_w = ok_w / total_w if total_w else 0.0
+    pass_b = ok_b / total_b if total_b else 0.0
+    return {
+        "loads": float(total_w),
+        "baseline": float(total_b),
+        "pass_lift": pass_w - pass_b,
+        "cost_ratio": (cost_w / cost_b) if cost_b else 1.0,
+    }
+
+
+def has_no_lift(db: BrainDB, skill: SkillRow) -> bool:
+    """Whether ten-plus loads bought nothing: neither a better pass rate nor cheaper work."""
+    if skill.loads_since_update < LIFT_MIN_LOADS:
+        return False
+    lift = skill_lift(db, skill.slug)
+    if lift["baseline"] < LIFT_MIN_BASELINE:
+        # Not enough comparable work: fall back to the skill's own record.
+        return skill.successes_since_update / max(1, skill.loads_since_update) < 0.5
+    return lift["pass_lift"] <= 0.0 and lift["cost_ratio"] >= LIFT_COST_RATIO
 
 
 def inspect_attempt_trajectory(attempt: AttemptRow, *, diff_stat: str = "") -> dict[str, Any]:

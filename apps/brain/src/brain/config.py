@@ -80,7 +80,7 @@ class Settings(EnvSettings):
     default_mode: Literal["ASSIST", "AUTONOMOUS"] = "ASSIST"
     sandbox_enabled: bool = True
     max_personal_skills: int = 10
-    auto_research_after_strikes: int = 0
+    auto_research_after_strikes: int = 2
     # An Improver-proposed harness fix lands as a draft task unless the owner opts into auto-ready.
     autonomous_harness_upgrades: bool = False
 

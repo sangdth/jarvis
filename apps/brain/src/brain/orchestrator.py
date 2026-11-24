@@ -27,7 +27,8 @@ from jarvis_core.projects import list_projects, projects_dir, resolve_project
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
-ROUTER_PROMPT = """You route one request for a voice assistant. Pick exactly one tool.
+ROUTER_PROMPT = """# === EVOLVE-BLOCK: router ===
+You route one request for a voice assistant. Pick exactly one tool.
 
 The user's project folders under {projects_label}:
 {projects}
@@ -49,7 +50,9 @@ Rules:
 - A question the assistant can answer from the project list or the board line above -> reply_direct.
 - Name Claude Code or OpenCode only when the user says so; otherwise runner="t3".
 - Never invent a folder, a task or a session title.
-Return only the tool call."""
+Return only the tool call.
+# === END-EVOLVE-BLOCK: router ===
+"""
 
 ROUTER_TOOLS: list[dict[str, Any]] = [
     {
