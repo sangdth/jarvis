@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import time
+import uuid
 from typing import Any, Callable
 
 from loguru import logger
@@ -22,6 +23,7 @@ MAX_TEXT = 2000
 _emit: Callable[..., Any] | None = None
 _turn_ids = itertools.count(1)
 _current: str | None = None
+_current_trace: str | None = None
 
 
 def bind(emit: Callable[..., Any] | None) -> None:
@@ -32,14 +34,22 @@ def bind(emit: Callable[..., Any] | None) -> None:
 
 def new_turn() -> str:
     """Starts a turn: every stage after it until the next one lands under this id in the cockpit."""
-    global _current
+    global _current, _current_trace
     _current = f"t{next(_turn_ids)}"
+    # 128-bit, OTel-valid: survives restarts and is what the brain and the trace files key on.
+    _current_trace = uuid.uuid4().hex
     return _current
 
 
 def current_turn() -> str:
     """The turn in progress, or a fresh one when a stage arrives without a sentence before it."""
     return _current or new_turn()
+
+
+def current_trace() -> str:
+    """The durable trace id for the current turn, minted with it."""
+    current_turn()
+    return _current_trace or ""
 
 
 def emit(kind: str, **fields: Any) -> None:
@@ -49,7 +59,7 @@ def emit(kind: str, **fields: Any) -> None:
     try:
         # `ts` is the voice's own clock, which is the same Mac as the hub's; the hub keeps its own too.
         turn = (_current or "") if kind == "voice.level" else current_turn()
-        _emit(kind, turn_id=turn, ts=time.time(), **_clip(fields))
+        _emit(kind, turn_id=turn, trace_id=current_trace(), ts=time.time(), **_clip(fields))
     except Exception as exc:  # noqa: BLE001 - telemetry is best effort by definition
         logger.debug(f"[Telemetry] dropped {kind}: {exc!r}")
 
@@ -67,4 +77,4 @@ def _clip(fields: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-__all__ = ["bind", "current_turn", "emit", "new_turn", "preview", "MAX_TEXT"]
+__all__ = ["bind", "current_trace", "current_turn", "emit", "new_turn", "preview", "MAX_TEXT"]

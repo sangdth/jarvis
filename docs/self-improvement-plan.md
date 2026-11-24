@@ -62,6 +62,10 @@ autonomy switch before its gate exists (see §4).
 
 ### Phase 1 — Experience and component observability
 
+Status: **built** (2026-11-24). `apps/brain/src/brain/traces.py`, `trace_runs`/`trace_fts`, nightly `ASSIST`
+reflection, `jarvis traces`, and cockpit cold start. Deep-dive research: `docs/research/observability-landscape.md`.
+Detailed build spec: `docs/observability-plan.md`.
+
 Goal: every run, including daytime and voice, leaves a small file the Improver can read.
 
 1. Write `traces/run-<run_id>.json` from `BrainOrchestrator.route` (`apps/brain/src/brain/orchestrator.py`)

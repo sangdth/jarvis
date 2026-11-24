@@ -267,7 +267,13 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             # Only the agent gets this line: the waiting lines below are written from `task` by a model and spoken.
             prompt += f"\n\n[Screenshot of the user's front window ({shot.app}: {shot.title}): {shot.path}]"
         before = agent.session_id if isinstance(agent, CodingSessionAdapter) else None
-        if not await agent.send_task(prompt):
+        from jarvis_voice.brain_client import BrainClientAdapter
+
+        if isinstance(agent, BrainClientAdapter):
+            sent = await agent.send_task(prompt, replace=bool(args.get("replace")))
+        else:
+            sent = await agent.send_task(prompt)
+        if not sent:
             return False
         if has_held and not side:
             ctx.clear()

@@ -33,11 +33,13 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   overrides it, and a pre-merge `~/.config/superbrain` is read until `jarvis init` moves it):
   `.env` (shared: `JARVIS_HOME/.env` wins), `state.db` (SQLite WAL, the only writer), `worktrees/<task_id>` (`0700`),
   `sessions/<task_id>`, `sessions/chat/<key>` (a resumed conversational `pi` session, pruned by age/count),
-  `traces/attempt-<id>.json`, `skills/<slug>/SKILL.md` (capped at 10 active auto-created personal skills),
+  `traces/<YYYY-MM-DD>/` (`spans.jsonl` + one `trace-<trace_id>.json`; pruned by day, see `traces.py`),
+  `traces/analysis/` (`overview.md` + `surfaces/<surface>.md`, the digest the Improver reads first),
+  `skills/<slug>/SKILL.md` (capped at 10 active auto-created personal skills),
   `INSTRUCTIONS.md` (owner-written, read-only to workers), and `memory/` (`MEMORY.md`, the small injected index;
   `repos/<slug>.md`; `reported.md`, what the voice has taken; `bookmarks.json`; and `progress/<task_id>.md`, the
   handoff + verified/negative-result ledger).
-- **7 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
+- **8 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
   `child_strategy IN ('all', 'any')`, `runner IN ('pi', 't3', 'claude', 'opencode')` defaulting to `pi`,
   `thread_id`, `dedupe_key` for idempotent timer/webhook submissions, `best_metric`, `best_branch`, `best_sha`),
   `attempts` (append-only run ledger with `thread_id`, `metric_value`, `skills_used`, `diagnostic`, and `reflected`),
@@ -45,13 +47,17 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `worktree_path`, `branch`, `last_sequence`), `skills` (versioned personal skills with baseline `sha256`, usage
   counters, and previous-version rollback snapshot), `outbox` (queued reports, blockers, and binary approvals),
   `timers` (one-shot `followup` or five-field cron `schedule`, `action='task'|'check'`, `next_run_at` in UTC and
-  `timezone` for the cron), plus the 1-row `system_state` table (`mode`, `daily_budget_usd` defaulting to
+  `timezone` for the cron), `trace_runs` (one row per voice turn, interactive run or board attempt: `surface`,
+  `outcome`, `friction_kind`, `causal_sig`, `git_sha`, `prompt_sha`, `cost_usd`, `trace_path`) with its `trace_fts`
+  FTS5 index, plus the 1-row `system_state` table (`mode`, `daily_budget_usd` defaulting to
   `$200.00/day`, `last_good_sha`, `upgrade_runs`, `upgrade_failures`). The
   reconciler loop runs continuously in both modes, resolving ready `ASSIST` tasks when in `ASSIST` mode and ready
   `AUTONOMOUS` tasks when in `AUTONOMOUS` mode. When the owner gives a new request clearly related to the current
   topic or active tasks, the Planner sets `mode='ASSIST'` and `ready=true`; if unsure when to resolve it, the
-  Planner asks the owner first. The cockpit reads these tables directly, read-only: a column it draws must not
-  change shape without `apps/tui/src/db.rs`.
+  Planner asks the owner first. In `ASSIST` too, once a day after `nightly_reflect_hour` (03:00 local) with at
+  least 5 unreflected traces, the reconciler runs the Improver over the durable digest; harness proposals still
+  land as `draft` unless `AUTONOMOUS_HARNESS_UPGRADES=true`. The cockpit reads these tables directly, read-only:
+  a column it draws must not change shape without `apps/tui/src/db.rs`.
 - **One orchestrator, several runners (`orchestrator.py` + `runners/`):**
   - `BrainOrchestrator.route` turns one interactive request into one runner call: a `Mode`/brief/improve/task
     command is handled in code first; a pinned `jarvis connect` session bypasses the router; otherwise one cheap
@@ -98,12 +104,17 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   - **Sealed held-out evaluation:** Held-out baseline failure output on the self repository is sealed from
     worker-visible `verify_output` and progress notes to prevent test overfitting, while preserved in owner `outbox`
     details.
-- **Self-improving skills loop (`skills.py` + `reconciler.py`):**
+- **Self-improving skills loop (`skills.py` + `traces.py` + `reconciler.py`):**
   - **Evidence:** `board.ts` records `record_skill_load` when a worker reads `skills/<slug>/SKILL.md` and exposes
-    `report_diagnostic`; `reconciler.py` writes `traces/attempt-<id>.json` after every attempt.
-  - **Reflection:** Offline `Improver` role receives a 1-line-per-item index of skills, repo notes and trace files,
-    the deterministic failure summary (`skills.mine_failure_patterns`: failed traces by harness surface, plus
-    `feedback/intent.jsonl` corrections), inspects them on demand via `read`/`grep`, and proposes at most 1 skill
+    `report_diagnostic`; `reconciler.py` writes `traces/attempt-<id>.json` after every attempt. `traces.py`'s
+    `TraceSink` drains `TelemetryHub` into `traces/<YYYY-MM-DD>/` and `trace_runs`, stamping `git_sha`/`prompt_sha`
+    and the deterministic friction signal (`replaced`, `stopped`, `router_override`, `not_you`, `asr_rewrite`,
+    `latency_sla`, …); pairing codes, credentials and room speech never reach disk.
+  - **Reflection:** `distill_experience` writes `traces/analysis/overview.md` (health per commit, top causal
+    clusters, failed-then-passed pairs) and `surfaces/<surface>.md`; the offline `Improver` reads that first, then
+    drills into the `trace-*.json` it cites. It also receives a 1-line-per-item index of skills, repo notes and
+    attempt traces and the deterministic failure summary (`skills.mine_failure_patterns`, plus
+    `feedback/intent.jsonl` corrections), and proposes at most 1 skill
     change (`create`, incremental `append`, `update`, or `retire`) via `propose_skill_change`, at most 1 memory
     change via `propose_memory_update` (checking the claim against the trace first), or at most 1 bounded harness
     fix via `propose_harness_task` (evidence + reproduce-first `verify_cmd`; a `repo='jarvis'` `draft` task under
@@ -162,7 +173,8 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `POST /v1/runs/{id}/stop`, `GET /v1/sessions`, `POST /v1/connect` and `GET /v1/events` with Bearer auth
   (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` -> `{"spoken": "..."}`)
   for the iPhone Shortcut over Tailscale; the operator routes `/v1/status`, `/v1/board`, `GET|POST /v1/tasks`,
-  `/v1/tasks/{id}/research`, `/v1/mode`, `/v1/skills/improve`, `/v1/restart`; the cockpit's telemetry; and the thin
+  `/v1/tasks/{id}/research`, `/v1/mode`, `/v1/skills/improve`, `/v1/traces`, `/v1/traces/diff`,
+  `/v1/traces/{id}`, `/v1/restart`; the cockpit's telemetry; and the thin
   client's `/ws` + `/client.py` (registered from `jarvis_voice/remote_audio.py`). `/health` is the only route
   without a token. Any route also accepts `?token=` or `X-Jarvis-Token`. The contract is `schemas/openapi.json`;
   keep it in step.

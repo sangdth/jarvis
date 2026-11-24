@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from typing import Any
+from typing import Any, Callable
 
 # Event kinds emitted by the daemon. Keep in sync with `tui/src/model.rs`.
 EVENT_HTTP_INBOUND = "http.inbound"
@@ -75,6 +75,7 @@ class TelemetryHub:
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._sticky: dict[str, dict[str, Any]] = {}
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._queue_size = queue_size
         self._seq = 0
         self._started_monotonic = time.monotonic()
@@ -113,7 +114,20 @@ class TelemetryHub:
         if event in _STICKY_EVENTS:
             self._sticky[event] = envelope
         self._fanout(envelope)
+        # In-process listeners (the durable `TraceSink`); a slow or broken one must never delay the bus.
+        for listener in list(self._listeners):
+            try:
+                listener(envelope)
+            except Exception:  # noqa: BLE001 - tracing is best effort
+                continue
         return envelope
+
+    def add_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        self._listeners[:] = [item for item in self._listeners if item is not listener]
 
     def snapshot(self, limit: int = 100) -> list[dict[str, Any]]:
         """Returns the most recent `limit` events, oldest first, keeping sticky state events."""

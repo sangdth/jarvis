@@ -105,6 +105,47 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+-- One row per voice turn, interactive run, timer check or board attempt: the experience the Improver mines.
+CREATE TABLE IF NOT EXISTS trace_runs (
+    trace_id TEXT PRIMARY KEY,
+    turn_id TEXT,
+    source TEXT NOT NULL DEFAULT 'voice',
+    surface TEXT NOT NULL DEFAULT '',
+    runner TEXT,
+    repo TEXT,
+    task_id TEXT,
+    attempt_id INTEGER,
+    outcome TEXT NOT NULL DEFAULT 'ok',
+    friction_kind TEXT,
+    causal_sig TEXT,
+    latency_ms INTEGER,
+    ttfb_ms INTEGER,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0.0,
+    git_sha TEXT,
+    prompt_sha TEXT,
+    skills_used TEXT NOT NULL DEFAULT '[]',
+    user_input TEXT NOT NULL DEFAULT '',
+    output_summary TEXT NOT NULL DEFAULT '',
+    trace_path TEXT NOT NULL DEFAULT '',
+    superseded_by TEXT,
+    reflected INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_trace_runs_created ON trace_runs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trace_runs_surface ON trace_runs(surface, outcome, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trace_runs_sha ON trace_runs(git_sha, outcome);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS trace_fts USING fts5(
+    trace_id UNINDEXED,
+    user_input,
+    output_summary,
+    causal_sig,
+    tokenize='porter unicode61'
+);
+
 -- Follow-ups and schedules. A due timer creates a board task (`action='task'`) or runs a read-only check
 -- (`action='check'`) whose answer goes to the outbox. `next_run_at` is UTC; `timezone` is the IANA zone the
 -- cron expression is read in, so a morning check stays at 08:00 across daylight-saving changes.

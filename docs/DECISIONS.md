@@ -81,8 +81,19 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   and the state folder `~/.config/superbrain` until `jarvis init` moves it. The separate `brain` console script is
   gone: one command, `jarvis` (`jarvis serve|status|…`, or `uv run python -m brain.cli …` when working inside
   `apps/brain`).
-- **One brain per machine, in this process.** `src/jarvis/supervisor.py` runs `brain.cli.running()` inside the
-  `jarvis` process and stops it at exit, so the voice and the board always share one home and one token; the
+- **Traces are local files plus one SQLite row, never an observability server.** `apps/brain/src/brain/traces.py`
+  drains `TelemetryHub` in the background into `traces/<YYYY-MM-DD>/` (per-day folders, so retention is
+  `shutil.rmtree`) and one `trace_runs` row with `git_sha`/`prompt_sha`, then writes `traces/analysis/` as the
+  digest the offline `pi` Improver reads. `jarvis traces` and the cockpit's cold start read the same rows. Limits:
+  token counts are only what a runner reports (0 today for voice turns), so `Succ/Mtok` is board-only until a
+  runner surfaces usage; the cockpit's cold start synthesises `STT`/`ROUTE`/`RETURN` rather than parsing every
+  trace file on each snapshot poll; and OTLP export is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set
+  (`shortcut:` OTLP/HTTP JSON over `httpx`, no protobuf/gRPC, to keep `grpcio` out of `.venv`).
+- **The trace sink is inside the trust boundary, and protected from workers.** `traces.py` is in
+  `PROTECTED_SELF_PATHS`, Seatbelt already denies `traces/` and `state.db*` to every worker but the Improver, and
+  the sink redacts `pair.requested` codes, `SECRET_ENV` values and unaddressed `[Room]` speech before anything is
+  written. Limits: a redaction bug is a data leak, not just a bad metric, so the sink's tests assert on bytes on disk.
+- **One brain per machine, in this process.** `src/jarvis/supervisor.py` runs `brain.cli.running()` inside the  `jarvis` process and stops it at exit, so the voice and the board always share one home and one token; the
   one-mic lock (`~/.config/jarvis/jarvis.lock`) stops a second `jarvis` on the same machine. A client on another
   machine reaches that same process over `BRAIN_URL` (default `0.0.0.0:8643`). Limits: there is no attach mode, so
   a dev checkout runs its own brain; set `BRAIN_HOME` / `BRAIN_PORT` to keep its board and port apart from an

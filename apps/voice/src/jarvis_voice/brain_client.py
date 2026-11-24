@@ -201,8 +201,13 @@ class BrainClientAdapter(CodingSessionAdapter):
 
     # ------------------------------------------------------------------ work
 
-    async def send_task(self, task: str) -> bool:
+    async def send_task(self, task: str, *, replace: bool = False) -> bool:
         body: dict[str, Any] = {"input": task}
+        # The durable correlation pair: `turn_id` keeps the cockpit's turn together, `trace_id` keys the files.
+        body["turn_id"] = telemetry.current_turn()
+        body["trace_id"] = telemetry.current_trace()
+        if replace:
+            body["replace"] = True
         if self._session_id:
             body["session_id"] = self._session_id
         if self._pinned:
@@ -244,7 +249,11 @@ class BrainClientAdapter(CodingSessionAdapter):
             if request.get("request_id"):
                 body["request_id"] = request["request_id"]
             try:
-                resp = await self._http.post(f"/v1/runs/{self._run_id}/answer", json=body)
+                resp = await self._http.post(
+                    f"/v1/runs/{self._run_id}/answer",
+                    json=body,
+                    headers={"X-Jarvis-Trace-Id": telemetry.current_trace()},
+                )
                 if resp.is_success:
                     self._pending = None
                     self._question_settled()

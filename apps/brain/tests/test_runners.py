@@ -297,7 +297,8 @@ class DirectOrchestrator:
     async def route(self, *, run_id: str, user_input: str, session_id: str, pinned: Any,
                     approval_cb: Any, emit: Any, screenshot: str | None = None,
                     session_mode: str | None = None, cwd: str | None = None,
-                    chat_session_key: str | None = None) -> RunResult:
+                    chat_session_key: str | None = None, trace_id: str = "",
+                    turn_id: str = "") -> RunResult:
         return await self.runner.run(
             RunRequest(run_id=run_id, prompt=user_input, approval_cb=approval_cb,
                        pinned_session_id=(pinned or {}).get("session_id")),

@@ -84,6 +84,13 @@ class Settings(EnvSettings):
     # An Improver-proposed harness fix lands as a draft task unless the owner opts into auto-ready.
     autonomous_harness_upgrades: bool = False
 
+    # Durable observability: daily trace folders under `traces/`, plus a nightly reflection in ASSIST mode.
+    trace_retention_days: int = 30
+    trace_max_mb: int = 500
+    nightly_reflect_hour: int = 3
+    # Empty (default) keeps every trace local; set an OTLP/HTTP endpoint to mirror spans on demand.
+    otel_exporter_otlp_endpoint: str = ""
+
     # Interactive orchestration. A small question is one-shot `pi`; project work goes to a long-lived client
     # thread (`t3` by default). `orchestrator_model` routes a turn; empty = a fast default model.
     openrouter_api_key: str = ""

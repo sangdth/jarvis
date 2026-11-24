@@ -8,7 +8,8 @@ use rusqlite::{Connection, OpenFlags, Row};
 
 use crate::config::Config;
 use crate::model::{
-    Attempt, Counts, DiskSpeaker, DiskSpeakers, Outbox, Skill, Snapshot, SystemState, Task,
+    Attempt, Counts, DiskSpeaker, DiskSpeakers, Outbox, Skill, Snapshot, StageTone, SystemState, Task,
+    Trace, TraceStage,
 };
 
 pub type DbResult<T> = Result<T, rusqlite::Error>;
@@ -202,6 +203,7 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
     };
 
     snap.speakers = load_disk_speakers(cfg);
+    snap.history = load_trace_history(conn);
 
     snap.db_bytes = file_len(&cfg.db_path);
     let wal_path = std::path::PathBuf::from(format!("{}-wal", cfg.db_path.display()));
@@ -213,6 +215,69 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
     snap.page_size = pragma_i64(conn, "page_size");
 
     Ok(snap)
+}
+
+/// Recent turns and runs from the durable `trace_runs` table, so a late `jarvis top` still shows what happened.
+///
+/// Only three stages are synthesized (STT, ROUTE, RETURN): the full stage list lives in the trace JSON file,
+/// and reading 40 of those off the UI thread on every snapshot poll would cost more than it shows.
+fn load_trace_history(conn: &Connection) -> Vec<Trace> {
+    let mut stmt = match conn.prepare(
+        "SELECT trace_id, outcome, friction_kind, surface, runner, user_input, output_summary, created_at \
+         FROM trace_runs ORDER BY created_at DESC LIMIT 40",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(), // an older state.db without the table: just no history yet
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1).unwrap_or_default(),
+            row.get::<_, Option<String>>(2).ok().flatten().unwrap_or_default(),
+            row.get::<_, Option<String>>(3).ok().flatten().unwrap_or_default(),
+            row.get::<_, Option<String>>(4).ok().flatten().unwrap_or_default(),
+            row.get::<_, Option<String>>(5).ok().flatten().unwrap_or_default(),
+            row.get::<_, Option<String>>(6).ok().flatten().unwrap_or_default(),
+            row.get::<_, Option<String>>(7).ok().flatten().unwrap_or_default(),
+        ))
+    });
+    let Ok(rows) = rows else { return Vec::new() };
+    let mut history: Vec<Trace> = Vec::new();
+    for (i, row) in rows.filter_map(Result::ok).enumerate() {
+        let (id, outcome, friction, surface, runner, user_input, output_summary, created_at) = row;
+        let ts = i as f64;
+        let mut stages = vec![TraceStage::new("STT", StageTone::Info, ts, user_input, created_at)];
+        if !surface.is_empty() {
+            stages.push(TraceStage::new(
+                "ROUTE",
+                StageTone::Think,
+                ts + 0.1,
+                format!("{surface} · {runner}"),
+                "",
+            ));
+        }
+        let ok = outcome == "ok" && friction.is_empty();
+        let detail = if friction.is_empty() {
+            outcome.clone()
+        } else {
+            format!("{outcome}/{friction}")
+        };
+        stages.push(TraceStage::new(
+            "RETURN",
+            if ok { StageTone::Ok } else { StageTone::Bad },
+            ts + 0.2,
+            output_summary,
+            detail,
+        ));
+        history.push(Trace {
+            id,
+            started: ts,
+            stages,
+            done: true,
+        });
+    }
+    history.reverse(); // oldest first, matching the live append order
+    history
 }
 
 /// Reads the saved speaker roster from `SOUL.md`, `owner_voice.npy`, and `speakers/speakers.json`.

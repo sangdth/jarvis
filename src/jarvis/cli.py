@@ -62,6 +62,7 @@ over the network (one HTTP/SSE/WebSocket server, one token):
   mode ASSIST|AUTONOMOUS
   research ID     run the hypothesis fan-out on a task
   improve         run the skill reflection loop
+  traces          recent turns and runs (`--failed`, `--surface X`, `--search "words"`, `<id>`, diff A..B)
   timers          list follow-ups and schedules (`timers cancel <id>`)
   remind "text" in 30m
                   a one-shot check, spoken when it fires (also `at 08:00`)
@@ -517,6 +518,8 @@ def dispatch(argv: list[str]) -> None:
             f"[{body.get('outcome')}] {body.get('summary')} "
             f"(modified={body.get('modified') or []} memory={body.get('modified_memory') or []})"
         )
+    if cmd == "traces":
+        return traces_command(rest)
     if cmd == "add":
         return add_task(rest)
     if cmd == "timers":
@@ -565,6 +568,64 @@ def local_or_remote(args: list[str]) -> list[str]:
                 flags += ["--connect"]
             break
     return flags
+
+
+def traces_command(args: list[str]) -> None:
+    """`jarvis traces` and the Meta-Harness-style drill-down: list, filter, show one, diff two commits."""
+    rest = list(args)
+    if rest and rest[0] == "diff":
+        base = rest[1] if len(rest) > 1 else ""
+        head = rest[2] if len(rest) > 2 else ""
+        body = call("GET", "/v1/traces/diff", params={"base": base, "head": head})
+        stats = body.get("stats") or []
+        if not stats:
+            return print("No trace history yet.")
+        for s in stats:
+            print(
+                f"{str(s['git_sha'])[:28]:<28} runs={s['runs']:<4} ok={s['ok']:<4} "
+                f"friction={s['friction']:<4} failed={s['failed']:<3} "
+                f"p50={s['p50_latency_ms']}ms ${s['cost_usd']:.2f}"
+            )
+        return
+    outcome = _take(rest, "--outcome")
+    surface = _take(rest, "--surface")
+    search = _take(rest, "--search")
+    params: dict[str, Any] = {"limit": 30}
+    if outcome:
+        params["outcome"] = outcome
+    if surface:
+        params["surface"] = surface
+    if search:
+        params["q"] = search
+    if rest:
+        body = call("GET", f"/v1/traces/{rest[0]}")
+        trace = body.get("trace") or {}
+        print(
+            f"{trace.get('created_at')} {trace.get('trace_id')} [{trace.get('outcome')}/"
+            f"{trace.get('friction_kind') or 'ok'}] surface={trace.get('surface') or '-'} "
+            f"runner={trace.get('runner') or '-'} latency={trace.get('latency_ms')}ms"
+        )
+        if trace.get("user_input"):
+            print(f"  in:  {trace['user_input']}")
+        if trace.get("output_summary"):
+            print(f"  out: {trace['output_summary']}")
+        if trace.get("causal_sig"):
+            print(f"  sig: {trace['causal_sig']}")
+        record = body.get("record") or {}
+        for stage, value in (record.get("voice") or {}).items():
+            print(f"  voice.{stage}: {value}")
+        return
+    body = call("GET", "/v1/traces", params=params)
+    rows = body.get("traces") or []
+    if not rows:
+        return print("No traces.")
+    for row in rows:
+        print(
+            f"{row['created_at']} [{row['outcome']}/{row['friction_kind'] or 'ok'}] "
+            f"{row['surface'] or '-':<18} {row['runner'] or '-':<8} "
+            f"{row['latency_ms'] or '-'}ms {row['trace_id']}  {(row['user_input'] or '')[:70]}"
+        )
+    return print(f"\n{len(rows)} trace(s).")
 
 
 def timers_command(args: list[str]) -> None:

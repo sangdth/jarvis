@@ -214,6 +214,12 @@ ignores `session` and `project`.
    `GET /v1/events`; the voice speaks it and acknowledges `POST /v1/outbox/{id}/spoken`, which writes one line to
    `memory/reported.md`. In `AUTONOMOUS` mode nothing is spoken until the owner switches back or asks for the brief.
    A reconnecting voice drains `GET /v1/outbox?status=queued` first, so a slept Mac does not lose the night's work.
+4. **Durable traces (`traces.py`):** `TraceSink` drains the same telemetry bus into
+   `traces/<YYYY-MM-DD>/spans.jsonl` + `trace-<trace_id>.json` and a `trace_runs` row (surface, outcome, implicit
+   friction, `git_sha`, `prompt_sha`, cost, `trace_path`). `distill_experience` turns those rows into
+   `traces/analysis/overview.md` + `surfaces/<surface>.md` for the offline Improver; `jarvis traces` and the
+   cockpit's startup read the rows, so a restart no longer erases the last turns. Local only, no extra daemon;
+   `OTEL_EXPORTER_OTLP_ENDPOINT` optionally mirrors spans over OTLP/HTTP.
 
 ---
 

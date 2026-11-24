@@ -24,6 +24,7 @@ from brain.db import (
     BrainDB,
     TaskRow,
     TimerRow,
+    TraceRunRow,
     WorkerRole,
     check_metric_target,
     has_metric_comparator,
@@ -49,6 +50,7 @@ from brain.telemetry import (
     TelemetryHub,
     preview,
 )
+from brain.traces import classify_surface, distill_experience
 from brain.upgrade import GitState, classify_git_state
 from jarvis_core.home import JARVIS_HOME
 
@@ -78,6 +80,8 @@ PROTECTED_SELF_PATHS = {
     # what runs the workers, and what lets them write anywhere
     "apps/brain/src/brain/config.py",
     "apps/brain/src/brain/sandbox.py",
+    # the tracer and its store: a worker that can edit these can fake its own evidence
+    "apps/brain/src/brain/traces.py",
     "apps/brain/src/brain/defaults/pi/board.ts",
     # the voice harness's own gatekeeping and entry point
     "apps/voice/src/jarvis_voice/config.py",
@@ -189,6 +193,7 @@ class Reconciler:
         self._wake = asyncio.Event()
         self._timer_tasks: set[asyncio.Task[None]] = set()
         self._check_runner: Any | None = None
+        self._last_reflection_date: str | None = None
         self.db.recover_firing_timers(max_age_seconds=max(1800, self.cfg.max_run_seconds * 2))
 
     def _repo_dir(self, repo: str) -> Path:
@@ -306,6 +311,11 @@ class Reconciler:
                 )
                 if should_reflect:
                     await self.run_skill_improver()
+            elif self._nightly_reflection_due():
+                # ASSIST mode used to teach the board nothing: the digest is read at night, edits stay drafts.
+                self._last_reflection_date = datetime.now().astimezone().strftime("%Y-%m-%d")
+                logger.info("[Reconciler] nightly reflection from the durable trace digest")
+                await self.run_skill_improver()
             return None
 
         self._set_phase(
@@ -910,6 +920,14 @@ class Reconciler:
             self.db.add_spend(res.cost_usd)
         return res
 
+    def _nightly_reflection_due(self) -> bool:
+        """Once a day, after the configured hour, with enough new experience to be worth a model call."""
+        now = datetime.now().astimezone()
+        today = now.strftime("%Y-%m-%d")
+        if self._last_reflection_date == today or now.hour < self.cfg.nightly_reflect_hour:
+            return False
+        return self.db.count_unreflected_traces() >= 5
+
     async def run_skill_improver(self, *, run_key: str = "improver") -> PiRunResult:
         """
         Runs the Perplexity-style 4-stage self-improvement reflection loop over unreflected attempts:
@@ -918,13 +936,16 @@ class Reconciler:
         3. Verification & 4. Activation: enforced deterministically in `propose_skill_change` RPC
         """
         unreflected = self.db.list_unreflected_attempts(limit=20)
-        if not unreflected:
+        pending_traces = self.db.count_unreflected_traces()
+        if not unreflected and pending_traces < 5:
             return PiRunResult(
                 outcome="pushed",
-                summary="No unreflected attempts available for skill improvement.",
+                summary="No unreflected attempts or traces available for skill improvement.",
                 cost_usd=0.0,
                 modified_skills=[],
             )
+
+        overview = distill_experience(self.db, self.cfg)
 
         session_dir = self.cfg.sessions_dir / "improver"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -959,6 +980,9 @@ class Reconciler:
         prompt = (
             "You are Brain Skill Improver and memory curator. Use `read` and `grep` to inspect the trace "
             "files, skill files, standing instructions and memory index below before deciding anything.\n"
+            "Start with the layered failure digest (clustered root causes, health per commit, failed-then-passed "
+            f"pairs): {overview} . Drill into `analysis/surfaces/<surface>.md`, then the `trace-*.json` paths it "
+            "cites, for the specific cases you act on. Do not paste raw traces into your reasoning.\n"
             "Rules:\n"
             "- Creating a new skill (`action='create'`) requires >= 2 independent attempt IDs showing "
             "the same recurring procedure or pitfall.\n"
@@ -989,6 +1013,7 @@ class Reconciler:
             f"{chr(10).join(skill_index_lines) or '(none)'}\n\n"
             f"Unreflected attempt traces ({len(unreflected)}):\n"
             f"{chr(10).join(attempt_index_lines)}\n\n"
+            f"Unreflected turn/run traces: {pending_traces} (in `trace_runs` and the digest above)\n\n"
             "Recurring failure patterns (grouped by harness surface; a narrow change should resolve one):\n"
             f"{render_failure_patterns(patterns)}"
         )
@@ -1005,6 +1030,9 @@ class Reconciler:
             self.db.add_spend(res.cost_usd)
         if res.outcome != "errored":
             self.db.mark_attempts_reflected([a.id for a in unreflected])
+            self.db.mark_traces_reflected(
+                [row.trace_id for row in self.db.list_trace_runs(limit=200, reflected=0, exclude_boards=True)]
+            )
         return res
 
     async def run_auto_research(self, task_id: str, *, run_key: str | None = None) -> PiRunResult:
@@ -2024,7 +2052,48 @@ class Reconciler:
         if not attempts:
             return
         latest = attempts[-1]
-        write_attempt_trace(self.cfg.traces_dir, latest, diff_stat=diff_stat)
+        trace_file = write_attempt_trace(self.cfg.traces_dir, latest, diff_stat=diff_stat)
+        repeated: tuple[str, ...] = ()
+        try:
+            oracle = json.loads(trace_file.read_text(encoding="utf-8")).get("oracle") or {}
+            repeated = tuple(str(t) for t in oracle.get("repeated_error_tools") or ())
+        except (OSError, ValueError):
+            repeated = ()
+        surface, causal = classify_surface(
+            latest.outcome, repeated_error_tools=repeated, used_skills=bool(latest.skills_used)
+        )
+        self.db.upsert_trace_run(
+            TraceRunRow(
+                trace_id=f"attempt-{latest.id}",
+                turn_id="",
+                source="board",
+                surface=surface or "builder_harness",
+                runner="pi",
+                repo="",
+                task_id=task_id,
+                attempt_id=latest.id,
+                outcome="ok" if latest.outcome in ("pushed", "decomposed", "deferred_approval") else latest.outcome,
+                friction_kind=(
+                    None
+                    if latest.outcome in ("pushed", "decomposed", "deferred_approval")
+                    else f"attempt_{latest.outcome}"
+                ),
+                causal_sig=causal,
+                latency_ms=None,
+                ttfb_ms=None,
+                tokens_in=0,
+                tokens_out=0,
+                cost_usd=float(latest.cost_usd or 0.0),
+                git_sha=str(latest.git_sha or ""),
+                prompt_sha="",
+                skills_used=tuple(latest.skills_used),
+                user_input=str(latest.summary or "")[:600],
+                output_summary=str(latest.summary or "")[:280],
+                trace_path=str(trace_file.relative_to(self.cfg.traces_dir)),
+                superseded_by=None,
+                reflected=0,
+            )
+        )
         self._emit_attempt(
             task_id,
             role=latest.role,

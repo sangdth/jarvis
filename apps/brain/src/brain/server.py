@@ -34,6 +34,7 @@ from brain.telemetry import (
     TelemetryHub,
     preview,
 )
+from brain.traces import TraceSink
 from jarvis_core.devices import DeviceStore
 from jarvis_core.home import JARVIS_HOME, REPO_ROOT, git_version
 from jarvis_core.net import advertised_hosts
@@ -91,6 +92,8 @@ class RunRecord:
     session_mode: str | None = None  # "new", or "continuing" (a picked session for this task)
     cwd: str | None = None  # a folder the voice already resolved (project picker)
     chat_session_key: str | None = None  # the `pi` conversation this voice session continues
+    turn_id: str = ""
+    trace_id: str = ""
     task_handle: asyncio.Task[None] | None = None
     mirror: Callable[[dict[str, Any]], None] | None = None
 
@@ -149,6 +152,7 @@ class BrainServer:
         self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
         self._started_at = started_at if started_at is not None else time.time()
         self._version = git_version()  # pinned at boot so `/v1/status` reports what is running, not a newer pull
+        self.traces = TraceSink(self.db, self.cfg, self.hub)
         memory.ensure_layout(self.cfg.home_dir)
         self.db.subscribe_outbox(self._on_outbox)
         self.app = web.Application(middlewares=[self._auth_middleware])
@@ -170,6 +174,9 @@ class BrainServer:
                 web.post("/v1/restart", self.handle_restart),
                 web.get("/v1/sessions", self.handle_sessions),
                 web.post("/v1/connect", self.handle_connect),
+                web.get("/v1/traces", self.handle_traces),
+                web.get("/v1/traces/diff", self.handle_trace_diff),
+                web.get("/v1/traces/{trace_id}", self.handle_trace_detail),
                 web.post("/v1/runs", self.handle_create_run),
                 web.get("/v1/runs/{run_id}", self.handle_get_run),
                 web.get("/v1/runs/{run_id}/events", self.handle_stream_events),
@@ -274,7 +281,8 @@ class BrainServer:
         return f"{safe}-{generation}"
 
     async def start_background(self) -> None:
-        """Start the long-lived runners (T3's socket; the others are lazy)."""
+        """Start the long-lived runners (T3's socket; the others are lazy) and the trace sink."""
+        self.traces.start()
         for runner in self.runners.values():
             try:
                 await runner.start()
@@ -283,6 +291,7 @@ class BrainServer:
 
     async def stop_background(self) -> None:
         self._stopping = True
+        await self.traces.stop()
         self._publish_global({})
         for queue in list(self.hub._subscribers):
             with contextlib.suppress(asyncio.QueueFull):
@@ -427,8 +436,75 @@ class BrainServer:
         })
 
 
-    def _task_dict(self, t: Any) -> dict[str, Any]:
+    # ------------------------------------------------------------------ traces
+
+    @staticmethod
+    def _trace_dict(row: Any) -> dict[str, Any]:
         return {
+            "trace_id": row.trace_id,
+            "turn_id": row.turn_id,
+            "source": row.source,
+            "surface": row.surface,
+            "runner": row.runner,
+            "repo": row.repo,
+            "task_id": row.task_id,
+            "attempt_id": row.attempt_id,
+            "outcome": row.outcome,
+            "friction_kind": row.friction_kind,
+            "causal_sig": row.causal_sig,
+            "latency_ms": row.latency_ms,
+            "cost_usd": row.cost_usd,
+            "git_sha": row.git_sha,
+            "prompt_sha": row.prompt_sha,
+            "skills_used": list(row.skills_used),
+            "user_input": row.user_input,
+            "output_summary": row.output_summary,
+            "trace_path": row.trace_path,
+            "superseded_by": row.superseded_by,
+            "reflected": bool(row.reflected),
+            "created_at": row.created_at,
+        }
+
+    async def handle_traces(self, request: web.Request) -> web.Response:
+        """Recent turns and runs, searchable; the same rows the Improver mines and `jarvis traces` prints."""
+        try:
+            limit = max(1, min(int(request.query.get("limit", "30")), 200))
+        except ValueError:
+            limit = 30
+        rows = self.db.list_trace_runs(
+            limit=limit,
+            outcome=(request.query.get("outcome") or "").strip() or None,
+            surface=(request.query.get("surface") or "").strip() or None,
+            query=(request.query.get("q") or "").strip() or None,
+            reflected=(0 if request.query.get("unreflected") else None),
+        )
+        return web.json_response({"traces": [self._trace_dict(row) for row in rows]})
+
+    async def handle_trace_detail(self, request: web.Request) -> web.Response:
+        trace_id = request.match_info["trace_id"]
+        row = self.db.get_trace_run(trace_id)
+        if row is None:
+            return web.json_response({"error": "Trace not found"}, status=404)
+        detail: dict[str, Any] = {"trace": self._trace_dict(row)}
+        path = (self.cfg.traces_dir / row.trace_path).resolve() if row.trace_path else None
+        root = self.cfg.traces_dir.resolve()
+        if path is not None and root in path.parents and path.is_file():
+            try:
+                detail["record"] = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                detail["record_error"] = str(exc)
+        return web.json_response(detail)
+
+    async def handle_trace_diff(self, request: web.Request) -> web.Response:
+        """Per-commit health, so a self-upgrade that quietly degraded routing or latency is visible."""
+        base = (request.query.get("base") or "").strip()
+        head = (request.query.get("head") or "").strip()
+        stats = self.db.trace_sha_stats()
+        if base or head:
+            stats = [s for s in stats if s["git_sha"].startswith(base) or s["git_sha"].startswith(head)]
+        return web.json_response({"stats": stats})
+
+    def _task_dict(self, t: Any) -> dict[str, Any]:        return {
             "id": t.id,
             "parent_id": t.parent_id,
             "kind": t.kind,
@@ -778,17 +854,35 @@ class BrainServer:
         )
         rec = RunRecord(run_id=run_id, session_id=session_id, pinned=pinned,
                         session_mode=str(body.get("session") or "") or None,
-                        cwd=str(body.get("cwd") or "") or None)
+                        cwd=str(body.get("cwd") or "") or None,
+                        turn_id=str(body.get("turn_id") or "") or "",
+                        trace_id=str(body.get("trace_id") or "") or uuid.uuid4().hex)
         rec.chat_session_key = self._chat_key_for(session_id, rec.session_mode)
         self.runs[run_id] = rec
-        if bool(body.get("replace")):
+        replace = bool(body.get("replace"))
+        if replace:
             for other in list(self.runs.values()):
                 if (
                     other is not rec
                     and other.session_id == session_id
                     and other.status == "running"
                 ):
-                    await self._stop_run(other, reason="Replaced by a corrected task.")
+                    self.traces.mark_replaced(
+                        other.trace_id,
+                        rec.trace_id,
+                        old_project=self._last_project_by_session.get(session_id, ""),
+                        new_project=str(body.get("cwd") or ""),
+                    )
+                    await self._stop_run(other, reason="Replaced by a corrected task.", replaced=True)
+        self.traces.note_run_created(
+            trace_id=rec.trace_id,
+            turn_id=rec.turn_id,
+            session_id=session_id,
+            user_input=user_input,
+            project=str(body.get("cwd") or self._last_project_by_session.get(session_id, "")),
+            runner="",
+            replace=replace,
+        )
         screenshot = str(body.get("screenshot") or "") or None
         self.hub.emit(
             EVENT_HTTP_INBOUND,
@@ -796,6 +890,8 @@ class BrainServer:
             route="/v1/runs",
             run_id=run_id,
             session_id=session_id,
+            trace_id=rec.trace_id,
+            turn_id=rec.turn_id,
             input_preview=preview(user_input),
         )
         rec.task_handle = asyncio.create_task(self._execute_run(rec, user_input, screenshot=screenshot))
@@ -1123,8 +1219,10 @@ class BrainServer:
         await self._stop_run(rec, reason="Stopped by the user.")
         return web.json_response({"ok": True})
 
-    async def _stop_run(self, rec: RunRecord, *, reason: str) -> None:
+    async def _stop_run(self, rec: RunRecord, *, reason: str, replaced: bool = False) -> None:
         """Stop one run: abort its worker, release a waiting question, and cancel its task."""
+        if not replaced:
+            self.traces.mark_stopped(rec.trace_id)
         self.reconciler.abort_run(rec.run_id)
         for runner in self.runners.values():
             try:
@@ -1148,14 +1246,30 @@ class BrainServer:
 
         self._prune_history()
         run_id = f"ask-{uuid.uuid4().hex[:12]}"
-        rec = RunRecord(run_id=run_id, session_id=run_id)
+        rec = RunRecord(
+            run_id=run_id,
+            session_id=run_id,
+            trace_id=uuid.uuid4().hex,
+            turn_id=f"ask-{run_id[-6:]}",
+        )
         self.runs[run_id] = rec
+        self.traces.note_run_created(
+            trace_id=rec.trace_id,
+            turn_id=rec.turn_id,
+            session_id=run_id,
+            user_input=user_input,
+            project="",
+            runner="",
+            replace=False,
+        )
         self.hub.emit(
             EVENT_HTTP_INBOUND,
             source="iphone_ask",
             route="/v1/ask",
             run_id=run_id,
             session_id=run_id,
+            trace_id=rec.trace_id,
+            turn_id=rec.turn_id,
             input_preview=preview(user_input),
         )
         await self._execute_run(rec, user_input, allow_live_approval=False)
@@ -1224,6 +1338,8 @@ class BrainServer:
             EVENT_RUN_STATUS,
             run_id=rec.run_id,
             session_id=rec.session_id,
+            trace_id=rec.trace_id,
+            turn_id=rec.turn_id,
             status="running",
             input_preview=preview(user_input),
         )
@@ -1236,6 +1352,8 @@ class BrainServer:
                 EVENT_RUN_STATUS,
                 run_id=rec.run_id,
                 session_id=rec.session_id,
+                trace_id=rec.trace_id,
+                turn_id=rec.turn_id,
                 status=rec.status,
                 output_preview=preview(rec.output),
                 error=preview(rec.error),
@@ -1244,6 +1362,8 @@ class BrainServer:
                 EVENT_HTTP_COMPLETED,
                 run_id=rec.run_id,
                 session_id=rec.session_id,
+                trace_id=rec.trace_id,
+                turn_id=rec.turn_id,
                 status=rec.status,
                 spoken=preview(rec.output or rec.error),
             )
@@ -1423,6 +1543,8 @@ class BrainServer:
                 session_mode=rec.session_mode,
                 cwd=rec.cwd,
                 chat_session_key=rec.chat_session_key,
+                trace_id=rec.trace_id,
+                turn_id=rec.turn_id,
             )
             if result.project:
                 self._last_project_by_session[rec.session_id] = result.project

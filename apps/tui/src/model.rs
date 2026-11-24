@@ -279,6 +279,7 @@ pub struct Snapshot {
     pub skills: Vec<Skill>,
     pub outbox: Vec<Outbox>,
     pub speakers: DiskSpeakers,
+    pub history: Vec<Trace>,
     pub counts: Counts,
     pub db_bytes: u64,
     pub wal_bytes: u64,

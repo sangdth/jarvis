@@ -1022,6 +1022,103 @@
         }
       }
     },
+    "/v1/traces": {
+      "get": {
+        "summary": "Recent turns and runs, searchable by outcome, surface or FTS query",
+        "parameters": [
+          {
+            "name": "outcome",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "surface",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "unreflected",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{traces: [...]}` rows from `trace_runs`"
+          }
+        }
+      }
+    },
+    "/v1/traces/diff": {
+      "get": {
+        "summary": "Per-commit health (runs, friction, failures, p50 latency, cost) for a trace diff",
+        "parameters": [
+          {
+            "name": "base",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "head",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{stats: [...]}` grouped by `git_sha`"
+          }
+        }
+      }
+    },
+    "/v1/traces/{trace_id}": {
+      "get": {
+        "summary": "One trace row plus the stitched `trace-<id>.json` record",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{trace, record}`"
+          },
+          "404": {
+            "description": "Unknown trace"
+          }
+        }
+      }
+    },
     "/v1/restart": {
       "post": {
         "summary": "Restart this Jarvis on the current checkout (voice included)",
@@ -1265,7 +1362,7 @@
     "/client.py": {
       "get": {
         "summary": "The zero-install thin client, with this server's URL and token already filled in",
-        "description": "Open on purpose: the bootstrap has to arrive before the laptop has a secret, and it carries none \u2014 only this server's address. Served whenever Jarvis runs; no remote mode is started. `curl -fsSL 'http://<host>:8643/client.py' -o ~/.local/bin/jarvis-remote.py`, then `uv run ~/.local/bin/jarvis-remote.py --pair <code>`.",
+        "description": "Open on purpose: the bootstrap has to arrive before the laptop has a secret, and it carries none — only this server's address. Served whenever Jarvis runs; no remote mode is started. `curl -fsSL 'http://<host>:8643/client.py' -o ~/.local/bin/jarvis-remote.py`, then `uv run ~/.local/bin/jarvis-remote.py --pair <code>`.",
         "responses": {
           "200": {
             "description": "text/x-python",

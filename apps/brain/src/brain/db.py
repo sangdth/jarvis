@@ -204,7 +204,6 @@ class OutboxRow:
 @dataclass(frozen=True)
 class TimerRow:
     """A follow-up or a schedule: `next_run_at` is UTC, `timezone` is the zone the cron is read in."""
-
     id: str
     kind: TimerKind
     action: TimerAction
@@ -223,6 +222,37 @@ class TimerRow:
     chain_count: int
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class TraceRunRow:
+    """One observable unit of work: a voice turn, an interactive run, a timer check or a board attempt."""
+
+    trace_id: str
+    turn_id: str
+    source: str
+    surface: str
+    runner: str
+    repo: str
+    task_id: str | None
+    attempt_id: int | None
+    outcome: str
+    friction_kind: str | None
+    causal_sig: str
+    latency_ms: int | None
+    ttfb_ms: int | None
+    tokens_in: int
+    tokens_out: int
+    cost_usd: float
+    git_sha: str
+    prompt_sha: str
+    skills_used: tuple[str, ...]
+    user_input: str
+    output_summary: str
+    trace_path: str
+    superseded_by: str | None
+    reflected: int
+    created_at: str = ""
 
 
 class BrainDB:
@@ -1373,6 +1403,203 @@ class BrainDB:
                 tuple(int(i) for i in attempt_ids),
             )
 
+    # ------------------------------------------------------------------ traces
+
+    def upsert_trace_run(self, row: TraceRunRow) -> None:
+        """Insert one trace row, or refresh a row that a later layer filled in (friction, outcome, cost)."""
+        now = row.created_at or _iso(_utc_now())
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO trace_runs (
+                    trace_id, turn_id, source, surface, runner, repo, task_id, attempt_id,
+                    outcome, friction_kind, causal_sig, latency_ms, ttfb_ms, tokens_in, tokens_out,
+                    cost_usd, git_sha, prompt_sha, skills_used, user_input, output_summary,
+                    trace_path, superseded_by, reflected, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(trace_id) DO UPDATE SET
+                    outcome = excluded.outcome,
+                    friction_kind = COALESCE(excluded.friction_kind, trace_runs.friction_kind),
+                    causal_sig = CASE WHEN excluded.causal_sig != '' THEN excluded.causal_sig
+                                      ELSE trace_runs.causal_sig END,
+                    surface = CASE WHEN excluded.surface != '' THEN excluded.surface ELSE trace_runs.surface END,
+                    latency_ms = COALESCE(excluded.latency_ms, trace_runs.latency_ms),
+                    tokens_in = MAX(excluded.tokens_in, trace_runs.tokens_in),
+                    tokens_out = MAX(excluded.tokens_out, trace_runs.tokens_out),
+                    cost_usd = MAX(excluded.cost_usd, trace_runs.cost_usd),
+                    output_summary = CASE WHEN excluded.output_summary != '' THEN excluded.output_summary
+                                          ELSE trace_runs.output_summary END,
+                    trace_path = CASE WHEN excluded.trace_path != '' THEN excluded.trace_path
+                                      ELSE trace_runs.trace_path END,
+                    superseded_by = COALESCE(excluded.superseded_by, trace_runs.superseded_by)
+                """,
+                (
+                    row.trace_id,
+                    row.turn_id,
+                    row.source,
+                    row.surface,
+                    row.runner,
+                    row.repo,
+                    row.task_id,
+                    row.attempt_id,
+                    row.outcome,
+                    row.friction_kind,
+                    row.causal_sig,
+                    row.latency_ms,
+                    row.ttfb_ms,
+                    row.tokens_in,
+                    row.tokens_out,
+                    row.cost_usd,
+                    row.git_sha,
+                    row.prompt_sha,
+                    json.dumps(list(row.skills_used)),
+                    row.user_input,
+                    row.output_summary,
+                    row.trace_path,
+                    row.superseded_by,
+                    row.reflected,
+                    now,
+                ),
+            )
+            # A re-indexed row keeps both FTS rows in step: delete then insert.
+            self._conn.execute("DELETE FROM trace_fts WHERE trace_id = ?", (row.trace_id,))
+            self._conn.execute(
+                "INSERT INTO trace_fts (trace_id, user_input, output_summary, causal_sig) VALUES (?,?,?,?)",
+                (row.trace_id, row.user_input, row.output_summary, row.causal_sig),
+            )
+
+    def get_trace_run(self, trace_id: str) -> TraceRunRow | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM trace_runs WHERE trace_id = ?", (trace_id,)
+            ).fetchone()
+            return self._row_to_trace_run(row) if row is not None else None
+
+    def mark_trace_friction(
+        self,
+        trace_id: str,
+        *,
+        friction_kind: str,
+        surface: str = "",
+        causal_sig: str = "",
+        outcome: str = "friction",
+        superseded_by: str | None = None,
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                UPDATE trace_runs SET
+                    outcome = ?, friction_kind = ?,
+                    surface = CASE WHEN ? != '' THEN ? ELSE surface END,
+                    causal_sig = CASE WHEN ? != '' THEN ? ELSE causal_sig END,
+                    superseded_by = COALESCE(?, superseded_by)
+                WHERE trace_id = ?
+                """,
+                (outcome, friction_kind, surface, surface, causal_sig, causal_sig, superseded_by, trace_id),
+            )
+
+    def list_trace_runs(
+        self,
+        *,
+        limit: int = 40,
+        outcome: str | None = None,
+        surface: str | None = None,
+        query: str | None = None,
+        reflected: int | None = None,
+        exclude_boards: bool = False,
+    ) -> list[TraceRunRow]:
+        where: list[str] = []
+        params: list[Any] = []
+        if outcome:
+            where.append("outcome = ?")
+            params.append(outcome)
+        if surface:
+            where.append("surface = ?")
+            params.append(surface)
+        if reflected is not None:
+            where.append("reflected = ?")
+            params.append(int(reflected))
+        if exclude_boards:
+            where.append("source != 'board'")
+        if query:
+            where.append("trace_id IN (SELECT trace_id FROM trace_fts WHERE trace_fts MATCH ?)")
+            params.append(query)
+        sql = "SELECT * FROM trace_runs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 1000)))
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+            return [self._row_to_trace_run(r) for r in rows]
+
+    def count_unreflected_traces(self, *, exclude_boards: bool = True) -> int:
+        sql = "SELECT COUNT(*) AS n FROM trace_runs WHERE reflected = 0"
+        if exclude_boards:
+            sql += " AND source != 'board'"
+        with self._lock:
+            row = self._conn.execute(sql).fetchone()
+            return int(row["n"]) if row is not None else 0
+
+    def mark_traces_reflected(self, trace_ids: list[str]) -> None:
+        if not trace_ids:
+            return
+        placeholders = ",".join("?" for _ in trace_ids)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"UPDATE trace_runs SET reflected = 1 WHERE trace_id IN ({placeholders})",
+                tuple(trace_ids),
+            )
+
+    def delete_traces_before(self, day: str) -> int:
+        with self._lock, self._conn:
+            stale = [
+                str(r["trace_id"])
+                for r in self._conn.execute(
+                    "SELECT trace_id FROM trace_runs WHERE substr(created_at, 1, 10) < ?", (day,)
+                ).fetchall()
+            ]
+            self._conn.execute("DELETE FROM trace_runs WHERE substr(created_at, 1, 10) < ?", (day,))
+            for trace_id in stale:
+                self._conn.execute("DELETE FROM trace_fts WHERE trace_id = ?", (trace_id,))
+            return len(stale)
+
+    def trace_sha_stats(self) -> list[dict[str, Any]]:
+        """Per-commit health, so a self-upgrade that quietly degrades is visible without asking the model."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT COALESCE(git_sha, 'unknown') AS sha,
+                       COUNT(*) AS runs,
+                       SUM(CASE WHEN outcome = 'ok' AND friction_kind IS NULL THEN 1 ELSE 0 END) AS ok,
+                       SUM(CASE WHEN outcome = 'ok' AND friction_kind IS NOT NULL THEN 1 ELSE 0 END) AS friction,
+                       SUM(CASE WHEN outcome NOT IN ('ok', 'cancelled') THEN 1 ELSE 0 END) AS failed,
+                       COALESCE(SUM(cost_usd), 0.0) AS cost,
+                       GROUP_CONCAT(latency_ms) AS latencies
+                FROM trace_runs
+                GROUP BY COALESCE(git_sha, 'unknown')
+                ORDER BY MAX(created_at) DESC
+                LIMIT 20
+                """
+            ).fetchall()
+        stats: list[dict[str, Any]] = []
+        for row in rows:
+            latencies = sorted(
+                int(v) for v in str(row["latencies"] or "").split(",") if v.strip().isdigit()
+            )
+            stats.append(
+                {
+                    "git_sha": str(row["sha"]),
+                    "runs": int(row["runs"]),
+                    "ok": int(row["ok"] or 0),
+                    "friction": int(row["friction"] or 0),
+                    "failed": int(row["failed"] or 0),
+                    "cost_usd": float(row["cost"] or 0.0),
+                    "p50_latency_ms": latencies[len(latencies) // 2] if latencies else None,
+                }
+            )
+        return stats
+
     def get_skill(self, slug: str) -> SkillRow | None:
         with self._lock:
             row = self._conn.execute("SELECT * FROM skills WHERE slug = ?", (slug,)).fetchone()
@@ -1754,6 +1981,45 @@ class BrainDB:
             diagnostic=row["diagnostic"] if "diagnostic" in keys else None,
             reflected=bool(row["reflected"]) if "reflected" in keys else False,
             thread_id=row["thread_id"] if "thread_id" in keys else None,
+        )
+
+    @staticmethod
+    def _row_to_trace_run(row: sqlite3.Row) -> TraceRunRow:
+        keys = set(row.keys())
+        try:
+            skills = tuple(str(x) for x in json.loads(str(row["skills_used"] or "[]")))
+        except Exception:
+            skills = ()
+        return TraceRunRow(
+            trace_id=str(row["trace_id"]),
+            turn_id=str(row["turn_id"] or ""),
+            source=str(row["source"]),
+            surface=str(row["surface"] or ""),
+            runner=str(row["runner"] or ""),
+            repo=str(row["repo"] or ""),
+            task_id=row["task_id"],
+            attempt_id=(
+                int(row["attempt_id"]) if "attempt_id" in keys and row["attempt_id"] is not None else None
+            ),
+            outcome=str(row["outcome"]),
+            friction_kind=row["friction_kind"],
+            causal_sig=str(row["causal_sig"] or ""),
+            latency_ms=(
+                int(row["latency_ms"]) if "latency_ms" in keys and row["latency_ms"] is not None else None
+            ),
+            ttfb_ms=int(row["ttfb_ms"]) if "ttfb_ms" in keys and row["ttfb_ms"] is not None else None,
+            tokens_in=int(row["tokens_in"] or 0),
+            tokens_out=int(row["tokens_out"] or 0),
+            cost_usd=float(row["cost_usd"] or 0.0),
+            git_sha=str(row["git_sha"] or ""),
+            prompt_sha=str(row["prompt_sha"] or ""),
+            skills_used=skills,
+            user_input=str(row["user_input"] or ""),
+            output_summary=str(row["output_summary"] or ""),
+            trace_path=str(row["trace_path"] or ""),
+            superseded_by=row["superseded_by"],
+            reflected=int(row["reflected"] or 0),
+            created_at=str(row["created_at"] or ""),
         )
 
     @staticmethod

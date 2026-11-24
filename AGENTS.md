@@ -18,7 +18,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   that restarts it), `jarvis pair`
   (one code, then another Mac's mic and speaker take over while connected: `jarvis remote` is gone), `jarvis meeting`
   (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
-  project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve|timers|remind|schedule`
+  project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve|traces|timers|remind|schedule`
   (HTTP calls to the running server, `--url` for another machine), `jarvis top`, `jarvis init`, `jarvis enroll`.
   One listens at a time (`hold_lock`, `~/.config/jarvis/jarvis.lock`, which stays machine-wide so two checkouts
   cannot share one mic).

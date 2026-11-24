@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -183,6 +184,8 @@ class BrainOrchestrator:
         session_mode: str | None = None,
         cwd: str | None = None,
         chat_session_key: str | None = None,
+        trace_id: str = "",
+        turn_id: str = "",
     ) -> RunResult:
         label, _ = self._projects()
         projects = list_projects()
@@ -198,7 +201,9 @@ class BrainOrchestrator:
             budget=state.daily_budget_usd,
             ready=ready,
         )
+        routed_at = time.monotonic()
         choice = await self._choose(prompt, user_input)
+        route_ms = round((time.monotonic() - routed_at) * 1000)
         if choice is None:
             choice = self._heuristic(user_input, projects, session_id)
         logger.info(f"[Brain] route {choice['name']} for {user_input[:80]!r}")
@@ -210,6 +215,9 @@ class BrainOrchestrator:
             runner=str(args.get("runner") or ""),
             project=str(args.get("project") or ""),
             text=preview(user_input, 400),
+            route_ms=route_ms,
+            trace_id=trace_id,
+            turn_id=turn_id,
         )
 
         if pinned and choice["name"] in ("delegate_project", "ask_ephemeral_pi"):
@@ -230,6 +238,8 @@ class BrainOrchestrator:
             outcome=result.outcome,
             project=result.project or "",
             summary=preview(result.summary, 400),
+            trace_id=trace_id,
+            turn_id=turn_id,
         )
         return result
 

@@ -20,6 +20,7 @@ from typing import IO
 
 from loguru import logger
 
+from jarvis_voice import telemetry
 from jarvis_voice.config import JARVIS_HOME
 from jarvis_voice.state import UserIntent
 
@@ -134,6 +135,7 @@ class FeedbackLog:
         not_label: UserIntent | None = None,
     ) -> None:
         logger.info(f"[Feedback] {signal}: {old.text!r} was not {old.intent.value}")
+        telemetry.emit("voice.feedback", signal=signal, strength=strength)
         record: dict[str, str | None] = {"correction_of": old.id, "signal": signal, "strength": strength}
         record |= {"label": label.value} if label else {"not_label": not_label.value if not_label else None}
         self._write(record)

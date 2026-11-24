@@ -493,10 +493,16 @@ impl App {
         match event {
             AppEvent::Snapshot(snapshot) => {
                 let disk_speakers = snapshot.speakers.clone();
+                let history = snapshot.history.clone();
                 self.snapshot = *snapshot;
                 self.snapshot_age = Some(Instant::now());
                 self.snapshot_error = None;
                 self.sync_disk_speakers(&disk_speakers);
+                // Cold start: a late `jarvis top` still shows the recent turns instead of an empty X-ray.
+                if self.traces.is_empty() && !history.is_empty() {
+                    self.traces = history;
+                    self.sel_trace = self.traces.len().saturating_sub(1);
+                }
             }
             AppEvent::SnapshotError(err) => {
                 self.snapshot_error = Some(err);
