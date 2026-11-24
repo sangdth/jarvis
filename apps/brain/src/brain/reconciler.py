@@ -29,6 +29,7 @@ from brain.db import (
     check_metric_target,
     has_metric_comparator,
 )
+from brain.evals import harvest_eval_cases
 from brain.pi_stream import PiStreamState
 from brain.sandbox import strip_secrets, wrap_with_sandbox
 from brain.skills import (
@@ -82,15 +83,18 @@ PROTECTED_SELF_PATHS = {
     "apps/brain/src/brain/sandbox.py",
     # the tracer and its store: a worker that can edit these can fake its own evidence
     "apps/brain/src/brain/traces.py",
+    "apps/brain/src/brain/evals.py",
     "apps/brain/src/brain/defaults/pi/board.ts",
     # the voice harness's own gatekeeping and entry point
     "apps/voice/src/jarvis_voice/config.py",
     "apps/voice/src/jarvis_voice/voice_gates.py",
     "src/jarvis/cli.py",
     "src/jarvis/supervisor.py",
-    # the benchmarks that decide whether a voice change is safe to keep
+    # the benchmarks that decide whether a change is safe to keep
     "scripts/bench_intent.py",
     "scripts/bench_routing.py",
+    "scripts/bench_brain_route.py",
+    "scripts/bench_voice_prompts.py",
 }
 # A self-upgrade touching these runs the matching benchmark in `scripts/` before it can land.
 VOICE_INTENT_PATHS = {
@@ -101,6 +105,22 @@ VOICE_ROUTING_PATHS = {
     "apps/voice/src/jarvis_voice/prompts.py",
     "apps/voice/src/jarvis_voice/agent_tools.py",
     "apps/voice/src/jarvis_voice/orchestrator.py",
+}
+# The brain's router: without a number here, a self-upgrade can degrade daytime routing unnoticed.
+BRAIN_ROUTE_PATHS = {"apps/brain/src/brain/orchestrator.py"}
+# What Jarvis says after hearing the user: the cleaner, a retell and the "still working" lines.
+VOICE_PROMPT_PATHS = {
+    "apps/voice/src/jarvis_voice/cleanup.py",
+    "apps/voice/src/jarvis_voice/prompts.py",
+    "apps/voice/src/jarvis_voice/state.py",
+    "apps/voice/src/jarvis_voice/system_prompts.py",
+    "apps/voice/src/jarvis_voice/waiting_lines.py",
+    "SYSTEM.md",
+}
+# suite -> (benchmark script, the paths that make it relevant); its `held_out` file is the sealed half.
+EVAL_GATES: dict[str, tuple[str, set[str]]] = {
+    "brain_route": ("scripts/bench_brain_route.py", BRAIN_ROUTE_PATHS),
+    "voice_prompts": ("scripts/bench_voice_prompts.py", VOICE_PROMPT_PATHS),
 }
 HARNESS_DEDUPE_KEY = "harness-proposal"
 
@@ -708,6 +728,18 @@ class Reconciler:
                         details={"benchmark_output": bench_out},
                     )
             if verified and task.repo in SELF_REPOS:
+                verified, eval_out = await self._run_eval_splits(
+                    repo_dir, worktree_dir, task, changed, session_dir
+                )
+                if not verified:
+                    verify_output = "Held-out eval cases regressed (details sealed to prevent overfitting)."
+                    self.db.queue_outbox(
+                        kind="report",
+                        task_id=task.id,
+                        summary_spoken=f"Task {task.id} failed the sealed eval split.",
+                        details={"eval_output": eval_out},
+                    )
+            if verified and task.repo in SELF_REPOS:
                 verified, baseline_out = await self._run_held_out_baseline_tests(
                     repo_dir, worktree_dir, session_dir
                 )
@@ -946,6 +978,10 @@ class Reconciler:
             )
 
         overview = distill_experience(self.db, self.cfg)
+        # Real use becomes the next gate: the editable set grows, the sealed one grows where no worker reads.
+        harvested = harvest_eval_cases(self.db, self.cfg)
+        if any(harvested.values()):
+            logger.info(f"[Reconciler] harvested eval cases: {harvested}")
 
         session_dir = self.cfg.sessions_dir / "improver"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1969,23 +2005,27 @@ class Reconciler:
     async def _run_voice_benchmarks(
         self, repo_dir: Path, worktree_dir: Path, changed: set[str], session_dir: Path
     ) -> tuple[bool, str]:
-        """The mandatory benchmarks when a self-upgrade touches the speech check or the router.
+        """The mandatory benchmarks when a self-upgrade touches the speech check, the router or what Jarvis says.
 
         The script comes from the checkout, never from the candidate, so a worker cannot rewrite the gate
-        it is measured by; `PYTHONPATH` still loads the candidate's voice modules.
+        it is measured by; `PYTHONPATH` still loads the candidate's modules.
         """
-        gates: list[str] = []
+        gates: list[tuple[str, list[str]]] = []
         if changed & VOICE_INTENT_PATHS:
-            gates.append("scripts/bench_intent.py")
+            gates.append(("scripts/bench_intent.py", ["1"]))
         if changed & VOICE_ROUTING_PATHS:
-            gates.append("scripts/bench_routing.py")
+            gates.append(("scripts/bench_routing.py", ["1"]))
+        if changed & VOICE_PROMPT_PATHS:
+            gates.append(("scripts/bench_voice_prompts.py", ["--split", "held_in"]))
+        if changed & BRAIN_ROUTE_PATHS:
+            gates.append(("scripts/bench_brain_route.py", ["1", "--split", "held_in"]))
         if not gates:
             return True, ""
         if not self.cfg.openrouter_api_key:
             self.db.queue_outbox(
                 kind="blocker",
                 summary_spoken=(
-                    "A voice change needs the speech benchmarks, but no OPENROUTER_API_KEY is set, "
+                    "A voice or router change needs its benchmark, but no OPENROUTER_API_KEY is set, "
                     "so the gate was skipped."
                 ),
                 details={"changed": sorted(changed)},
@@ -1993,12 +2033,13 @@ class Reconciler:
             return True, ""
         sources = [
             worktree_dir / "apps" / "voice" / "src",
+            worktree_dir / "apps" / "brain" / "src",
             worktree_dir / "packages" / "jarvis-core" / "src",
         ]
         outputs: list[str] = []
-        for script in gates:
+        for script, extra_args in gates:
             ok, output = await self._run_sandboxed_cmd(
-                [sys.executable, str(repo_dir / script), "1"],
+                [sys.executable, str(repo_dir / script), *extra_args],
                 worktree_dir=worktree_dir,
                 session_dir=session_dir,
                 label=script,
@@ -2010,6 +2051,82 @@ class Reconciler:
             if not ok:
                 return False, "\n\n".join(outputs)
         return True, "\n\n".join(outputs)
+
+    async def _run_eval_splits(
+        self,
+        repo_dir: Path,
+        worktree_dir: Path,
+        task: TaskRow,
+        changed: set[str],
+        session_dir: Path,
+    ) -> tuple[bool, str]:
+        """The sealed half of Phase 2: no held-out case may regress, and a harness fix must fix a held-in one.
+
+        Both halves run from `repo_dir` with the code under test on `PYTHONPATH`: the baseline is the current
+        checkout, the candidate is this worktree. A held-out failure is reported sealed, like the baseline suite.
+        """
+        suites = [name for name, (_, paths) in EVAL_GATES.items() if changed & paths]
+        if not suites or not self.cfg.openrouter_api_key:
+            return True, ""
+        outputs: list[str] = []
+        for suite in suites:
+            script, _ = EVAL_GATES[suite]
+            if not (self.cfg.home_dir / "evals" / "held_out" / f"{suite}.jsonl").is_file():
+                continue  # nothing harvested yet: Phase 2 has no sealed set to protect
+            baseline = await self._run_eval_split(
+                repo_dir, repo_dir, worktree_dir, script, suite, "held_out", session_dir
+            )
+            candidate = await self._run_eval_split(
+                repo_dir, worktree_dir, worktree_dir, script, suite, "held_out", session_dir
+            )
+            regressed = sorted(key for key, ok in baseline.items() if ok and not candidate.get(key, False))
+            if regressed:
+                return False, f"{suite}: {len(regressed)} held-out case(s) regressed"
+            is_harness_fix = (task.dedupe_key or "").startswith("harness:")
+            if is_harness_fix:
+                base_in = await self._run_eval_split(
+                    repo_dir, repo_dir, worktree_dir, script, suite, "held_in", session_dir
+                )
+                cand_in = await self._run_eval_split(
+                    repo_dir, worktree_dir, worktree_dir, script, suite, "held_in", session_dir
+                )
+                fixed = [key for key, ok in base_in.items() if not ok and cand_in.get(key)]
+                if base_in and not fixed:
+                    return False, f"{suite}: a harness fix must make at least one held-in case pass"
+            outputs.append(f"{suite}: {len(candidate)} held-out cases, 0 regressions")
+        return True, "\n\n".join(outputs)
+
+    async def _run_eval_split(
+        self,
+        script_root: Path,
+        code_root: Path,
+        worktree_dir: Path,
+        script: str,
+        suite: str,
+        split: str,
+        session_dir: Path,
+    ) -> dict[str, bool]:
+        """One benchmark run, returning which cases passed; empty when the run could not report."""
+        dump = session_dir / f"eval-{suite}-{split}-{code_root.name}.json"
+        dump.unlink(missing_ok=True)
+        sources = [code_root / "src", code_root]
+        sources += sorted((code_root / "apps").glob("*/src"))
+        sources += sorted((code_root / "packages").glob("*/src"))
+        await self._run_sandboxed_cmd(
+            [sys.executable, str(script_root / script), "--split", split, "--dump-results", str(dump)],
+            worktree_dir=worktree_dir,
+            session_dir=session_dir,
+            label=f"{script} {split}",
+            extra_pythonpath=[str(path) for path in sources if path.is_dir()],
+            timeout_seconds=self.cfg.verify_timeout_seconds * 8,
+            extra_env={"OPENROUTER_API_KEY": self.cfg.openrouter_api_key},
+        )
+        try:
+            raw = json.loads(dump.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        cases = raw.get("cases") if isinstance(raw, dict) else None
+        return {str(key): bool(value) for key, value in cases.items()} if isinstance(cases, dict) else {}
 
     async def _run_held_out_baseline_tests(
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path

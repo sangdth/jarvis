@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from jarvis_voice.system_prompts import load_overrides, parse_overrides
+from jarvis_voice.system_prompts import build_retell_prompt, load_overrides, parse_overrides
 
 
 class TestSystemPrompts(unittest.TestCase):
@@ -26,8 +26,32 @@ class TestSystemPrompts(unittest.TestCase):
     def test_reads_the_file(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "SYSTEM.md"
-            path.write_text("## Cleanup\nOnly commas.\n", encoding="utf-8")
-            self.assertEqual(load_overrides(path), {"cleanup": "Only commas."})
+            path.write_text(
+                "## Cleanup\nClean the sentence inside <transcript> only.\n", encoding="utf-8"
+            )
+            self.assertEqual(load_overrides(path), {"cleanup": "Clean the sentence inside <transcript> only."})
+
+    def test_a_cleanup_override_that_drops_the_tags_is_left_out(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "SYSTEM.md"
+            path.write_text("## Cleanup\nJust fix the commas.\n", encoding="utf-8")
+            self.assertEqual(load_overrides(path), {})
+
+    def test_an_oversized_section_is_left_out(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "SYSTEM.md"
+            path.write_text("## Retell\n" + "rule line\n" * 500, encoding="utf-8")
+            self.assertEqual(load_overrides(path), {})
+
+    def test_the_retell_prompt_always_keeps_the_marker(self) -> None:
+        from jarvis_voice.prompts import NOT_THE_USER
+
+        self.assertTrue(build_retell_prompt({}).startswith(NOT_THE_USER))
+        # An override may add rules, never drop the marker that keeps an agent's words out of the user's voice.
+        self.assertTrue(build_retell_prompt({"retell": "Say it in ten words."}).startswith(NOT_THE_USER))
+        self.assertEqual(
+            build_retell_prompt({"retell": f"{NOT_THE_USER} custom]"}), f"{NOT_THE_USER} custom]"
+        )
 
 
 if __name__ == "__main__":

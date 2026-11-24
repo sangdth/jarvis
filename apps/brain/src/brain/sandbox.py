@@ -52,6 +52,8 @@ def _deny_reads(
             lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / db_name)}"))')
         if not allow_read_traces:
             lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "traces")}"))')
+        # Never readable, not even by the Improver: a candidate tuned against the set that measures it is no gate.
+        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "evals" / "held_out")}"))')
     return lines
 
 

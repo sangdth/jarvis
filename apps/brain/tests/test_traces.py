@@ -241,6 +241,29 @@ async def test_traces_routes_are_owner_scoped(tmp_path: Path) -> None:
         assert missing.status == 404
 
 
+async def test_nightly_reflection_fires_in_assist_mode(tmp_path: Path, monkeypatch) -> None:
+    """Phase 1 gate: the daytime mode still teaches the board, so long as traces accumulated."""
+    from brain.reconciler import Reconciler
+
+    cfg = _settings(tmp_path)
+    cfg.nightly_reflect_hour = 0  # always due
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    db.set_mode("ASSIST")
+    for index in range(5):
+        db.upsert_trace_run(_trace_row(f"{index}" * 32, surface="builder_harness", outcome="ok"))
+    assert db.count_unreflected_traces() >= 5
+    rec = Reconciler(db, cfg, hub=TelemetryHub())
+    calls: list[str] = []
+
+    async def _record(*, run_key: str = "improver") -> None:
+        calls.append(run_key)
+
+    monkeypatch.setattr(rec, "run_skill_improver", _record)
+    await rec.tick()
+    assert calls, "nightly reflection did not run while the board was in ASSIST"
+    assert db.get_state().mode == "ASSIST"
+
+
 def test_prune_deletes_old_day_folders(tmp_path: Path) -> None:
     cfg = _settings(tmp_path)
     db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
