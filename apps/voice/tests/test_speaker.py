@@ -426,6 +426,61 @@ class TestSpeaker(unittest.TestCase):
             self.assertFalse(flow2.should_cancel_after_spoken())
             self.assertEqual(flow2.llm_turn(), (None, False))  # tools unlocked on the next turn
 
+    def test_owner_correction_regex_catches_self_name_fixes_without_misfiring_on_small_talk(self) -> None:
+        from jarvis_voice.speaker import extract_owner_correction
+
+        self.assertEqual(extract_owner_correction("Actually, my name is Sang.", "Song"), "Sang")
+        self.assertEqual(extract_owner_correction("No, I'm not Song, it's Sang.", "Song"), "Sang")
+        self.assertEqual(extract_owner_correction("My name is not Song, it's Sang.", "Song"), "Sang")
+        self.assertIsNone(extract_owner_correction("My name is not Song.", "Song"))
+        self.assertIsNone(extract_owner_correction("Actually it's tea.", "Song"))
+        self.assertIsNone(extract_speaker_name("My name is not Song."))
+
+    def test_registry_renames_owner_and_guests_and_reloads_disk_edits(self) -> None:
+        import json
+
+        from jarvis_core.soul import load_soul, owner_name, remember_owner_name
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "speakers"
+            soul_path = Path(tmp) / "SOUL.md"
+            remember_owner_name("Song", soul_path)
+            reg = SpeakerRegistry(folder=folder, owner_name="Song", soul_path=soul_path)
+
+            res = reg.set_owner_name("Sang Do")
+            assert res is not None
+            self.assertEqual((res.profile_id, res.previous, res.name), ("owner", "Song", "Sang Do"))
+            self.assertEqual(owner_name(load_soul(soul_path).personality), "Sang Do")
+            self.assertIn("- Owner: Sang Do", reg.format_for_prompt())
+
+            # External edit to SOUL.md is picked up live without restarting.
+            remember_owner_name("Sang", soul_path, overwrite=True)
+            self.assertIn("- Owner: Sang", reg.format_for_prompt())
+            self.assertEqual(reg.owner_name, "Sang")
+
+            # Rename an ephemeral voice by its cockpit label ("Speaker 1") -> enrolled & saved on disk.
+            p1 = reg.observe(np.array([0.0, 1.0], dtype=np.float32), threshold=0.5)
+            assert p1 is not None
+            renamed = reg.rename_profile("Speaker 1", "Davd", enroll=True)
+            assert renamed is not None
+            self.assertEqual(
+                (renamed.profile_id, renamed.previous, renamed.name, renamed.enrolled),
+                ("voice_1", "Speaker 1", "Davd", True),
+            )
+
+            # Non-owner self-rename cannot merge into a different enrolled profile.
+            p2 = reg.observe(np.array([1.0, 0.0], dtype=np.float32), threshold=0.5)
+            assert p2 is not None
+            self.assertIsNone(reg.rename_profile(p2.id, "Davd", enroll=False, allow_merge=False))
+
+            # External edit to speakers.json is picked up live without restarting.
+            idx_path = folder / "speakers.json"
+            data = json.loads(idx_path.read_text(encoding="utf-8"))
+            data["voice_1"]["name"] = "David"
+            idx_path.write_text(json.dumps(data), encoding="utf-8")
+            self.assertIn("- Guests: David", reg.format_for_prompt())
+            self.assertEqual(reg.get("voice_1").name, "David")  # type: ignore[union-attr]
+
 
 if __name__ == "__main__":
     unittest.main()

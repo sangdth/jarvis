@@ -378,7 +378,8 @@ class TraceSink:
             voice["speaker"] = str(event.get("speaker") or "")
             b["user_input"] = b["user_input"] or voice["stt"]
         elif name == EVENT_VOICE_SPEAKER:
-            voice["speaker"] = str(event.get("label") or voice.get("speaker") or "")
+            if not event.get("renamed") or event.get("profile_id") == "owner":
+                voice["speaker"] = str(event.get("label") or voice.get("speaker") or "")
         elif name == EVENT_VOICE_INTENT:
             voice["intent"] = str(event.get("intent") or "")
             voice["intent_ms"] = event.get("ms")

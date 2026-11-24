@@ -737,10 +737,27 @@ impl App {
                 self.push_stage(&ev, "INTENT", tone, intent, detail);
             }
             "voice.speaker" => {
-                self.speaker_label = ev.text("label");
-                self.speaker_known = ev.bool("known").unwrap_or(false);
-                self.speaker_confidence = ev.f64("confidence").unwrap_or(0.0);
-                self.speaker_updated = Some(Instant::now());
+                let renamed = ev.bool("renamed").unwrap_or(false);
+                if renamed {
+                    let label = ev.text("label");
+                    let previous = ev.text("previous");
+                    let is_owner = normalize_profile_id(&ev.text("profile_id")) == "owner";
+                    let matches_header = !previous.is_empty()
+                        && self.speaker_label.eq_ignore_ascii_case(&previous);
+                    let owner_header = is_owner
+                        && (self.speaker_label == "Owner"
+                            || self
+                                .speaker_by_id("owner")
+                                .is_some_and(|o| self.speaker_label.eq_ignore_ascii_case(&o.label)));
+                    if !label.is_empty() && (matches_header || owner_header) {
+                        self.speaker_label = label;
+                    }
+                } else {
+                    self.speaker_label = ev.text("label");
+                    self.speaker_known = ev.bool("known").unwrap_or(false);
+                    self.speaker_confidence = ev.f64("confidence").unwrap_or(0.0);
+                    self.speaker_updated = Some(Instant::now());
+                }
                 self.record_voice_speaker(&ev);
             }
             "voice.fastcmd" => {
@@ -984,13 +1001,19 @@ impl App {
     pub fn sync_disk_speakers(&mut self, disk: &DiskSpeakers) {
         if disk.owner_voiceprint || disk.owner_name.is_some() || self.speaker_index_by_id("owner").is_some() {
             let check_enrolled = self.check_mode == "master check";
+            let prev_label = self.speaker_by_id("owner").map(|s| s.label.clone());
             let owner = self.speaker_mut_or_insert("owner");
             owner.is_owner = true;
             owner.known = true;
             owner.enrolled = disk.owner_voiceprint || check_enrolled;
             if let Some(name) = &disk.owner_name {
-                if owner.label.is_empty() || owner.label == "Owner" {
-                    owner.label = name.clone();
+                owner.label = name.clone();
+                if self.speaker_label == "Owner"
+                    || prev_label
+                        .as_deref()
+                        .is_some_and(|prev| !prev.is_empty() && self.speaker_label.eq_ignore_ascii_case(prev))
+                {
+                    self.speaker_label = name.clone();
                 }
             }
         }
@@ -1012,6 +1035,7 @@ impl App {
                 fold_speaker_into(target, src);
             }
             let row = self.speaker_mut_or_insert(&guest.id);
+            let prev_guest = row.label.clone();
             row.label = guest.name.clone();
             row.enrolled = true;
             row.known = true;
@@ -1019,6 +1043,9 @@ impl App {
             row.clips = guest.clips;
             row.speech_secs = guest.speech_secs;
             row.clear_sim();
+            if !prev_guest.is_empty() && self.speaker_label.eq_ignore_ascii_case(&prev_guest) {
+                self.speaker_label = guest.name.clone();
+            }
         }
 
         // A guest deleted from speakers.json drops its enrolled flag; quiet deleted rows disappear.
@@ -1091,6 +1118,8 @@ impl App {
         let raw_profile = ev.text("profile_id");
         let raw_voice = ev.text("voice_id");
         let known = ev.bool("known").unwrap_or(false);
+        let renamed = ev.bool("renamed").unwrap_or(false);
+        let enrolled = ev.bool("enrolled");
         let confidence = ev.f64("confidence");
         let ts = ev.ts;
 
@@ -1135,12 +1164,14 @@ impl App {
                 if self.speakers[existing_idx].enrolled {
                     self.merge_speaker_id(&id, &existing_id);
                     let row = self.speaker_mut_or_insert(&existing_id);
-                    row.turns += 1;
+                    if !renamed {
+                        row.turns += 1;
+                    }
                     row.known = row.known || known;
                     if let Some(conf) = confidence {
                         row.confidence = Some(conf);
                     }
-                    if ts > 0.0 {
+                    if !renamed && ts > 0.0 {
                         row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
                     }
                     row.clear_sim();
@@ -1151,15 +1182,20 @@ impl App {
         }
 
         let row = self.speaker_mut_or_insert(&id);
-        row.turns += 1;
+        if !renamed {
+            row.turns += 1;
+        }
         if !label.is_empty() && (!row.is_owner || label != "Owner" || row.label.is_empty()) {
             row.label = label;
+        }
+        if enrolled == Some(true) {
+            row.enrolled = true;
         }
         row.known = row.is_owner || row.enrolled || known;
         if let Some(conf) = confidence {
             row.confidence = Some(conf);
         }
-        if ts > 0.0 {
+        if !renamed && ts > 0.0 {
             row.last_ts = Some(row.last_ts.map_or(ts, |prev| prev.max(ts)));
         }
         if !row.is_owner && row.is_identified() {
@@ -2137,5 +2173,60 @@ mod tests {
         assert!(app.speaker_by_id("voice_1").is_none());
         assert!(app.speaker_by_id("voice_2").is_none());
         assert!(app.speaker_by_id("voice_10").is_some());
+    }
+
+    #[test]
+    fn speaker_rename_updates_table_and_header_in_real_time_without_bumping_turns() {
+        let mut app = test_app();
+        app.apply(AppEvent::Snapshot(Box::new(Snapshot {
+            speakers: DiskSpeakers {
+                owner_name: Some("Song".to_string()),
+                owner_voiceprint: true,
+                guests: Vec::new(),
+            },
+            ..Default::default()
+        })));
+        app.apply(voice_event(serde_json::json!({
+            "seq": 2, "ts": 100.0, "event": "voice.speaker", "turn_id": "t1",
+            "label": "Song", "known": true, "confidence": 1.0, "voice_id": "owner", "profile_id": "owner"
+        })));
+        assert_eq!(app.speaker_label, "Song");
+        assert_eq!(app.speaker_by_id("owner").unwrap().turns, 1);
+
+        // Live SSE rename of owner updates row + header immediately without incrementing turns.
+        app.apply(voice_event(serde_json::json!({
+            "seq": 3, "ts": 101.0, "event": "voice.speaker", "turn_id": "t1",
+            "label": "Sang", "previous": "Song", "known": true, "confidence": 1.0,
+            "voice_id": "owner", "profile_id": "owner", "enrolled": true, "renamed": true
+        })));
+        assert_eq!(app.speaker_label, "Sang");
+        let owner = app.speaker_by_id("owner").unwrap();
+        assert_eq!(owner.label, "Sang");
+        assert_eq!(owner.turns, 1);
+        assert_eq!(owner.last_ts, Some(100.0));
+
+        // Live SSE rename of a guest updates that row without hijacking the owner's header.
+        app.apply(voice_event(serde_json::json!({
+            "seq": 4, "ts": 102.0, "event": "voice.speaker", "turn_id": "t2",
+            "label": "David", "previous": "Speaker 1", "known": true, "confidence": 1.0,
+            "voice_id": "voice_1", "profile_id": "voice_1", "enrolled": true, "renamed": true
+        })));
+        assert_eq!(app.speaker_label, "Sang");
+        let david = app.speaker_by_id("voice_1").unwrap();
+        assert_eq!(david.label, "David");
+        assert!(david.enrolled);
+        assert_eq!(david.turns, 0);
+
+        // External SOUL.md edit picked up on next snapshot poll updates both table and header.
+        app.apply(AppEvent::Snapshot(Box::new(Snapshot {
+            speakers: DiskSpeakers {
+                owner_name: Some("Sang Do".to_string()),
+                owner_voiceprint: true,
+                guests: Vec::new(),
+            },
+            ..Default::default()
+        })));
+        assert_eq!(app.speaker_by_id("owner").unwrap().label, "Sang Do");
+        assert_eq!(app.speaker_label, "Sang Do");
     }
 }

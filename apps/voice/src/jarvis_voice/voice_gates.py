@@ -41,7 +41,6 @@ from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
-from jarvis_core.soul import remember_owner_name
 from jarvis_voice import telemetry
 from jarvis_voice.cleanup import TranscriptCleaner
 from jarvis_voice.config import JARVIS_HOME, WHISPER_MODELS, settings
@@ -57,6 +56,7 @@ from jarvis_voice.speaker import (
     VoiceProfile,
     cosine,
     extract_claimed_name,
+    extract_owner_correction,
     speaker_number,
 )
 from jarvis_voice.state import JarvisMode, JarvisState, UserIntent, classify_fast_command, is_not_for_jarvis
@@ -678,6 +678,7 @@ class JarvisIntentGate(FrameProcessor):
 
     def _speaker_tag(self, frame: TranscriptionFrame, transcript: str) -> tuple[str, float | None, str]:
         """The `[Speaker: ...]` tag, its confidence, and the name the cockpit shows for this turn."""
+        self.registry.refresh_from_disk()
         if frame.user_id in ("owner", "u", ""):
             conf = 1.0 if self.registry.owner_voiceprint is not None else None
             return "User", conf, self.registry.owner_name or "Owner"
@@ -872,15 +873,17 @@ class JarvisIntentGate(FrameProcessor):
         is_owner = frame.user_id in ("owner", "u", "")
         if is_owner and not is_not_for_jarvis(transcript):
             owner_clips: list[OwnerClip] = list(getattr(frame, "_owner_clips", ()))
-            stated = (
-                extract_claimed_name(transcript, [], allow_bare=self.registry.owner_voiceprint is None)
-                if not self.registry.owner_name
-                else None
-            )
-            if stated:
-                self.registry.owner_name = stated
-                if self.registry.voiceprint_path is not None:
-                    await asyncio.to_thread(remember_owner_name, stated)
+            self.registry.refresh_from_disk()
+            if not self.registry.owner_name:
+                stated = extract_claimed_name(transcript, [], allow_bare=self.registry.owner_voiceprint is None)
+                if stated:
+                    await asyncio.to_thread(
+                        self.registry.set_owner_name, stated, overwrite=self.registry.learning_owner
+                    )
+            elif self.registry.learning_owner:
+                corrected = extract_owner_correction(transcript, self.registry.owner_name)
+                if corrected and corrected.lower() != self.registry.owner_name.lower():
+                    await asyncio.to_thread(self.registry.set_owner_name, corrected, overwrite=True)
             combined = _combine_owner_clips(owner_clips)
             if combined is not None:
                 emb, secs, score, threshold = combined
@@ -900,6 +903,7 @@ class JarvisIntentGate(FrameProcessor):
         # Resolve after `_speaker_tag` so a graduated voice that merged into an existing profile emits the surviving id.
         resolved = None if is_owner else (self._resolve_profile(frame.user_id) or self.registry.get(display) or profile)
         profile_id = "owner" if is_owner else (resolved.id if resolved is not None else "room")
+        self.state.current_speaker_id = profile_id
         telemetry.emit(
             "voice.speaker",
             label=display,

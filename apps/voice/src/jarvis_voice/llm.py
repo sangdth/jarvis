@@ -72,11 +72,13 @@ class JarvisLLM(OpenRouterLLMService):
         *args: Any,
         working_context: Any = None,
         enrollment_turn: Callable[[], tuple[str | None, bool]] | None = None,
+        speaker_registry: Any = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._working_context = working_context
         self._enrollment_turn = enrollment_turn
+        self._speaker_registry = speaker_registry
 
     def build_chat_completion_params(self, params_from_context: Any) -> dict[str, Any]:  # type: ignore[override]
         notes: list[str] = []
@@ -85,6 +87,10 @@ class JarvisLLM(OpenRouterLLMService):
             note, hide_tools = self._enrollment_turn()
             if note:
                 notes.append(note)
+        if self._speaker_registry is not None and (
+            roster := self._speaker_registry.format_for_prompt(can_rename=not hide_tools)
+        ):
+            notes.append(roster)
         if not hide_tools and self._working_context is not None and (held := self._working_context.format_for_prompt()):
             notes.append(held)
         if notes:

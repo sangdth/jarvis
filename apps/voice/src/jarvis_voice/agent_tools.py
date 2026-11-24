@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -9,11 +10,12 @@ from typing import Any
 
 from loguru import logger
 
-from jarvis_voice import meeting_notes
+from jarvis_voice import meeting_notes, telemetry
 from jarvis_voice.config import settings
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.screen import ScreenError, ask_screen, capture_front_window
 from jarvis_voice.sessions import CodingSessionAdapter, match_sessions
+from jarvis_voice.speaker import SpeakerRegistry, normalize_speaker_name, speaker_number
 from jarvis_voice.state import WorkingContext
 from jarvis_voice.t3_adapter import resolve_project
 
@@ -168,6 +170,30 @@ def agent_tools() -> list:
             },
             required=["question"],
         ),
+        FunctionSchema(
+            name="rename_speaker",
+            description=(
+                "Update a person's name in Jarvis's Speakers table (the owner's name in SOUL.md or a guest's"
+                " voice profile). Use ONLY when someone corrects or changes their own name or a speaker's name"
+                " in Jarvis's speaker list ('my name is Sang, not Song', 'change my name to Sang', 'call me"
+                " Sang', 'rename David to Daniel'). Never use it for coding tasks (renaming variables/columns)"
+                " or correcting a task/email recipient."
+            ),
+            properties={
+                "name": {
+                    "type": "string",
+                    "description": "The correct name as it should appear in the Speakers table (e.g. 'Sang', 'David').",
+                },
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Whose entry to rename: 'owner' for the owner, or the current/wrong speaker name or"
+                        " label (e.g. 'Song', 'David', 'Speaker 2'). Omit to rename whoever is speaking now."
+                    ),
+                },
+            },
+            required=["name"],
+        ),
     ]
     return tools + comment_tools()
 
@@ -206,7 +232,10 @@ def comment_tools() -> list:
     ]
 
 
-def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[Any], Awaitable[None]]]:
+def agent_tool_handlers(
+    orchestrator: AgentOrchestrator,
+    registry: SpeakerRegistry | None = None,
+) -> dict[str, Callable[[Any], Awaitable[None]]]:
     """Handlers for agent_tools(). Pipecat 1.x calls each with one FunctionCallParams (arguments, result_callback)."""
 
     def handler(
@@ -428,6 +457,78 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
             **({"project": ctx.project} if ctx.project else {}),
         })
 
+    async def rename_speaker(params: Any) -> None:
+        if registry is None:
+            await params.result_callback({"status": "unavailable"})
+            return
+        args = params.arguments
+        name = normalize_speaker_name(str(args.get("name") or ""))
+        if not name:
+            await params.result_callback({"status": "invalid_name"})
+            return
+        target = str(args.get("target") or "").strip()
+        target_low = target.lower()
+        registry.refresh_from_disk()
+        guest = orchestrator.state.room_turn is True
+        self_aliases = {"", "me", "myself"}
+        owner_targets = {"owner", "user"}
+        if registry.owner_name:
+            owner_targets.add(registry.owner_name.lower())
+
+        if guest:
+            if target_low in owner_targets or (registry.owner_name and name.lower() == registry.owner_name.lower()):
+                await params.result_callback({"status": "owner_only"})
+                return
+            speaker_id = str(getattr(orchestrator.state, "current_speaker_id", "") or "")
+            current = registry.find_profile(speaker_id)
+            if current is None:
+                await params.result_callback({"status": "speaker_not_found"})
+                return
+            if target_low not in self_aliases and registry.find_profile(target) is not current:
+                await params.result_callback({"status": "owner_only"})
+                return
+            result = await asyncio.to_thread(
+                registry.rename_profile, current.id, name, enroll=False, allow_merge=False
+            )
+            if result is None:
+                await params.result_callback({"status": "owner_only"})
+                return
+            orchestrator.state.current_speaker = f"Speaker: {result.name}"
+        elif target_low in self_aliases or target_low in owner_targets:
+            result = await asyncio.to_thread(registry.set_owner_name, name, overwrite=True)
+            if result is None:
+                await params.result_callback({"status": "invalid_name"})
+                return
+        else:
+            result = await asyncio.to_thread(registry.rename_profile, target, name, enroll=True, allow_merge=True)
+            if result is None:
+                await params.result_callback({
+                    "status": "speaker_not_found",
+                    "target": target,
+                    "owner": registry.owner_name or "Owner",
+                    "guests": [p.name or f"Speaker {speaker_number(p)}" for p in registry.profiles.values()],
+                })
+                return
+
+        telemetry.emit(
+            "voice.speaker",
+            label=result.name,
+            previous=result.previous or "",
+            confidence=1.0,
+            known=True,
+            voice_id=result.source_id,
+            profile_id=result.profile_id,
+            enrolled=result.enrolled,
+            renamed=True,
+        )
+        logger.info(f"[Speaker] renamed {result.profile_id}: {result.previous!r} -> {result.name!r}")
+        await params.result_callback({
+            "status": "renamed",
+            "target": result.profile_id,
+            "previous": result.previous or "",
+            "name": result.name,
+        })
+
     async def stop(agent: Any, args: dict) -> bool | str:
         # Nothing running: say so, instead of a "failed" the model would read out as "I couldn't stop it".
         return await agent.interrupt() if agent.busy else "nothing_running"
@@ -446,6 +547,7 @@ def agent_tool_handlers(orchestrator: AgentOrchestrator) -> dict[str, Callable[[
         "stop_agent": handler(stop, "stopped", "failed", orchestrator.find_busy, owner_only=True),
         "list_sessions": sessions,
         "look_at_screen": look,
+        "rename_speaker": rename_speaker,
         # Both are open to the whole room; they refuse themselves outside meeting mode.
         "add_comment": add_comment,
         "read_comments": read_comments,
