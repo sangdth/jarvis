@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,21 +56,34 @@ def owner_name(personality: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def remember_owner_name(name: str, path: Path = SOUL_PATH) -> bool:
-    """Record the owner's stated name in `SOUL.md` when no name is stored there yet."""
-    cleaned = name.strip().replace('"', "")
+def strip_owner_name(personality: str) -> str:
+    """Drop the stored owner-name line when the live speaker roster supplies names per turn."""
+    lines = [line for line in personality.splitlines() if not _USER_NAME_RE.search(line)]
+    return "\n".join(lines).strip()
+
+
+def remember_owner_name(name: str, path: Path = SOUL_PATH, *, overwrite: bool = False) -> bool:
+    """Record the owner's name in `SOUL.md` (replaces an existing name only when `overwrite=True`)."""
+    first = next((line for line in name.splitlines() if line.strip()), "")
+    cleaned = " ".join(first.replace('"', "").split())
     if not cleaned:
         return False
     existing = path.read_text(encoding="utf-8") if path.is_file() else ""
     if _USER_NAME_RE.search(existing):
-        return False
-    line = f'The user\'s name is "{cleaned}"; use it rarely, not in every reply.'
-    text = (
-        f"{existing.rstrip(chr(10))}\n{line}\n"
-        if existing.strip()
-        else f"---\nprojects_dir: {DEFAULT_PROJECTS_DIR}\n---\n{line}\n"
-    )
+        if not overwrite:
+            return False
+        text = _USER_NAME_RE.sub(lambda _: f'The user\'s name is "{cleaned}"', existing, count=1)
+    else:
+        line = f'The user\'s name is "{cleaned}"; use it rarely, not in every reply.'
+        text = (
+            f"{existing.rstrip(chr(10))}\n{line}\n"
+            if existing.strip()
+            else f"---\nprojects_dir: {DEFAULT_PROJECTS_DIR}\n---\n{line}\n"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    path.chmod(0o600)
+    tmp = path.with_name(f"{path.name}.tmp")
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
     return True

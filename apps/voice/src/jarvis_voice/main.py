@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from loguru import logger
 
-from jarvis_core.soul import load_soul, owner_name
+from jarvis_core.soul import SOUL_PATH, load_soul, owner_name, strip_owner_name
 from jarvis_voice import telemetry
 from jarvis_voice.agent_adapter import WatchedAgentConfig
 from jarvis_voice.agent_tools import agent_tool_handlers, agent_tools
@@ -334,8 +334,10 @@ async def run_pipecat_harness(
         meeting=meeting,  # from then on `state.meeting` follows the voice ("meeting mode on")
     )
     soul = load_soul()
+    # Keep the owner's name out of the static prompts so the live Speakers table is the one authority.
+    tone = strip_owner_name(soul.personality)
     orchestrator = AgentOrchestrator(
-        state=state, personality=soul.personality, waiting_prompt=overrides.get("waiting", "")
+        state=state, personality=tone, waiting_prompt=overrides.get("waiting", "")
     )
     if not enroll_owner:
         orchestrator.load_from_file(settings.watch_config_path)
@@ -389,7 +391,7 @@ async def run_pipecat_harness(
             confirm_checks=OWNER_CONFIRM_CHECKS if settings.openrouter_api_key else 0,
         )
         if checking_owner
-        else SpeakerRegistry(folder=None)
+        else SpeakerRegistry(folder=None, owner_name=owner_name(soul.personality), soul_path=SOUL_PATH)
     )
     enrollment = _EnrollmentFlow(registry=registry, standalone=enroll_owner)
     stt = SpeakerVerifiedWhisperSTT(
@@ -413,11 +415,12 @@ async def run_pipecat_harness(
             base_url=settings.openrouter_base_url,
             working_context=state.working_context,
             enrollment_turn=enrollment.llm_turn,
+            speaker_registry=registry,
             settings=JarvisLLM.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(
                     orchestrator,
-                    soul.personality,
+                    tone,
                     thread,
                     settings.language,
                     meeting=meeting,
@@ -447,7 +450,7 @@ async def run_pipecat_harness(
     if llm is not None and not enroll_owner:
         from jarvis_voice.llm import traced_tool
 
-        for name, handler in agent_tool_handlers(orchestrator).items():
+        for name, handler in agent_tool_handlers(orchestrator, registry=registry).items():
             llm.register_function(name, traced_tool(name, handler))
 
     context = LLMContext(tools=tools) if tools else LLMContext()

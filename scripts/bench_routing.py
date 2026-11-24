@@ -196,6 +196,9 @@ CASES: list[tuple[str | list[dict], str]] = [
             {"role": "assistant", "content": "It's using Pipecat 1.15.0."},
         ],
     ), "t3-code@jarvis+task"),
+    # Speaker name corrections go to rename_speaker, never to send_agent_task or coding renames
+    ("You saved my name wrong in the speakers list, change it to Sang", "rename"),
+    ("Rename David to Daniel in the speaker list", "rename"),
 ]
 
 # Vietnamese or mixed speech, with the vi prompt: routed the same, with English arguments
@@ -212,6 +215,7 @@ VI_CASES: list[tuple[str | list[dict], str]] = [
     ("Cái lỗi trên màn hình này nghĩa là gì?", "look"),
     ("Sửa cái lỗi đang hiện trên màn hình giúp anh", "t3-code+screen"),
     ("Để anh kể cho nghe cái bug trong dự án Jarvis trước đã: lúc bấm lưu thì cửa sổ tự đóng luôn.", "hold@jarvis"),
+    ("Tên anh trong danh sách speaker bị sai rồi, đổi lại thành Sang giúp anh", "rename"),
 ]
 
 
@@ -228,6 +232,8 @@ def outcome(message: dict, default_id: str | None) -> str:
         return "look"
     if calls[0]["function"]["name"] == "list_sessions":
         return "list"
+    if calls[0]["function"]["name"] == "rename_speaker":
+        return "rename"
     if calls[0]["function"]["name"] == "answer_agent":
         return "answer"  # answer_agent finds the waiting agent itself when no id is given
     label = projects_dir()[0].strip("/")
@@ -259,7 +265,7 @@ async def main(rounds: int) -> int:
     # One orchestrator: every task goes to `brain`, which picks the runner. The case labels keep their
     # project/session/screen/replace suffixes; only the agent id changes.
     def expected(want: str) -> str:
-        if want in (SELF, "stop", "look", "list", "answer"):
+        if want in (SELF, "stop", "look", "list", "answer", "rename"):
             return want
         return re.sub(r"^(?:t3-code|claude|opencode|hermes)", "brain", want)
     personality = load_soul().personality

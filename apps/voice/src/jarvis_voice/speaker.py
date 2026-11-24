@@ -17,10 +17,12 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import EllipsisType
 
 import numpy as np
 from loguru import logger
 
+import jarvis_core.soul as soul_mod
 from jarvis_voice.config import JARVIS_HOME
 
 SAMPLE_RATE = 16000
@@ -79,9 +81,10 @@ _GENDER_WORDS = {
     "female": {"she", "her", "hers", "sister", "wife", "girlfriend", "daughter", "chị", "cô", "bà", "em gái"},
 }
 _AFFIRMATIVE_RE = re.compile(r"^\s*(?:yes|yeah|yep|yup|correct|right|sure|that'?s me|speaking)\b", re.IGNORECASE)
-# "No, I'm Mike" / "Actually I'm Mike" changes the name; "not John" takes the old one away.
+# "No, I'm Mike" / "Actually I'm Mike" / "My name is not Song, it's Sang" changes the name; "not John" drops the old one.
 _CORRECTION_RE = re.compile(
-    r"\b(?:no|actually|sorry|not)\b[,.! ]+(?:i'?m|i am|my name is|it'?s)\s+([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)",
+    r"\b(?:(?:no|actually|sorry)\b|(?:i'?m\s+not|my\s+name\s+is\s+not|not|isn'?t)\s+[A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)"
+    r"[,.! ]+(?:i'?m|i am|my name is|it'?s)\s+(?!not\b)([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)",
     re.IGNORECASE,
 )
 _WRONG_NAME_RE = re.compile(r"\b(?:i'?m not|not|isn'?t)\s+([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)", re.IGNORECASE)
@@ -107,7 +110,7 @@ _NON_NAMES = {
 
 _EXPLICIT_NAME_RE = re.compile(
     r"\b(?:my\s+name\s+is|my\s+name's|you\s+can\s+call\s+me|call\s+me|tên\s+(?:mình|tôi|anh|em|chị)\s+là)\s+"
-    r"([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*(?:\s+[A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)?)",
+    r"(?!not\b)([A-Za-zÀ-ỹ][\wÀ-ỹ'-]*(?:\s+[A-Za-zÀ-ỹ][\wÀ-ỹ'-]*)?)",
     re.IGNORECASE,
 )
 _SELF_INTRO_CS_RE = re.compile(
@@ -135,6 +138,26 @@ def _clean_name(raw: str) -> str | None:
         return None
     name = words[0]
     return name if name[0].isupper() else name.title()
+
+
+def normalize_speaker_name(raw: str) -> str | None:
+    """Clean an explicitly given speaker name (keeps multi-word names like 'Minh Anh' and intentional casing)."""
+    first = next((line for line in raw.splitlines() if line.strip()), "")
+    cleaned = " ".join(first.replace('"', "").split()).strip(".,!?;:'()[]{}")
+    if not cleaned or not any(ch.isalpha() for ch in cleaned):
+        return None
+    cleaned = cleaned[:60].strip()
+    return cleaned if any(ch.isupper() for ch in cleaned) else cleaned.title()
+
+
+def _file_sig(path: Path | None) -> tuple[int, int] | None:
+    if path is None:
+        return None
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
 
 
 def extract_speaker_name(transcript: str, *, allow_bare: bool = False) -> str | None:
@@ -201,6 +224,16 @@ def extract_correction(transcript: str) -> tuple[str | None, str | None]:
         _clean_name(right.group(1)) if right else None,
         _clean_name(wrong.group(1)) if wrong else None,
     )
+
+
+def extract_owner_correction(transcript: str, current_name: str) -> str | None:
+    """Safe owner-name correction while tools are hidden (enrollment): explicit self-name or negating `current_name`."""
+    if m := _EXPLICIT_NAME_RE.search(transcript.strip()):
+        return _clean_name(m.group(1))
+    right, wrong = extract_correction(transcript)
+    if right and wrong and wrong.lower() == current_name.lower():
+        return right
+    return None
 
 
 def extract_claimed_name(transcript: str, expected: list[str], *, allow_bare: bool = False) -> str | None:
@@ -382,6 +415,20 @@ class VoiceProfile:
         self.last_seen = time.monotonic()
 
 
+@dataclass(frozen=True)
+class RenameResult:
+    """What changed when a speaker entry was renamed (for tool response and live cockpit telemetry)."""
+
+    profile_id: str
+    source_id: str
+    previous: str | None
+    name: str
+    enrolled: bool
+
+
+_SPEAKER_LABEL_RE = re.compile(r"^speaker\s+(\d+)$", re.IGNORECASE)
+
+
 class SpeakerRegistry:
     """Tracks the owner's voiceprint (claiming the first speaker when missing) and guest profiles in SPEAKERS_DIR."""
 
@@ -392,6 +439,7 @@ class SpeakerRegistry:
         owner_voiceprint: np.ndarray | None = None,
         owner_name: str | None = None,
         voiceprint_path: Path | None = ...,  # type: ignore[assignment]
+        soul_path: Path | None = ...,  # type: ignore[assignment]
         on_owner_enrolled: Callable[[VoiceProfile], None] | None = None,
         confirm_checks: int = OWNER_CONFIRM_CHECKS,
     ) -> None:
@@ -406,11 +454,47 @@ class SpeakerRegistry:
         self.owner_last_check_weak = False
         self._owner_just_enrolled = False
         self.voiceprint_path = (VOICEPRINT_PATH if folder is not None else None) if voiceprint_path is ... else voiceprint_path
+        self._soul_path: Path | None | EllipsisType = soul_path
+        self._soul_state: tuple[Path, tuple[int, int] | None] | None = None
+        if (resolved := self._resolved_soul_path()) is not None:
+            self._soul_state = (resolved, _file_sig(resolved))
+        self._speakers_sig: tuple[int, int] | None = None
         self.on_owner_enrolled = on_owner_enrolled
         self.profiles: dict[str, VoiceProfile] = {}
         self._next_id = 1
         if self.folder is not None:
             self._load()
+
+    def _resolved_soul_path(self) -> Path | None:
+        if self._soul_path is ...:
+            return soul_mod.SOUL_PATH if self.folder is not None else None
+        return self._soul_path
+
+    def refresh_from_disk(self) -> None:
+        """Reload owner and guest names if `SOUL.md` or `speakers.json` changed on disk."""
+        with self._lock:
+            soul_path = self._resolved_soul_path()
+            if soul_path is not None:
+                sig = _file_sig(soul_path)
+                if self._soul_state is None or self._soul_state[0] != soul_path:
+                    self._soul_state = (soul_path, sig)
+                    if sig is not None and not self.learning_owner:
+                        disk_name = soul_mod.owner_name(soul_mod.load_soul(soul_path).personality)
+                        if disk_name is not None:
+                            self.owner_name = disk_name
+                elif sig != self._soul_state[1]:
+                    self._soul_state = (soul_path, sig)
+                    if sig is not None:
+                        disk_name = soul_mod.owner_name(soul_mod.load_soul(soul_path).personality)
+                        if disk_name is not None:
+                            self.owner_name = disk_name
+                            if self.claiming_owner is not None:
+                                self.claiming_owner.name = disk_name
+                    else:
+                        self.owner_name = None
+            if self.folder is not None:
+                if _file_sig(self.folder / "speakers.json") != self._speakers_sig:
+                    self._load()
 
     @property
     def learning_owner(self) -> bool:
@@ -567,6 +651,7 @@ class SpeakerRegistry:
     ) -> VoiceProfile | None:
         """Match a heard voice embedding to an existing profile (refining it) or create a new fingerprint profile."""
         with self._lock:
+            self.refresh_from_disk()
             if emb is None:
                 return None
             norm = float(np.linalg.norm(emb))
@@ -613,6 +698,121 @@ class SpeakerRegistry:
             low = key.lower()
             return next((p for p in self.profiles.values() if p.name and p.name.lower() == low), None)
 
+    def find_profile(self, query: str | None) -> VoiceProfile | None:
+        """Look up a guest by id ('voice_1'), cockpit label ('Speaker 1'), saved name, or top tentative belief."""
+        with self._lock:
+            if not query or not query.strip():
+                return None
+            cleaned = query.strip()
+            if profile := self.get(cleaned):
+                return profile
+            if m := _SPEAKER_LABEL_RE.match(cleaned):
+                if profile := self.profiles.get(f"voice_{m.group(1)}"):
+                    return profile
+            low = cleaned.lower()
+            for profile in self.profiles.values():
+                if profile.beliefs:
+                    best, _ = SpeakerBeliefTracker._probability(profile.beliefs)
+                    if best and best.lower() == low:
+                        return profile
+            return None
+
+    def set_owner_name(self, name: str, *, overwrite: bool = True) -> RenameResult | None:
+        """Set or rename the owner in RAM and `SOUL.md`."""
+        cleaned = normalize_speaker_name(name)
+        if not cleaned:
+            return None
+        with self._lock:
+            self.refresh_from_disk()
+            previous = self.owner_name
+            if previous and not overwrite:
+                return None
+            self.owner_name = cleaned
+            if self.claiming_owner is not None:
+                self.claiming_owner.name = cleaned
+            soul_path = self._resolved_soul_path()
+            if soul_path is not None:
+                soul_mod.remember_owner_name(cleaned, soul_path, overwrite=overwrite)
+                self._soul_state = (soul_path, _file_sig(soul_path))
+            return RenameResult("owner", "owner", previous, cleaned, self.owner_voiceprint is not None)
+
+    def rename_profile(
+        self, target: str, new_name: str, *, enroll: bool = True, allow_merge: bool = True
+    ) -> RenameResult | None:
+        """Rename a guest profile (and persist to `speakers.json` if enrolled or `enroll=True`)."""
+        cleaned = normalize_speaker_name(new_name)
+        if not cleaned:
+            return None
+        with self._lock:
+            self.refresh_from_disk()
+            profile = self.find_profile(target)
+            if profile is None:
+                return None
+            source_id = profile.id
+            previous = profile.name
+            if not previous and profile.beliefs:
+                previous, _ = SpeakerBeliefTracker._probability(profile.beliefs)
+            if not previous:
+                previous = f"Speaker {speaker_number(profile)}"
+            existing = self.get(cleaned)
+            if existing is not None and existing is not profile:
+                if not allow_merge and existing.enrolled:
+                    return None
+                for emb in profile._embeddings or [_unit(profile.voiceprint)]:
+                    existing.add_embedding(emb, 1.0)
+                existing.speech_secs += profile.speech_secs
+                existing.owner_vouched = existing.owner_vouched or profile.owner_vouched
+                self.profiles.pop(profile.id, None)
+                if self.folder is not None and profile.enrolled:
+                    (self.folder / f"{profile.id}.npy").unlink(missing_ok=True)
+                profile = existing
+            profile.name = cleaned
+            profile.beliefs = {cleaned: 8.0}
+            if enroll:
+                profile.owner_vouched = True
+                profile.enrolled = True
+            if profile.enrolled:
+                self._save()
+            return RenameResult(profile.id, source_id, previous, cleaned, profile.enrolled)
+
+    def format_for_prompt(self, *, can_rename: bool = True) -> str:
+        """Live authoritative snapshot of the Speakers table for the conversation model."""
+        with self._lock:
+            self.refresh_from_disk()
+            if not can_rename and not self.owner_name and not self.profiles:
+                return ""
+            owner = self.owner_name or "(unnamed)"
+            guests: list[str] = []
+            for p in sorted(self.profiles.values(), key=lambda x: (not x.enrolled, (x.name or x.id).lower())):
+                if p.name:
+                    guests.append(p.name)
+                elif p.beliefs:
+                    best, conf = SpeakerBeliefTracker._probability(p.beliefs)
+                    label = (
+                        f"{best}? (Speaker {speaker_number(p)})"
+                        if best and conf >= TENTATIVE_AT
+                        else f"Speaker {speaker_number(p)}"
+                    )
+                    guests.append(label)
+                else:
+                    guests.append(f"Speaker {speaker_number(p)}")
+            lines = [f"- Owner: {owner}"]
+            if guests:
+                lines.append(f"- Guests: {', '.join(guests)}")
+            action = (
+                "\nIf someone says their name or a speaker's name is wrong, or asks to change/spell it, call"
+                " `rename_speaker` right away so the Speakers table updates in real time."
+                if can_rename
+                else ""
+            )
+            return (
+                "[Not the user speaking: Speakers table (single source of truth for speaker names; always use"
+                " these over older chat or memory):\n"
+                + "\n".join(lines)
+                + action
+                + "]"
+            )
+
     def link_name(self, profile_id: str, name: str, *, enroll: bool = True) -> VoiceProfile | None:
         """Associate a speaker identity ('David') with a voice fingerprint profile and persist if enrolled."""
         with self._lock:
@@ -626,9 +826,11 @@ class SpeakerRegistry:
                     existing.add_embedding(emb, 1.0)
                 existing.speech_secs += profile.speech_secs
                 existing.owner_vouched = existing.owner_vouched or profile.owner_vouched
-                for name, value in profile.beliefs.items():
-                    existing.beliefs[name] = max(existing.beliefs.get(name, BASE_LOG_ODDS), value)
+                for belief_name, value in profile.beliefs.items():
+                    existing.beliefs[belief_name] = max(existing.beliefs.get(belief_name, BASE_LOG_ODDS), value)
                 self.profiles.pop(profile.id, None)
+                if self.folder is not None and profile.enrolled:
+                    (self.folder / f"{profile.id}.npy").unlink(missing_ok=True)
                 profile = existing
             profile.name = cleaned
             if enroll:
@@ -643,23 +845,39 @@ class SpeakerRegistry:
                 return
             index_path = self.folder / "speakers.json"
             if not index_path.is_file():
+                for pid in [pid for pid, p in self.profiles.items() if p.enrolled]:
+                    self.profiles.pop(pid, None)
+                self._speakers_sig = None
                 return
             try:
                 entries = json.loads(index_path.read_text(encoding="utf-8"))
             except (OSError, ValueError) as exc:
                 logger.warning(f"Could not read speaker profiles from {index_path} ({exc!r}).")
                 return
+            if not isinstance(entries, dict):
+                return
+            seen_ids: set[str] = set()
             for pid, meta in entries.items():
                 npy_path = self.folder / f"{pid}.npy"
                 if not isinstance(meta, dict) or not npy_path.is_file():
+                    continue
+                clips = int(meta.get("clips", 1))
+                name = str(meta["name"]).strip() if meta.get("name") else None
+                speech_secs = float(meta.get("speech_secs", 0.0))
+                vouched = bool(meta.get("vouched", False))
+                seen_ids.add(pid)
+                if pid in self.profiles:
+                    existing = self.profiles[pid]
+                    existing.name = name
+                    existing.clips = clips
+                    existing.speech_secs = speech_secs
+                    existing.enrolled = True
+                    existing.owner_vouched = vouched
                     continue
                 try:
                     vec = np.load(npy_path).astype(np.float32)
                 except (OSError, ValueError):
                     continue
-                clips = int(meta.get("clips", 1))
-                name = str(meta["name"]) if meta.get("name") else None
-                speech_secs = float(meta.get("speech_secs", 0.0))
                 self.profiles[pid] = VoiceProfile(
                     id=pid,
                     voiceprint=vec,
@@ -667,11 +885,14 @@ class SpeakerRegistry:
                     clips=clips,
                     speech_secs=speech_secs,
                     enrolled=True,
-                    owner_vouched=bool(meta.get("vouched", False)),
+                    owner_vouched=vouched,
                     last_seen=time.monotonic(),
                     _embeddings=[_unit(vec)] * max(1, min(clips, MAX_PROFILE_CLIPS)),
                     _weights=[1.0] * max(1, min(clips, MAX_PROFILE_CLIPS)),
                 )
+            for pid in [pid for pid, p in self.profiles.items() if p.enrolled and pid not in seen_ids]:
+                self.profiles.pop(pid, None)
+            self._speakers_sig = _file_sig(index_path)
 
     def _save(self) -> None:
         with self._lock:
@@ -701,6 +922,7 @@ class SpeakerRegistry:
                     f.write(json.dumps(index, ensure_ascii=False, indent=2) + "\n")
                 os.chmod(index_tmp, 0o600)
                 index_tmp.replace(index_path)
+                self._speakers_sig = _file_sig(index_path)
             except OSError as exc:
                 logger.warning(f"Could not save speaker profiles to {self.folder} ({exc!r}).")
 

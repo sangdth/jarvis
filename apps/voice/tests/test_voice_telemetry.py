@@ -102,6 +102,32 @@ class TestVoiceTelemetry(unittest.TestCase):
         self.assertIn("tools", normal)
         self.assertEqual([m["role"] for m in normal["messages"]], ["system", "user"])
 
+    def test_jarvis_llm_injects_live_speakers_table_after_memory_and_tracks_renames(self) -> None:
+        from jarvis_voice.llm import JarvisLLM
+        from jarvis_voice.speaker import SpeakerRegistry
+
+        registry = SpeakerRegistry(folder=None, owner_name="Song")
+        llm = JarvisLLM(
+            api_key="k",
+            speaker_registry=registry,
+            settings=JarvisLLM.Settings(model="deepseek/deepseek-chat"),
+        )
+        raw = {
+            "messages": [
+                {"role": "system", "content": "base"},
+                {"role": "developer", "content": "Relevant memories:\n1. User's name is Song"},
+                {"role": "user", "content": "What is my name?"},
+            ]
+        }
+        before = llm.build_chat_completion_params(raw)["messages"]
+        self.assertEqual([m["role"] for m in before], ["system", "developer", "system", "user"])
+        self.assertIn("- Owner: Song", before[2]["content"])
+
+        registry.set_owner_name("Sang")
+        after = llm.build_chat_completion_params(raw)["messages"]
+        self.assertIn("- Owner: Sang", after[2]["content"])
+        self.assertNotIn("Song", after[2]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -656,9 +656,6 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
                 with (
                     patch.object(SpeakerVerifiedWhisperSTT, "_transcribe_mlx", new=whisper),
                     patch("jarvis_core.soul.SOUL_PATH", soul_path),
-                    patch("jarvis_voice.voice_gates.remember_owner_name", side_effect=lambda n: __import__(
-                        "jarvis_core.soul", fromlist=["remember_owner_name"]
-                    ).remember_owner_name(n, soul_path)),
                 ):
                     for f in [f async for f in stt.run_stt(b"\x00\x00" * 16000)]:
                         await gate.process_frame(f, FrameDirection.DOWNSTREAM)
@@ -671,11 +668,11 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
 
             # 2. First person addresses Jarvis: locks onto their voice from turn 1 without opening a guest window.
             flt.classify_user_utterance = AsyncMock(return_value=UserIntent.ADDRESSED_TO_JARVIS)
-            await say("Hi Jarvis, I'm Sang.", [1.0, 0.0], secs=3.0)
+            await say("Hi Jarvis, I'm Song.", [1.0, 0.0], secs=3.0)
             self.assertIsNotNone(registry.claiming_owner)
             self.assertFalse(vp_path.exists())
             self.assertEqual(state.social_window_until, 0.0)
-            self.assertEqual(owner_name(load_soul(soul_path).personality), "Sang")
+            self.assertEqual(owner_name(load_soul(soul_path).personality), "Song")
 
             # 3. A stranger speaking mid-enrollment is rejected without creating a guest profile or polluting owner.
             gate.push_frame.reset_mock()
@@ -683,13 +680,15 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
             gate.push_frame.assert_not_awaited()
             self.assertEqual(registry.profiles, {})
 
-            # 4. Turns 2-4 reach 4 turns & >= 10s -> moves to confirmation phase without saving yet.
+            # 4. Mid-enrollment name correction updates SOUL.md and in-memory owner name before confirmation finishes.
             for line in (
-                "I've been building the voice harness today.",
+                "No, my name is Sang, not Song.",
                 "Mostly testing how well the mic picks up speech.",
                 "It's been a pretty productive afternoon overall.",
             ):
                 await say(line, [0.98, 0.05], secs=2.5)
+            self.assertEqual(owner_name(load_soul(soul_path).personality), "Sang")
+            self.assertEqual(registry.owner_name, "Sang")
             self.assertTrue(registry.confirming_owner)
             self.assertEqual(registry.owner_confirmed, 0)
             self.assertFalse(vp_path.exists())

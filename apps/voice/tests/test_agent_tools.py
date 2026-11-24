@@ -451,5 +451,71 @@ class TestHoldContext(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.state.working_context.active())
 
 
+class TestRenameSpeakerTool(unittest.IsolatedAsyncioTestCase):
+    async def test_owner_and_guest_rename_rules_and_live_telemetry(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import numpy as np
+
+        from jarvis_core.soul import load_soul, owner_name, remember_owner_name
+        from jarvis_voice import telemetry
+        from jarvis_voice.speaker import SpeakerRegistry
+        from jarvis_voice.state import JarvisState
+
+        events: list[dict] = []
+        telemetry.bind(lambda kind, **fields: events.append({"kind": kind, **fields}))
+        self.addCleanup(lambda: telemetry.bind(None))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            soul_path = Path(tmp) / "SOUL.md"
+            remember_owner_name("Song", soul_path)
+            registry = SpeakerRegistry(folder=Path(tmp) / "speakers", owner_name="Song", soul_path=soul_path)
+            p1 = registry.observe(np.array([0.0, 1.0], dtype=np.float32), threshold=0.5)
+            p2 = registry.observe(np.array([1.0, 0.0], dtype=np.float32), threshold=0.5)
+            assert p1 is not None and p2 is not None
+            registry.link_name(p1.id, "Davd", enroll=True)
+
+            state = JarvisState()
+            orch = AgentOrchestrator(state=state)
+            handlers = agent_tool_handlers(orch, registry=registry)
+
+            async def rename(**kwargs) -> dict:
+                p = params(kwargs)
+                await handlers["rename_speaker"](p)
+                return p.result_callback.await_args.args[0]
+
+            # 1. Owner renames themselves -> SOUL.md + RAM + immediate telemetry with renamed=True.
+            r = await rename(name="Sang")
+            self.assertEqual(r, {"status": "renamed", "target": "owner", "previous": "Song", "name": "Sang"})
+            self.assertEqual(owner_name(load_soul(soul_path).personality), "Sang")
+            self.assertEqual(events[-1]["kind"], "voice.speaker")
+            self.assertEqual((events[-1]["profile_id"], events[-1]["label"], events[-1]["renamed"]), ("owner", "Sang", True))
+
+            # 2. Owner renames enrolled guest and ephemeral Speaker 2.
+            r_guest = await rename(target="Davd", name="David")
+            self.assertEqual(r_guest["status"], "renamed")
+            self.assertEqual(registry.get("voice_1").name, "David")  # type: ignore[union-attr]
+            r_spk2 = await rename(target="Speaker 2", name="Sarah")
+            self.assertEqual(r_spk2["status"], "renamed")
+            self.assertTrue(registry.get("voice_2").enrolled)  # type: ignore[union-attr]
+
+            # 3. Guest trust boundaries: cannot rename owner, cannot rename another guest, cannot hijack another guest.
+            state.room_turn = True
+            state.current_speaker_id = "voice_1"
+            state.current_speaker = "Speaker: David"
+            self.assertEqual((await rename(target="owner", name="Hacker"))["status"], "owner_only")
+            self.assertEqual((await rename(target="Sang", name="Hacker"))["status"], "owner_only")
+            self.assertEqual((await rename(target="Sarah", name="Mallory"))["status"], "owner_only")
+            self.assertEqual((await rename(name="Sang"))["status"], "owner_only")
+            self.assertEqual((await rename(name="Sarah"))["status"], "owner_only")
+
+            # 4. Enrolled guest CAN fix their own name; updates state.current_speaker and speakers.json.
+            r_self = await rename(name="Daniel")
+            self.assertEqual(r_self, {"status": "renamed", "target": "voice_1", "previous": "David", "name": "Daniel"})
+            self.assertEqual(state.current_speaker, "Speaker: Daniel")
+            self.assertEqual(SpeakerRegistry(folder=Path(tmp) / "speakers").get("voice_1").name, "Daniel")  # type: ignore[union-attr]
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -210,6 +210,8 @@ class JarvisState:
         self.room_turn = False
         # Who is speaking this turn (`User`, `Room`, `Speaker: David`), so a meeting comment is filed under a name.
         self.current_speaker = "User"
+        # Canonical profile id for the current speaker (`owner`, `voice_1`, `room`), for `rename_speaker`.
+        self.current_speaker_id = "owner"
         # Meeting mode, toggled by `jarvis meeting` or by voice ("meeting mode on"). One source of truth: the
         # gate, the STT and the meeting tools all read this, so a toggle takes effect on the next sentence.
         self.meeting = meeting
