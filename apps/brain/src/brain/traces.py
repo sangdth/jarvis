@@ -39,6 +39,7 @@ from brain.telemetry import (
     EVENT_ATTEMPT_FINISHED,
     EVENT_BRAIN_ROUTE,
     EVENT_HTTP_COMPLETED,
+    EVENT_HTTP_INBOUND,
     EVENT_PAIR_REQUESTED,
     EVENT_RUN_STATUS,
     EVENT_VOICE_CLEANUP,
@@ -404,6 +405,12 @@ class TraceSink:
             b["voice_closed"] = True
             b["latency_ms"] = int(max(0.0, (b["finished"] - b["started"]) * 1000))
             b["summary"] = b["summary"] or str(event.get("text") or "")
+        elif name == EVENT_HTTP_INBOUND:
+            source = str(event.get("source") or "")
+            if "iphone" in source:
+                b["source"] = "ask"
+            elif source:
+                b["source"] = source
         elif name == EVENT_RUN_STATUS:
             status = str(event.get("status") or "")
             if status == "running":
@@ -538,52 +545,6 @@ class TraceSink:
                 outcome="friction",
             )
             return
-
-    def record_attempt(
-        self,
-        *,
-        attempt_id: int,
-        task_id: str,
-        outcome: str,
-        summary: str,
-        cost_usd: float,
-        git_sha: str = "",
-        skills_used: tuple[str, ...] = (),
-        repeated_error_tools: tuple[str, ...] = (),
-    ) -> None:
-        surface, causal = classify_surface(
-            outcome, repeated_error_tools=repeated_error_tools, used_skills=bool(skills_used)
-        )
-        trace_id = f"attempt-{attempt_id}"
-        day = datetime.now().astimezone().strftime("%Y-%m-%d")
-        self.db.upsert_trace_run(
-            TraceRunRow(
-                trace_id=trace_id,
-                turn_id="",
-                source="board",
-                surface=surface or "builder_harness",
-                runner="pi",
-                repo="",
-                task_id=task_id,
-                attempt_id=attempt_id,
-                outcome="ok" if outcome in ("pushed", "decomposed") else outcome,
-                friction_kind="" if outcome in ("pushed", "decomposed") else f"attempt_{outcome}",
-                causal_sig=causal,
-                latency_ms=None,
-                ttfb_ms=None,
-                tokens_in=0,
-                tokens_out=0,
-                cost_usd=cost_usd,
-                git_sha=git_sha,
-                prompt_sha=self.prompt_sha(),
-                skills_used=skills_used,
-                user_input=summary[:600],
-                output_summary=summary[:_SUMMARY_CHARS],
-                trace_path=f"{day}/attempt-{attempt_id}.json",
-                superseded_by=None,
-                reflected=0,
-            )
-        )
 
     def _buffer_friction(self, trace_id: str, kind: str, surface: str, causal: str) -> None:
         buffer = self._buffers.get(trace_id)
@@ -725,8 +686,20 @@ class TraceSink:
                             "spans": [
                                 {
                                     "traceId": record["trace_id"],
+                                    "spanId": hashlib.sha256(record["trace_id"].encode()).hexdigest()[:16],
                                     "name": f"turn {record.get('source', 'voice')}",
+                                    "kind": 1,
                                     "startTimeUnixNano": str(int(float(record.get("started_ts") or 0) * 1e9)),
+                                    "endTimeUnixNano": str(
+                                        int(
+                                            (
+                                                float(record.get("started_ts") or 0)
+                                                + float(record.get("duration_ms") or 0) / 1000
+                                            )
+                                            * 1e9
+                                        )
+                                    ),
+                                    "status": {"code": 1 if record.get("outcome") == "ok" else 2},
                                     "attributes": [
                                         {"key": "gen_ai.operation.name", "value": {"stringValue": "invoke_agent"}},
                                         {"key": "gen_ai.agent.name", "value": {"stringValue": "jarvis"}},
