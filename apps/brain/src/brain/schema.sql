@@ -146,6 +146,30 @@ CREATE VIRTUAL TABLE IF NOT EXISTS trace_fts USING fts5(
     tokenize='porter unicode61'
 );
 
+-- One row per harness fix the Improver proposed: the manifesto, what the surface scored before, and what became
+-- of it. This is the loop's own memory, so a rejected or falsified edit is never proposed again unchanged.
+CREATE TABLE IF NOT EXISTS harness_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    surface TEXT NOT NULL,
+    spec_hash TEXT NOT NULL,
+    title TEXT NOT NULL,
+    spec TEXT NOT NULL,
+    predicted_fix TEXT NOT NULL DEFAULT '',
+    at_risk_regressions TEXT NOT NULL DEFAULT '',
+    baseline_fail_rate REAL NOT NULL DEFAULT 0.0,
+    baseline_runs INTEGER NOT NULL DEFAULT 0,
+    applied_at TEXT,
+    applied_sha TEXT,
+    rollback_sha TEXT,
+    outcome TEXT NOT NULL DEFAULT 'proposed' CHECK (
+        outcome IN ('proposed', 'pushed', 'failed_verify', 'rejected', 'rolled_back', 'falsified', 'verified')
+    ),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_harness_proposals_surface ON harness_proposals(surface, created_at DESC);
+
 -- Follow-ups and schedules. A due timer creates a board task (`action='task'`) or runs a read-only check
 -- (`action='check'`) whose answer goes to the outbox. `next_run_at` is UTC; `timezone` is the IANA zone the
 -- cron expression is read in, so a morning check stays at 08:00 across daylight-saving changes.

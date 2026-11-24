@@ -255,6 +255,28 @@ class TraceRunRow:
     created_at: str = ""
 
 
+@dataclass(frozen=True)
+class HarnessProposalRow:
+    """One harness fix the Improver proposed, with the score it predicted and what became of it."""
+
+    id: int
+    task_id: str | None
+    surface: str
+    spec_hash: str
+    title: str
+    spec: str
+    predicted_fix: str
+    at_risk_regressions: str
+    baseline_fail_rate: float
+    baseline_runs: int
+    outcome: str
+    applied_at: str | None = None
+    applied_sha: str | None = None
+    rollback_sha: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class BrainDB:
     """Thread-safe SQLite WAL state store for Brain."""
 
@@ -1738,6 +1760,160 @@ class BrainDB:
                         (loads, succ, fail, now, slug),
                     )
         return rolled_back
+
+    # ------------------------------------------------------------ harness proposals
+
+    def record_harness_proposal(
+        self,
+        *,
+        surface: str,
+        spec_hash: str,
+        title: str,
+        spec: str,
+        predicted_fix: str,
+        at_risk_regressions: str,
+        baseline_fail_rate: float,
+        baseline_runs: int,
+        task_id: str | None = None,
+    ) -> HarnessProposalRow:
+        now = _iso(_utc_now())
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO harness_proposals (
+                    task_id, surface, spec_hash, title, spec, predicted_fix, at_risk_regressions,
+                    baseline_fail_rate, baseline_runs, outcome, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?, 'proposed', ?, ?)
+                """,
+                (
+                    task_id,
+                    surface,
+                    spec_hash,
+                    title,
+                    spec,
+                    predicted_fix,
+                    at_risk_regressions,
+                    baseline_fail_rate,
+                    baseline_runs,
+                    now,
+                    now,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM harness_proposals WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+        assert row is not None
+        return self._row_to_harness_proposal(row)
+
+    def list_harness_proposals(
+        self,
+        *,
+        limit: int = 10,
+        surface: str | None = None,
+        since_days: int | None = None,
+    ) -> list[HarnessProposalRow]:
+        where: list[str] = []
+        params: list[Any] = []
+        if surface:
+            where.append("surface = ?")
+            params.append(surface)
+        if since_days is not None:
+            where.append("created_at >= ?")
+            params.append(_iso(_utc_now() - timedelta(days=since_days)))
+        sql = "SELECT * FROM harness_proposals"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 200)))
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [self._row_to_harness_proposal(row) for row in rows]
+
+    def pushed_harness_proposals(self, *, limit: int = 20) -> list[HarnessProposalRow]:
+        """Applied proposals whose prediction has not been checked yet."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM harness_proposals WHERE outcome = 'pushed' ORDER BY applied_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_harness_proposal(row) for row in rows]
+
+    def set_harness_outcome(
+        self,
+        *,
+        proposal_id: int | None = None,
+        task_id: str | None = None,
+        outcome: str,
+        applied_sha: str | None = None,
+        rollback_sha: str | None = None,
+    ) -> list[HarnessProposalRow]:
+        """Moves a proposal along; `applied_at` is the window the falsifiability check reads from."""
+        if proposal_id is None and task_id is None:
+            return []
+        now = _iso(_utc_now())
+        sets = ["outcome = ?", "updated_at = ?"]
+        params: list[Any] = [outcome, now]
+        if applied_sha is not None:
+            sets += ["applied_sha = ?", "applied_at = ?"]
+            params += [applied_sha, now]
+        if rollback_sha is not None:
+            sets.append("rollback_sha = ?")
+            params.append(rollback_sha)
+        where = "id = ?" if proposal_id is not None else "task_id = ?"
+        target = proposal_id if proposal_id is not None else task_id
+        params.append(target)
+        with self._lock, self._conn:
+            ids = {
+                int(row["id"])
+                for row in self._conn.execute(
+                    f"SELECT id FROM harness_proposals WHERE {where}", (target,)
+                ).fetchall()
+            }
+            if ids:
+                self._conn.execute(
+                    f"UPDATE harness_proposals SET {', '.join(sets)} WHERE {where}", tuple(params)
+                )
+        return [row for row in self.list_harness_proposals(limit=200) if row.id in ids]
+
+    def surface_run_stats(self, surface: str, *, since: str | None = None, limit: int = 50) -> tuple[int, int]:
+        """`(failed or friction, total)` runs on one surface: what the proposal promised to move."""
+        where = ["surface = ?"]
+        params: list[Any] = [surface]
+        if since:
+            where.append("created_at >= ?")
+            params.append(since)
+        sql = (
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN outcome != 'ok' OR friction_kind IS NOT NULL THEN 1 ELSE 0 END) AS fails "
+            f"FROM (SELECT * FROM trace_runs WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC LIMIT ?)"
+        )
+        params.append(max(1, limit))
+        with self._lock:
+            row = self._conn.execute(sql, tuple(params)).fetchone()
+        return (int(row["fails"] or 0), int(row["total"] or 0)) if row is not None else (0, 0)
+
+    @staticmethod
+    def _row_to_harness_proposal(row: sqlite3.Row) -> HarnessProposalRow:
+        keys = row.keys()
+        return HarnessProposalRow(
+            id=int(row["id"]),
+            task_id=row["task_id"],
+            surface=str(row["surface"]),
+            spec_hash=str(row["spec_hash"]),
+            title=str(row["title"]),
+            spec=str(row["spec"]),
+            predicted_fix=str(row["predicted_fix"] or ""),
+            at_risk_regressions=str(row["at_risk_regressions"] or ""),
+            baseline_fail_rate=float(row["baseline_fail_rate"] or 0.0),
+            baseline_runs=int(row["baseline_runs"] or 0),
+            outcome=str(row["outcome"]),
+            applied_at=row["applied_at"] if "applied_at" in keys else None,
+            applied_sha=row["applied_sha"] if "applied_sha" in keys else None,
+            rollback_sha=row["rollback_sha"] if "rollback_sha" in keys else None,
+            created_at=str(row["created_at"] or ""),
+            updated_at=str(row["updated_at"] or ""),
+        )
 
     def subscribe_outbox(self, callback: Callable[[OutboxRow], None]) -> None:
         """Called for every newly queued outbox row; the server turns it into a voice event."""

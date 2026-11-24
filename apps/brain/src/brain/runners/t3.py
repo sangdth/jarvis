@@ -27,6 +27,7 @@ from loguru import logger
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import InvalidStatus
 
+from brain import memory
 from brain.config import Settings
 from brain.db import BrainDB
 from brain.runners.base import EventCallback, RunRequest, RunResult
@@ -641,12 +642,18 @@ class T3Runner:
             branch = request.worktree_branch
             strategy = {"type": "worktree", "baseBranch": "origin/master", "branch": branch}
         title = request.prompt.strip().splitlines()[0][:80] or "Jarvis task"
+        # The first message carries the small index plus this repo's note: a new daytime thread starts knowing
+        # what the night learned, without pasting the whole memory into every turn after it.
+        initial = SYNC_MASTER + request.prompt
+        standing = memory.standing_context(self.cfg.home_dir, repo_key)
+        if standing:
+            initial = f"[Standing context]\n{standing}\n\n{initial}"
         launched = await self._call("orchestration.launchThread", {
             "commandId": str(uuid.uuid4()), "threadId": thread_id, "projectId": project["id"],
             "title": title, "generateTitle": True, "modelSelection": model,
             "runtimeMode": defaults.get("defaultRuntimeMode") or "auto",
             "interactionMode": "default", "workspaceStrategy": strategy,
-            "initialMessage": {"text": SYNC_MASTER + request.prompt, "attachments": []},
+            "initialMessage": {"text": initial, "attachments": []},
         })
         if launched is None:
             return None, False, "T3 Code refused to start a thread (is a default model set in T3?)."

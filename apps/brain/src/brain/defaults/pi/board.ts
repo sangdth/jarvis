@@ -187,6 +187,19 @@ export default function (pi: ExtensionAPI) {
 				title: { type: "string" },
 				spec: { type: "string", description: "The fault, the narrow fix, and how to reproduce it" },
 				evidence: { type: "string", description: "Trace ids or corrections showing it recurs" },
+				target_surface: {
+					type: "string",
+					enum: [
+						"voice_intent_data",
+						"whisper_asr_data",
+						"voice_prompts",
+						"brain_router",
+						"builder_harness",
+						"skills",
+						"memory",
+					],
+					description: "The one editable component this fix belongs to (HARNESS_SURFACES)",
+				},
 				target_files: { type: "array", items: { type: "string" }, description: "Files the fix touches" },
 				predicted_fix: { type: "string" },
 				at_risk_regressions: { type: "string" },
@@ -195,7 +208,7 @@ export default function (pi: ExtensionAPI) {
 					description: "Reproduce-first command: fails today, passes after the fix",
 				},
 			},
-			required: ["title", "spec", "evidence", "verify_cmd"],
+			required: ["title", "spec", "evidence", "target_surface", "verify_cmd"],
 		} as never,
 		async execute(_toolCallId, params: Record<string, unknown>) {
 			const res = await callBoardRpc("propose_harness_task", params);
@@ -344,6 +357,30 @@ export default function (pi: ExtensionAPI) {
 		} as never,
 		async execute(_toolCallId, params: Record<string, unknown>) {
 			const res = await callBoardRpc("propose_memory_update", params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(res) }],
+				details: res,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "curate_voice_memory",
+		label: "Curate Voice Memory",
+		description:
+			"Improver only: delete a duplicate or contradicted Mem0 memory, or promote one of the owner's durable engineering facts into MEMORY.md. Never crosses namespaces.",
+		promptSnippet: "Delete a duplicate voice memory or promote an owner fact from it.",
+		parameters: {
+			type: "object",
+			properties: {
+				op: { type: "string", enum: ["delete", "promote"] },
+				user_id: { type: "string", description: "'sang' (the owner) or 'speaker:<name>'" },
+				memory_id: { type: "string", description: "The Mem0 memory id from the index above" },
+			},
+			required: ["op", "user_id", "memory_id"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("curate_voice_memory", params);
 			return {
 				content: [{ type: "text", text: JSON.stringify(res) }],
 				details: res,

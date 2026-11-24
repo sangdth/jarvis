@@ -99,6 +99,20 @@ def addendum_paths(home_dir: Path) -> list[Path]:
     return [path for path in (instructions_path(home_dir), index_path(home_dir)) if path.is_file()]
 
 
+def standing_context(home_dir: Path, repo: str = "") -> str:
+    """The small index (and this repo's note, when there is one): what the night learned, for a daytime run."""
+    parts: list[str] = []
+    index = index_path(home_dir)
+    if index.is_file():
+        parts.append(index.read_text(encoding="utf-8").strip())
+    slug = repo.rstrip("/").split("/")[-1].lower() if repo else ""
+    if slug:
+        note = repos_dir(home_dir) / f"{slug}.md"
+        if note.is_file():
+            parts.append(note.read_text(encoding="utf-8").strip())
+    return "\n\n".join(part for part in parts if part)
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, raw_tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -51,8 +52,9 @@ from brain.telemetry import (
     TelemetryHub,
     preview,
 )
-from brain.traces import classify_surface, distill_experience
+from brain.traces import HARNESS_SURFACES, classify_surface, distill_experience
 from brain.upgrade import GitState, classify_git_state
+from brain.voice_memory import curate_voice_memory
 from jarvis_core.home import JARVIS_HOME
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
@@ -66,7 +68,7 @@ BUILDER_TOOLS = (
     "record_note,report_diagnostic,defer_for_approval,schedule_followup"
 )
 IMPROVER_TOOLS = (
-    "read,grep,find,ls,propose_skill_change,propose_memory_update,propose_harness_task"
+    "read,grep,find,ls,propose_skill_change,propose_memory_update,propose_harness_task,curate_voice_memory"
 )
 SCOUT_TOOLS = "read,grep,find,ls"
 _METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
@@ -122,7 +124,13 @@ EVAL_GATES: dict[str, tuple[str, set[str]]] = {
     "brain_route": ("scripts/bench_brain_route.py", BRAIN_ROUTE_PATHS),
     "voice_prompts": ("scripts/bench_voice_prompts.py", VOICE_PROMPT_PATHS),
 }
-HARNESS_DEDUPE_KEY = "harness-proposal"
+HARNESS_PREDICTION_RUNS = 10  # runs on the target surface before a fix's prediction is checked
+
+
+def harness_spec_hash(spec: str) -> str:
+    """Identity of a proposal's idea, indifferent to punctuation: the duplicate check's first key."""
+    normalized = " ".join(_WORD_RE.findall(spec.lower()))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def spec_similarity(left: str, right: str) -> float:
@@ -131,6 +139,19 @@ def spec_similarity(left: str, right: str) -> float:
     if not left_words or not right_words:
         return 0.0
     return len(left_words & right_words) / len(left_words | right_words)
+
+
+def duplicate_harness_proposal(
+    db: BrainDB, surface: str, spec: str
+) -> Any | None:
+    """The earlier proposal this spec repeats: a rejected or failed idea may not come back unchanged."""
+    spec_hash = harness_spec_hash(spec)
+    for previous in db.list_harness_proposals(surface=surface, since_days=30, limit=20):
+        if previous.outcome == "proposed":
+            continue  # still open: the dedupe key already stops a second row for that surface
+        if previous.spec_hash == spec_hash or spec_similarity(spec, previous.spec) >= 0.8:
+            return previous
+    return None
 
 
 def extract_metric_value(output: str | None) -> float | None:
@@ -200,6 +221,8 @@ class Reconciler:
         self.hub = hub if hub is not None else TelemetryHub()
         self.restart_pending: bool = False
         self._last_phase: str | None = None
+        # The voice's live Mem0 client, attached by the supervisor when both run in one process.
+        self.voice_memory: Any | None = None
         self.cfg.worktrees_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.notes_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -233,6 +256,10 @@ class Reconciler:
         target.write_text(source_text, encoding="utf-8")
         os.chmod(target, 0o600)
         return target
+
+    def attach_voice_memory(self, client: Any | None) -> None:
+        """The voice's live Mem0 client, so curation shares its Qdrant handle instead of opening a second one."""
+        self.voice_memory = client
 
     def start(self) -> None:
         if self._loop_task is None or self._loop_task.done():
@@ -312,6 +339,7 @@ class Reconciler:
         self.db.reap_stale_leases()
         self.db.recover_firing_timers(max_age_seconds=max(1800, self.cfg.max_run_seconds * 2))
         await self._fire_timers()
+        await self._check_harness_predictions()
         state = self.db.get_state()
         if state.spent_today_usd >= state.daily_budget_usd:
             self._set_phase("budget_paused", spent_usd=state.spent_today_usd)
@@ -345,6 +373,7 @@ class Reconciler:
             mode=task.mode,
         )
         finished = await self.execute_claimed_task(task)
+        self._sync_harness_outcome(finished)
         if self.restart_pending and self.on_restart_requested is not None:
             self.on_restart_requested()
         return finished
@@ -960,6 +989,61 @@ class Reconciler:
             return False
         return self.db.count_unreflected_traces() >= 5
 
+    def _sync_harness_outcome(self, finished: TaskRow | None) -> None:
+        """`pushed` starts the prediction window; a failed verify closes the proposal as it stands.
+
+        shortcut: only these two outcomes move a proposal here; a 2-crash rollback is the sha circuit breaker's
+        job, and falsification (`_check_harness_predictions`) names the surface and the numbers.
+        """
+        if finished is None or not (finished.dedupe_key or "").startswith("harness:"):
+            return
+        attempts = self.db.list_attempts(finished.id)
+        if not attempts:
+            return
+        outcome = {"pushed": "pushed", "failed_verify": "failed_verify"}.get(attempts[-1].outcome)
+        if outcome is None:
+            return
+        self.db.set_harness_outcome(
+            task_id=finished.id, outcome=outcome, applied_sha=finished.best_sha or None
+        )
+
+    async def _check_harness_predictions(self) -> None:
+        """Self-Harness's falsifiable prediction: K runs after the fix, did the surface move as promised?
+
+        A proposal that made its surface worse is marked `falsified` and offered for rollback; one that held
+        is `verified`. Without this, a self-upgrade is never checked against the claim it shipped with.
+        """
+        for proposal in self.db.pushed_harness_proposals():
+            if not proposal.applied_at:
+                continue
+            fails, total = self.db.surface_run_stats(
+                proposal.surface, since=proposal.applied_at, limit=HARNESS_PREDICTION_RUNS
+            )
+            if total < HARNESS_PREDICTION_RUNS:
+                continue
+            rate = fails / total
+            if fails >= 2 and rate > proposal.baseline_fail_rate:
+                self.db.set_harness_outcome(proposal_id=proposal.id, outcome="falsified")
+                self.db.queue_outbox(
+                    kind="approval_request",
+                    task_id=proposal.task_id,
+                    summary_spoken=(
+                        f"Roll back the {proposal.surface} fix? Its failure rate rose from "
+                        f"{proposal.baseline_fail_rate:.0%} to {rate:.0%} over {total} runs."
+                    ),
+                    details={
+                        "proposal_id": proposal.id,
+                        "predicted_fix": proposal.predicted_fix,
+                        "at_risk_regressions": proposal.at_risk_regressions,
+                        "baseline_fail_rate": proposal.baseline_fail_rate,
+                        "post_fail_rate": round(rate, 4),
+                        "runs": total,
+                        "rollback_sha": proposal.rollback_sha,
+                    },
+                )
+            else:
+                self.db.set_harness_outcome(proposal_id=proposal.id, outcome="verified")
+
     async def run_skill_improver(self, *, run_key: str = "improver") -> PiRunResult:
         """
         Runs the Perplexity-style 4-stage self-improvement reflection loop over unreflected attempts:
@@ -982,6 +1066,11 @@ class Reconciler:
         harvested = harvest_eval_cases(self.db, self.cfg)
         if any(harvested.values()):
             logger.info(f"[Reconciler] harvested eval cases: {harvested}")
+        # Its own history: a rejected or falsified idea must not come back unchanged.
+        proposal_history = "\n".join(
+            f"- [{p.surface}] {p.outcome}: {p.title}"
+            for p in self.db.list_harness_proposals(limit=10)
+        ) or "(none yet)"
 
         session_dir = self.cfg.sessions_dir / "improver"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1030,8 +1119,9 @@ class Reconciler:
             "- Propose at most ONE skill change via `propose_skill_change`, or abstain.\n"
             "- If a fault recurs in the failure patterns below, you may instead queue at most ONE bounded "
             "harness fix via `propose_harness_task`: name the trace ids or corrections as evidence, a "
-            "`verify_cmd` that fails today, and the files you expect to change. A fix that needs a "
-            "protected file is the owner's call, not yours.\n"
+            "`verify_cmd` that fails today, the `target_surface` it belongs to, and the files you expect to "
+            "change. A fix that needs a protected file is the owner's call, not yours. A proposal already "
+            "rejected, failed or falsified may not be re-proposed unchanged.\n"
             "- A speech-check correction that keeps coming back is training data for the intent model, "
             "not a prompt edit; say so in the task spec instead of proposing a skill.\n"
             "- You may also propose at most ONE memory change via `propose_memory_update`:\n"
@@ -1051,7 +1141,8 @@ class Reconciler:
             f"{chr(10).join(attempt_index_lines)}\n\n"
             f"Unreflected turn/run traces: {pending_traces} (in `trace_runs` and the digest above)\n\n"
             "Recurring failure patterns (grouped by harness surface; a narrow change should resolve one):\n"
-            f"{render_failure_patterns(patterns)}"
+            f"{render_failure_patterns(patterns)}\n\n"
+            f"Your recent harness proposals and their outcomes:\n{proposal_history}"
         )
         res = await self._run_pi(
             role="improver",
@@ -1225,6 +1316,7 @@ class Reconciler:
         diagnostics: list[str] = []
         modified_skills: list[str] = []
         modified_memory: list[str] = []
+        curated_voice: list[str] = []
         stream_state = PiStreamState(session_id=resume_session_id)
         extra_scout_cost = 0.0
         timed_out = False
@@ -1431,6 +1523,9 @@ class Reconciler:
                     spec = str(params.get("spec") or "").strip()
                     verify_cmd = str(params.get("verify_cmd") or "").strip()
                     evidence = str(params.get("evidence") or "").strip()
+                    surface = str(params.get("target_surface") or "").strip()
+                    predicted_fix = str(params.get("predicted_fix") or "").strip()
+                    at_risk = str(params.get("at_risk_regressions") or "").strip()
                     raw_targets = params.get("target_files") or []
                     targets = (
                         [str(p).strip() for p in raw_targets if str(p).strip()]
@@ -1441,6 +1536,10 @@ class Reconciler:
                         raise ValueError(
                             "A harness task needs a title, a spec and a reproduce-first verify_cmd."
                         )
+                    if surface not in HARNESS_SURFACES:
+                        raise ValueError(
+                            f"target_surface must be one of: {', '.join(sorted(HARNESS_SURFACES))}."
+                        )
                     if len(evidence) < 40:
                         raise ValueError(
                             "A harness task needs evidence: name the trace ids or corrections."
@@ -1450,23 +1549,59 @@ class Reconciler:
                         raise ValueError(
                             f"Protected files belong to the owner: {', '.join(protected)}."
                         )
+                    # A rejected or failed idea is never re-proposed unchanged: the loop remembers its own history.
+                    spec_hash = harness_spec_hash(spec)
+                    duplicate = duplicate_harness_proposal(self.db, surface, spec)
+                    if duplicate is not None:
+                        raise ValueError(
+                            f"{surface} proposal #{duplicate.id} was already {duplicate.outcome}: "
+                            f"{duplicate.title!r}. Take a different mechanism or leave it alone."
+                        )
+                    fails, runs = self.db.surface_run_stats(surface)
                     queued_task = self.db.upsert_task(
                         kind="problem",
                         repo="jarvis",
                         title=title[:120],
                         spec=(
                             f"{spec}\n\nEvidence:\n{evidence}\n\n"
-                            f"Predicted fix: {params.get('predicted_fix') or '(not stated)'}\n"
-                            f"At risk: {params.get('at_risk_regressions') or '(not stated)'}"
+                            f"Predicted fix: {predicted_fix or '(not stated)'}\n"
+                            f"At risk: {at_risk or '(not stated)'}"
                         ),
                         verify_cmd=verify_cmd,
-                        dedupe_key=HARNESS_DEDUPE_KEY,
+                        dedupe_key=f"harness:{surface}",
                         ready=self.cfg.autonomous_harness_upgrades,
+                    )
+                    recorded = self.db.record_harness_proposal(
+                        surface=surface,
+                        spec_hash=spec_hash,
+                        title=title[:120],
+                        spec=spec,
+                        predicted_fix=predicted_fix,
+                        at_risk_regressions=at_risk,
+                        baseline_fail_rate=(fails / runs) if runs else 0.0,
+                        baseline_runs=runs,
+                        task_id=queued_task.id,
                     )
                     resp = {
                         "ok": True,
-                        "result": {"id": queued_task.id, "status": queued_task.status},
+                        "result": {
+                            "id": queued_task.id,
+                            "status": queued_task.status,
+                            "proposal_id": recorded.id,
+                            "baseline_fail_rate": round(recorded.baseline_fail_rate, 4),
+                            "baseline_runs": runs,
+                        },
                     }
+                elif method == "curate_voice_memory":
+                    if role != "improver":
+                        raise ValueError(
+                            "curate_voice_memory is only permitted for the improver role."
+                        )
+                    if curated_voice:
+                        raise ValueError("Updates are scoped to one voice-memory change per reflection run.")
+                    curated = curate_voice_memory(self.voice_memory, params)
+                    curated_voice.append(str(curated.get("memory_id") or ""))
+                    resp = {"ok": True, "result": curated}
                 elif method == "schedule_followup":
                     if role not in ("planner", "builder"):
                         raise ValueError("schedule_followup is only permitted for planner or builder roles.")
@@ -1547,6 +1682,8 @@ class Reconciler:
                 detail = str(result.get("name") or "")
             elif method == "propose_harness_task":
                 detail = str(result.get("id") or "")
+            elif method == "curate_voice_memory":
+                detail = str(result.get("op") or "")
             elif method == "schedule_followup":
                 detail = str(result.get("timer_id") or "")
             elif method == "defer_for_approval":
