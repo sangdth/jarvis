@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -57,6 +57,7 @@ from brain.telemetry import (
 from brain.traces import HARNESS_SURFACES, classify_surface, distill_experience
 from brain.upgrade import GitState, classify_git_state
 from brain.voice_memory import curate_voice_memory
+from brain.weights import laya_intent_ready
 from jarvis_core.home import JARVIS_HOME
 
 ApprovalCallback = Callable[[str, str, str | None], Awaitable[bool | None]]
@@ -70,7 +71,8 @@ BUILDER_TOOLS = (
     "record_note,report_diagnostic,defer_for_approval,schedule_followup"
 )
 IMPROVER_TOOLS = (
-    "read,grep,find,ls,propose_skill_change,propose_memory_update,propose_harness_task,curate_voice_memory"
+    "read,grep,find,ls,propose_skill_change,propose_memory_update,propose_harness_task,"
+    "curate_voice_memory,propose_weight_update"
 )
 SCOUT_TOOLS = "read,grep,find,ls"
 _METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
@@ -127,6 +129,16 @@ EVAL_GATES: dict[str, tuple[str, set[str]]] = {
     "voice_prompts": ("scripts/bench_voice_prompts.py", VOICE_PROMPT_PATHS),
 }
 HARNESS_PREDICTION_RUNS = 10  # runs on the target surface before a fix's prediction is checked
+# The Improver's own probation: new evidence needed before its scorecard is allowed to judge the change.
+PROBATION_MIN_TASKS = 10
+PROBATION_MIN_TURNS = 30
+IMPROVER_PATHS = {"apps/brain/src/brain/skills.py", "apps/brain/src/brain/reconciler.py"}
+WEIGHT_TARGETS = ("whisper-owner-lora", "laya-intent", "router-distill")
+WEIGHT_GATES = {
+    "whisper-owner-lora": "uv run python scripts/voice/evaluate.py --split test",
+    "laya-intent": "uv run python scripts/bench_intent.py 3",
+    "router-distill": "uv run python scripts/bench_brain_route.py 3",
+}
 # Hypothesis novelty: embeddings separate mechanisms that share words; word overlap is the offline fallback.
 OLLAMA_EMBED_URL = "http://127.0.0.1:11434/api/embed"
 SPEC_COSINE_DUPLICATE = 0.88
@@ -384,6 +396,7 @@ class Reconciler:
         self.db.recover_firing_timers(max_age_seconds=max(1800, self.cfg.max_run_seconds * 2))
         await self._fire_timers()
         await self._check_harness_predictions()
+        await self._check_improver_probation()
         state = self.db.get_state()
         if state.spent_today_usd >= state.daily_budget_usd:
             self._set_phase("budget_paused", spent_usd=state.spent_today_usd)
@@ -1088,6 +1101,52 @@ class Reconciler:
             else:
                 self.db.set_harness_outcome(proposal_id=proposal.id, outcome="verified")
 
+    async def _check_improver_probation(self) -> None:
+        """A self-upgrade that edits the Improver itself sits on a 7-day probation: its own numbers may not drop.
+
+        Independent of the 2-crash breaker: this one looks at pass rate, interactive friction and cost per
+        solved task, and offers the rollback sha rather than applying it on its own.
+        """
+        probation = self.db.improver_probation()
+        if probation is None or not probation["until"]:
+            return
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if now >= probation["until"]:
+            self.db.clear_improver_probation()
+            return
+        current = self.db.compute_meta_utility()
+        if current["attempted_tasks"] < PROBATION_MIN_TASKS or current["turns"] < PROBATION_MIN_TURNS:
+            return  # not enough new evidence to judge the change yet
+        try:
+            baseline = json.loads(probation["baseline_json"] or "{}")
+        except ValueError:
+            baseline = {}
+        if not baseline:
+            return
+        dropped = (
+            current["first_attempt_pass_rate"] < baseline.get("first_attempt_pass_rate", 0.0) - 0.10
+            or current["friction_per_100_turns"] > baseline.get("friction_per_100_turns", 0.0) + 5.0
+            or current["median_usd_per_solved_task"]
+            > baseline.get("median_usd_per_solved_task", 0.0) * 1.35
+        )
+        if not dropped:
+            return
+        self.db.clear_improver_probation()
+        self.db.queue_outbox(
+            kind="approval_request",
+            summary_spoken=(
+                "Roll back the Improver change? Its own scorecard dropped during probation: "
+                f"first-attempt pass rate {baseline.get('first_attempt_pass_rate', 0):.0%} to "
+                f"{current['first_attempt_pass_rate']:.0%}."
+            ),
+            details={
+                "reason": "improver_probation_regressed",
+                "rollback_sha": probation["rollback_sha"],
+                "baseline": baseline,
+                "current": current,
+            },
+        )
+
     async def run_skill_improver(self, *, run_key: str = "improver") -> PiRunResult:
         """
         Runs the Perplexity-style 4-stage self-improvement reflection loop over unreflected attempts:
@@ -1638,6 +1697,45 @@ class Reconciler:
                             "baseline_runs": runs,
                         },
                     }
+                elif method == "propose_weight_update":
+                    if role != "improver":
+                        raise ValueError(
+                            "propose_weight_update is only permitted for the improver role."
+                        )
+                    target = str(params.get("target") or "").strip()
+                    if target not in WEIGHT_TARGETS:
+                        raise ValueError(f"target must be one of: {', '.join(WEIGHT_TARGETS)}")
+                    reason = str(params.get("reason") or "").strip()
+                    if len(reason) < 40:
+                        raise ValueError("A weight update needs a reason: what the data shows.")
+                    if target == "laya-intent":
+                        cursor = int(memory.read_bookmarks(self.cfg.home_dir).get("laya_intent_cursor", "0") or 0)
+                        ready_now, why = laya_intent_ready(self.cfg.home_dir, bookmark_cursor=cursor)
+                    else:
+                        ready_now, why = True, "thresholds are checked by the training task itself"
+                    queued_weight = self.db.upsert_task(
+                        kind="problem",
+                        repo="jarvis",
+                        title=f"Retrain {target}",
+                        spec=(
+                            f"{reason}\n\nTarget: {target}\nGate: {WEIGHT_GATES[target]}\n"
+                            f"Readiness: {why}\n"
+                            "Train overnight, keep the best validation epoch, and promote only when the gate"
+                            " improves; keep the previous checkpoint for a one-step rollback."
+                        ),
+                        verify_cmd=WEIGHT_GATES[target],
+                        dedupe_key=f"weights:{target}",
+                        ready=False,
+                    )
+                    resp = {
+                        "ok": True,
+                        "result": {
+                            "id": queued_weight.id,
+                            "status": queued_weight.status,
+                            "ready": ready_now,
+                            "gate": why,
+                        },
+                    }
                 elif method == "curate_voice_memory":
                     if role != "improver":
                         raise ValueError(
@@ -1730,6 +1828,8 @@ class Reconciler:
                 detail = str(result.get("id") or "")
             elif method == "curate_voice_memory":
                 detail = str(result.get("op") or "")
+            elif method == "propose_weight_update":
+                detail = str(result.get("id") or "")
             elif method == "schedule_followup":
                 detail = str(result.get("timer_id") or "")
             elif method == "defer_for_approval":
@@ -2663,6 +2763,23 @@ class Reconciler:
             )
         await self._git_out(repo_dir, "reset", "--hard", verified_sha)
         new_head = (await self._git_out(repo_dir, "rev-parse", "HEAD")).strip()
+        changed = set(
+            (
+                await self._git_out(
+                    repo_dir, "diff", "--name-only", old_head, new_head, check=False
+                )
+            ).splitlines()
+        )
+        if changed & IMPROVER_PATHS:
+            # A change to the loop's own brain gets a week of numbers before it is trusted.
+            self.db.start_improver_probation(
+                rollback_sha=old_head,
+                baseline_json=json.dumps(self.db.compute_meta_utility()),
+                until_iso=(datetime.now(timezone.utc) + timedelta(days=7)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+            )
+            logger.info("[Reconciler] Improver self-upgrade on 7-day probation")
         dep_diff = (
             await self._git_out(
                 repo_dir,

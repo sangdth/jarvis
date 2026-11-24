@@ -1,7 +1,23 @@
 # Phases 2–5 Implementation Plan: Evaluators, Closed Loop, Pareto Skills & Weights (plan, 2026-11-24)
 
-Status: **not started** (baseline: `c31bf80`, Phase 1 landed).
+Status: **Phases 2 and 3 built; Phase 4 built except skill sidecars; Phase 5 built except the cockpit strip
+and the two CLI verbs.** Landed in `55ae307` (Phase 2), `5356096` (Phase 3), `3c994cb` (Phase 4) and the
+Phase 5 commit after it. Covered by `apps/brain/tests/test_evals.py`, `test_closed_loop.py`,
+`test_pareto_and_lift.py` and `test_weights_and_meta.py`.
 Companions: `docs/self-improvement-plan.md` (roadmap & literature) and `docs/observability-plan.md` (Phase 1 build spec).
+
+Remaining, with the reason it was deferred:
+
+- **Phase 4 · MCE-lite skill sidecars** (`context.py` / `check.sh`): storing, validating and executing them needs
+  the prompt-injection seam the Planner/Builder prompts do not have, and the plan's own open questions leave the
+  payoff unproven. The 10-load marginal-lift retirement covers the same risk (a placebo skill never fails, so the
+  2-failure rollback never fires).
+- **Phase 5 · `jarvis models` and `jarvis voice-review`**: `weights.py` has `promote`, `rollback`, `status` and
+  `laya_intent_ready`, and `propose_weight_update` queues the draft task; the CLI verbs and the owner clip review
+  are the next small step.
+- **Phase 5 · the cockpit strip**: the 7-day probation and meta-utility live in `state.db` and the outbox; drawing
+  them in `jarvis-top` is a read-only `db.rs` query plus a header badge.
+
 
 ---
 

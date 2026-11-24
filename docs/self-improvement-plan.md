@@ -1,6 +1,6 @@
 # Closing the self-improvement gap (plan, 2026-11-24)
 
-Status: Phase 1 built (2026-11-24); Phases 2–5 specified in `docs/self-improvement-phases-2-5-plan.md`, not started.
+Status: Phase 1 built; Phases 2–3 built, Phases 4–5 mostly built (2026-11-24). Remaining work is listed at the top of `docs/self-improvement-phases-2-5-plan.md`.
 Baseline: Lilian Weng, *Harness Engineering for Self-Improvement*
 (2026-07-04, <https://lilianweng.github.io/posts/2026-07-04-harness/>) compared against this checkout at
 `6a77d89`. Read `docs/architecture.md` and `apps/brain/AGENTS.md` first; this plan only adds to them.
@@ -89,7 +89,7 @@ still in `ASSIST`.
 
 ### Phase 2 — Evaluator coverage and held-in / held-out splits
 
-Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 2).
+Status: **built** (`55ae307`). Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 2).
 
 Goal: nothing that can change behaviour ships without a number.
 
@@ -112,7 +112,7 @@ Gate: a deliberately bad router edit fails Phase 2 in CI, and a good one passes.
 
 ### Phase 3 — Closed decision loop and one memory
 
-Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 3).
+Status: **built** (`5356096`). Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 3).
 
 Goal: the Improver remembers its own history, and Voice and Brain stop disagreeing.
 
@@ -134,7 +134,7 @@ namespaces (`sang` vs `speaker:*`).
 
 ### Phase 4 — Skills that earn their keep, and a Pareto tournament
 
-Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 4).
+Status: **most built** (`3c994cb`): lift retirement, Pareto tournament, `bge-m3` novelty, evolve blocks; skill sidecars not built. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 4).
 
 Goal: measure skills, then choose between candidates on more than accuracy.
 
@@ -152,7 +152,7 @@ Gate: a candidate that buys 0.5% accuracy for >150 ms of voice latency is reject
 
 ### Phase 5 — Weights, and a metric for the Improver itself
 
-Status: **not started**. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 5).
+Status: **mostly built**: `weights.py`, `propose_weight_update`, meta-utility and 7-day Improver probation; the `jarvis models` / `voice-review` verbs and the cockpit strip are not. Detailed build spec: `docs/self-improvement-phases-2-5-plan.md` (§Phase 5).
 
 Goal: close the parametric half and stop trusting the loop because it looks busy.
 

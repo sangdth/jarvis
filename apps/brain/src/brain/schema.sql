@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS system_state (
     last_good_sha TEXT,
     upgrade_runs INTEGER NOT NULL DEFAULT 0,
     upgrade_failures INTEGER NOT NULL DEFAULT 0,
+    -- 7-day probation on a self-upgrade that edits the Improver itself: newest scorecard vs the recorded one
+    improver_probation_until TEXT,
+    improver_rollback_sha TEXT,
+    improver_baseline_json TEXT,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

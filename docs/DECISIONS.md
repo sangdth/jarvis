@@ -148,6 +148,19 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   problem under `dedupe_key='harness-proposal'` with evidence and a reproduce-first `verify_cmd`. It stays a
   `draft` unless `AUTONOMOUS_HARNESS_UPGRADES=true`, so the owner still decides. Limits: one open proposal at a
   time; a fix that needs a protected file is refused and must be asked for by voice.
+- **A harness proposal is remembered, checked and falsified.** `harness_proposals` holds one row per Improver fix:
+  the surface it targets, its spec hash, the failure rate measured from `trace_runs` before it landed, and what
+  became of it. `propose_harness_task` refuses an idea already `rejected`, `failed_verify`, `rolled_back` or
+  `falsified` within 30 days (same spec hash, or word overlap `>= 0.8`), and K=10 runs on the surface after the fix
+  either verify the prediction or mark it falsified and offer a rollback quoting baseline vs post rate. Limits: only
+  `pushed` and `failed_verify` move a proposal automatically in `tick`; a 2-crash rollback stays the sha circuit
+  breaker's job, and the K window counts any run on the surface, not only the ones the fix was meant to change.
+- **The Improver sits on a 7-day probation when a self-upgrade edits it.** A verified upgrade touching
+  `skills.py` or `reconciler.py` records `improver_rollback_sha` and a baseline of `compute_meta_utility()` (first-
+  attempt builder pass rate, interactive friction per 100 turns, median USD and turns per solved task, all computed
+  from `attempts` + `trace_runs`). Once 10 tasks and 30 turns have run under it, a `-10 pp` pass rate, `+5` friction
+  or `+35%` cost queues a rollback approval. Limits: the thresholds are a first guess, and a quiet week with little
+  interactive use simply keeps the probation open until its date passes.
 - **A self-upgrade that touches the voice runs its benchmark.** `_changed_files` + `_run_voice_benchmarks` run
   `scripts/bench_intent.py 1` (≥97%) for `executive_filter.py` / `languages.json`, and `scripts/bench_routing.py 1`
   (≥95%) for `prompts.py`, `agent_tools.py` or `orchestrator.py`. The script is read from the checkout, not the
@@ -161,6 +174,10 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 
 Not yet checked against real use:
 
+- Whether `bge-m3` cosine `>= 0.88` separates distinct hypotheses the way the sample suggested: the numeric-constant
+  exemption keeps sweeps working, but a threshold change would silently widen or narrow what the tournament accepts.
+- The 7-day Improver probation needs a week of real use before its thresholds (`-10 pp` pass rate, `+5` friction per
+  100 turns, `+35%` cost) can be called calibrated.
 - A run's SSE stream that drops mid-run in real life (the `GET /v1/runs/:id` fallback is only unit-tested).
 - T3's worktree `workspaceStrategy` fields against a live T3 build: the automatic thread path uses `root`, and the
   board still builds on `pi`, so no board task depends on the worktree variant yet.
