@@ -16,6 +16,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+import httpx
 from loguru import logger
 
 from brain import memory, schedule
@@ -31,6 +32,7 @@ from brain.db import (
     has_metric_comparator,
 )
 from brain.evals import harvest_eval_cases
+from brain.pareto import Candidate, parse_metrics, select_winner
 from brain.pi_stream import PiStreamState
 from brain.sandbox import strip_secrets, wrap_with_sandbox
 from brain.skills import (
@@ -125,6 +127,10 @@ EVAL_GATES: dict[str, tuple[str, set[str]]] = {
     "voice_prompts": ("scripts/bench_voice_prompts.py", VOICE_PROMPT_PATHS),
 }
 HARNESS_PREDICTION_RUNS = 10  # runs on the target surface before a fix's prediction is checked
+# Hypothesis novelty: embeddings separate mechanisms that share words; word overlap is the offline fallback.
+OLLAMA_EMBED_URL = "http://127.0.0.1:11434/api/embed"
+SPEC_COSINE_DUPLICATE = 0.88
+SPEC_JACCARD_DUPLICATE = 0.8
 
 
 def harness_spec_hash(spec: str) -> str:
@@ -139,6 +145,44 @@ def spec_similarity(left: str, right: str) -> float:
     if not left_words or not right_words:
         return 0.0
     return len(left_words & right_words) / len(left_words | right_words)
+
+
+async def embedding_cosine(left: str, right: str, *, client: httpx.AsyncClient | None = None) -> float:
+    """bge-m3 cosine between two specs on the Ollama app already in RAM; raises when it cannot answer."""
+    owned = client is None
+    http = client or httpx.AsyncClient(timeout=1.5)
+    try:
+        resp = await http.post(
+            OLLAMA_EMBED_URL,
+            json={"model": "bge-m3", "input": [left, right], "keep_alive": -1},
+        )
+        resp.raise_for_status()
+        first, second = resp.json()["embeddings"]
+    finally:
+        if owned:
+            await http.aclose()
+    dot = sum(a * b for a, b in zip(first, second))
+    norms = sum(a * a for a in first) ** 0.5 * sum(b * b for b in second) ** 0.5
+    return dot / norms if norms else 0.0
+
+
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+async def is_duplicate_spec(left: str, right: str, *, client: httpx.AsyncClient | None = None) -> bool:
+    """Two hypotheses that would test the same mechanism: cosine when the embedder answers, words otherwise.
+
+    A differing numeric constant is a different experiment, not a copy: `Set CYCLES = 1400` and
+    `Set CYCLES = 1100` are a legitimate sweep, and embeddings alone would call them identical.
+    """
+    if _NUMBER_RE.sub("#", left.lower()) == _NUMBER_RE.sub("#", right.lower()) and (
+        _NUMBER_RE.findall(left) != _NUMBER_RE.findall(right)
+    ):
+        return False
+    try:
+        return await embedding_cosine(left, right, client=client) >= SPEC_COSINE_DUPLICATE
+    except Exception:  # noqa: BLE001 - Ollama down or model unpulled: the word overlap still holds the line
+        return spec_similarity(left, right) >= SPEC_JACCARD_DUPLICATE
 
 
 def duplicate_harness_proposal(
@@ -1352,7 +1396,9 @@ class Reconciler:
                         for sibling in self.db.list_tasks():
                             if sibling.parent_id != parent_id or sibling.id == params.get("id"):
                                 continue
-                            if spec_similarity(str(params.get("spec") or ""), sibling.spec) >= 0.8:
+                            if await is_duplicate_spec(
+                                str(params.get("spec") or ""), sibling.spec
+                            ):
                                 raise ValueError(
                                     f"Hypothesis duplicates sibling {sibling.id}; "
                                     "take a distinct mechanism, not a reworded one."
@@ -2210,21 +2256,41 @@ class Reconciler:
             script, _ = EVAL_GATES[suite]
             if not (self.cfg.home_dir / "evals" / "held_out" / f"{suite}.jsonl").is_file():
                 continue  # nothing harvested yet: Phase 2 has no sealed set to protect
-            baseline = await self._run_eval_split(
+            baseline, base_metrics = await self._run_eval_split(
                 repo_dir, repo_dir, worktree_dir, script, suite, "held_out", session_dir
             )
-            candidate = await self._run_eval_split(
+            candidate, cand_metrics = await self._run_eval_split(
                 repo_dir, worktree_dir, worktree_dir, script, suite, "held_out", session_dir
             )
             regressed = sorted(key for key, ok in baseline.items() if ok and not candidate.get(key, False))
             if regressed:
                 return False, f"{suite}: {len(regressed)} held-out case(s) regressed"
+            if base_metrics and cand_metrics:
+                winner = select_winner(
+                    [
+                        Candidate(
+                            "candidate",
+                            accuracy=cand_metrics.get("accuracy", cand_metrics.get("pass_rate", 0.0)),
+                            p50_ms=cand_metrics.get("p50_ms", 0.0),
+                            cost_usd=cand_metrics.get("cost_usd", 0.0),
+                        )
+                    ],
+                    baseline=Candidate(
+                        "baseline",
+                        accuracy=base_metrics.get("accuracy", base_metrics.get("pass_rate", 0.0)),
+                        p50_ms=base_metrics.get("p50_ms", 0.0),
+                        cost_usd=base_metrics.get("cost_usd", 0.0),
+                    ),
+                )
+                if winner is None:
+                    # The plan's tournament gate: cheaper accuracy is not worth more voice latency.
+                    return False, f"{suite}: the candidate did not earn the change on accuracy, latency and cost"
             is_harness_fix = (task.dedupe_key or "").startswith("harness:")
             if is_harness_fix:
-                base_in = await self._run_eval_split(
+                base_in, _ = await self._run_eval_split(
                     repo_dir, repo_dir, worktree_dir, script, suite, "held_in", session_dir
                 )
-                cand_in = await self._run_eval_split(
+                cand_in, _ = await self._run_eval_split(
                     repo_dir, worktree_dir, worktree_dir, script, suite, "held_in", session_dir
                 )
                 fixed = [key for key, ok in base_in.items() if not ok and cand_in.get(key)]
@@ -2242,14 +2308,14 @@ class Reconciler:
         suite: str,
         split: str,
         session_dir: Path,
-    ) -> dict[str, bool]:
-        """One benchmark run, returning which cases passed; empty when the run could not report."""
+    ) -> tuple[dict[str, bool], dict[str, float]]:
+        """One benchmark run: which cases passed, and the `METRICS:` line it printed (empty if it printed none)."""
         dump = session_dir / f"eval-{suite}-{split}-{code_root.name}.json"
         dump.unlink(missing_ok=True)
         sources = [code_root / "src", code_root]
         sources += sorted((code_root / "apps").glob("*/src"))
         sources += sorted((code_root / "packages").glob("*/src"))
-        await self._run_sandboxed_cmd(
+        _, output = await self._run_sandboxed_cmd(
             [sys.executable, str(script_root / script), "--split", split, "--dump-results", str(dump)],
             worktree_dir=worktree_dir,
             session_dir=session_dir,
@@ -2261,9 +2327,10 @@ class Reconciler:
         try:
             raw = json.loads(dump.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return {}
+            return {}, parse_metrics(output)
         cases = raw.get("cases") if isinstance(raw, dict) else None
-        return {str(key): bool(value) for key, value in cases.items()} if isinstance(cases, dict) else {}
+        passed = {str(key): bool(value) for key, value in cases.items()} if isinstance(cases, dict) else {}
+        return passed, parse_metrics(output)
 
     async def _run_held_out_baseline_tests(
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path

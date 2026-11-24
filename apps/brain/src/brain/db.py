@@ -85,6 +85,13 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _counts(rows: list[tuple[int, float]]) -> tuple[int, int, float]:
+    """`(ok, total, average cost)` for the lift comparison; an empty side is `(0, 0, 0.0)`."""
+    if not rows:
+        return (0, 0, 0.0)
+    return (sum(ok for ok, _ in rows), len(rows), sum(cost for _, cost in rows) / len(rows))
+
+
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1914,6 +1921,37 @@ class BrainDB:
             created_at=str(row["created_at"] or ""),
             updated_at=str(row["updated_at"] or ""),
         )
+
+    def skill_lift_counts(self, slug: str, *, since: str) -> tuple[tuple[int, int, float], tuple[int, int, float]]:
+        """`(ok, total, avg_cost)` with this skill loaded, and on the same repos without it.
+
+        The baseline is what the same repositories did *without* the skill in the window, so a skill that
+        changes nothing looks like one: the Lin et al. filter, and the reason a placebo can be retired.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT a.task_id, a.outcome, a.cost_usd, a.skills_used, t.repo
+                FROM attempts a JOIN tasks t ON t.id = a.task_id
+                WHERE a.role = 'builder' AND a.created_at >= ?
+                """,
+                (since,),
+            ).fetchall()
+        loaded_repos: set[str] = set()
+        with_skill: list[tuple[int, float]] = []
+        baseline: list[tuple[int, float]] = []
+        for row in rows:
+            used = slug in json.loads(row["skills_used"] or "[]")
+            if used:
+                loaded_repos.add(str(row["repo"]))
+        for row in rows:
+            ok = 1 if row["outcome"] in ("pushed", "decomposed", "deferred_approval") else 0
+            cost = float(row["cost_usd"] or 0.0)
+            if slug in json.loads(row["skills_used"] or "[]"):
+                with_skill.append((ok, cost))
+            elif str(row["repo"]) in loaded_repos:
+                baseline.append((ok, cost))
+        return _counts(with_skill), _counts(baseline)
 
     def subscribe_outbox(self, callback: Callable[[OutboxRow], None]) -> None:
         """Called for every newly queued outbox row; the server turns it into a voice event."""

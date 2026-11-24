@@ -157,8 +157,8 @@ async def test_eval_split_rejects_a_held_out_regression(tmp_path: Path, monkeypa
     rec = Reconciler(db, cfg)
     answers = iter(
         [
-            {"a": True, "b": True},  # baseline, held_out
-            {"a": True, "b": False},  # candidate, held_out: b regressed
+            ({"a": True, "b": True}, {}),  # baseline, held_out
+            ({"a": True, "b": False}, {}),  # candidate, held_out: b regressed
         ]
     )
 
@@ -188,10 +188,10 @@ async def test_a_harness_fix_must_fix_a_held_in_case(tmp_path: Path, monkeypatch
     rec = Reconciler(db, cfg)
     answers = iter(
         [
-            {"a": True},  # baseline held_out
-            {"a": True},  # candidate held_out: no regression
-            {"a": False},  # baseline held_in: the case the proposal promised to fix
-            {"a": False},  # candidate held_in: still broken
+            ({"a": True}, {}),  # baseline held_out
+            ({"a": True}, {}),  # candidate held_out: no regression
+            ({"a": False}, {}),  # baseline held_in: the case the proposal promised to fix
+            ({"a": False}, {}),  # candidate held_in: still broken
         ]
     )
 
