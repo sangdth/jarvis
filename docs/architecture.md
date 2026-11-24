@@ -1,22 +1,28 @@
 # Jarvis — Architecture
 
-## 0. Three apps, one repository
+## 0. Four apps, one repository
 
-| App | Package / binary | Job | Where |
-| :--- | :--- | :--- | :--- |
-| Voice layer | `jarvis-voice` (Python) | hears, checks the sentence, talks, drives agents | `apps/voice/` |
-| Brain | `brain` (Python) | board of goals/problems, `pi` workers in worktrees, HTTP/SSE | `apps/brain/` |
-| Dashboard | `jarvis-dashboard` (Rust) | fullscreen board, attempts, spend and live telemetry | `apps/dashboard/` |
+| App         | Package / binary          | Job                                                  | Where             |
+| :---------- | :------------------------ | :--------------------------------------------------- | :---------------- |
+| Voice layer | `jarvis-voice` (Python)   | hears, checks speech, talks, drives agents           | `apps/voice/`     |
+| Brain       | `brain` (Python)          | board, reconciler, `pi` workers, HTTP/SSE/WS gateway | `apps/brain/`     |
+| Dashboard   | `jarvis-dashboard` (Rust) | fullscreen board, attempts, spend, live telemetry    | `apps/dashboard/` |
+| Connect     | `Jarvis.app` (SwiftUI)    | one-button Mac mic/speaker client                    | `apps/connect/`   |
 
-`packages/jarvis-core` holds what all three share: `REPO_ROOT` and `JARVIS_HOME`, the `.env` settings base, the
-tokens and `SOUL.md`. `src/jarvis` is the one command (`jarvis`) that starts, stops and talks to the stack.
+`packages/jarvis-core` holds what the apps share: `REPO_ROOT` and `JARVIS_HOME`, `.env` settings, tokens, paired
+devices, project discovery, question mapping, and `SOUL.md`. `src/jarvis` is the `jarvis` CLI and supervisor that
+starts, stops, and talks to the stack.
 
-The checkout is the runtime. `jarvis` runs the brain and the voice in one process on this checkout (`uv sync` is
-the only build step, and only when dependencies changed), so `jarvis start` is the whole update loop. One aiohttp
-app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface: the brain's API, the dashboard's
-telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode`, `/v1/restart`, and the thin client's
-`/ws` + `/client.py`. Every route but `/health` needs the shared token. One machine, one board, one SQLite writer,
-and one client at a time on the mic.
+The checkout is the runtime. `jarvis` runs the brain and the voice in one process on this checkout; `jarvis start` runs
+`uv sync`, rebuilds the two optional compiled artifacts (`jarvis-dashboard` with `cargo` and `Jarvis.app` with
+`swiftc`), and relaunches launchd. One aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only
+network surface: the brain's API, dashboard telemetry, operator routes (`/v1/status`, `/v1/board`, `/v1/tasks`,
+`/v1/mode`, `/v1/traces`, `/v1/restart`), and remote audio (`/ws`, `/client.py`, `/Jarvis.app.zip`, `/install-app`).
+Unauthenticated routes are limited to `/health` and the client bootstrap (`/client.py`, `/Jarvis.app.zip`,
+`/install-app`, `POST /v1/pair/request`, `POST /v1/pair`). Every other route requires the owner token (`BRAIN_API_KEY`
+or `JARVIS_HOME/brain_token`) or a paired device's secret (`JARVIS_HOME/devices.json`), with `/v1/telemetry/*`,
+`/v1/pair/*`, and `/v1/devices*` restricted to the owner token. One machine, one board, one SQLite writer, and one
+client at a time on the mic.
 
 Each language keeps its native workspace (`uv`, `cargo`; `pnpm`/`go.work` when a client or service in another
 language arrives), so a new app is a folder and a workspace line. Cross-language contracts live in `schemas/`.
@@ -38,9 +44,6 @@ language arrives), so a new app is a folder and a workspace line. Cross-language
 ---
 
 ## 2. System Architecture Diagram
-
-> [!TIP]
-> A visual architecture map is stored in [docs/architecture-map.html](architecture-map.html) (standalone interactive view) and [docs/assets/architecture-map.png](assets/architecture-map.png).
 
 ```mermaid
 flowchart LR
@@ -111,7 +114,31 @@ Without a wake word, two local filtering stages prevent false triggers and API c
    is on the network, so every connection carries the shared token (`brain_token`, or `remote_token` /
    `REMOTE_TOKEN`) or a paired device's secret, and only one client at a time, since they share one ear.
 1. **VAD (Voice Activity Detection):** **[Silero VAD](https://github.com/snakers4/silero-vad)** detects human speech boundaries locally in `<1ms`.
-2. **Local Always-On STT + Turn Classifier:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)** (`mlx-community/whisper-large-v3-turbo`) transcribes speech locally on the Apple GPU at $0 cost. With `MASTER_CHECK=true` (on by default; `jarvis enroll` records the voiceprint, `MASTER_CHECK=false` turns the check off), in the same step a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) speaker embedding (3D-Speaker ERes2Net, about 100 ms, run alongside Whisper) compares the whole sentence with the enrolled voiceprint (`JARVIS_HOME/owner_voice.npy`); below `SPEAKER_THRESHOLD` the sentence is dropped, unless it is a mute or unmute phrase, or `jarvis meeting` tags it `[Room]`. Turns come only from sentences that pass both checks: the user aggregator runs on Pipecat's `ExternalUserTurnStrategies`, and `JarvisIntentGate` wraps each passed sentence in proposed start/stop frames, so background voices never interrupt Jarvis or hold a turn open. Voice detection still cuts Whisper's sentences: with `SMART_TURN=true` (default) a 0.2 s pause asks Pipecat's Smart Turn v3 (local ONNX, about 50 ms) whether the voice sounds finished; if not, `SpeakerVerifiedWhisperSTT` keeps the sentence open until the user goes on or 1.5 s of silence pass, so Whisper and the voice check get it whole; a sentence held past 30 s (`MAX_HELD_SECS`, a TV that never sounds done) goes on as it is. With `SMART_TURN=false` every 0.6 s pause ends a sentence, and one Whisper ends with "..." or a dash waits up to 2 s after the user's next silence and joins what they say next, once (`HOLD_SECS`). Research: `docs/research/speaker-verification.md`. Each answered turn logs `[Latency]` lines (Pipecat's `UserBotLatencyObserver`, `enable_metrics` on; `latency.py` skips cycles with no released user turn) and `[Intent] ... ms` for the speech check, which Pipecat counts inside transcription. With `SAVE_SEGMENTS=N`, every segment Whisper gets (even one it returns no text for) is saved as a WAV in `JARVIS_HOME/clips` (folder 0700, files 0600, newest N kept) and named on its `[Speaker] score=` log line, to re-run Whisper and the voice check on real misses; off by default. Fixed phrases ("shut up", "you can talk") are caught by a local pattern; everything else goes to Laya's `jarvis-intent` (`POST $LAYA_BASE_URL/v1/systemone`, one `choice` question, fine-tuned for Jarvis, about 90 ms), which labels it `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`. The OpenRouter decision model `typesafe/jev-1.14` (`FILTER_MODEL`, `POST /api/alpha/decisions`, about 230 ms) gets the same question at the same time; its answer is used only when Laya fails or passes `LAYA_TIMEOUT_SECS`, and both answers go to `feedback/intent.jsonl` for retraining. A sentence that passes goes to `TranscriptCleaner` (`cleanup.py`, `TRANSCRIPT_CLEANUP`) before the `[Room]` / `[Speaker: ...]` / `[Meeting transcript:` labels are added: one OpenRouter call (`CLEANUP_MODEL`, thinking off, 1.5 s cap) fixes punctuation, drops fillers and resolves a slip fixed in the same sentence, and keeps an opening "No, sorry," so a correction still replaces the running task. Sentences of eight words or fewer skip it unless they hold a filler or a `CLEANUP_CUES` phrase; the speech check and its feedback log keep the words as heard; `[Cleanup] ... ms` logs the time.
+2. **Local STT + Master Check:** **[MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)**
+   (`mlx-community/whisper-large-v3-turbo` for `en`; `sangdth/phowhisper-large-vien-cs-mlx-16bit` for `vi`) transcribes
+   speech locally on the Apple GPU at $0 cost. With `MASTER_CHECK=true` (on by default; `jarvis enroll` resets the
+   voiceprint, `MASTER_CHECK=false` turns the check off), a [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+   speaker embedding (3D-Speaker ERes2Net, ~100 ms, run alongside Whisper) scores the whole sentence against
+   `JARVIS_HOME/owner_voice.npy` and drops speech below `SPEAKER_THRESHOLD`, except mute/unmute phrases or `[Room]`
+   speech in meeting mode. Turns come only from verified sentences (`ExternalUserTurnStrategies` + `JarvisIntentGate`),
+   so background voices never interrupt Jarvis or hold a turn open. With `SAVE_SEGMENTS=N` (off by default), every
+   segment Whisper receives — even no-text drops — is saved as a WAV in `JARVIS_HOME/clips` (0700/0600, newest N) and
+   named on the `[Speaker] score=` log line. Research: `docs/research/speaker-verification.md`.
+3. **Turn Detection:** With `SMART_TURN=true` (default), a 0.2 s pause asks Pipecat's Smart Turn v3 (local ONNX,
+   ~50 ms) whether the voice sounds finished; if not, `SpeakerVerifiedWhisperSTT` keeps the sentence open until speech
+   resumes or 1.5 s of silence pass (capped at `MAX_HELD_SECS = 30`). With `SMART_TURN=false`, every 0.6 s pause ends
+   a sentence, and trailing `"..."` / dashes wait up to `HOLD_SECS = 2.0` once to join the continuation. Answered turns
+   log `[Latency]` lines (`latency.py`, `UserBotLatencyObserver`) and `[Intent] ... ms`.
+4. **Speech Check (Laya + Fallback):** Fixed phrases ("shut up", "you can talk", "meeting mode on/off") match locally
+   (`state.classify_fast_command`). Everything else goes to Laya's `jarvis-intent` (`POST $LAYA_BASE_URL/v1/systemone`,
+   ~90 ms), labeling `MUTE`, `UNMUTE`, `ADDRESSED_TO_JARVIS`, or `IGNORE_BACKGROUND`. OpenRouter's `FILTER_MODEL`
+   (`typesafe/jev-1.14`, `/api/alpha/decisions`, ~230 ms) is queried in parallel and used if Laya fails or exceeds
+   `LAYA_TIMEOUT_SECS`. Both decisions and inferred user corrections append to `JARVIS_HOME/feedback/intent.jsonl`.
+5. **Transcript Cleanup:** Passed sentences run through `TranscriptCleaner` (`cleanup.py`, `TRANSCRIPT_CLEANUP`) before
+   `[Room]` / `[Speaker: ...]` / `[Meeting transcript:` tags are added. One non-thinking `CLEANUP_MODEL` call (1.5 s
+   cap) fixes punctuation, strips fillers, and resolves in-sentence slips while keeping opening `"No, sorry,"`
+   replacements. Sentences of 18 words or fewer (`SHORT_WORDS = 18`) skip cleanup unless they contain a stutter
+   (repeated word), a filler, or a `CLEANUP_CUES` phrase; `[Cleanup] ... ms` logs the timing.
 
 ### C. Agent Integration (Claude Code, OpenCode, the brain, T3 Code)
 Instead of fragile terminal/tmux scraping, Jarvis connects via structured JSON protocols:
@@ -169,7 +196,7 @@ ignores `session` and `project`.
    `t3 auth session issue --scope orchestration:read --scope orchestration:operate`, issued once per run and again
    only after a 401/403. Its sessions are the user's threads in the T3 project holding a folder
    (`orchestration.subscribeShell`, `recent_threads`). The folder is `cwd`, or a `project` the conversation model
-   picks from the git repos under `projects_dir` from `~/.config/jarvis/SOUL.md`, default `~/Projects/`
+   picks from the git repos under `projects_dir` from `JARVIS_HOME/SOUL.md`, default `~/Projects/`
    (`list_projects`). The first task continues the newest thread there that is not running; with none, or after a
    new session, it starts a thread (`orchestration.launchThread`, `generateTitle`) with the user's T3 default model
    and runtime mode, whose first message is "Sync with the master branch first. Then: <task>". A project folder T3
@@ -225,38 +252,60 @@ ignores `session` and `project`.
 
 ## 4. Codebase Mapping
 
-The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voice/src/jarvis_voice/`.
+### Root CLI and shared core (`src/jarvis/` and `packages/jarvis-core/src/jarvis_core/`)
 
-| File                  | What it holds                                                              |
-| :-------------------- | :------------------------------------------------------------------------- |
-| `main.py`             | Pipeline wiring, TTS, `jarvis connect` thread and session pick             |
-| `prompts.py`          | System prompt, agent roster, project list, retell and greeting prompts     |
-| `languages.json`      | Per-language prompt rules and fixed spoken lines (`en`, `vi`)              |
-| `agent_tools.py`      | `send_agent_task`, `answer_agent`, `stop_agent` schemas and handlers       |
-| `cli.py`              | `jarvis` commands (init, service, HTTP calls), one-mic lock                 |
-| `config.py`           | `Settings` from `.env`, `JARVIS_HOME`, the gateway host and port            |
-| `soul.py`             | `SOUL.md` read and write                                                   |
-| `system_prompts.py`   | `SYSTEM.md`: optional `## Name` sections that replace shipped prompts      |
-| `init.py`             | `jarvis init`: copies the defaults, makes the brain folder and token, writes `SOUL.md` |
-| `mac_audio.py`        | `MacVoiceTransport`: mic and speaker through macOS voice processing, handed to a paired Mac while it is connected |
-| `voice_engine.py`     | `VoiceAudio`, `MicConverter`: that engine, without Pipecat (enroll, client) |
-| `remote_audio.py`     | `RelayHub` + `RemoteVoiceTransport`: a paired Mac's mic and speaker over WS, always served |
-| `defaults/remote/`    | `client.py`: what runs on that Mac; nothing but a mic, a resampler, a player |
-| `voice_gates.py`      | `SpeakerVerifiedWhisperSTT`, `JarvisIntentGate`                            |
-| `speaker.py`          | sherpa-onnx speaker embeddings, voiceprint load and save, model download   |
-| `enroll.py`           | `jarvis enroll`: records the owner's voiceprint, sets `MASTER_CHECK=true`  |
-| `executive_filter.py` | `ExecutiveFilter`: decision model, `INTENT_QUESTION`                       |
-| `cleanup.py`          | `TranscriptCleaner`: tidies a passed sentence before the model reads it    |
-| `state.py`            | `JarvisState` (`VOICE`, `BEEP_ONLY`, meeting mode), fast commands, beep synth |
-| `agent_adapter.py`    | `BaseAgentAdapter`, `WatchedAgentConfig`, spoken answer to form, approval  |
-| `sessions.py`         | `CodingSessionAdapter` (list, pick, new session); `match_sessions` from `jarvis_core` |
-| `brain_client.py`     | `BrainClientAdapter`: the brain's runs, answers, stops, and session picker |
-| `claude_adapter.py`   | `ClaudeCodeAdapter`: optional direct Claude Code (enabled in `agents.json`)  |
-| `opencode_adapter.py` | `OpenCodeSSEAdapter`: optional direct OpenCode 2 service                    |
-| `orchestrator.py`     | `AgentOrchestrator`, `ADAPTERS` (agents.json type to adapter), reminders   |
-| `waiting_lines.py`    | `WaitingLines`: the per-task "still working" lines, refilled in batches    |
-| `meeting_notes.py`    | `jarvis meeting` comments: the day's notes file, appended and read back     |
-| `t3_adapter.py`       | `T3Adapter`, optional direct T3 Code, `jarvis connect` thread lookup       |
-| `memory.py`           | Local Mem0 config, `LastExchangeMemory` (saves only the newest exchange)   |
-| `telemetry.py`        | The voice's stage events for `jarvis dashboard`, bound to the brain's hub by the supervisor |
-| `llm.py`              | `JarvisLLM`: OpenRouter with the prepared request and the reasoning teed to telemetry |
+| File                                        | What it holds                                                 |
+| :------------------------------------------ | :------------------------------------------------------------ |
+| `src/jarvis/cli.py`                         | `jarvis` commands (service, init, HTTP calls), one-mic lock   |
+| `src/jarvis/init.py`                        | `jarvis init`: defaults, brain folder, tokens, `SOUL.md`      |
+| `src/jarvis/supervisor.py`                  | Runs brain + voice in one process; shares Qdrant/telemetry    |
+| `src/jarvis/defaults/`                      | Shipped `agents.json` and `env.example`                       |
+| `jarvis_core/{home,settings,soul}.py`       | `JARVIS_HOME`, `REPO_ROOT`, `.env` base, `SOUL.md` I/O        |
+| `jarvis_core/{devices,net}.py`              | Paired device store (`devices.json`), advertised LAN hosts    |
+| `jarvis_core/{projects,questions}.py`       | Repo discovery (`list_projects`), deterministic answer maps   |
+| `jarvis_core/{sessions,t3}.py`              | Shared session matching (`match_sessions`), T3 helpers        |
+
+### Voice layer (`apps/voice/src/jarvis_voice/`)
+
+| File                                        | What it holds                                                 |
+| :------------------------------------------ | :------------------------------------------------------------ |
+| `main.py`                                   | Pipecat pipeline wiring, TTS, `jarvis connect` picker         |
+| `prompts.py`, `languages.json`              | System, retell, greeting prompts; per-language rules (`en`/`vi`) |
+| `system_prompts.py`                         | Optional `SYSTEM.md` overrides (`cleanup`, `retell`, `waiting`) |
+| `agent_tools.py`                            | Tool schemas/handlers (`send_agent_task`, `rename_speaker`, …) |
+| `config.py`                                 | Voice `Settings` from `.env`, Whisper models, gateway URL     |
+| `mac_audio.py`, `voice_engine.py`           | `AVAudioEngine` voice processing transport + standalone audio |
+| `remote_audio.py`, `defaults/remote/`       | `RelayHub` + `RemoteVoiceTransport` (`/ws`, `/client.py`)     |
+| `meet_voice.py`, `defaults/meet/`           | Google Meet Chrome extension audio bridge (`127.0.0.1:47123`) |
+| `voice_gates.py`                            | `SpeakerVerifiedWhisperSTT`, `JarvisIntentGate`               |
+| `speaker.py`, `enroll.py`                   | sherpa-onnx embeddings, `SpeakerBeliefTracker`, `jarvis enroll` |
+| `executive_filter.py`, `feedback.py`        | Laya + OpenRouter speech check, `feedback/intent.jsonl`       |
+| `cleanup.py`, `latency.py`                  | `TranscriptCleaner`, per-turn `[Latency]` breakdown           |
+| `state.py`, `waiting_lines.py`              | `JarvisState` (mute/meeting), fast commands, waiting lines    |
+| `meeting_notes.py`, `screen.py`             | Meeting comments (`meeting/<date>.md`), front-window capture  |
+| `agent_adapter.py`, `sessions.py`           | `BaseAgentAdapter`, `CodingSessionAdapter`                    |
+| `brain_client.py`, `orchestrator.py`        | `BrainClientAdapter` (shipped default), `AgentOrchestrator`   |
+| `{t3,claude,opencode,pi}_adapter.py`        | Optional direct coding adapters + `jarvis connect` helpers    |
+| `memory.py`, `llm.py`, `telemetry.py`       | Local Mem0 (`LastExchangeMemory`), `JarvisLLM`, stage events  |
+
+### Brain (`apps/brain/src/brain/`)
+
+| File                                        | What it holds                                                 |
+| :------------------------------------------ | :------------------------------------------------------------ |
+| `server.py`, `cli.py`, `config.py`          | Gateway HTTP/SSE server, `brain` CLI helpers, settings        |
+| `orchestrator.py`                           | Fast-paths + OpenRouter tool router across runners/board      |
+| `runners/{base,ephemeral_pi,t3,claude,opencode}.py` | `Runner` protocol, one-shot `pi`, T3 WS RPC, lazy clients |
+| `reconciler.py`, `pi_stream.py`             | Board loop, worktree workers, self-upgrade gates, JSON stream |
+| `db.py`, `schema.sql`                       | SQLite WAL store (9 tables + `trace_fts` FTS5)                |
+| `sandbox.py`, `defaults/pi/board.ts`        | macOS Seatbelt profiles, Pi extension (`edit_and_run`, RPC)   |
+| `schedule.py`, `upgrade.py`                 | Cron/one-shot timers, divergence-safe git state helper        |
+| `memory.py`, `voice_memory.py`, `skills.py` | Curated `MEMORY.md`, Mem0 curation, skill lift + rollback     |
+| `traces.py`, `telemetry.py`                 | `TraceSink`, friction detector, digest, `TelemetryHub`        |
+| `evals.py`, `pareto.py`, `weights.py`       | `held_in`/`held_out` harvest, Pareto selector, weight links   |
+
+### Dashboard and Connect
+
+- **Dashboard (`apps/dashboard/`):** Rust + Ratatui fullscreen UI (`db.rs`, `http.rs`, `app.rs`, `ui/*.rs`). Details in
+  `apps/dashboard/README.md`.
+- **Connect (`apps/connect/`):** SwiftUI Mac mic/speaker app (`JarvisApp.swift`, `AppModel.swift`, `ApiClient.swift`,
+  `AudioRelay.swift`, `build.sh`). Details in `apps/connect/README.md`.

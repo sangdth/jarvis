@@ -4,8 +4,8 @@ An always-on goal and problem reconciler. It lives in this repository as `apps/b
 Jarvis**: the supervisor (`src/jarvis/supervisor.py`) runs it and the voice in one process on this checkout, and its
 HTTP/SSE/WebSocket gateway on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface. It is
 driven from the voice harness (`BrainClientAdapter`, agent type `brain`), the dashboard (`apps/dashboard`), `jarvis` itself
-(`jarvis status|add|mode|...` are HTTP calls), or an iPhone Shortcut over Tailscale (`POST /v1/ask`). Plan and
-history: `docs/super-brain-plan.md`, `docs/architecture.md`.
+(`jarvis status|add|mode|...` are HTTP calls), or an iPhone Shortcut over Tailscale (`POST /v1/ask`). Architecture and
+decisions: `docs/architecture.md`, `docs/DECISIONS.md`.
 
 ## Commands
 
@@ -120,7 +120,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     change (`create`, incremental `append`, `update`, or `retire`) via `propose_skill_change`, at most 1 memory
     change via `propose_memory_update` (checking the claim against the trace first), or at most 1 bounded harness
     fix via `propose_harness_task` (evidence + reproduce-first `verify_cmd`; a `repo='jarvis'` `draft` task under
-    `harness-proposal`, `ready` only with `AUTONOMOUS_HARNESS_UPGRADES`). Protected files are refused.
+    `harness:<surface>`, `ready` only with `AUTONOMOUS_HARNESS_UPGRADES`). Protected files are refused.
   - **Verification & Activation:** Creating a skill requires $\ge 2$ attempt IDs; `append`/`update` requires $\ge 1$
     attempt ID plus matching `expected_sha256`; at the 10-skill cap, creating requires retiring an existing skill. Any
     skill with 2 failures and 0 successes after an update automatically rolls back or retires.

@@ -1,6 +1,7 @@
 # Speaker verification with sherpa-onnx (research, 2026-11-03)
 
-Goal: Jarvis acts only on the owner's voice. Built as `SpeakerVerifiedWhisperSTT` (`src/jarvis/voice_gates.py`).
+Goal: Jarvis acts only on the owner's voice. Built as `SpeakerVerifiedWhisperSTT`
+(`apps/voice/src/jarvis_voice/voice_gates.py`).
 
 ## Library
 
