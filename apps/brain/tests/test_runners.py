@@ -387,3 +387,50 @@ async def test_sessions_and_connect(tmp_path: Path) -> None:
         await reconciler.stop()
         await server.stop_background()
         db.close()
+
+
+async def test_your_dashboard_routes_to_jarvis_board_while_generic_dashboard_stays_project(
+    tmp_path: Path,
+) -> None:
+    from brain.orchestrator import BrainOrchestrator
+
+    cfg = _cfg(tmp_path)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    orch = BrainOrchestrator(cfg, db, reconciler, runners={}, last_project=lambda _: "opscom/platform")
+    try:
+        projects = ["jarvis", "opscom/dashboard", "opscom/platform"]
+
+        bug = orch._heuristic("Fix the flickering bug in your dashboard", projects, "s1")
+        assert bug["name"] == "queue_board_task"
+        assert bug["arguments"]["repo"] == "jarvis"
+        assert bug["arguments"]["kind"] == "problem"
+
+        feat = orch._heuristic("Add a latency chart to Jarvis's dashboard", projects, "s1")
+        assert feat["name"] == "queue_board_task"
+        assert feat["arguments"]["repo"] == "jarvis"
+        assert feat["arguments"]["kind"] == "goal"
+
+        generic = orch._heuristic("Fix the login bug in the dashboard", ["jarvis", "opscom/platform"], "s1")
+        assert generic["name"] == "delegate_project"
+        assert generic["arguments"]["project"] == "opscom/platform"
+
+        woke = False
+        orig_wake = reconciler.wake
+
+        def track_wake() -> None:
+            nonlocal woke
+            woke = True
+            orig_wake()
+
+        reconciler.wake = track_wake  # type: ignore[method-assign]
+        res = await orch._queue_task(
+            {"kind": "problem", "repo": "jarvis", "title": "Fix dashboard", "spec": "Fix apps/dashboard/"},
+            "Fix your dashboard",
+        )
+        assert res.outcome == "pushed"
+        assert woke is True
+    finally:
+        await orch.close()
+        await reconciler.stop()
+        db.close()

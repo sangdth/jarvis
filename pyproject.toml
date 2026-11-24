@@ -1,7 +1,7 @@
 [project]
 name = "jarvis-harness"
 version = "0.1.0"
-description = "Always-on voice harness, its always-on brain, and the cockpit over it."
+description = "Always-on voice harness, its always-on brain, and the dashboard over it."
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]

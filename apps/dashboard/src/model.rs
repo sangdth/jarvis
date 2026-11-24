@@ -360,7 +360,7 @@ impl TelemetryEvent {
 pub struct PendingPair {
     pub code: String,
     pub name: String,
-    /// Unix epoch seconds on the daemon's clock; the cockpit runs on the same Mac.
+    /// Unix epoch seconds on the daemon's clock; the dashboard runs on the same Mac.
     pub expires_at: f64,
 }
 impl PendingPair {

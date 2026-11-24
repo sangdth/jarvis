@@ -199,6 +199,9 @@ CASES: list[tuple[str | list[dict], str]] = [
     # Speaker name corrections go to rename_speaker, never to send_agent_task or coding renames
     ("You saved my name wrong in the speakers list, change it to Sang", "rename"),
     ("Rename David to Daniel in the speaker list", "rename"),
+    # "your dashboard" means Jarvis's own dashboard (omit project so brain routes to its board, not another dashboard repo)
+    ("Fix the flickering bug in your dashboard", "t3-code"),
+    ("Add a latency graph to your dashboard", "t3-code"),
 ]
 
 # Vietnamese or mixed speech, with the vi prompt: routed the same, with English arguments

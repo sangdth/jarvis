@@ -2142,7 +2142,7 @@ class BrainDB:
             return self._row_to_outbox(updated)
 
     def list_outbox(self, limit: int = 200) -> list[OutboxRow]:
-        """Queued approvals first, then newest: the order the cockpit draws."""
+        """Queued approvals first, then newest: the order the dashboard draws."""
         with self._lock:
             rows = self._conn.execute(
                 """

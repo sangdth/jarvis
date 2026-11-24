@@ -118,7 +118,7 @@ struct JarvisApi {
         )
     }
 
-    /// Asks Jarvis to show a code on `jarvis top`. The answer never carries the code itself.
+    /// Asks Jarvis to show a code on `jarvis dashboard`. The answer never carries the code itself.
     @discardableResult
     func requestCode(name: String) async throws -> Int {
         guard let request = request("/v1/pair/request", method: "POST", body: ["name": name]) else {

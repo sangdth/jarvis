@@ -1,6 +1,6 @@
 """Durable, local, agent-readable traces: the experience the Improver learns from.
 
-`TelemetryHub` stays a memory-only bus for the live cockpit. This module drains it in the background into
+`TelemetryHub` stays a memory-only bus for the live dashboard. This module drains it in the background into
 three layers the offline `pi` Improver can actually read inside its Seatbelt sandbox:
 
 1. `traces/<YYYY-MM-DD>/spans.jsonl` and `trace-<trace_id>.json` — one file per turn/run, OpenTelemetry

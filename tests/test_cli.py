@@ -149,14 +149,14 @@ class HttpTest(unittest.TestCase):
 
 
 class ServiceTest(unittest.TestCase):
-    def test_start_builds_everything_starts_it_and_opens_the_cockpit(self) -> None:
-        # One path: the only service command builds, starts and opens the cockpit, so a `git pull` and a start never
-        # serve a stale cockpit or mac app.
+    def test_start_builds_everything_starts_it_and_opens_the_dashboard(self) -> None:
+        # One path: the only service command builds, starts and opens the dashboard, so a `git pull` and a start never
+        # serve a stale dashboard or mac app.
         with patch.object(cli, "PLIST_PATH", Path("/tmp/com.sangdth.jarvis.plist")), \
-                patch.object(cli, "sync_dependencies") as sync, patch.object(cli, "build_cockpit") as build, \
+                patch.object(cli, "sync_dependencies") as sync, patch.object(cli, "build_dashboard") as build, \
                 patch.object(cli, "build_mac_app") as mac, \
                 patch.object(cli, "write_plist") as write, patch.object(cli, "launchd_loaded", return_value=True), \
-                patch.object(cli, "launchd_kick") as kick, patch.object(cli, "run_cockpit") as top, \
+                patch.object(cli, "launchd_kick") as kick, patch.object(cli, "run_dashboard") as dashboard, \
                 patch.object(cli.sys, "platform", "darwin"), patch("builtins.print"):
             cli.service_start(["--meeting"])
         sync.assert_called_once_with()
@@ -164,46 +164,46 @@ class ServiceTest(unittest.TestCase):
         mac.assert_called_once_with()
         write.assert_called_once_with(["--meeting"])
         kick.assert_called_once_with()
-        top.assert_called_once_with([])
+        dashboard.assert_called_once_with([])
 
     def test_start_bootstraps_when_the_agent_is_not_loaded(self) -> None:
         with patch.object(cli, "PLIST_PATH", Path("/tmp/com.sangdth.jarvis.plist")), \
-                patch.object(cli, "sync_dependencies"), patch.object(cli, "build_cockpit"), \
+                patch.object(cli, "sync_dependencies"), patch.object(cli, "build_dashboard"), \
                 patch.object(cli, "build_mac_app"), patch.object(cli, "write_plist"), \
                 patch.object(cli, "launchd_loaded", return_value=False), \
-                patch.object(cli, "launchd_boot") as boot, patch.object(cli, "run_cockpit"), \
+                patch.object(cli, "launchd_boot") as boot, patch.object(cli, "run_dashboard"), \
                 patch.object(cli.sys, "platform", "darwin"), patch("builtins.print"):
             cli.service_start()
         boot.assert_called_once_with()
 
-    def test_the_cockpit_is_skipped_when_there_is_no_terminal(self) -> None:
-        # `jarvis start` over ssh: the restart worked, so it must not exit nonzero because a TUI cannot open.
-        with patch.object(cli, "cockpit_binary", return_value=Path("/tmp/jarvis-top")), \
+    def test_the_dashboard_is_skipped_when_there_is_no_terminal(self) -> None:
+        # `jarvis start` over ssh: the restart worked, so it must not exit nonzero because a dashboard cannot open.
+        with patch.object(cli, "dashboard_binary", return_value=Path("/tmp/jarvis-dashboard")), \
                 patch.object(cli.sys.stdout, "isatty", return_value=False), \
                 patch.object(cli.subprocess, "call") as call, patch("builtins.print"):
-            self.assertEqual(cli.run_cockpit([]), 0)
+            self.assertEqual(cli.run_dashboard([]), 0)
         call.assert_not_called()
 
-    def test_stale_cockpit_binary_is_rebuilt_on_top(self) -> None:
+    def test_stale_dashboard_binary_is_rebuilt_on_dashboard(self) -> None:
         import os
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cargo_toml = root / "Cargo.toml"
             cargo_toml.write_text("[workspace]\n")
-            src = root / "apps" / "tui" / "src"
+            src = root / "apps" / "dashboard" / "src"
             src.mkdir(parents=True)
             rs = src / "main.rs"
             rs.write_text("fn main() {}\n")
-            binary = root / "target" / "release" / "jarvis-top"
+            binary = root / "target" / "release" / "jarvis-dashboard"
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"old")
             os.utime(cargo_toml, (100.0, 100.0))
             os.utime(binary, (100.0, 100.0))
             os.utime(rs, (200.0, 200.0))
-            self.assertTrue(cli.cockpit_stale(binary, root))
+            self.assertTrue(cli.dashboard_stale(binary, root))
             os.utime(binary, (300.0, 300.0))
-            self.assertFalse(cli.cockpit_stale(binary, root))
+            self.assertFalse(cli.dashboard_stale(binary, root))
 
     def test_restart_keeps_the_mode_already_installed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

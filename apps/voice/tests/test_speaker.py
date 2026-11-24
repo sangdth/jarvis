@@ -458,7 +458,7 @@ class TestSpeaker(unittest.TestCase):
             self.assertIn("- Owner: Sang", reg.format_for_prompt())
             self.assertEqual(reg.owner_name, "Sang")
 
-            # Rename an ephemeral voice by its cockpit label ("Speaker 1") -> enrolled & saved on disk.
+            # Rename an ephemeral voice by its dashboard label ("Speaker 1") -> enrolled & saved on disk.
             p1 = reg.observe(np.array([0.0, 1.0], dtype=np.float32), threshold=0.5)
             assert p1 is not None
             renamed = reg.rename_profile("Speaker 1", "Davd", enroll=True)

@@ -58,7 +58,7 @@ def test_hub_ring_buffer_and_fanout() -> None:
     assert queue.empty()
 
 
-def test_sticky_state_events_and_heartbeats_preserve_cockpit_header() -> None:
+def test_sticky_state_events_and_heartbeats_preserve_dashboard_header() -> None:
     from brain.telemetry import EVENT_VOICE_EAR, EVENT_VOICE_MODE
 
     hub = TelemetryHub(max_events=3)

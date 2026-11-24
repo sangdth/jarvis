@@ -63,7 +63,7 @@ def setup_brain(home: Path = JARVIS_HOME) -> list[str]:
     had_token = token_file.is_file() and bool(token_file.read_text(encoding="utf-8").strip())
     brain_token()  # writes JARVIS_HOME/brain_token (0600) unless .env or the shell already names one
     if not had_token and token_file.is_file():
-        notes.append(f"Made a brain token in {token_file}: the daemon, Jarvis and the cockpit share it.")
+        notes.append(f"Made a brain token in {token_file}: the daemon, Jarvis and the dashboard share it.")
     return notes
 
 

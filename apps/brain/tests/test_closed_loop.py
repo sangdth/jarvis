@@ -170,7 +170,7 @@ async def test_the_first_t3_message_carries_the_standing_memory(tmp_path: Path) 
     cfg = _settings(tmp_path)
     memory.ensure_layout(cfg.home_dir)
     memory.index_path(cfg.home_dir).write_text(
-        "# Brain memory index\n\n- the cockpit builds with cargo.\n", encoding="utf-8"
+        "# Brain memory index\n\n- the dashboard builds with cargo.\n", encoding="utf-8"
     )
     db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
     runner = t3_module.T3Runner(cfg, db)
@@ -198,7 +198,7 @@ async def test_the_first_t3_message_carries_the_standing_memory(tmp_path: Path) 
         t3_module.t3_defaults = original
     assert error is None and created, state
     sent_text = sent[0]["initialMessage"]["text"]
-    assert "the cockpit builds with cargo" in sent_text
+    assert "the dashboard builds with cargo" in sent_text
     assert sent_text.index("Standing context") < sent_text.index("Sync with the master branch")
 
 

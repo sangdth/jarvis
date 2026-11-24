@@ -132,7 +132,7 @@ struct ContentView: View {
                         .fill(Color(nsColor: .textBackgroundColor))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.3)))
                 )
-            Text("Six digits, from `jarvis top` on the Mac mini.")
+            Text("Six digits, from `jarvis dashboard` on the Mac mini.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }

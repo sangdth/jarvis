@@ -6,14 +6,14 @@
 | :--- | :--- | :--- | :--- |
 | Voice layer | `jarvis-voice` (Python) | hears, checks the sentence, talks, drives agents | `apps/voice/` |
 | Brain | `brain` (Python) | board of goals/problems, `pi` workers in worktrees, HTTP/SSE | `apps/brain/` |
-| Cockpit | `jarvis-top` (Rust) | fullscreen board, attempts, spend and live telemetry | `apps/tui/` |
+| Dashboard | `jarvis-dashboard` (Rust) | fullscreen board, attempts, spend and live telemetry | `apps/dashboard/` |
 
 `packages/jarvis-core` holds what all three share: `REPO_ROOT` and `JARVIS_HOME`, the `.env` settings base, the
 tokens and `SOUL.md`. `src/jarvis` is the one command (`jarvis`) that starts, stops and talks to the stack.
 
 The checkout is the runtime. `jarvis` runs the brain and the voice in one process on this checkout (`uv sync` is
 the only build step, and only when dependencies changed), so `jarvis start` is the whole update loop. One aiohttp
-app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface: the brain's API, the cockpit's
+app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface: the brain's API, the dashboard's
 telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode`, `/v1/restart`, and the thin client's
 `/ws` + `/client.py`. Every route but `/health` needs the shared token. One machine, one board, one SQLite writer,
 and one client at a time on the mic.
@@ -81,7 +81,7 @@ flowchart LR
         REC -->|"one `pi` worker per repo"| WT["Worktree `brain/<task_id>`"]
         WT -->|"verify_cmd, then push (never merge)"| SB
         SRV["HTTP/SSE/WS :8643"] --- SB
-        TUI["`jarvis top` (Rust cockpit)"] -->|"read-only state.db + /v1/telemetry"| SB
+        DASH["`jarvis dashboard` (Rust dashboard)"] -->|"read-only state.db + /v1/telemetry"| SB
     end
 
     BC -->|"POST /v1/runs, GET /v1/runs/:id/events"| SRV
@@ -218,7 +218,7 @@ ignores `session` and `project`.
    `traces/<YYYY-MM-DD>/spans.jsonl` + `trace-<trace_id>.json` and a `trace_runs` row (surface, outcome, implicit
    friction, `git_sha`, `prompt_sha`, cost, `trace_path`). `distill_experience` turns those rows into
    `traces/analysis/overview.md` + `surfaces/<surface>.md` for the offline Improver; `jarvis traces` and the
-   cockpit's startup read the rows, so a restart no longer erases the last turns. Local only, no extra daemon;
+   dashboard's startup read the rows, so a restart no longer erases the last turns. Local only, no extra daemon;
    `OTEL_EXPORTER_OTLP_ENDPOINT` optionally mirrors spans over OTLP/HTTP.
 
 ---
@@ -258,5 +258,5 @@ The `jarvis` command is in `src/jarvis/`; the voice files below are in `apps/voi
 | `meeting_notes.py`    | `jarvis meeting` comments: the day's notes file, appended and read back     |
 | `t3_adapter.py`       | `T3Adapter`, optional direct T3 Code, `jarvis connect` thread lookup       |
 | `memory.py`           | Local Mem0 config, `LastExchangeMemory` (saves only the newest exchange)   |
-| `telemetry.py`        | The voice's stage events for `jarvis top`, bound to the brain's hub by the supervisor |
+| `telemetry.py`        | The voice's stage events for `jarvis dashboard`, bound to the brain's hub by the supervisor |
 | `llm.py`              | `JarvisLLM`: OpenRouter with the prepared request and the reasoning teed to telemetry |

@@ -119,7 +119,7 @@ final class AppModel: ObservableObject {
         Task {
             do {
                 let expires = try await JarvisApi(server: server).requestCode(name: hostName)
-                self.detail = "The code is on `jarvis top` on the Mac running Jarvis (\(max(1, expires / 60)) minutes)."
+                self.detail = "The code is on `jarvis dashboard` on the Mac running Jarvis (\(max(1, expires / 60)) minutes)."
                 self.phase = .pairing
             } catch {
                 self.phase = .failed("Could not reach Jarvis")
@@ -136,7 +136,7 @@ final class AppModel: ObservableObject {
         }
         let code = codeInput.filter(\.isNumber)
         guard code.count == 6 else {
-            detail = "The code is six digits, shown on `jarvis top`."
+            detail = "The code is six digits, shown on `jarvis dashboard`."
             return
         }
         pairingInFlight = true
@@ -153,7 +153,7 @@ final class AppModel: ObservableObject {
                 self.codeInput = ""
                 self.connect()
             } catch let error as ApiError where error.status == 403 || error.status == 429 {
-                self.detail = "That code was wrong or expired. Ask for a new one on `jarvis top`."
+                self.detail = "That code was wrong or expired. Ask for a new one on `jarvis dashboard`."
                 self.phase = .pairing
             } catch {
                 self.phase = .failed("Pairing failed")

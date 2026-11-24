@@ -36,7 +36,7 @@ class TestVoiceTelemetry(unittest.TestCase):
 
     def test_a_broken_hub_never_breaks_the_voice(self) -> None:
         def explode(kind: str, **fields: Any) -> None:
-            raise RuntimeError("cockpit went away")
+            raise RuntimeError("dashboard went away")
 
         telemetry.bind(explode)
         telemetry.emit("voice.tts", text="still fine")

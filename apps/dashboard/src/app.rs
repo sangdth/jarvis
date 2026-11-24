@@ -18,7 +18,7 @@ use crate::model::{
 };
 
 // shortcut: mirrors `MAX_EPHEMERAL` in `apps/voice/src/jarvis_voice/speaker.py`; the two must change together,
-// or `jarvis top` evicts real voices the voice still keeps. Upgrade to a shared value if the cap ever moves.
+// or `jarvis dashboard` evicts real voices the voice still keeps. Upgrade to a shared value if the cap ever moves.
 const MAX_EPHEMERAL_SPEAKERS: usize = 8;
 
 #[derive(Debug)]
@@ -498,7 +498,7 @@ impl App {
                 self.snapshot_age = Some(Instant::now());
                 self.snapshot_error = None;
                 self.sync_disk_speakers(&disk_speakers);
-                // Cold start: a late `jarvis top` still shows the recent turns instead of an empty X-ray.
+                // Cold start: a late `jarvis dashboard` still shows the recent turns instead of an empty X-ray.
                 if self.traces.is_empty() && !history.is_empty() {
                     self.traces = history;
                     self.sel_trace = self.traces.len().saturating_sub(1);

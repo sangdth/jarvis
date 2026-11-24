@@ -10,7 +10,7 @@ sync:
     uv sync
     cargo fetch
 
-# Every suite: the CLI, the voice harness, the brain, and the cockpit.
+# Every suite: the CLI, the voice harness, the brain, and the dashboard.
 test:
     uv run pytest -q
     cargo test --workspace
@@ -24,7 +24,7 @@ fmt:
     uv run ruff check --fix src apps packages tests scripts
     cargo fmt --all
 
-# The cockpit and the Connect app (the one compiled artifact per language; Python is live as written).
+# The dashboard and the Connect app (the one compiled artifact per language; Python is live as written).
 build:
     cargo build --release --workspace
     sh apps/connect/build.sh
@@ -37,15 +37,15 @@ mac:
 run:
     uv run jarvis
 
-# The 24/7 service on this checkout: sync, build the cockpit and the mac app, relaunch, open the cockpit.
+# The 24/7 service on this checkout: sync, build the dashboard and the mac app, relaunch, open the dashboard.
 start:
     uv run jarvis start
 
 status:
     uv run jarvis status
 
-top:
-    uv run jarvis top
+dashboard:
+    uv run jarvis dashboard
 
 # Set up the state home: .env, agents.json, SOUL.md, the brain folder and its token.
 init:

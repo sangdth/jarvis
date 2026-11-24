@@ -44,6 +44,9 @@ SEED_CASES: list[tuple[str, str, dict[str, str]]] = [
     ("Queue an overnight job to upgrade Jarvis", "queue_board_task", {}),
     ("Run this autonomously overnight: keep fixing the flaky tests", "queue_board_task", {}),
     ("Set a goal to cut the build time in half", "queue_board_task", {}),
+    ("Fix the speakers pane bug in your dashboard", "queue_board_task", {"repo": "jarvis"}),
+    ("Add a latency graph to Jarvis's dashboard (apps/dashboard)", "queue_board_task", {"repo": "jarvis"}),
+    ("Fix the login bug in the dashboard", "delegate_project", {}),
     ("How many project folders do I have?", "reply_direct", {}),
 ]
 
@@ -98,6 +101,9 @@ def matches(choice: dict, case: dict[str, str]) -> bool:
         return False
     project = case.get("project", "").strip("/").lower()
     if project and str(args.get("project") or "").strip("/").lower() != project:
+        return False
+    repo = case.get("repo", "").strip("/").lower()
+    if repo and str(args.get("repo") or "").strip("/").lower() != repo:
         return False
     return True
 

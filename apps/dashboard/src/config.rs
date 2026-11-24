@@ -20,7 +20,7 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Self {
-        // One home for the voice harness, the brain and this cockpit; `jarvis` exports these to us.
+        // One home for the voice harness, the brain and this dashboard; `jarvis` exports these to us.
         let jarvis_home = std::env::var("JARVIS_HOME")
             .ok()
             .filter(|v| !v.trim().is_empty())
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn parses_env_file_with_quotes_and_comments() {
-        let dir = std::env::temp_dir().join(format!("jarvis-top-cfg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("jarvis-dashboard-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".env");
         std::fs::write(

@@ -7,7 +7,7 @@ plus `jarvis start` is live. The CLI only starts, stops and talks to that proces
 - foreground: `jarvis` (this Mac's mic and speaker, or a paired Mac's), `jarvis meeting`, `jarvis connect [agent]`
 - as a service: `jarvis start | stop | logs`
 - over HTTP: `jarvis status | health | ask | add | board | tasks | mode | research | improve | timers | remind | schedule`
-- once: `jarvis init | enroll | top`
+- once: `jarvis init | enroll | dashboard`
 
 Everything network-shaped is one HTTP/SSE/WebSocket server on `BRAIN_PORT`, so a thin client on another machine
 needs no `jarvis` install at all (`jarvis health --url http://<mac-mini>:8643`).
@@ -47,7 +47,7 @@ a paired Mac (no install, no mode to start):
   jarvis devices  list them (`devices revoke <id>` cuts one off)
 
 as a service (launchd keeps it up, 24/7):
-  start           sync, build the cockpit and the mac app, (re)start it, then open the cockpit;
+  start           sync, build the dashboard and the mac app, (re)start it, then open the dashboard;
                   keeps the mode it already had
   stop            stop it
   logs            tail the daemon's log
@@ -70,7 +70,7 @@ over the network (one HTTP/SSE/WebSocket server, one token):
                   a recurring check; add `--action task` to queue board work instead
 
 once:
-  top             open the cockpit (the Rust TUI, built from this checkout)
+  dashboard       open the dashboard (the Rust dashboard, built from this checkout)
   init            set up the state home, keys and personality
   enroll          learn a new owner voice through a short chat (pauses the running service)
   --version       the running checkout's branch and commit
@@ -256,11 +256,11 @@ def sync_dependencies() -> None:
 
 
 def service_start(serve_args: list[str] | None = None) -> None:
-    """`jarvis start`: sync, build what compiles, (re)start it, then show the cockpit."""
+    """`jarvis start`: sync, build what compiles, (re)start it, then show the dashboard."""
     if sys.platform != "darwin":
         sys.exit("`jarvis start` uses launchd; on another system run `jarvis serve` in a terminal.")
     sync_dependencies()
-    build_cockpit()
+    build_dashboard()
     build_mac_app()
     write_plist(serve_args if serve_args is not None else plist_serve_args())
     if launchd_loaded():
@@ -268,7 +268,7 @@ def service_start(serve_args: list[str] | None = None) -> None:
     else:
         launchd_boot()
     print(f"Started {LAUNCHD_LABEL} on {version()}. `jarvis status` checks it; `jarvis logs` follows the log.")
-    run_cockpit([])
+    run_dashboard([])
 
 
 def service_stop() -> None:
@@ -292,10 +292,10 @@ def follow_logs() -> None:
 
 
 # --------------------------------------------------------------------------------------------------------------
-# The cockpit
+# The dashboard
 # --------------------------------------------------------------------------------------------------------------
-def build_cockpit() -> None:
-    """Build `jarvis-top` (`cargo build --release --workspace`) from this checkout."""
+def build_dashboard() -> None:
+    """Build `jarvis-dashboard` (`cargo build --release --workspace`) from this checkout."""
     import shutil
 
     root = workspace_root()
@@ -304,7 +304,7 @@ def build_cockpit() -> None:
     fallback = Path("~/.cargo/bin/cargo").expanduser()
     cargo = shutil.which("cargo") or (str(fallback) if fallback.is_file() else None)
     if cargo is None:
-        print("`cargo` is not on PATH; skipping the cockpit build.")
+        print("`cargo` is not on PATH; skipping the dashboard build.")
         return
     proc = subprocess.run([cargo, "build", "--release", "--workspace"], cwd=str(root))
     if proc.returncode != 0:
@@ -327,23 +327,23 @@ def build_mac_app() -> None:
         print("The mac client did not build; `/Jarvis.app.zip` keeps serving the last bundle.", file=sys.stderr)
 
 
-def cockpit_binary() -> Path | None:
-    """The built `jarvis-top`: a cargo `target/` in this checkout, or PATH."""
+def dashboard_binary() -> Path | None:
+    """The built `jarvis-dashboard`: a cargo `target/` in this checkout, or PATH."""
     import shutil
 
     root = workspace_root()
     if root is not None:
-        candidates = [root / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
-        candidates += [root / "apps" / "tui" / "target" / profile / "jarvis-top" for profile in ("release", "debug")]
+        candidates = [root / "target" / profile / "jarvis-dashboard" for profile in ("release", "debug")]
+        candidates += [root / "apps" / "dashboard" / "target" / profile / "jarvis-dashboard" for profile in ("release", "debug")]
         if built := next((path for path in candidates if path.is_file()), None):
             return built
-    if found := shutil.which("jarvis-top"):
+    if found := shutil.which("jarvis-dashboard"):
         return Path(found)
     return None
 
 
-def cockpit_stale(binary: Path, root: Path | None = None) -> bool:
-    """True when `apps/tui` sources or workspace Cargo files are newer than the built `jarvis-top`."""
+def dashboard_stale(binary: Path, root: Path | None = None) -> bool:
+    """True when `apps/dashboard` sources or workspace Cargo files are newer than the built `jarvis-dashboard`."""
     base = root if root is not None else workspace_root()
     if base is None or not binary.is_file():
         return False
@@ -351,34 +351,34 @@ def cockpit_stale(binary: Path, root: Path | None = None) -> bool:
     inputs = [
         base / "Cargo.toml",
         base / "Cargo.lock",
-        base / "apps" / "tui" / "Cargo.toml",
-        *(base / "apps" / "tui").rglob("*.rs"),
+        base / "apps" / "dashboard" / "Cargo.toml",
+        *(base / "apps" / "dashboard").rglob("*.rs"),
     ]
     return any(p.is_file() and p.stat().st_mtime > built_at for p in inputs)
 
 
-def run_cockpit(args: list[str]) -> int:
-    binary = cockpit_binary()
+def run_dashboard(args: list[str]) -> int:
+    binary = dashboard_binary()
     if binary is None:
-        build_cockpit()
-        binary = cockpit_binary()
+        build_dashboard()
+        binary = dashboard_binary()
     if binary is None:
-        print("`jarvis top` needs the cockpit built first:", file=sys.stderr)
+        print("`jarvis dashboard` needs the dashboard built first:", file=sys.stderr)
         print("  cargo build --release --workspace", file=sys.stderr)
         return 1
     if not sys.stdout.isatty():
-        # `jarvis start` over ssh: there is no terminal for a fullscreen TUI, and a nonzero exit here would make a
+        # `jarvis start` over ssh: there is no terminal for a fullscreen dashboard, and a nonzero exit here would make a
         # restart that worked look like it failed.
-        print("Jarvis is up. Run `jarvis top` in a terminal to watch the board.")
+        print("Jarvis is up. Run `jarvis dashboard` in a terminal to watch the board.")
         return 0
-    if cockpit_stale(binary):
-        build_cockpit()
-        binary = cockpit_binary() or binary
-    # The cockpit defaults to an installed home; hand it the one this process runs on, token included.
+    if dashboard_stale(binary):
+        build_dashboard()
+        binary = dashboard_binary() or binary
+    # The dashboard defaults to an installed home; hand it the one this process runs on, token included.
     env = dict(os.environ)
     env["JARVIS_HOME"] = str(JARVIS_HOME)
     env.setdefault("BRAIN_HOME", str(brain_home()))
-    # The owner token, the same one this CLI sends: `jarvis top` now reads the telemetry stream, and `.env` wins
+    # The owner token, the same one this CLI sends: `jarvis dashboard` now reads the telemetry stream, and `.env` wins
     # over brain_token() there, so handing it brain_token() alone would be a 401 for a checkout with its own key.
     env["BRAIN_API_KEY"] = token()
     try:
@@ -407,7 +407,7 @@ def pair_device(args: list[str]) -> None:
     print(f"  curl -fsSL 'http://{host}/client.py' -o ~/.local/bin/jarvis-remote.py")
     print(f"  uv run ~/.local/bin/jarvis-remote.py --pair {code}{named}")
     print("\nEither way the code goes into that Mac once; it keeps its own secret after that.")
-    print("`jarvis top` shows the code too. `jarvis devices revoke <id>` ends one Mac without touching the others.")
+    print("`jarvis dashboard` shows the code too. `jarvis devices revoke <id>` ends one Mac without touching the others.")
 
 
 def list_devices(args: list[str]) -> None:
@@ -468,8 +468,8 @@ def dispatch(argv: list[str]) -> None:
         return print(USAGE)
     if cmd in ("-V", "--version", "version"):
         return print(version())
-    if cmd == "top":
-        sys.exit(run_cockpit(rest))
+    if cmd == "dashboard":
+        sys.exit(run_dashboard(rest))
     if cmd == "logs":
         return follow_logs()
     if cmd == "start":

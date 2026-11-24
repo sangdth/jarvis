@@ -217,7 +217,7 @@ pub fn load_snapshot(conn: &Connection, cfg: &Config) -> DbResult<Snapshot> {
     Ok(snap)
 }
 
-/// Recent turns and runs from the durable `trace_runs` table, so a late `jarvis top` still shows what happened.
+/// Recent turns and runs from the durable `trace_runs` table, so a late `jarvis dashboard` still shows what happened.
 ///
 /// Only three stages are synthesized (STT, ROUTE, RETURN): the full stage list lives in the trace JSON file,
 /// and reading 40 of those off the UI thread on every snapshot poll would cost more than it shows.
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn loads_saved_speakers_and_owner_files() {
-        let dir = std::env::temp_dir().join(format!("jarvis-top-speakers-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("jarvis-dashboard-speakers-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("speakers")).unwrap();
         std::fs::write(

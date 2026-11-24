@@ -3,7 +3,7 @@
   "info": {
     "title": "Jarvis gateway: HTTP, SSE and WebSocket",
     "version": "2.2.0",
-    "description": "The one network surface of a Jarvis instance: the brain's run protocol (which routes each turn to a T3 Code thread, a one-shot pi answer, a minimal Claude/OpenCode turn, or the board), the cockpit's telemetry, the small operator API, device pairing, the mac client (`/Jarvis.app.zip`, `/install-app`), and the thin client's mic and speaker. Every route except `/health`, `GET /client.py`, `GET /Jarvis.app.zip`, `GET /install-app`, `POST /v1/pair` and `POST /v1/pair/request` needs a credential: the shared token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`), or a paired device's secret from `POST /v1/pair`. The shared token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; paired devices live in `JARVIS_HOME/devices.json` as hashes, and only the shared token can mint or revoke them. `/v1/telemetry/*` is the owner's alone, because a pending pairing code rides it. Questions and approvals travel verbatim (`approval.request`, `question.request`) and are answered with `POST /v1/runs/{run_id}/answer`; no model decides them. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`, `ear`); `GET /client.py` serves the zero-install thin client with this server's address filled in."
+    "description": "The one network surface of a Jarvis instance: the brain's run protocol (which routes each turn to a T3 Code thread, a one-shot pi answer, a minimal Claude/OpenCode turn, or the board), the dashboard's telemetry, the small operator API, device pairing, the mac client (`/Jarvis.app.zip`, `/install-app`), and the thin client's mic and speaker. Every route except `/health`, `GET /client.py`, `GET /Jarvis.app.zip`, `GET /install-app`, `POST /v1/pair` and `POST /v1/pair/request` needs a credential: the shared token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`), or a paired device's secret from `POST /v1/pair`. The shared token is `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; paired devices live in `JARVIS_HOME/devices.json` as hashes, and only the shared token can mint or revoke them. `/v1/telemetry/*` is the owner's alone, because a pending pairing code rides it. Questions and approvals travel verbatim (`approval.request`, `question.request`) and are answered with `POST /v1/runs/{run_id}/answer`; no model decides them. WebSocket `/ws` carries 16-bit mono PCM at 16 kHz both ways plus JSON control frames (`hello`, `flush`, `ear`); `GET /client.py` serves the zero-install thin client with this server's address filled in."
   },
   "servers": [
     {
@@ -375,7 +375,7 @@
         "properties": {
           "approved": {
             "type": "boolean",
-            "description": "What the cockpit sends."
+            "description": "What the dashboard sends."
           },
           "action": {
             "type": "string",
@@ -738,7 +738,7 @@
     "/v1/pair/request": {
       "post": {
         "summary": "Ask for a pairing code without being able to read it (no credential needed)",
-        "description": "An app that has never paired holds no secret, so this is open like `GET /client.py`. The answer never carries the code: it goes to the owner's telemetry, which `jarvis top` draws, and only the owner's token can read that. Asking again while a code is still live reuses it, so a double click cannot steal the digits off the screen.",
+        "description": "An app that has never paired holds no secret, so this is open like `GET /client.py`. The answer never carries the code: it goes to the owner's telemetry, which `jarvis dashboard` draws, and only the owner's token can read that. Asking again while a code is still live reuses it, so a double click cannot steal the digits off the screen.",
         "security": [],
         "requestBody": {
           "required": false,
@@ -906,7 +906,7 @@
     "/v1/board": {
       "get": {
         "summary": "The full board in one body: state, tasks, attempts, skills, outbox",
-        "description": "What a remote cockpit draws, with no direct SQLite access.",
+        "description": "What a remote dashboard draws, with no direct SQLite access.",
         "responses": {
           "200": {
             "description": "Board snapshot",
@@ -1296,7 +1296,7 @@
     },
     "/v1/telemetry/events": {
       "get": {
-        "summary": "Live telemetry for the cockpit (ring buffer, then live)",
+        "summary": "Live telemetry for the dashboard (ring buffer, then live)",
         "responses": {
           "200": {
             "description": "text/event-stream of Event objects",

@@ -208,7 +208,7 @@ async def run_pipecat_harness(
     `relay` is the already-built `RemoteVoiceTransport` when the shared Jarvis server owns its routes; without it,
     one is built and it listens on its own (the voice without the brain). Either way a paired Mac's mic and speaker
     are always served, and take over from this Mac's while connected. `status`, when given, is kept up to date for
-    the server's `/v1/status` answer. `hub_emit` is the brain's telemetry bus, so `jarvis top` can show each turn
+    the server's `/v1/status` answer. `hub_emit` is the brain's telemetry bus, so `jarvis dashboard` can show each turn
     stage by stage; without it (standalone voice) those stages go nowhere.
     """
     telemetry.bind(hub_emit)

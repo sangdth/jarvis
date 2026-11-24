@@ -2,7 +2,7 @@
 
 One repository, three apps. The **voice layer** (`jarvis-voice`, Pipecat) talks to the user and hands work to
 agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else to **the brain** (`brain`), the daemon
-that always runs with it. The **cockpit** (`jarvis-top`, Rust + Ratatui) shows the brain's board live. No wake word.
+that always runs with it. The **dashboard** (`jarvis-dashboard`, Rust + Ratatui) shows the brain's board live. No wake word.
 Jarvis stays thin: it routes and relays; the work, tools and memory live in each app's or agent's own harness.
 Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS.md`. Setup and voice commands:
 `README.md`.
@@ -19,17 +19,17 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
   (one code, then another Mac's mic and speaker take over while connected: `jarvis remote` is gone), `jarvis meeting`
   (`--meeting` after `connect`), `jarvis connect` (continue a T3 thread; as a T3
   project script, the thread it runs in), `jarvis connect claude|opencode|pi`, `jarvis health|status|board|tasks|add|mode|research|improve|traces|timers|remind|schedule`
-  (HTTP calls to the running server, `--url` for another machine), `jarvis top`, `jarvis init`, `jarvis enroll`.
+  (HTTP calls to the running server, `--url` for another machine), `jarvis dashboard`, `jarvis init`, `jarvis enroll`.
   One listens at a time (`hold_lock`, `~/.config/jarvis/jarvis.lock`, which stays machine-wide so two checkouts
   cannot share one mic).
 - Needs: nothing extra for the brain (it runs with `jarvis`); T3 Code on loopback (the brain starts
   `t3 serve --mode desktop` itself when nothing answers on `127.0.0.1:3773`); OpenCode 2's service only when
   the owner names OpenCode.
 - Test: `uv run pytest` (the CLI, the voice harness and the brain; config in `pyproject.toml`), and
-  `cargo test --workspace` for the cockpit. `just test` runs both, `just lint` runs ruff, mypy and clippy.
+  `cargo test --workspace` for the dashboard. `just test` runs both, `just lint` runs ruff, mypy and clippy.
 - Lint and types: `uv run ruff check src apps packages tests scripts`, `uv run mypy`, and
   `cargo clippy --workspace --all-targets -- -D warnings`
-- Build the cockpit: `cargo build --release --workspace` (binary `target/release/jarvis-top`, `jarvis top` finds it)
+- Build the dashboard: `cargo build --release --workspace` (binary `target/release/jarvis-dashboard`, `jarvis dashboard` finds it)
 - Speech benchmark: `uv run python scripts/bench_intent.py` (paid OpenRouter calls, about 150 at 3 rounds)
 - Routing benchmark: `uv run python scripts/bench_routing.py` (about 240 paid calls; `bench_routing.py 1` runs one round, 80)
 - Landing page: `site/index.html`, one static file; `.github/workflows/pages.yml` publishes it to
@@ -41,10 +41,10 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 | :--- | :--------------- |
 | `apps/voice/src/jarvis_voice/` | the voice layer (`jarvis-voice`): ear, speech check, executive model, agent watchers |
 | `apps/brain/src/brain/` | the brain (`brain`): board, reconciler, `pi` workers, HTTP/SSE server |
-| `apps/tui/` | the cockpit (`jarvis-top`, Rust + Ratatui) |
+| `apps/dashboard/` | the dashboard (`jarvis-dashboard`, Rust + Ratatui) |
 | `apps/connect/` | the Connect app (`Jarvis.app`, SwiftUI): one Connect button, served at `/Jarvis.app.zip` |
 | `packages/jarvis-core/` | what all three share: `REPO_ROOT`/`JARVIS_HOME`, the `.env` settings base, the tokens, paired devices, `SOUL.md` |
-| `src/jarvis/` | the `jarvis` command: dispatch, `init`, `top`, the launchd service, and the supervisor that runs the stack |
+| `src/jarvis/` | the `jarvis` command: dispatch, `init`, `dashboard`, the launchd service, and the supervisor that runs the stack |
 | `schemas/` | cross-language contracts (the gateway's HTTP/SSE/WS API, see `schemas/README.md`) |
 
 Each language keeps its native workspace (`pyproject.toml` + `uv.lock`, `Cargo.toml` + `Cargo.lock`, and
@@ -71,7 +71,7 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`               |
 | Brain runs nothing overnight         | `apps/brain/src/brain/reconciler.py`, `DEFAULT_MODE`    |
 | Brain spends too much, or stops      | `db.py` budget breaker, `config.py` `max_*_cost_usd`, `reconciler.py` `_run_pi` |
-| Cockpit shows nothing / no data      | `apps/tui/src/db.rs`, `telemetry.py`, `jarvis top`              |
+| Dashboard shows nothing / no data    | `apps/dashboard/src/db.rs`, `telemetry.py`, `jarvis dashboard`  |
 | A reminder or scheduled check never fires | `schedule.py`, `db.py` `fire_due_timers`, `reconciler.py` `_fire_timers` |
 | Work finished but Jarvis said nothing | `server.py` `_deliver_outbox`, `brain_client.py` `_events_loop` |
 | A worker repeats itself or forgets a verified fact | `memory.py`, `reconciler.py` `_finalize_attempt_artifacts`, `run_skill_improver` |
@@ -126,9 +126,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `apps/brain/src/brain/runners/`, not new code in the voice.
 - **The checkout is the runtime; one gateway is the surface.** `src/jarvis/supervisor.py` runs the brain and the
   voice in one process on this checkout (no wheel, no `uv tool`). `jarvis start` syncs, builds both compiled
-  artifacts (cockpit, mac app), kicks launchd and opens the cockpit; it is the only service command.
+  artifacts (dashboard, mac app), kicks launchd and opens the dashboard; it is the only service command.
   Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`), built by
-  `BrainServer`: the brain's API, the cockpit's telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`,
+  `BrainServer`: the brain's API, the dashboard's telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`,
   `/v1/mode`, `/v1/restart`, and the thin client's `/ws` + `/client.py`. Every route but `/health` needs the shared
   token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`). A client on another machine needs no `jarvis`
   install: `jarvis health --url http://<mac-mini>:8643`. Both share one state home, `JARVIS_HOME` (this checkout

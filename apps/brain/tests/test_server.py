@@ -409,7 +409,7 @@ async def test_the_gateway_probe_status_board_tasks_and_restart(tmp_path: Path) 
         listed = await (await client.get("/v1/tasks", headers=headers)).json()
         assert [t["id"] for t in listed["tasks"]] == ["PRB-1"]
 
-        # 4. The full board in one body, so a remote cockpit needs no SQLite access.
+        # 4. The full board in one body, so a remote dashboard needs no SQLite access.
         board = await (await client.get("/v1/board", headers=headers)).json()
         assert board["tasks"][0]["id"] == "PRB-1"
         assert "state" in board and "attempts" in board and "outbox" in board
@@ -517,7 +517,7 @@ async def test_pairing_stops_the_guessing(tmp_path: Path) -> None:
 
 
 async def test_a_client_that_has_never_paired_asks_for_a_code_without_reading_it(tmp_path: Path) -> None:
-    """The app holds no secret yet, so asking is open; the digits themselves only reach the owner's cockpit."""
+    """The app holds no secret yet, so asking is open; the digits themselves only reach the owner's dashboard."""
     from jarvis_core.devices import DeviceStore
 
     store = DeviceStore(tmp_path / "devices.json")
@@ -549,7 +549,7 @@ async def test_a_client_that_has_never_paired_asks_for_a_code_without_reading_it
         assert (await again.json())["expires_in"] > 0
         assert (await (await client.post("/v1/pair/start", headers=owner)).json())["code"] == shown
 
-        # 3. The cockpit is where it can be read: `pair.requested` rides the owner's telemetry.
+        # 3. The dashboard is where it can be read: `pair.requested` rides the owner's telemetry.
         snapshot = await (await client.get("/v1/telemetry/snapshot", headers=owner)).json()
         requests = [e for e in snapshot["events"] if e["event"] == "pair.requested"]
         assert requests, "pair.requested must be on the telemetry stream"
@@ -567,7 +567,7 @@ async def test_a_client_that_has_never_paired_asks_for_a_code_without_reading_it
         assert (await client.get("/v1/telemetry/events", headers=device)).status == 401
         assert (await client.get("/v1/telemetry/snapshot", headers=owner)).status == 200
 
-        # 6. Pairing is announced too, so the cockpit can clear the code.
+        # 6. Pairing is announced too, so the dashboard can clear the code.
         snapshot = await (await client.get("/v1/telemetry/snapshot", headers=owner)).json()
         resolved = [e for e in snapshot["events"] if e["event"] == "pair.resolved"]
         assert resolved and resolved[-1]["ok"] is True

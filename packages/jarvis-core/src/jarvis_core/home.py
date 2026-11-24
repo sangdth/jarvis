@@ -128,7 +128,7 @@ def env_file_value(name: str, *paths: Path) -> str:
 
 
 def brain_token(home: Path | None = None) -> str:
-    """The bearer token shared by the server, voice harness, cockpit, and thin clients; created on first use (0600)."""
+    """The bearer token shared by the server, voice harness, dashboard, and thin clients; created on first use (0600)."""
     base = home or JARVIS_HOME
     b_home = brain_home() if home is None else (base / BRAIN_DIRNAME)
     token_path = base / BRAIN_TOKEN_FILE

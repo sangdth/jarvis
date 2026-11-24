@@ -1,12 +1,12 @@
 [package]
-name = "jarvis-top"
+name = "jarvis-dashboard"
 version = "0.1.0"
 edition = "2021"
-description = "Fullscreen Ratatui cockpit for Jarvis's brain (Brain)"
+description = "Fullscreen Ratatui dashboard for Jarvis's brain"
 license = "AGPL-3.0-only"
 
 [[bin]]
-name = "jarvis-top"
+name = "jarvis-dashboard"
 path = "src/main.rs"
 
 [dependencies]

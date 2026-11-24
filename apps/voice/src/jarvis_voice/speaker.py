@@ -417,7 +417,7 @@ class VoiceProfile:
 
 @dataclass(frozen=True)
 class RenameResult:
-    """What changed when a speaker entry was renamed (for tool response and live cockpit telemetry)."""
+    """What changed when a speaker entry was renamed (for tool response and live dashboard telemetry)."""
 
     profile_id: str
     source_id: str
@@ -699,7 +699,7 @@ class SpeakerRegistry:
             return next((p for p in self.profiles.values() if p.name and p.name.lower() == low), None)
 
     def find_profile(self, query: str | None) -> VoiceProfile | None:
-        """Look up a guest by id ('voice_1'), cockpit label ('Speaker 1'), saved name, or top tentative belief."""
+        """Look up a guest by id ('voice_1'), dashboard label ('Speaker 1'), saved name, or top tentative belief."""
         with self._lock:
             if not query or not query.strip():
                 return None
@@ -1076,7 +1076,7 @@ class SpeakerBeliefTracker:
 
 
 def speaker_number(profile: VoiceProfile) -> int:
-    """`voice_3` -> 3, for the cockpit and logs."""
+    """`voice_3` -> 3, for the dashboard and logs."""
     return int(profile.id.rsplit("_", 1)[-1]) if profile.id.rsplit("_", 1)[-1].isdigit() else 0
 
 

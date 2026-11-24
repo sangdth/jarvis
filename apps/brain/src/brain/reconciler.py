@@ -1016,11 +1016,12 @@ class Reconciler:
             "call `upsert_task` with `mode='AUTONOMOUS'` and `ready=true`.\n"
             "- If you are not sure whether it is related to the current topic/tasks or when the owner wants "
             "the issue resolved, ask the owner when you should resolve the issue before marking it ready.\n"
-            "If the owner complains about a Brain bug/feature or asks to upgrade this repository "
-            "('jarvis', 'the brain', 'your code', 'brain'), call `upsert_task` with "
+            "If the owner complains about a Brain/Jarvis bug or feature, or asks to upgrade this repository "
+            "('jarvis', 'the brain', 'your code', 'your dashboard', 'brain'), call `upsert_task` with "
             "`repo='jarvis'`, `kind='problem'` (for bugs/complaints) or `kind='goal'` "
-            "(for new tech/upgrades), `mode='ASSIST'`, a deterministic `verify_cmd` (e.g. 'uv run pytest'), and "
-            "`ready=true` so Brain immediately builds, verifies, and restarts itself. "
+            "(for new features/upgrades), `mode='ASSIST'`, a deterministic `verify_cmd` "
+            "(e.g. 'uv run pytest', or 'cargo test --manifest-path apps/dashboard/Cargo.toml' for dashboard work "
+            "under `apps/dashboard/`), and `ready=true` so Brain immediately builds, verifies, and restarts itself. "
             "Reply in 1-2 concise sentences suitable to be spoken aloud."
         )
         res = await self._run_pi(
@@ -2803,6 +2804,23 @@ class Reconciler:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await sync_proc.wait()
+        rust_changed = any(
+            p in ("Cargo.toml", "Cargo.lock") or p.startswith("apps/dashboard/")
+            for p in changed
+        )
+        cargo_exe = shutil.which("cargo")
+        if rust_changed and cargo_exe:
+            cargo_proc = await asyncio.create_subprocess_exec(
+                cargo_exe,
+                "build",
+                "--release",
+                "--manifest-path",
+                str(repo_dir / "apps" / "dashboard" / "Cargo.toml"),
+                cwd=str(repo_dir),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await cargo_proc.wait()
         if has_origin:
             # Never swallow this: a rejected push means origin/master moved ahead of the checkout.
             push_rc, push_detail = await self._git_capture(repo_dir, "push", "origin", "HEAD:master")

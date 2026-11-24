@@ -42,7 +42,7 @@ pub const NODES: [NodeSpec; 15] = [
         id: "meet",
         title: "Meet / CLI",
         summary: "Chrome tap · /v1/ask",
-        detail: "Meeting mode hears the call through the system audio tap and speaks back through a Chrome extension. The CLI, the cockpit and an iPhone Shortcut are ordinary authenticated HTTP calls.",
+        detail: "Meeting mode hears the call through the system audio tap and speaks back through a Chrome extension. The CLI, the dashboard and an iPhone Shortcut are ordinary authenticated HTTP calls.",
         file: "apps/voice/src/jarvis_voice/meet_voice.py",
     },
     NodeSpec {
@@ -77,7 +77,7 @@ pub const NODES: [NodeSpec; 15] = [
         id: "exec",
         title: "Exec LLM",
         summary: "OpenRouter · thinking on",
-        detail: "The conversation model reads the prepared context and calls one tool: send_agent_task, answer_agent or stop_agent. Its reasoning stream and each tool call are teed to this cockpit.",
+        detail: "The conversation model reads the prepared context and calls one tool: send_agent_task, answer_agent or stop_agent. Its reasoning stream and each tool call are teed to this dashboard.",
         file: "apps/voice/src/jarvis_voice/llm.py",
     },
     NodeSpec {
@@ -112,7 +112,7 @@ pub const NODES: [NodeSpec; 15] = [
         id: "db",
         title: "state.db",
         summary: "SQLite WAL · 7 tables",
-        detail: "Single writer: tasks, attempts, threads, skills, outbox, timers and system_state. This cockpit reads the same file on a read-only connection, so it never blocks the daemon.",
+        detail: "Single writer: tasks, attempts, threads, skills, outbox, timers and system_state. This dashboard reads the same file on a read-only connection, so it never blocks the daemon.",
         file: "apps/brain/src/brain/db.py",
     },
     NodeSpec {

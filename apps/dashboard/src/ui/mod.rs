@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
     if area.width < 60 || area.height < 18 {
         frame.render_widget(
-            Paragraph::new("terminal too small — jarvis top wants a wide screen (resize or press q)")
+            Paragraph::new("terminal too small — jarvis dashboard wants a wide screen (resize or press q)")
                 .style(theme::base()),
             area,
         );

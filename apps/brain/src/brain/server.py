@@ -108,7 +108,7 @@ class RunRecord:
 class BrainServer:
     """
     The one Jarvis network surface: the brain's HTTP/SSE contract, the thin client's mic and speaker routes, the
-    cockpit's telemetry, and the small operator API a probe or a script needs (`/health`, `/v1/status`, `/v1/board`,
+    dashboard's telemetry, and the small operator API a probe or a script needs (`/health`, `/v1/status`, `/v1/board`,
     `/v1/tasks`, `/v1/mode`, `/v1/restart`). Everything except `/health` needs the shared token.
     """
 
@@ -147,7 +147,7 @@ class BrainServer:
         self._last_project_by_session: dict[str, str] = {}
         # One pairing code at a time, in memory: a restart clears it, which is what we want.
         self._pair_codes: dict[str, float] = {}
-        self._pair_name = ""  # who asked, for the cockpit's banner; the app that asked first keeps it
+        self._pair_name = ""  # who asked, for the dashboard's banner; the app that asked first keeps it
         self._pair_failures: deque[float] = deque(maxlen=PAIR_MAX_FAILURES * 2)
         self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
         self._started_at = started_at if started_at is not None else time.time()
@@ -226,7 +226,7 @@ class BrainServer:
             return await handler(request)
         if request.path.startswith("/v1/telemetry/"):
             # The pairing code rides the telemetry stream, so a paired device must not read it: only the owner's
-            # token does, which is the one `jarvis top` already uses.
+            # token does, which is the one `jarvis dashboard` already uses.
             return web.json_response({"error": "owner token required"}, status=401)
         if request.path.startswith(("/v1/pair/", "/v1/devices")):
             # Minting and revoking devices is the owner's business; a paired device cannot do it.
@@ -651,7 +651,7 @@ class BrainServer:
 
     def _reveal_pair_code(self, name: str) -> tuple[str, float]:
         """
-        One pending code at a time, and it shows where the owner can see it: the cockpit's telemetry, or `jarvis pair`.
+        One pending code at a time, and it shows where the owner can see it: the dashboard's telemetry, or `jarvis pair`.
 
         A second request reuses the code that is still live instead of minting a new one, so a double click, or an app
         asking again while you type, never steals the digits on your screen.
@@ -666,7 +666,7 @@ class BrainServer:
             self._pair_codes = {code: expires}
             self._pair_failures.clear()
             self._pair_name = label = name
-            logger.info("[Pair] a pairing code was issued (single use, 5 minutes); `jarvis top` shows it.")
+            logger.info("[Pair] a pairing code was issued (single use, 5 minutes); `jarvis dashboard` shows it.")
         self.hub.emit(
             EVENT_PAIR_REQUESTED,
             code=code,
@@ -687,7 +687,7 @@ class BrainServer:
 
     async def handle_pair_request(self, request: web.Request) -> web.Response:
         """
-        An unpaired client asks for a code; the code goes to the cockpit, never back down this connection.
+        An unpaired client asks for a code; the code goes to the dashboard, never back down this connection.
 
         Open on purpose, like `GET /client.py`: an app that has never paired holds no secret yet. Asking costs
         nothing and reveals nothing — reading the digits takes the owner's token, or the screen of the Mac it runs on.
@@ -737,7 +737,7 @@ class BrainServer:
         return web.json_response({"device": device.public()})
 
     async def handle_board(self, request: web.Request) -> web.Response:
-        """The full board snapshot in one body: what a remote cockpit draws, with no direct SQLite access."""
+        """The full board snapshot in one body: what a remote dashboard draws, with no direct SQLite access."""
         st = self.db.get_state()
         return web.json_response(
             {
@@ -965,7 +965,7 @@ class BrainServer:
         return resp
 
     async def handle_telemetry_events(self, request: web.Request) -> web.StreamResponse:
-        """SSE stream of transient daemon telemetry for the Ratatui dashboard (`brain top`)."""
+        """SSE stream of transient daemon telemetry for the Ratatui dashboard (`jarvis dashboard`)."""
         resp = web.StreamResponse(
             status=200,
             reason="OK",
@@ -1027,7 +1027,7 @@ class BrainServer:
         """Approves or rejects a queued outbox item directly from the dashboard."""
         outbox_id = request.match_info["outbox_id"]
         body = await self._read_json_dict(request)
-        # The cockpit sends `{"approved": true}`; scripts and the OpenAPI contract send `{"action": "approve"}`.
+        # The dashboard sends `{"approved": true}`; scripts and the OpenAPI contract send `{"action": "approve"}`.
         if "approved" in body:
             approved = bool(body.get("approved"))
         else:

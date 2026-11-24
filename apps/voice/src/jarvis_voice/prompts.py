@@ -320,7 +320,11 @@ def project_list(orchestrator: AgentOrchestrator) -> str:
            if others else "")
         + " Give a `task` only when the user"
         " says what to do there; \"continue on X\" or \"open X\" alone has no task. Set `project` also when the"
-        " user names it in a reply to your question. Coding with no project named needs no `project`. Questions"
+        " user names it in a reply to your question. Coding with no project named needs no `project`. When the"
+        " user says \"your dashboard\" or \"Jarvis's dashboard\", they mean Jarvis's own dashboard"
+        " (`apps/dashboard`), never another project folder: send it to `brain` with \"Jarvis's dashboard"
+        " (`apps/dashboard`)\" in `task` and omit `project`. Generic \"the dashboard\" without \"your\" means"
+        " the current project: omit `project` unless they name one. Questions"
         " about the projects themselves (which exist, how many, what is in a group) you answer from this list"
         " yourself, with no tool. The list is newest first. When a name fits more than one folder, pick the one that"
         " comes first in the list; \"where I left off\" means the first folder.\n"
