@@ -75,6 +75,33 @@ class TestVoiceTelemetry(unittest.TestCase):
         self.assertIn("Clicking save closes modal", built[1]["content"])
         self.assertEqual(len(raw_messages), 4)  # caller's list untouched
 
+    def test_jarvis_llm_hides_tools_and_injects_enrollment_note_until_done(self) -> None:
+        from jarvis_voice.llm import JarvisLLM
+
+        state = iter([
+            ("[Not the user speaking: Confirm voice check 1 of 2.]", True),
+            (None, False),
+        ])
+        llm = JarvisLLM(
+            api_key="k",
+            enrollment_turn=lambda: next(state),
+            settings=JarvisLLM.Settings(model="deepseek/deepseek-chat"),
+        )
+        raw = {
+            "messages": [{"role": "system", "content": "base"}, {"role": "user", "content": "Hello"}],
+            "tools": [{"type": "function", "function": {"name": "send_agent_task"}}],
+            "tool_choice": "auto",
+        }
+        enrolling = llm.build_chat_completion_params(raw)
+        self.assertNotIn("tools", enrolling)
+        self.assertNotIn("tool_choice", enrolling)
+        self.assertEqual([m["role"] for m in enrolling["messages"]], ["system", "system", "user"])
+        self.assertIn("Confirm voice check 1 of 2", enrolling["messages"][1]["content"])
+
+        normal = llm.build_chat_completion_params(raw)
+        self.assertIn("tools", normal)
+        self.assertEqual([m["role"] for m in normal["messages"]], ["system", "user"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ changing a single frame the pipeline sees.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from typing import Any, AsyncIterator
 
 from pipecat.services.openrouter.llm import OpenRouterLLMService
@@ -66,21 +67,41 @@ async def _tee_reasoning(stream: AsyncIterator[Any]) -> AsyncIterator[Any]:
 class JarvisLLM(OpenRouterLLMService):
     """OpenRouter's service, with the prepared request and the model's reasoning on the telemetry bus."""
 
-    def __init__(self, *args: Any, working_context: Any = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        working_context: Any = None,
+        enrollment_turn: Callable[[], tuple[str | None, bool]] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._working_context = working_context
+        self._enrollment_turn = enrollment_turn
 
     def build_chat_completion_params(self, params_from_context: Any) -> dict[str, Any]:  # type: ignore[override]
-        if self._working_context is not None and (held := self._working_context.format_for_prompt()):
+        notes: list[str] = []
+        hide_tools = False
+        if self._enrollment_turn is not None:
+            note, hide_tools = self._enrollment_turn()
+            if note:
+                notes.append(note)
+        if not hide_tools and self._working_context is not None and (held := self._working_context.format_for_prompt()):
+            notes.append(held)
+        if notes:
             msgs = list(params_from_context.get("messages") or [])
             idx = next(
                 (i for i in range(len(msgs) - 1, -1, -1) if isinstance(msgs[i], dict) and msgs[i].get("role") == "user"),
                 len(msgs) - 1 if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") != "tool" else None,
             )
             if idx is not None:
-                msgs.insert(idx, {"role": "system", "content": held})
+                for offset, note in enumerate(notes):
+                    msgs.insert(idx + offset, {"role": "system", "content": note})
                 params_from_context = {**params_from_context, "messages": msgs}
-        return super().build_chat_completion_params(params_from_context)
+        params = super().build_chat_completion_params(params_from_context)
+        if hide_tools:
+            params.pop("tools", None)
+            params.pop("tool_choice", None)
+        return params
 
     async def get_chat_completions(self, context: Any) -> AsyncIterator[Any]:  # type: ignore[override]
         try:

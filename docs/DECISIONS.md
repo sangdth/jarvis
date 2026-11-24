@@ -61,13 +61,15 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   through the relay is not built.
 - **Speaker names — and the owner — are inferred from conversation, not enrolled by interview.** With `MASTER_CHECK`
   on and no `owner_voice.npy` yet (or during `jarvis enroll`), the first person who addresses Jarvis locks onto their
-  voice on turn one and saves `owner_voice.npy` once ~4 s across two turns is heard; background/TV speech ignored by
-  the speech check never claims ownership. An introduction then offers a guest name to the room; the next unknown
-  voice to answer gets it with a confidence (about 70% from adjacency alone, about 99% once it says "I'm David"), and
-  only a name at 85% or more with at least 4 s of speech is written to `speakers/`. Unknown voices live in RAM for
-  ten minutes, so TV never reaches the disk. Limits: if another person addresses Jarvis before the owner on a fresh
-  install, run `jarvis enroll` to reset it; one label per sentence (no diarization); pitch only separates clear cases
-  (~155–180 Hz overlaps).
+  voice on turn one, chats across 4 turns (~10 s of speech), and answers 2 quick voice-check questions before
+  `owner_voice.npy` is saved; background/TV speech ignored by the speech check never claims ownership, and an
+  interrupted enrollment never writes a partial voiceprint. `jarvis enroll` says goodbye and exits once confirmed;
+  startup enrollment welcomes the owner and stays listening. An introduction then offers a guest name to the room;
+  the next unknown voice to answer gets it with a confidence (about 70% from adjacency alone, about 99% once it says
+  "I'm David"), and only a name at 85% or more with at least 4 s of speech is written to `speakers/`. Unknown voices
+  live in RAM for ten minutes, so TV never reaches the disk. Limits: if another person addresses Jarvis before the
+  owner on a fresh install, run `jarvis enroll` to reset it; one label per sentence (no diarization); pitch only
+  separates clear cases (~155–180 Hz overlaps).
 
 - **The brain moved into this repository and was renamed.** Superbrain became `apps/brain` (package `brain`) with its
   full history via `git subtree`; the Rust cockpit came out to `apps/tui` and the two histories join at one merge.

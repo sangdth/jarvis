@@ -117,11 +117,12 @@ To change how Jarvis tidies what you say, write your own prompt under a `## Clea
 Jarvis uses its own, and new versions keep improving it. Startup logs `SYSTEM.md overrides: Cleanup` while yours is used.
 
 Last, it asks whether to lock Jarvis to your voice (on by default; later: `jarvis enroll`). There are no lines to
-read aloud: when Jarvis starts without `JARVIS_HOME/owner_voice.npy`, the first person who chats with it becomes its
-owner after a couple of sentences (downloading the 25 MB speaker model to `JARVIS_HOME/models/` on first use).
-`jarvis enroll` resets `owner_voice.npy` and starts a short chat so a new voice (or a new mic) becomes the owner.
-Anyone can still say "shut up" or "you can talk". Declining writes `MASTER_CHECK=false`, and any voice may talk to
-Jarvis until you enroll; `MASTER_CHECK=false` also turns the check off again later and keeps the voiceprint.
+read aloud: when Jarvis starts without `JARVIS_HOME/owner_voice.npy`, it has a short natural chat with the first
+person who speaks to it, asks a couple of quick questions to confirm their voice, saves the voiceprint (downloading
+the 25 MB speaker model to `JARVIS_HOME/models/` on first use), and welcomes them ready to go. `jarvis enroll` resets
+`owner_voice.npy` and runs the same conversation and voice check, then says goodbye and exits. Anyone can still say
+"shut up" or "you can talk". Declining writes `MASTER_CHECK=false`, and any voice may talk to Jarvis until you
+enroll; `MASTER_CHECK=false` also turns the check off again later and keeps the voiceprint.
 
 ### 3. Configure `.env`
 `jarvis init` fills the two API keys unless your shell exports them; set the rest in `JARVIS_HOME/.env`. A variable set in

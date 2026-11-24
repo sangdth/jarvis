@@ -7,6 +7,7 @@ from jarvis_voice.prompts import (
     AGENT_REPORT_PROMPT,
     JARVIS_EXECUTIVE_SYSTEM_PROMPT,
     LANGUAGES,
+    enrollment_step_prompt,
     greeting_prompt,
     system_prompt,
 )
@@ -90,8 +91,38 @@ class TestGreeting(unittest.TestCase):
     def test_unclaimed_greeting_invites_first_speaker_without_memories(self) -> None:
         prompt = greeting_prompt(datetime(2026, 11, 6, 8, 5), ["secret note"], unclaimed=True)
         self.assertIn("no owner voiceprint yet", prompt)
+        self.assertIn("what to call them", prompt)
         self.assertNotIn("secret note", prompt)
         self.assertIn("Do not call any tool", prompt)
+
+        named = greeting_prompt(datetime(2026, 11, 6, 8, 5), [], unclaimed=True, owner_name="Sang")
+        self.assertIn("Sang", named)
+        self.assertNotIn("what to call them", named)
+
+    def test_enrollment_step_prompts_cover_chat_confirmation_goodbye_and_welcome(self) -> None:
+        learning = enrollment_step_prompt("learning", step=2, total=4, speech_secs=5.0)
+        self.assertIn("2 of 4 turns", learning)
+        self.assertIn("Do not call any tool", learning)
+
+        confirm_1 = enrollment_step_prompt("confirming", step=0, total=2)
+        self.assertIn("couple of quick questions", confirm_1)
+        self.assertIn("either-or", confirm_1)
+
+        confirm_2 = enrollment_step_prompt("confirming", step=1, total=2)
+        self.assertIn("one last", confirm_2)
+
+        retry = enrollment_step_prompt("confirming", step=0, total=2, weak_retry=True)
+        self.assertIn("too quiet or brief", retry)
+
+        goodbye = enrollment_step_prompt("just_enrolled", standalone=True)
+        self.assertIn("goodbye", goodbye)
+        self.assertIn("Do not ask another question", goodbye)
+
+        welcome = enrollment_step_prompt("just_enrolled", standalone=False)
+        self.assertIn("welcome", welcome)
+        self.assertIn("Do not say goodbye", welcome)
+
+        self.assertEqual(enrollment_step_prompt("idle"), "")
 
 
 if __name__ == "__main__":

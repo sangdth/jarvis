@@ -4,8 +4,10 @@ Jarvis Always-On Voice Executive Harness (Pipecat Pipeline).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -26,7 +28,7 @@ from jarvis_voice.feedback import FeedbackLog
 from jarvis_voice.memory import create_memory_service
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.pi_adapter import PiAdapter, install_extension
-from jarvis_voice.prompts import LANGUAGES, greeting_prompt, system_prompt
+from jarvis_voice.prompts import LANGUAGES, enrollment_step_prompt, greeting_prompt, system_prompt
 from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
 from jarvis_voice.state import JarvisState
 from jarvis_voice.system_prompts import build_retell_prompt, load_overrides
@@ -140,6 +142,57 @@ def choose(heading: str, labels: list[str], question: str) -> int:
     return int(choice) - 1
 
 
+@dataclass
+class _EnrollmentFlow:
+    """Drives per-turn enrollment prompts and `jarvis enroll`'s goodbye-before-cancel handshake."""
+
+    registry: Any
+    standalone: bool
+    farewell_state: str = "idle"  # idle -> pending -> speaking -> done
+    farewell_dispatched: bool = False
+
+    def on_enrolled(self) -> None:
+        if self.standalone:
+            self.farewell_state = "pending"
+
+    def llm_turn(self) -> tuple[str | None, bool]:
+        stage, step, total, speech_secs, weak_retry = self.registry.owner_enrollment_status()
+        if stage == "idle":
+            return None, False
+        if stage == "waiting":
+            return None, True
+        if stage == "just_enrolled":
+            self.registry.consume_just_enrolled()
+            if self.standalone:
+                self.farewell_dispatched = True
+            return enrollment_step_prompt("just_enrolled", standalone=self.standalone), True
+        return (
+            enrollment_step_prompt(
+                stage,
+                step=step,
+                total=total,
+                speech_secs=speech_secs,
+                weak_retry=weak_retry,
+                standalone=self.standalone,
+            ),
+            True,
+        )
+
+    def on_assistant_started(self) -> None:
+        if self.standalone and self.farewell_state == "pending":
+            self.farewell_state = "speaking"
+
+    def should_cancel_after_spoken(self) -> bool:
+        if not self.standalone or self.farewell_state != "speaking":
+            return False
+        if not self.farewell_dispatched:
+            # An earlier question's start frame was still in flight when enrollment finished; wait for the goodbye.
+            self.farewell_state = "pending"
+            return False
+        self.farewell_state = "done"
+        return True
+
+
 async def run_pipecat_harness(
     connect: str | None = None,
     *,
@@ -182,7 +235,13 @@ async def run_pipecat_harness(
     from jarvis_voice.cleanup import TranscriptCleaner
     from jarvis_voice.latency import latency_observer
     from jarvis_voice.mac_audio import MacVoiceTransport
-    from jarvis_voice.speaker import VOICEPRINT_PATH, SpeakerEmbedder, SpeakerRegistry, load_voiceprint
+    from jarvis_voice.speaker import (
+        OWNER_CONFIRM_CHECKS,
+        VOICEPRINT_PATH,
+        SpeakerEmbedder,
+        SpeakerRegistry,
+        load_voiceprint,
+    )
     from jarvis_voice.voice_gates import (
         CLIPS_DIR,
         ActivationChime,
@@ -313,9 +372,12 @@ async def run_pipecat_harness(
     # (claiming the first speaker when no owner_voice.npy exists yet), known guests, or tagging room in meetings.
     enrolled_owner: list[VoiceProfile] = []
     ear_notifier: list[Any] = []
+    enrollment: _EnrollmentFlow | None = None
 
     def _on_owner_enrolled(profile: VoiceProfile) -> None:
         enrolled_owner.append(profile)
+        if enrollment is not None:
+            enrollment.on_enrolled()
         for fn in ear_notifier:
             fn()
 
@@ -324,10 +386,12 @@ async def run_pipecat_harness(
             owner_voiceprint=voiceprint,
             owner_name=None if enroll_owner else owner_name(soul.personality),
             on_owner_enrolled=_on_owner_enrolled,
+            confirm_checks=OWNER_CONFIRM_CHECKS if settings.openrouter_api_key else 0,
         )
         if checking_owner
         else SpeakerRegistry(folder=None)
     )
+    enrollment = _EnrollmentFlow(registry=registry, standalone=enroll_owner)
     stt = SpeakerVerifiedWhisperSTT(
         embedder=SpeakerEmbedder() if checking_owner else None,
         voiceprint=voiceprint,
@@ -348,6 +412,7 @@ async def run_pipecat_harness(
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
             working_context=state.working_context,
+            enrollment_turn=enrollment.llm_turn,
             settings=JarvisLLM.Settings(
                 model=settings.executive_model,
                 system_instruction=system_prompt(
@@ -377,15 +442,15 @@ async def run_pipecat_harness(
         logger.warning("No OPENROUTER_API_KEY configured; running in offline mode.")
         llm = None
 
-    tools = agent_tools()
+    tools = [] if enroll_owner else agent_tools()
 
-    if llm is not None:
+    if llm is not None and not enroll_owner:
         from jarvis_voice.llm import traced_tool
 
         for name, handler in agent_tool_handlers(orchestrator).items():
             llm.register_function(name, traced_tool(name, handler))
 
-    context = LLMContext(tools=tools)
+    context = LLMContext(tools=tools) if tools else LLMContext()
     # Pipecat 1.x runs voice detection in the user aggregator; it signals speech start/stop
     # upstream too, which is what tells Whisper when a sentence is complete.
     context_aggregator = LLMContextAggregatorPair(
@@ -423,7 +488,7 @@ async def run_pipecat_harness(
         context_aggregator.user(),
     ]
     # Long-term memory sits right before the brain: it adds what Jarvis remembers to each request (~22 ms).
-    memory = create_memory_service() if llm is not None else None
+    memory = create_memory_service() if llm is not None and not enroll_owner else None
     if memory is not None:
         processors.append(memory)
         if on_memory is not None:
@@ -445,19 +510,27 @@ async def run_pipecat_harness(
 
     assistant_agg = context_aggregator.assistant()
 
+    @assistant_agg.event_handler("on_assistant_turn_started")
+    async def _on_speak_start(_agg: Any) -> None:
+        enrollment.on_assistant_started()
+
     @assistant_agg.event_handler("on_assistant_turn_stopped")
     async def _on_spoken(_agg: Any, message: Any) -> None:
         text = getattr(message, "content", "")
+        interrupted = bool(getattr(message, "interrupted", False))
         if text:
             telemetry.emit(
                 "voice.tts",
                 text=text,
                 mode=state.mode.value,
-                interrupted=bool(getattr(message, "interrupted", False)),
+                interrupted=interrupted,
             )
             if enroll_owner and not settings.elevenlabs_api_key:
                 print(f"\nJarvis: {text}\n")
-        if enroll_owner and enrolled_owner:
+        if enrollment.should_cancel_after_spoken():
+            if settings.elevenlabs_api_key and not interrupted:
+                # Let CoreAudio drain the ~80 ms play-ahead buffer before tearing down the audio engine.
+                await asyncio.sleep(0.25)
             await task.cancel()
 
     processors.extend([transport.output(), assistant_agg])
@@ -519,7 +592,13 @@ async def run_pipecat_harness(
                 messages=[
                     {
                         "role": "user",
-                        "content": greeting_prompt(datetime.now(), memories, settings.language, unclaimed=unclaimed),
+                        "content": greeting_prompt(
+                            datetime.now(),
+                            memories,
+                            settings.language,
+                            unclaimed=unclaimed,
+                            owner_name=registry.owner_name,
+                        ),
                     }
                 ],
                 run_llm=True,

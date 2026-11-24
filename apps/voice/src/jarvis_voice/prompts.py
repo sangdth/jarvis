@@ -110,14 +110,27 @@ AGENT_REPORT_PROMPT = (
 )
 
 
-def greeting_prompt(now: datetime, memories: list[str], language: str = "en", *, unclaimed: bool = False) -> str:
+def greeting_prompt(
+    now: datetime,
+    memories: list[str],
+    language: str = "en",
+    *,
+    unclaimed: bool = False,
+    owner_name: str | None = None,
+) -> str:
     """What the brain gets at startup so Jarvis speaks first: the local time and a few things it remembers."""
     greeting = LANGUAGES[language]["greeting"]
     if unclaimed:
+        ask_name = (
+            f" You already know their name is {owner_name}; greet them by name once and ask a casual open question"
+            " (like how their day is going or what they're up to) to get a short conversation going."
+            if owner_name
+            else " Casually ask what to call them and invite them to chat for a bit."
+        )
         return (
             f"{NOT_THE_USER} Jarvis just started and has no owner voiceprint yet.] Greet the person warmly in one"
-            " or two short sentences, invite them to chat naturally so you can learn their voice as your owner, and"
-            " casually ask what to call them."
+            " or two short sentences and let them know you'd like to chat for a moment so you can learn their voice"
+            f" as your owner.{ask_name}"
             + (f" {greeting}" if greeting else "")
             + " Do not call any tool."
         )
@@ -133,6 +146,69 @@ def greeting_prompt(now: datetime, memories: list[str], language: str = "en", *,
         + (f" {greeting}" if greeting else "")
         + " Do not call any tool."
     )
+
+
+def enrollment_step_prompt(
+    stage: str,
+    *,
+    step: int = 0,
+    total: int = 0,
+    speech_secs: float = 0.0,
+    weak_retry: bool = False,
+    standalone: bool = False,
+) -> str:
+    """Per-turn guidance while learning and confirming the owner's voiceprint."""
+    if stage == "learning":
+        if weak_retry:
+            body = (
+                "You are still learning your owner's voice, and that last line was a little quiet or brief to catch"
+                " clearly. Respond naturally in one short sentence and ask an easy open question so they say a full"
+                " sentence or two."
+            )
+        else:
+            body = (
+                f"You are learning your owner's voice through a natural conversation ({step} of {total} turns,"
+                f" {speech_secs:.0f}s heard so far). Respond warmly to what they just said in one short sentence, then"
+                " ask one easy, casual open question to keep them talking naturally — never mention turn counts or"
+                " seconds."
+            )
+    elif stage == "confirming":
+        if weak_retry:
+            body = (
+                "You are confirming your owner's voice, and their last short reply was a little too quiet or brief to"
+                " verify clearly. Ask one quick, playful either-or question (like coffee or tea, morning or night) and"
+                " invite a short 2 to 4 word answer — never yes/no or 'okay'."
+            )
+        elif step == 0:
+            body = (
+                f"You have enough conversation to test your owner's voice now ({total} quick checks). Reply briefly to"
+                " what they said, tell them you just have a couple of quick questions to double-check their voice, and"
+                " ask one short, playful either-or question that invites a 2 to 4 word answer (never yes/no)."
+            )
+        else:
+            remaining = max(1, total - step)
+            which = "one last" if remaining == 1 else "another"
+            body = (
+                f"Voice check {step} of {total} matched. Acknowledge their answer warmly in a few words and ask"
+                f" {which} quick, playful either-or question (different topic, 2 to 4 word answer, never yes/no) to"
+                " confirm their voice again."
+            )
+    elif stage == "just_enrolled":
+        if standalone:
+            body = (
+                "Voice enrollment is complete and saved. Acknowledge their answer briefly, confirm you've got their"
+                " voice locked in, and say a warm, friendly goodbye as enrollment wraps up. Do not ask another"
+                " question."
+            )
+        else:
+            body = (
+                "Voice enrollment is complete and saved. Acknowledge their answer briefly, confirm you've got their"
+                " voice locked in, and welcome them warmly — let them know you're ready whenever they need anything."
+                " Do not say goodbye."
+            )
+    else:
+        return ""
+    return f"{NOT_THE_USER} {body} Do not call any tool.]"
 
 
 def system_prompt(

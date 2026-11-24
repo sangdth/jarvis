@@ -26,7 +26,7 @@ def suggest_threshold(scores: list[float]) -> float:
 
 
 def main() -> None:
-    if not settings.openrouter_api_key and not settings.laya_api_key:
+    if not settings.openrouter_api_key:
         sys.exit(f"Set OPENROUTER_API_KEY in {ENV_PATH} first (`jarvis init`) so Jarvis can chat with you.")
 
     from jarvis_voice.main import run_pipecat_harness
@@ -34,7 +34,7 @@ def main() -> None:
     previous = VOICEPRINT_PATH.read_bytes() if VOICEPRINT_PATH.is_file() else None
     VOICEPRINT_PATH.unlink(missing_ok=True)
     print("\n=== Jarvis owner voice enrollment ===")
-    print("Just chat naturally with Jarvis for a couple of sentences — the first voice it hears becomes its owner.\n")
+    print("Chat naturally with Jarvis for a few turns, then answer a couple of quick questions to confirm your voice.\n")
     profile = None
     try:
         profile = asyncio.run(run_pipecat_harness(enroll_owner=True))

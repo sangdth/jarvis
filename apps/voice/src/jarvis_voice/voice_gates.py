@@ -49,6 +49,7 @@ from jarvis_voice.executive_filter import ExecutiveFilter
 from jarvis_voice.prompts import LANGUAGES, MEETING_TRANSCRIPT, meeting_mode
 from jarvis_voice.speaker import (
     KNOWN_AT,
+    OWNER_WEAK_MARGIN,
     TENTATIVE_AT,
     SpeakerBeliefTracker,
     SpeakerEmbedder,
@@ -117,12 +118,15 @@ def _uninterruptible(frame: TranscriptionFrame, *, smart_turn_held: bool | None 
     return frame
 
 
+OwnerClip = tuple[np.ndarray, float, float | None, float]
+
+
 def _keep_speaker_audio(target: TranscriptionFrame, *sources: TranscriptionFrame) -> TranscriptionFrame:
     """`replace()` drops attributes added by the STT; a joined sentence keeps its pitch, duration and owner clips."""
     pitch: float | None = None
     secs = 0.0
     has_secs = False
-    clips: list[tuple[np.ndarray, float]] = []
+    clips: list[OwnerClip] = []
     for src in sources:
         if getattr(src, "_pitch_hz", None) is not None:
             pitch = getattr(src, "_pitch_hz")
@@ -137,6 +141,21 @@ def _keep_speaker_audio(target: TranscriptionFrame, *sources: TranscriptionFrame
     if clips:
         setattr(target, "_owner_clips", clips)
     return target
+
+
+def _combine_owner_clips(clips: list[OwnerClip]) -> OwnerClip | None:
+    """Collapse segments joined into one user turn into a single clip, so a mid-sentence pause counts once."""
+    valid = [(e, s, sc, th) for e, s, sc, th in clips if (n := float(np.linalg.norm(e))) > 0 and np.isfinite(n)]
+    if not valid:
+        return None
+    if len(valid) == 1:
+        return valid[0]
+    weights = np.array([max(0.5, min(s, 4.0)) for _, s, _, _ in valid], dtype=np.float32)
+    units = np.stack([(e / float(np.linalg.norm(e))).astype(np.float32) for e, _, _, _ in valid])
+    avg = np.average(units, axis=0, weights=weights).astype(np.float32)
+    total_secs = sum(s for _, s, _, _ in valid)
+    scores = [sc for _, _, sc, _ in valid if sc is not None]
+    return avg, total_secs, (max(scores) if scores else None), valid[-1][3]
 
 
 def save_clip(pcm16: bytes, rate: int, keep: int, folder: Path = CLIPS_DIR) -> Path | None:
@@ -288,7 +307,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
             await score_task if score_task else (None, None, None, 0.0, None)
         )
         heard = f"score={score:.2f}" if score is not None else ("unclaimed" if checking else "off")
-        owner = score is None or score >= self._threshold
+        owner = score is None or score >= self._threshold or owner_clip is not None
         # Saved before any drop: the misses worth replaying are the ones Whisper or the voice check threw away.
         clip = (
             await asyncio.to_thread(save_clip, audio, self.sample_rate, settings.save_segments)
@@ -360,14 +379,13 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         )
 
     async def cleanup(self) -> None:
-        await asyncio.to_thread(self._registry.flush_claiming_owner)
         if self._turn is not None:
             await self._turn.cleanup()
         await super().cleanup()
 
     def _analyze(
         self, audio: bytes
-    ) -> tuple[float | None, VoiceProfile | None, float | None, float, tuple[np.ndarray, float] | None]:
+    ) -> tuple[float | None, VoiceProfile | None, float | None, float, OwnerClip | None]:
         assert self._embedder is not None  # only called with the master check on
         stats = self._embedder.analyze(audio)
         if stats is None:
@@ -377,15 +395,28 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         )
         if voiceprint is None:
             # No owner voiceprint yet: the first voice that addresses Jarvis claims it.
-            return None, None, stats.pitch_hz, stats.speech_secs, (stats.embedding, stats.speech_secs)
-        score = cosine(stats.embedding, voiceprint)
-        if score >= self._threshold:
-            clip = (
-                (stats.embedding, stats.speech_secs)
-                if self._voiceprint is None and self._registry.owner_voiceprint is None
-                else None
+            return None, None, stats.pitch_hz, stats.speech_secs, (
+                stats.embedding,
+                stats.speech_secs,
+                None,
+                self._threshold,
             )
+        score = cosine(stats.embedding, voiceprint)
+        enrolling = self._voiceprint is None and self._registry.owner_voiceprint is None
+        if score >= self._threshold:
+            clip = (stats.embedding, stats.speech_secs, score, self._threshold) if enrolling else None
             return score, None, stats.pitch_hz, stats.speech_secs, clip
+        if enrolling:
+            # During owner enrollment, borderline short replies still reach the gate to retry; clearly different
+            # voices are dropped without creating guest profiles.
+            if score >= max(0.0, self._threshold - OWNER_WEAK_MARGIN):
+                return score, None, stats.pitch_hz, stats.speech_secs, (
+                    stats.embedding,
+                    stats.speech_secs,
+                    score,
+                    self._threshold,
+                )
+            return score, None, stats.pitch_hz, stats.speech_secs, None
         # Every unnamed voice gets a RAM-only fingerprint that expires: recognition improves while nothing piles up.
         profile = self._registry.observe(stats.embedding, self._threshold, stats.speech_secs)
         return score, profile, stats.pitch_hz, stats.speech_secs, None
@@ -686,7 +717,7 @@ class JarvisIntentGate(FrameProcessor):
             # Mute, unmute and the meeting switch settle in code, with no model call and no latency.
             telemetry.emit("voice.fastcmd", command=fast.value, text=transcript)
         if is_owner:
-            if self.registry.active_owner_voiceprint() is not None:
+            if not self.registry.learning_owner:
                 # The owner speaking is what makes a nearby voice answerable: the next sentence may be theirs.
                 self.state.social_window_until = max(self.state.social_window_until, now + ATTENDED_WINDOW_SECS)
                 self.tracker.owner_turn(
@@ -772,8 +803,8 @@ class JarvisIntentGate(FrameProcessor):
             return
 
         if intent == UserIntent.INTRODUCTION:
-            if not settings.master_check:
-                # Without the master check voices are not told apart, so the conversation model just says hello.
+            if not settings.master_check or self.registry.learning_owner:
+                # Without the master check (or while still enrolling the owner), just let the model reply normally.
                 intent = UserIntent.ADDRESSED_TO_JARVIS
             elif is_owner:
                 # The tracker already took the name; the turn still reaches the model, which greets the newcomer.
@@ -794,12 +825,6 @@ class JarvisIntentGate(FrameProcessor):
             if not self._vad_speaking and self._held is None and not self.has_queued_frame(TranscriptionFrame):
                 await self._flush_ready_now(direction)
             return
-
-        if is_owner and self.registry.active_owner_voiceprint() is None:
-            self.state.social_window_until = max(self.state.social_window_until, time.monotonic() + ATTENDED_WINDOW_SECS)
-            self.tracker.owner_turn(
-                transcript, [p.name for p in self.registry.profiles.values() if p.name], time.monotonic()
-            )
 
         if self._bot_speaking and (self.cleaner is not None or self._vad_speaking):
             # Stop playback right away when cleaning up or holding for continued speech so Jarvis never talks over it.
@@ -846,7 +871,7 @@ class JarvisIntentGate(FrameProcessor):
         transcript = frame.text.strip()
         is_owner = frame.user_id in ("owner", "u", "")
         if is_owner and not is_not_for_jarvis(transcript):
-            owner_clips: list[tuple[np.ndarray, float]] = list(getattr(frame, "_owner_clips", ()))
+            owner_clips: list[OwnerClip] = list(getattr(frame, "_owner_clips", ()))
             stated = (
                 extract_claimed_name(transcript, [], allow_bare=self.registry.owner_voiceprint is None)
                 if not self.registry.owner_name
@@ -856,8 +881,17 @@ class JarvisIntentGate(FrameProcessor):
                 self.registry.owner_name = stated
                 if self.registry.voiceprint_path is not None:
                     await asyncio.to_thread(remember_owner_name, stated)
-            for emb, secs in owner_clips:
-                await asyncio.to_thread(self.registry.record_owner_clip, emb, secs, self.registry.owner_name)
+            combined = _combine_owner_clips(owner_clips)
+            if combined is not None:
+                emb, secs, score, threshold = combined
+                await asyncio.to_thread(
+                    self.registry.record_owner_clip,
+                    emb,
+                    secs,
+                    self.registry.owner_name,
+                    score=score,
+                    threshold=threshold,
+                )
         profile = self._resolve_profile(frame.user_id)
         tag, confidence, display = self._speaker_tag(frame, transcript)
         speaker = "User" if is_owner else (f"Speaker: {display}" if display not in ("Room", "Guest") else tag)

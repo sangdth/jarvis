@@ -669,24 +669,70 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(registry.active_owner_voiceprint())
             self.assertFalse(vp_path.exists())
 
-            # 2. First person addresses Jarvis: locks onto their voice from turn 1, awaits a second turn to save.
+            # 2. First person addresses Jarvis: locks onto their voice from turn 1 without opening a guest window.
             flt.classify_user_utterance = AsyncMock(return_value=UserIntent.ADDRESSED_TO_JARVIS)
-            await say("Hi Jarvis, I'm Sang.", [1.0, 0.0], secs=2.5)
+            await say("Hi Jarvis, I'm Sang.", [1.0, 0.0], secs=3.0)
             self.assertIsNotNone(registry.claiming_owner)
             self.assertFalse(vp_path.exists())
+            self.assertEqual(state.social_window_until, 0.0)
             self.assertEqual(owner_name(load_soul(soul_path).personality), "Sang")
 
-            # 3. A second stranger speaking before save is rejected as non-owner (cannot hijack or pollute owner).
-            state.social_window_until = 0.0
+            # 3. A stranger speaking mid-enrollment is rejected without creating a guest profile or polluting owner.
             gate.push_frame.reset_mock()
             await say("Run rm -rf", [0.0, 1.0], secs=3.0)
             gate.push_frame.assert_not_awaited()
+            self.assertEqual(registry.profiles, {})
 
-            # 4. Sang's second sentence reaches >= 4 s across 2 turns -> saves owner_voice.npy and promotes live.
-            await say("What's on my board today?", [0.98, 0.05], secs=2.5)
+            # 4. Turns 2-4 reach 4 turns & >= 10s -> moves to confirmation phase without saving yet.
+            for line in (
+                "I've been building the voice harness today.",
+                "Mostly testing how well the mic picks up speech.",
+                "It's been a pretty productive afternoon overall.",
+            ):
+                await say(line, [0.98, 0.05], secs=2.5)
+            self.assertTrue(registry.confirming_owner)
+            self.assertEqual(registry.owner_confirmed, 0)
+            self.assertFalse(vp_path.exists())
+
+            # 5. Cleanup mid-enrollment must not persist an unconfirmed voiceprint.
+            with patch.object(SpeakerVerifiedWhisperSTT, "cleanup", wraps=stt.cleanup):
+                await stt.cleanup()
+            self.assertFalse(vp_path.exists())
+
+            # 6. A borderline short answer (threshold - 0.12 <= score < threshold) passes to the LLM to retry,
+            # without incrementing confirmed count or saving. (threshold=0.5, cosine([0.45, 0.89], [1, 0]) ~= 0.45)
+            gate.push_frame.reset_mock()
+            await say("Hot coffee.", [0.45, 0.89], secs=1.0)
+            self.assertGreater(gate.push_frame.await_count, 0)
+            self.assertEqual(registry.owner_confirmed, 0)
+            self.assertTrue(registry.owner_last_check_weak)
+            self.assertFalse(vp_path.exists())
+
+            # 7. Two passing short confirmation answers lock in and save owner_voice.npy.
+            await say("Definitely hot coffee.", [0.97, 0.08], secs=1.5)
+            self.assertEqual(registry.owner_confirmed, 1)
+            self.assertFalse(registry.owner_last_check_weak)
+            self.assertFalse(vp_path.exists())
+
+            await say("Mountains over the beach.", [0.96, 0.10], secs=1.5)
             self.assertTrue(vp_path.is_file())
             self.assertEqual(enrolled, ["Sang"])
+            self.assertTrue(registry.consume_just_enrolled())
             self.assertGreater(cosine(load_voiceprint(vp_path), np.array([1.0, 0.0], dtype=np.float32)), 0.99)
+
+    async def test_joined_segments_in_one_turn_count_as_one_owner_clip(self) -> None:
+        from jarvis_voice.voice_gates import _combine_owner_clips
+
+        combined = _combine_owner_clips([
+            (np.array([1.0, 0.0], dtype=np.float32), 1.0, 0.42, 0.5),
+            (np.array([0.98, 0.05], dtype=np.float32), 2.0, 0.91, 0.5),
+        ])
+        assert combined is not None
+        emb, secs, score, threshold = combined
+        self.assertAlmostEqual(secs, 3.0)
+        self.assertAlmostEqual(score or 0.0, 0.91)
+        self.assertAlmostEqual(threshold, 0.5)
+        self.assertGreater(float(emb[0]), 0.98)
 
     async def test_other_voice_passes_as_room_in_meeting_mode(self) -> None:
         room = await self.run_stt("what about the deadline", [0.1, 0.9], meeting=True)

@@ -297,6 +297,135 @@ class TestSpeaker(unittest.TestCase):
                 self.assertFalse(bad_path.exists())
                 self.assertFalse(bad_path.with_suffix(".part").exists())
 
+    def test_owner_enrollment_requires_longer_chat_and_two_confirmations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vp = Path(tmp) / "owner_voice.npy"
+            enrolled: list[VoiceProfile] = []
+            reg = SpeakerRegistry(
+                folder=None,
+                voiceprint_path=vp,
+                on_owner_enrolled=enrolled.append,
+            )
+            self.assertTrue(reg.learning_owner)
+            self.assertEqual(reg.owner_enrollment_status()[0], "waiting")
+
+            # One long turn is not enough on its own (needs 4 turns and >= 10s).
+            self.assertIsNone(reg.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 15.0, "Sang"))
+            self.assertEqual(reg.owner_enrollment_status()[:3], ("learning", 1, 4))
+            self.assertFalse(vp.exists())
+
+            # Weak clip neither advances turns nor pollutes the voiceprint.
+            self.assertIsNone(
+                reg.record_owner_clip(np.array([0.0, 1.0], dtype=np.float32), 3.0, score=0.30, threshold=0.35)
+            )
+            self.assertTrue(reg.owner_enrollment_status()[4])
+            self.assertEqual(reg.owner_enrollment_status()[:3], ("learning", 1, 4))
+            for _ in range(2):
+                self.assertIsNone(
+                    reg.record_owner_clip(np.array([0.99, 0.05], dtype=np.float32), 2.5, score=0.95, threshold=0.35)
+                )
+            self.assertEqual(reg.owner_enrollment_status()[:3], ("learning", 3, 4))
+
+            # Turn 4 reaches >= 4 turns and >= 10s -> enters confirmation phase without saving yet.
+            self.assertIsNone(
+                reg.record_owner_clip(np.array([0.98, 0.05], dtype=np.float32), 2.5, score=0.95, threshold=0.35)
+            )
+            self.assertEqual(reg.owner_enrollment_status()[:3], ("confirming", 0, 2))
+            self.assertFalse(vp.exists())
+
+            # Weak short answer during confirmation triggers retry without incrementing confirmed count.
+            self.assertIsNone(
+                reg.record_owner_clip(np.array([0.0, 1.0], dtype=np.float32), 1.0, score=0.28, threshold=0.35)
+            )
+            self.assertEqual(reg.owner_enrollment_status()[:3], ("confirming", 0, 2))
+            self.assertTrue(reg.owner_enrollment_status()[4])
+            self.assertFalse(vp.exists())
+
+            # First passing confirmation check advances to 1/2.
+            self.assertIsNone(
+                reg.record_owner_clip(np.array([0.97, 0.08], dtype=np.float32), 1.5, score=0.80, threshold=0.35)
+            )
+            self.assertEqual(reg.owner_enrollment_status()[:3], ("confirming", 1, 2))
+            self.assertFalse(reg.owner_enrollment_status()[4])
+            self.assertFalse(vp.exists())
+
+            # Second passing confirmation check saves owner_voice.npy (0600) and fires callback once.
+            profile = reg.record_owner_clip(np.array([0.96, 0.10], dtype=np.float32), 1.5, score=0.78, threshold=0.35)
+            assert profile is not None
+            self.assertEqual(len(enrolled), 1)
+            self.assertEqual(profile.clips, 6)
+            self.assertTrue(vp.is_file())
+            self.assertEqual(stat.S_IMODE(os.stat(vp).st_mode), 0o600)
+            self.assertFalse(reg.learning_owner)
+            self.assertEqual(reg.owner_enrollment_status()[0], "just_enrolled")
+            self.assertTrue(reg.consume_just_enrolled())
+            self.assertFalse(reg.consume_just_enrolled())
+            self.assertEqual(reg.owner_enrollment_status()[0], "idle")
+
+    def test_owner_enrollment_needs_both_min_turns_and_min_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vp = Path(tmp) / "owner_voice.npy"
+            reg = SpeakerRegistry(folder=None, voiceprint_path=vp, confirm_checks=0)
+            # 4 very short turns (1.5s each = 6.0s < 10.0s) stay in learning.
+            for _ in range(4):
+                self.assertIsNone(
+                    reg.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 1.5, score=0.95, threshold=0.35)
+                )
+            self.assertEqual(reg.owner_enrollment_status()[0], "learning")
+            self.assertFalse(vp.exists())
+            # Reaching >= 10s with confirm_checks=0 finalizes immediately (offline fallback).
+            profile = reg.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 4.5, score=0.95, threshold=0.35)
+            assert profile is not None
+            self.assertTrue(vp.is_file())
+
+    def test_enrollment_flow_goodbye_waits_past_barge_in_and_startup_welcomes_without_cancelling(self) -> None:
+        from jarvis_voice.main import _EnrollmentFlow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 1. `jarvis enroll` (standalone=True): barge-in on question 2 does not cancel before goodbye plays.
+            reg = SpeakerRegistry(folder=None, voiceprint_path=Path(tmp) / "a.npy")
+            flow = _EnrollmentFlow(registry=reg, standalone=True)
+            reg.on_owner_enrolled = lambda _p: flow.on_enrolled()
+
+            self.assertEqual(flow.llm_turn(), (None, True))  # waiting on greeting: tools hidden
+            for _ in range(4):
+                reg.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 3.0, score=0.95, threshold=0.35)
+            note, hide = flow.llm_turn()
+            self.assertTrue(hide)
+            self.assertIn("couple of quick questions", note or "")
+
+            reg.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 1.5, score=0.95, threshold=0.35)
+            reg.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 1.5, score=0.95, threshold=0.35)
+
+            # Barge-in on confirmation question 2 arrives before goodbye starts -> must not cancel.
+            self.assertFalse(flow.should_cancel_after_spoken())
+            # Even if an earlier start frame arrived while farewell was not yet dispatched, do not cancel.
+            flow.on_assistant_started()
+            self.assertFalse(flow.should_cancel_after_spoken())
+            # Real goodbye turn starts and dispatches -> speaks goodbye -> now cancels cleanly.
+            flow.on_assistant_started()
+            goodbye_note, hide = flow.llm_turn()
+            self.assertTrue(hide)
+            self.assertIn("goodbye", goodbye_note or "")
+            self.assertTrue(flow.should_cancel_after_spoken())
+            self.assertFalse(flow.should_cancel_after_spoken())  # one-shot
+
+            # 2. `jarvis start` (standalone=False): welcomes warmly, never cancels, unlocks tools next turn.
+            reg2 = SpeakerRegistry(folder=None, voiceprint_path=Path(tmp) / "b.npy")
+            flow2 = _EnrollmentFlow(registry=reg2, standalone=False)
+            reg2.on_owner_enrolled = lambda _p: flow2.on_enrolled()
+            for _ in range(4):
+                reg2.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 3.0, score=0.95, threshold=0.35)
+            for _ in range(2):
+                reg2.record_owner_clip(np.array([1.0, 0.0], dtype=np.float32), 1.5, score=0.95, threshold=0.35)
+            welcome_note, hide = flow2.llm_turn()
+            self.assertTrue(hide)
+            self.assertIn("welcome", welcome_note or "")
+            self.assertIn("Do not say goodbye", welcome_note or "")
+            flow2.on_assistant_started()
+            self.assertFalse(flow2.should_cancel_after_spoken())
+            self.assertEqual(flow2.llm_turn(), (None, False))  # tools unlocked on the next turn
+
 
 if __name__ == "__main__":
     unittest.main()

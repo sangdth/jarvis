@@ -46,9 +46,14 @@ EPHEMERAL_TTL_SECS = 600.0
 MAX_EPHEMERAL = 8
 # Two stored profiles this close are the same voice unless the margin picks one clearly.
 MATCH_MARGIN = 0.04
-# A voiceprint needs about 4 s of clean speech across two sentences (or one long 6 s turn) to generalize.
+# A guest voiceprint needs about 4 s of clean speech to generalize.
 ENOUGH_SPEECH_SECS = 4.0
-ENOUGH_SINGLE_TURN_SECS = 6.0
+# Owner enrollment runs a fuller chat, then confirms with two short answers before locking in.
+OWNER_ENROLL_CLIPS = 4
+OWNER_ENROLL_SECS = 10.0
+OWNER_CONFIRM_CHECKS = 2
+# During owner enrollment, a short reply just under the threshold triggers a retry instead of silence.
+OWNER_WEAK_MARGIN = 0.12
 # Log-odds the belief loop starts from: one person in ten in the room is the name just introduced.
 BASE_LOG_ODDS = -2.20
 INTRO_BOOST = 2.40
@@ -388,18 +393,63 @@ class SpeakerRegistry:
         owner_name: str | None = None,
         voiceprint_path: Path | None = ...,  # type: ignore[assignment]
         on_owner_enrolled: Callable[[VoiceProfile], None] | None = None,
+        confirm_checks: int = OWNER_CONFIRM_CHECKS,
     ) -> None:
         self._lock = threading.RLock()
         self.folder = folder
         self.owner_voiceprint = owner_voiceprint
         self.owner_name = owner_name
         self.claiming_owner: VoiceProfile | None = None
+        self.confirm_checks = max(0, confirm_checks)
+        self.confirming_owner = False
+        self.owner_confirmed = 0
+        self.owner_last_check_weak = False
+        self._owner_just_enrolled = False
         self.voiceprint_path = (VOICEPRINT_PATH if folder is not None else None) if voiceprint_path is ... else voiceprint_path
         self.on_owner_enrolled = on_owner_enrolled
         self.profiles: dict[str, VoiceProfile] = {}
         self._next_id = 1
         if self.folder is not None:
             self._load()
+
+    @property
+    def learning_owner(self) -> bool:
+        """True while this registry is waiting for or verifying a new owner's voiceprint."""
+        with self._lock:
+            return self.owner_voiceprint is None and (self.voiceprint_path is not None or self.claiming_owner is not None)
+
+    def owner_enrollment_status(self) -> tuple[str, int, int, float, bool]:
+        """Current owner-enrollment stage: (stage, step, total, speech_secs, weak_retry)."""
+        with self._lock:
+            if self._owner_just_enrolled:
+                return ("just_enrolled", self.confirm_checks, self.confirm_checks, 0.0, False)
+            if not self.learning_owner:
+                return ("idle", 0, 0, 0.0, False)
+            if self.claiming_owner is None:
+                return ("waiting", 0, OWNER_ENROLL_CLIPS, 0.0, False)
+            if self.confirming_owner:
+                return (
+                    "confirming",
+                    self.owner_confirmed,
+                    self.confirm_checks,
+                    self.claiming_owner.speech_secs,
+                    self.owner_last_check_weak,
+                )
+            return (
+                "learning",
+                self.claiming_owner.clips,
+                OWNER_ENROLL_CLIPS,
+                self.claiming_owner.speech_secs,
+                self.owner_last_check_weak,
+            )
+
+    def consume_just_enrolled(self) -> bool:
+        """Return True once right after owner enrollment finishes, so the closing reply fires only once."""
+        with self._lock:
+            if not self._owner_just_enrolled:
+                return False
+            self._owner_just_enrolled = False
+            return True
 
     def active_owner_voiceprint(self) -> np.ndarray | None:
         """The enrolled owner voiceprint, or the first speaker's in-progress voiceprint while learning it."""
@@ -408,8 +458,16 @@ class SpeakerRegistry:
                 return self.owner_voiceprint
             return self.claiming_owner.voiceprint if self.claiming_owner is not None else None
 
-    def record_owner_clip(self, emb: np.ndarray, speech_secs: float, name: str | None = None) -> VoiceProfile | None:
-        """Feed one addressed utterance from the first speaker; returns the finalized owner profile once mature."""
+    def record_owner_clip(
+        self,
+        emb: np.ndarray,
+        speech_secs: float,
+        name: str | None = None,
+        *,
+        score: float | None = None,
+        threshold: float = 0.0,
+    ) -> VoiceProfile | None:
+        """Feed one addressed turn from the first speaker; returns the finalized owner profile once confirmed."""
         graduated: VoiceProfile | None = None
         with self._lock:
             if name and not self.owner_name:
@@ -432,24 +490,40 @@ class SpeakerRegistry:
                     _embeddings=[unit],
                     _weights=[weight],
                 )
+                self.owner_last_check_weak = False
+            elif score is not None and score < threshold:
+                # Borderline match during enrollment: ask for a clearer reply without polluting the voiceprint.
+                self.owner_last_check_weak = True
+                phase = "confirmation" if self.confirming_owner else "learning"
+                logger.info(f"[Speaker] Owner {phase} weak (score={score:.2f} < {threshold:.2f}); asking again")
+                return None
             else:
+                self.owner_last_check_weak = False
                 self.claiming_owner.add_embedding(emb, speech_secs)
                 if self.owner_name:
                     self.claiming_owner.name = self.owner_name
-            if (
-                self.claiming_owner.clips >= 2 and self.claiming_owner.speech_secs >= ENOUGH_SPEECH_SECS
-            ) or self.claiming_owner.speech_secs >= ENOUGH_SINGLE_TURN_SECS:
-                graduated = self._finalize_owner()
-        if graduated is not None and self.on_owner_enrolled is not None:
-            self.on_owner_enrolled(graduated)
-        return graduated
-
-    def flush_claiming_owner(self) -> VoiceProfile | None:
-        """Persist an in-progress owner voiceprint on shutdown so a short first conversation is still kept."""
-        graduated: VoiceProfile | None = None
-        with self._lock:
-            if self.owner_voiceprint is None and self.claiming_owner is not None:
-                graduated = self._finalize_owner()
+                if self.confirming_owner:
+                    self.owner_confirmed += 1
+                    score_note = f", score={score:.2f}" if score is not None else ""
+                    logger.info(
+                        f"[Speaker] Owner voice check {self.owner_confirmed}/{self.confirm_checks} passed{score_note}"
+                    )
+                    if self.owner_confirmed >= self.confirm_checks:
+                        graduated = self._finalize_owner()
+                elif (
+                    self.claiming_owner.clips >= OWNER_ENROLL_CLIPS
+                    and self.claiming_owner.speech_secs >= OWNER_ENROLL_SECS
+                ):
+                    if self.confirm_checks == 0:
+                        graduated = self._finalize_owner()
+                    else:
+                        self.confirming_owner = True
+                        self.owner_confirmed = 0
+                        logger.info(
+                            f"[Speaker] Owner voiceprint ready (clips={self.claiming_owner.clips}, "
+                            f"speech={self.claiming_owner.speech_secs:.1f}s); confirming voice "
+                            f"(0/{self.confirm_checks})"
+                        )
         if graduated is not None and self.on_owner_enrolled is not None:
             self.on_owner_enrolled(graduated)
         return graduated
@@ -462,6 +536,9 @@ class SpeakerRegistry:
             profile.name = self.owner_name
         self.owner_voiceprint = profile.voiceprint
         self.claiming_owner = None
+        self.confirming_owner = False
+        self.owner_last_check_weak = False
+        self._owner_just_enrolled = True
         if self.voiceprint_path is not None:
             save_owner_voiceprint(profile.voiceprint, self.voiceprint_path)
             logger.info(

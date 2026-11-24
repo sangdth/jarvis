@@ -84,6 +84,13 @@ class InitTest(unittest.TestCase):
             self.assertEqual(vp.read_bytes(), b"new-voiceprint")
             self.assertIn("MASTER_CHECK=true", env.read_text())
 
+            # Missing OPENROUTER_API_KEY fails fast even when LAYA_API_KEY is present.
+            with patch.object(enroll, "ENV_PATH", env), \
+                    patch.object(enroll.settings, "openrouter_api_key", ""), \
+                    patch.object(enroll.settings, "laya_api_key", "laya_1"):
+                with self.assertRaises(SystemExit):
+                    enroll.main()
+
     def test_init_copies_the_defaults_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
