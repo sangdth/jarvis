@@ -1,4 +1,4 @@
-//! `jarvis-top` — a fullscreen Ratatui cockpit for Jarvis's brain (Brain) daemon.
+//! `jarvis-dashboard` — a fullscreen Ratatui dashboard for Jarvis's brain daemon.
 //!
 //! Data planes:
 //!   * durable — `state.db` opened read-only, polled on a worker thread
@@ -33,10 +33,10 @@ use app::{App, AppEvent, LedgerTab, Modal, Pane};
 use config::Config;
 
 const HELP: &str = "\
-jarvis-top — fullscreen cockpit for Jarvis's brain (Brain)
+jarvis-dashboard — fullscreen dashboard for Jarvis's brain
 
 USAGE
-  jarvis-top
+  jarvis-dashboard
 
 READS
   $JARVIS_HOME (default ~/.config/jarvis)
@@ -62,7 +62,7 @@ fn main() {
         return;
     }
     if std::env::args().any(|a| a == "--version" || a == "-V") {
-        println!("jarvis-top {}", env!("CARGO_PKG_VERSION"));
+        println!("jarvis-dashboard {}", env!("CARGO_PKG_VERSION"));
         return;
     }
 
@@ -74,7 +74,7 @@ fn main() {
 
     if let Err(err) = run() {
         let _ = restore_terminal();
-        eprintln!("jarvis-top: {err}");
+        eprintln!("jarvis-dashboard: {err}");
         std::process::exit(1);
     }
 }

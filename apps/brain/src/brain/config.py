@@ -12,14 +12,14 @@ from jarvis_core.home import JARVIS_HOME, brain_home, brain_token, workspace_roo
 from jarvis_core.settings import EnvSettings
 from jarvis_core.soul import load_soul
 
-# The checkout this daemon is part of. `repo='jarvis'` is this repository (voice, brain, cockpit);
+# The checkout this daemon is part of. `repo='jarvis'` is this repository (voice, brain, dashboard);
 # `repo='brain'` names the same checkout, for tasks written by voice before the app was renamed.
 SELF_REPO = "jarvis"
 SELF_REPOS = frozenset({SELF_REPO, "brain"})
 
 # `BRAIN_HOME` selects the state directory; default `JARVIS_HOME/brain`,
 # falling back to the pre-merge `~/.config/superbrain` until `jarvis init` moves it. The Rust dashboard
-# (`apps/tui`) resolves the same variable so both processes always agree on paths.
+# (`apps/dashboard`) resolves the same variable so both processes always agree on paths.
 BRAIN_HOME = brain_home()
 
 
@@ -107,7 +107,7 @@ class Settings(EnvSettings):
     # The whole monorepo before a self-upgrade lands: Python lint, types, tests and the canary, then Rust.
     self_upgrade_verify_cmd: str = (
         "uv run ruff check src apps packages tests && uv run mypy && uv run pytest && uv run jarvis self-check"
-        " && if command -v cargo >/dev/null 2>&1; then cargo test --quiet --manifest-path apps/tui/Cargo.toml; fi"
+        " && if command -v cargo >/dev/null 2>&1; then cargo test --quiet --manifest-path apps/dashboard/Cargo.toml; fi"
     )
 
     @field_validator("home_dir", "projects_dir", "self_repo_dir", mode="before")

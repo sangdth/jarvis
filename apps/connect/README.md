@@ -29,7 +29,7 @@ By hand: open `Jarvis.Connect.dmg`, drag `Jarvis.app` to Applications, then allo
 ## What it does
 
 - **Connect.** With no secret yet, the button asks the server for a pairing code
-  (`POST /v1/pair/request`, which is open and answers without the code). `jarvis top` shows the digits and keeps them
+  (`POST /v1/pair/request`, which is open and answers without the code). `jarvis dashboard` shows the digits and keeps them
   on screen until they are used or expire; `jarvis pair` prints them in the terminal instead. Type them in
   (`POST /v1/pair`) and the app keeps its own secret in `~/.config/jarvis-remote/credentials.json` (0600), the same
   file the Python client uses. After that the button just connects, and Disconnect hands the mic back.

@@ -23,7 +23,7 @@ from brain.upgrade import LAUNCHD_LABEL, run_upgrade
 from jarvis_core.devices import DeviceStore
 from jarvis_core.home import JARVIS_HOME
 
-# `jarvis top` opens the cockpit; it lives in the root CLI so one command finds it for every app.
+# `jarvis dashboard` opens the dashboard; it lives in the root CLI so one command finds it for every app.
 
 
 def build_launchd_plist(serve_args: list[str] | None = None) -> str:

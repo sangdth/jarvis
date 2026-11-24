@@ -2,7 +2,7 @@
 
 Always-on goal and problem reconciler, running 24/7 in one process with (or next to) the voice harness. It holds a
 board of goals and problems, runs `pi` workers in isolated worktrees, verifies their work, and pushes a branch — it
-never merges to `master` on its own. The voice asks it for everything that is not coding; the cockpit shows it live.
+never merges to `master` on its own. The voice asks it for everything that is not coding; the dashboard shows it live.
 
 It needs no setup of its own: `jarvis` runs it with the voice in one process on this checkout, and both share
 `JARVIS_HOME/.env`, `SOUL.md` (its `projects_dir` decides where the brain may work) and the token in
@@ -14,7 +14,7 @@ It needs no setup of its own: `jarvis` runs it with the voice in one process on 
 jarvis                      # the voice and the brain together, in this terminal
 jarvis start                # 24/7: launchd keeps this checkout running, and how you restart after an edit
 jarvis status               # version, uptime, mode, spend today, tasks, voice
-jarvis top                  # the cockpit (cargo build --release --workspace first)
+jarvis dashboard            # the dashboard (cargo build --release --workspace first)
 ```
 
 From the voice: "add a goal for ...", "what happened overnight", "switch to autonomous mode", "morning brief".

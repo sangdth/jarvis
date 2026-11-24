@@ -15,10 +15,11 @@ from brain.config import settings
 from brain.db import BrainDB
 
 LAUNCHD_LABEL = "com.sangdth.jarvis"
-# Python deps: `uv sync`. Rust deps: the cockpit is rebuilt, but its absence never blocks the daemon.
+# Python deps: `uv sync`. Rust changes: the dashboard is rebuilt, but its absence never blocks the daemon.
 DEPENDENCY_FILES = ("pyproject.toml", "uv.lock")
 RUST_FILES = ("Cargo.toml", "Cargo.lock")
-COCKPIT_MANIFEST = ("apps", "tui", "Cargo.toml")
+DASHBOARD_DIR = "apps/dashboard"
+DASHBOARD_MANIFEST = ("apps", "dashboard", "Cargo.toml")
 
 
 class GitState(enum.Enum):
@@ -126,6 +127,7 @@ def read_snapshot(repo_dir: Path) -> RepoSnapshot:
             "--",
             *DEPENDENCY_FILES,
             *RUST_FILES,
+            DASHBOARD_DIR,
         )
         if diff.returncode == 0:
             deps_changed = tuple(line.strip() for line in diff.stdout.splitlines() if line.strip())
@@ -204,20 +206,20 @@ def run_uv_sync(repo_dir: Path) -> int:
 
 
 def run_cargo_build(repo_dir: Path) -> int:
-    """Rebuilds the cockpit after a Rust dependency change; a missing toolchain only warns."""
+    """Rebuilds the dashboard after Rust changes; a missing toolchain only warns."""
     cargo = shutil.which("cargo")
     if cargo is None:
-        print("Rust dependency files changed, but `cargo` is not on PATH; the cockpit keeps its old build.")
+        print("Rust files changed, but `cargo` is not on PATH; the dashboard keeps its old build.")
         return 127
-    print("Rust dependency files changed; rebuilding the cockpit ...")
+    print("Rust files changed; rebuilding the dashboard ...")
     proc = subprocess.run(
-        [cargo, "build", "--release", "--manifest-path", str(repo_dir.joinpath(*COCKPIT_MANIFEST))],
+        [cargo, "build", "--release", "--manifest-path", str(repo_dir.joinpath(*DASHBOARD_MANIFEST))],
         cwd=str(repo_dir),
         check=False,
     )
     if proc.returncode != 0:
         logger.error(f"cargo build failed in {repo_dir} (exit {proc.returncode}); the daemon still restarts.")
-        print("The cockpit build failed; `jarvis top` will use the previous binary. Fix it when you can.")
+        print("The dashboard build failed; `jarvis dashboard` will use the previous binary. Fix it when you can.")
     return proc.returncode
 
 
@@ -363,7 +365,7 @@ def run_upgrade(
             return 1
 
         new_head = _rev_parse(root, "HEAD") or ""
-        wanted = [*DEPENDENCY_FILES, *RUST_FILES]
+        wanted = [*DEPENDENCY_FILES, *RUST_FILES, DASHBOARD_DIR]
         if old_head is None:
             deps = list(wanted)
         else:
@@ -387,7 +389,7 @@ def run_upgrade(
                 return 1
         else:
             print("Python dependency files unchanged; skipping `uv sync`.")
-        if any(name in RUST_FILES for name in deps):
+        if any(name in RUST_FILES or name.startswith(f"{DASHBOARD_DIR}/") or name == DASHBOARD_DIR for name in deps):
             run_cargo_build(root)
 
         if not restart:

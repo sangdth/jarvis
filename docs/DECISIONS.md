@@ -4,16 +4,16 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 
 - **A pairing code is never sent to the client that asked for it.** The mac app has no secret before it pairs, so
   `POST /v1/pair/request` is open like `GET /client.py`; it answers only `{"ok": true, "expires_in": ...}` and the
-  digits go to the cockpit's telemetry instead. That is why `/v1/telemetry/*` is now the owner's token alone (a
+  digits go to the dashboard's telemetry instead. That is why `/v1/telemetry/*` is now the owner's token alone (a
   paired device reads nothing there), and why a second request reuses the live code rather than minting another:
   a double click, or asking twice while you type, cannot steal the digits off the screen. Limits: whoever can read
-  `jarvis top` can pair a device; with no cockpit open, `jarvis pair` in a terminal is the way to see a code.
+  `jarvis dashboard` can pair a device; with no dashboard open, `jarvis pair` in a terminal is the way to see a code.
 - **The Connect app is a download from the gateway, not a release.** `apps/connect/build.sh` builds `Jarvis.app` on the
   checkout and the gateway serves it at `/Jarvis.app.zip` with `/install-app` beside it, so the app is never older
   than the code running on the Mac mini. Limits: `swiftc` is needed to build it; the bundle is signed ad-hoc when no
   Apple Development identity is in the keychain, so macOS can ask for the Microphone again after an in-app update.
-- **One service command: `jarvis start`.** It syncs, builds the cockpit, builds the mac app, kicks launchd and opens
-  the cockpit; `restart`, `update` and `upgrade` were separate spellings of parts of that and are gone. Limits: it is
+- **One service command: `jarvis start`.** It syncs, builds the dashboard, builds the mac app, kicks launchd and opens
+  the dashboard; `restart`, `update` and `upgrade` were separate spellings of parts of that and are gone. Limits: it is
   a restart, not "ensure running" — on a live instance it kills the voice mid-sentence. Run `jarvis` in a terminal,
   or `jarvis serve` for the stack without launchd, when you do not want it supervising.
 - **One pending request per client** (T3 `runtime-request`, OpenCode `_pending_permission` / `_pending_form`).
@@ -72,23 +72,23 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   separates clear cases (~155–180 Hz overlaps).
 
 - **The brain moved into this repository and was renamed.** Superbrain became `apps/brain` (package `brain`) with its
-  full history via `git subtree`; the Rust cockpit came out to `apps/tui` and the two histories join at one merge.
+  full history via `git subtree`; the Rust dashboard came out to `apps/dashboard` and the two histories join at one merge.
   Limits: the old `sangdth/superbrain` repository is frozen (leave it read-only, do not push fixes there), and a task
   queued before the rename as `repo='superbrain'` no longer means "this checkout" — re-point it
   (`jarvis add --id <task> --repo brain …`) or it is treated as an ordinary folder under `projects_dir`.
 - **`brain` is the name everywhere; the old `SUPERBRAIN_*` keys are still read, never written.** Settings are
   `BRAIN_HOME`, `BRAIN_HOST`, `BRAIN_PORT`, `BRAIN_API_KEY`, `BRAIN_URL`; the worker env vars are `BRAIN_WORKTREE_DIR`,
   `BRAIN_RPC_SOCK`, `BRAIN_TASK_ID`, `BRAIN_TASK_KIND`, `BRAIN_ALLOWED_REPOS`, `BRAIN_SKILLS_DIR`. Two reads stay for
-  a running daemon or an old `.env`: `SUPERBRAIN_HOME` and `SUPERBRAIN_API_KEY` (Python and the cockpit, as fallbacks)
+  a running daemon or an old `.env`: `SUPERBRAIN_HOME` and `SUPERBRAIN_API_KEY` (Python and the dashboard, as fallbacks)
   and the state folder `~/.config/superbrain` until `jarvis init` moves it. The separate `brain` console script is
   gone: one command, `jarvis` (`jarvis serve|status|…`, or `uv run python -m brain.cli …` when working inside
   `apps/brain`).
 - **Traces are local files plus one SQLite row, never an observability server.** `apps/brain/src/brain/traces.py`
   drains `TelemetryHub` in the background into `traces/<YYYY-MM-DD>/` (per-day folders, so retention is
   `shutil.rmtree`) and one `trace_runs` row with `git_sha`/`prompt_sha`, then writes `traces/analysis/` as the
-  digest the offline `pi` Improver reads. `jarvis traces` and the cockpit's cold start read the same rows. Limits:
+  digest the offline `pi` Improver reads. `jarvis traces` and the dashboard's cold start read the same rows. Limits:
   token counts are only what a runner reports (0 today for voice turns), so `Succ/Mtok` is board-only until a
-  runner surfaces usage; the cockpit's cold start synthesises `STT`/`ROUTE`/`RETURN` rather than parsing every
+  runner surfaces usage; the dashboard's cold start synthesises `STT`/`ROUTE`/`RETURN` rather than parsing every
   trace file on each snapshot poll; and OTLP export is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set
   (`shortcut:` OTLP/HTTP JSON over `httpx`, no protobuf/gRPC, to keep `grpcio` out of `.venv`).
 - **The trace sink is inside the trust boundary, and protected from workers.** `traces.py` is in
@@ -121,13 +121,13 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `just build`). Limits: there is no single cross-language dependency graph or remote cache, so a change to a shared
   schema is coordinated by the `schemas/` table and the commit, not enforced by a build tool. Revisit (moon/Nx, or
   Bazel) only if the repo grows to many apps with heavy CI fan-out.
-- **The cockpit is the one compiled artifact.** `cargo build --release --workspace` in the checkout, and
-  `jarvis top` looks on `PATH` and in `target/{release,debug}`. Limits: Python code is live as written, but a
-  cockpit change needs that build; no toolchain means no cockpit, and the voice and the brain never depend on it.
+- **The dashboard is the one compiled artifact.** `cargo build --release --workspace` in the checkout, and
+  `jarvis dashboard` looks on `PATH` and in `target/{release,debug}`. Limits: Python code is live as written, but a
+  dashboard change needs that build; no toolchain means no dashboard, and the voice and the brain never depend on it.
 - **`schemas/` documents contracts; the canonical files stay in their apps.** `schema.sql` stays in the Python package
   (the daemon reads it as package data at startup) and `openapi.json` describes the one gateway (HTTP, SSE, and the
   `/ws` relay). Limits: the
-  Rust side queries tables by hand, so a column rename still needs a matching change in `apps/tui/src/db.rs`; a
+  Rust side queries tables by hand, so a column rename still needs a matching change in `apps/dashboard/src/db.rs`; a
   contract test on each side is what catches it.
 
 - **The brain's memory is files, and only the offline Improver writes the top layer.** `INSTRUCTIONS.md` is the

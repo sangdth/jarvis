@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["apps/tui"]
+members = ["apps/dashboard"]
 
-# One lockfile and one `target/` per checkout: the cockpit, and any Rust crate or native extension
+# One lockfile and one `target/` per checkout: the dashboard, and any Rust crate or native extension
 # added later, share compilation caches.
 
 [profile.release]
-# The cockpit is the one compiled artifact, built once per edit: LTO and stripped symbols keep it small.
+# The dashboard is the one compiled artifact, built once per edit: LTO and stripped symbols keep it small.
 opt-level = 2
 lto = "thin"
 strip = true

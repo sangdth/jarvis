@@ -1,10 +1,10 @@
-"""The voice side of the brain's telemetry bus: one line per stage of a turn, for `jarvis top`.
+"""The voice side of the brain's telemetry bus: one line per stage of a turn, for `jarvis dashboard`.
 
-The supervisor hands this module the brain's `TelemetryHub.emit`, so the cockpit sees Whisper, the voice check,
+The supervisor hands this module the brain's `TelemetryHub.emit`, so the dashboard sees Whisper, the voice check,
 the cleanup, memory, the conversation model's reasoning and the reply on the same SSE stream as the board. A
 standalone `jarvis` with no server leaves it unbound and every call is a no-op.
 
-Text is capped: a long prompt would otherwise flood the queue a subscribed cockpit has to drain. The full text
+Text is capped: a long prompt would otherwise flood the queue a subscribed dashboard has to drain. The full text
 stays in the log and in the session files.
 """
 
@@ -33,7 +33,7 @@ def bind(emit: Callable[..., Any] | None) -> None:
 
 
 def new_turn() -> str:
-    """Starts a turn: every stage after it until the next one lands under this id in the cockpit."""
+    """Starts a turn: every stage after it until the next one lands under this id in the dashboard."""
     global _current, _current_trace
     _current = f"t{next(_turn_ids)}"
     # 128-bit, OTel-valid: survives restarts and is what the brain and the trace files key on.
@@ -53,7 +53,7 @@ def current_trace() -> str:
 
 
 def emit(kind: str, **fields: Any) -> None:
-    """Publishes one stage. Never raises: a broken cockpit must not break a conversation."""
+    """Publishes one stage. Never raises: a broken dashboard must not break a conversation."""
     if _emit is None:
         return
     try:

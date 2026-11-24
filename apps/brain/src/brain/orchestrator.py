@@ -45,8 +45,10 @@ Rules:
 - A small, self-contained question or lookup that is not about a project (news, docs, a fact, a quick check
   of this machine) -> ask_ephemeral_pi.
 - Asking what threads/sessions exist -> list_sessions.
-- "queue this", "overnight", "autonomous", a multi-step goal, or an upgrade of Jarvis/brain itself ->
-  queue_board_task.
+- "queue this", "overnight", "autonomous", a multi-step goal, or fixing/upgrading Jarvis, brain, or Jarvis's
+  own dashboard ("your dashboard", which lives in `apps/dashboard/` of repo `jarvis`) -> queue_board_task
+  (with `repo="jarvis"`, `kind="problem"` for bugs or `"goal"` for features, and `apps/dashboard/` in `spec`).
+  Generic "the dashboard" without "your"/"Jarvis's" stays with delegate_project on the current project.
 - A question the assistant can answer from the project list or the board line above -> reply_direct.
 - Name Claude Code or OpenCode only when the user says so; otherwise runner="t3".
 - Never invent a folder, a task or a session title.
@@ -138,7 +140,8 @@ _PROJECT_WORK = re.compile(
     r"review|commit|branch|pull request|repo)\b",
     re.I,
 )
-_BOARD = re.compile(r"\b(overnight|autonomous|queue|schedule|goal|upgrade (jarvis|brain)|your code)\b", re.I)
+_SELF_BOARD = re.compile(r"\b(upgrade (?:jarvis|brain)|your (?:code|dashboard)|jarvis(?:'s)? dashboard)\b", re.I)
+_BOARD = re.compile(r"\b(overnight|autonomous|queue|schedule|goal)\b", re.I)
 
 
 class BrainOrchestrator:
@@ -258,7 +261,7 @@ class BrainOrchestrator:
         return result
 
     def _telemetry(self, **fields: Any) -> None:
-        """Publishes the route the brain took, for the cockpit; a missing hub is not an error."""
+        """Publishes the route the brain took, for the dashboard; a missing hub is not an error."""
         try:
             self.reconciler.hub.emit(EVENT_BRAIN_ROUTE, **fields)
         except Exception:  # noqa: BLE001 - telemetry must never fail a request
@@ -296,13 +299,24 @@ class BrainOrchestrator:
         self, text: str, projects: list[str], session_id: str
     ) -> dict[str, Any]:
         lowered = text.lower()
+        if _SELF_BOARD.search(text):
+            is_bug = bool(re.search(r"\b(fix|bug|broken|crash|flicker|error|issue)\b", lowered))
+            return {
+                "name": "queue_board_task",
+                "arguments": {
+                    "kind": "problem" if is_bug else "goal",
+                    "repo": "jarvis",
+                    "title": text[:80],
+                    "spec": text,
+                },
+            }
+        if _BOARD.search(text):
+            return {"name": "queue_board_task", "arguments": {"text": text}}
         for project in projects:
             name = Path(project).name.lower()
             if name and name in lowered:
                 return {"name": "delegate_project",
                         "arguments": {"project": project, "task": text, "runner": "t3"}}
-        if _BOARD.search(text):
-            return {"name": "queue_board_task", "arguments": {"text": text}}
         if re.search(r"\b(sessions?|threads?)\b", lowered) and re.search(r"\b(list|what|which|how many)\b", lowered):
             return {"name": "list_sessions", "arguments": {}}
         question = text.strip().endswith("?") or _QUESTION_START.search(text.strip()) is not None
@@ -440,6 +454,8 @@ class BrainOrchestrator:
             if claimed is not None:
                 done = await self.reconciler.execute_claimed_task(claimed)
                 note = f"{task.id} finished with status {done.status}."
+                return RunResult(outcome="pushed", summary=note)
+        self.reconciler.wake()
         return RunResult(outcome="pushed", summary=note)
 
     async def _list_sessions(self, runner_id: str, project: str) -> RunResult:

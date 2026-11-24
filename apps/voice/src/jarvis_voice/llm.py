@@ -1,7 +1,7 @@
 """The conversation model, with one side tap: what it was given, what it thought, and which tool it called.
 
 OpenRouter streams a reasoning model's thinking as `delta.reasoning`, which Pipecat's OpenAI-compatible service
-drops. Wrapping the chunk stream keeps that visible to `jarvis top` without copying Pipecat's processing loop or
+drops. Wrapping the chunk stream keeps that visible to `jarvis dashboard` without copying Pipecat's processing loop or
 changing a single frame the pipeline sees.
 """
 

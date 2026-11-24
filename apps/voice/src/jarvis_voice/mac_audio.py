@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from jarvis_voice.remote_audio import RelayHub
 
 SILENT_MIC_SECS = 3.0  # this long after start without real sound means the mic is not reaching Jarvis
-METER_INTERVAL_SECS = 0.12  # ~8 Hz input level ticks for `jarvis top`'s header meter
+METER_INTERVAL_SECS = 0.12  # ~8 Hz input level ticks for `jarvis dashboard`'s header meter
 SILENT_MIC_WARNING = (
     "Mic is silent: macOS voice processing delivers no sound. Set System Settings > Sound > Output to speakers "
     "or headphones; a Multi-Output or aggregate device stops the mic."

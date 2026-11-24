@@ -9,7 +9,7 @@ Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sh
 It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **the brain** (`brain`), the daemon it runs alongside itself: goals, research, notes, email, calendar. It reads out their questions and approvals and retells each finished turn in plain words.
 
 Jarvis is one repository of three apps: the **voice layer** (`jarvis-voice`), the **brain** (`brain`, an
-always-on daemon that starts with the voice) and the **cockpit** (`jarvis-top`, a Rust terminal dashboard over the
+always-on daemon that starts with the voice) and the **dashboard** (`jarvis-dashboard`, a Rust terminal UI over the
 brain). Python and Rust share the workspace and the state home, and the layout leaves room for a Go service or a
 React client without moving anything.
 
@@ -48,7 +48,7 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Memory                            | Mem0 + Qdrant + Ollama `bge-m3`             | `memory.py`           |
 | Goals, problems, overnight work   | `Reconciler` + `pi` workers in worktrees    | `reconciler.py`       |
 | Its own board, spend and approvals| SQLite WAL + one HTTP/SSE/WS gateway        | `server.py`           |
-| Seeing what it is doing           | Rust + Ratatui cockpit                      | `apps/tui/`           |
+| Seeing what it is doing           | Rust + Ratatui dashboard                    | `apps/dashboard/`     |
 
 The voice files above are in [`apps/voice/src/jarvis_voice/`](apps/voice/src/jarvis_voice/); the brain's are in
 [`apps/brain/src/brain/`](apps/brain/src/brain/); the `jarvis` command itself is
@@ -59,7 +59,7 @@ The voice files above are in [`apps/voice/src/jarvis_voice/`](apps/voice/src/jar
 ```
 apps/voice/            jarvis-voice: Pipecat ear, speech check, executive model, agent watchers
 apps/brain/            brain: board (SQLite), reconciler, pi workers, the HTTP/SSE/WS gateway
-apps/tui/              jarvis-top: the Ratatui cockpit (Rust)
+apps/dashboard/        jarvis-dashboard: the Ratatui dashboard (Rust)
 packages/jarvis-core/  the shared runtime home, .env settings base, tokens, SOUL.md
 src/jarvis/            the `jarvis` command: init, the launcher, and the supervisor that runs it all
 schemas/               the cross-language contracts (the gateway's HTTP/SSE/WS API)
@@ -82,7 +82,7 @@ curl -fsSL https://sangdth.github.io/jarvis/install.sh | sh
 The [script](site/install.sh) installs [uv](https://docs.astral.sh/uv/) if it is missing (which brings its own
 Python, leaving yours alone), clones this repository into `~/Projects/jarvis` (set `JARVIS_DIR` to change that),
 runs `uv sync`, and puts one tiny shim on your `PATH` that runs that checkout's `.venv`. If a Rust toolchain is
-present it also builds the cockpit (`jarvis top`). Apple Silicon Macs only.
+present it also builds the dashboard (`jarvis dashboard`). Apple Silicon Macs only.
 
 **There is no release to wait for: the checkout is the runtime.** Nothing is packaged into a wheel and nothing is
 installed globally. Editing a file and running `jarvis start` is the whole update loop; so is `git pull` and
@@ -103,7 +103,7 @@ jarvis init
 ```
 It creates the state home (`JARVIS_HOME`, the checkout by default) with a `.env` and an `agents.json` from
 [`src/jarvis/defaults/`](src/jarvis/defaults/), the brain's own folder under it (`brain/`, with a board, worktrees and
-skills) and a `brain_token` the voice, the brain, the cockpit and any thin client share; it never overwrites your
+skills) and a `brain_token` the voice, the brain, the dashboard and any thin client share; it never overwrites your
 files. Moving over from a standalone Superbrain? `jarvis init` moves `~/.config/superbrain` to `JARVIS_HOME/brain`
 for you. It asks for your OpenRouter and
 ElevenLabs keys (typing stays hidden; Enter skips one) and saves them in `.env`, readable only by you; a key
@@ -154,7 +154,7 @@ what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path
   the same process, and its HTTP/SSE/WebSocket gateway is the only network surface Jarvis exposes. It routes each
   task itself: a small question to a one-shot `pi` worker, project work to a T3 Code thread, a named Claude Code or
   OpenCode turn to that client, and anything for later to its board. Its board, spend and skills:
-  `jarvis status`; watch it live: `jarvis top`.
+  `jarvis status`; watch it live: `jarvis dashboard`.
 - **T3 Code** is the coding surface the brain drives: the owner sees the thread, the diff and the review. The brain
   starts `t3 serve --mode desktop` on loopback itself when nothing answers on port 3773, and gets its own token
   through the `t3` CLI. Say "continue working on the Hugger Hustle platform" and the brain picks the folder from your
@@ -175,7 +175,7 @@ Ollama, Jarvis still runs, just without memory.
 jarvis                 # listen here, in this terminal
 jarvis start           # or as a 24/7 service: launchd keeps this checkout running
 ```
-`jarvis start` is also how you restart: it syncs, rebuilds the cockpit and the mac app, and relaunches the daemon on
+`jarvis start` is also how you restart: it syncs, rebuilds the dashboard and the mac app, and relaunches the daemon on
 whatever is on disk, so an edit or a `git pull` is one command.
 Jarvis greets you in a few words and listens. Speakers work: the mic and speaker run through macOS voice
 processing (the echo canceller FaceTime uses), so you can talk over Jarvis. With the master check on, enroll your
@@ -186,7 +186,7 @@ Updated from a version that required enrollment? Your voiceprint stays, but the 
 `jarvis start` never waits for a release: the daemon runs this checkout directly, so the file you just saved is
 the code that starts. `jarvis logs` follows its log; `jarvis stop` stops it.
 
-### The brain and the cockpit
+### The brain and the dashboard
 
 The brain is the part of Jarvis that keeps working when you stop talking: it holds a board of goals and problems,
 picks one when it is allowed to (mode `AUTONOMOUS`, under a daily budget), and runs a `pi` worker in a clean worktree
@@ -200,8 +200,8 @@ jarvis remind "check the pull requests" in 30m
 jarvis schedule --every "0 8 * * 1-5" --title "Morning PRs" --prompt "check the pull requests"
 jarvis timers                             # follow-ups and schedules (`timers cancel <id>`)
 jarvis mode AUTONOMOUS                    # or ASSIST: pause background work
-jarvis top                                # live cockpit: tasks, attempts, spend, telemetry (cargo build first)
-jarvis start                              # sync, rebuild, relaunch the 24/7 service and open the cockpit
+jarvis dashboard                          # live dashboard: tasks, attempts, spend, telemetry (cargo build first)
+jarvis start                              # sync, rebuild, relaunch the 24/7 service and open the dashboard
 ```
 
 A scheduled check runs read-only and lands in the outbox: in `ASSIST` mode Jarvis speaks it as soon as it is
@@ -220,7 +220,7 @@ decides where the brain may work), the board, and the token in `JARVIS_HOME/brai
 curl -fsSL 'http://<mac-mini>:8643/install-app' | sh
 ```
 It installs `/Applications/Jarvis.app` and opens it. One big **Connect** button in the middle: the first press asks the
-Mac mini for a pairing code, `jarvis top` shows it in its header and as a banner, you type the six digits, and from
+Mac mini for a pairing code, `jarvis dashboard` shows it in its header and as a banner, you type the six digits, and from
 then on the button just connects (Disconnect hands the mic back). Settings shows the app's version beside the
 server's, an **Update** button that pulls the newer bundle from the Mac mini, the server address, and Unpair.
 
@@ -342,7 +342,7 @@ and it never reaches memory. Ask "what did we note?" and it summarizes the day s
 read it, edit it, or delete it.
 
 With the master check on you can also introduce someone: "Jarvis, this is David, he's my friend." Jarvis does not
-interview them: the next new voice to answer is taken as David with a confidence shown in `jarvis top` (about 70%
+interview them: the next new voice to answer is taken as David with a confidence shown in `jarvis dashboard` (about 70%
 from the introduction alone, over 99% once they say "I'm David"), and a confidently named voice is remembered after
 a few seconds of speech. "Jarvis, meet my friend" without a name works too: Jarvis greets them and asks. Profiles
 live in `JARVIS_HOME/speakers/`; delete a file there to forget a voice. Off, it just says hello.

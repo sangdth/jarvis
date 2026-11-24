@@ -547,3 +547,55 @@ print(json.dumps({{"role": "assistant", "content": f"Run {{count}}", "cost_usd":
     finally:
         await reconciler.stop()
         db.close()
+
+
+async def test_apply_self_upgrade_rebuilds_dashboard_when_rust_files_change(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    import pytest
+
+    assert isinstance(monkeypatch, pytest.MonkeyPatch)
+    projects_dir, repo_dir, _ = await _init_brain_repo(tmp_path)
+    dash_src = repo_dir / "apps" / "dashboard" / "src"
+    dash_src.mkdir(parents=True, exist_ok=True)
+    (repo_dir / "apps" / "dashboard" / "Cargo.toml").write_text("[package]\nname = 'jarvis-dashboard'\n", encoding="utf-8")
+    (dash_src / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+    for cmd in [["git", "add", "."], ["git", "commit", "-m", "dashboard edit"]]:
+        proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(repo_dir))
+        await proc.wait()
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "HEAD", cwd=str(repo_dir), stdout=asyncio.subprocess.PIPE
+    )
+    verified_sha = (await proc.communicate())[0].decode().strip()
+    proc = await asyncio.create_subprocess_exec("git", "reset", "--hard", "HEAD~1", cwd=str(repo_dir))
+    await proc.wait()
+
+    cargo_calls: list[tuple[str, ...]] = []
+    orig_exec = asyncio.create_subprocess_exec
+
+    async def fake_exec(*args: object, **kwargs: object):
+        if args and str(args[0]) == "/fake/cargo":
+            cargo_calls.append(tuple(str(a) for a in args))
+            return await orig_exec("true")
+        return await orig_exec(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("brain.reconciler.shutil.which", lambda name: "/fake/cargo" if name == "cargo" else None)
+    monkeypatch.setattr("brain.reconciler.asyncio.create_subprocess_exec", fake_exec)
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=projects_dir,
+        self_repo_dir=repo_dir,
+        sandbox_enabled=False,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    try:
+        applied = await reconciler._apply_self_upgrade(repo_dir, verified_sha, "SG-9")
+        assert applied is True
+        assert len(cargo_calls) == 1
+        assert cargo_calls[0][:4] == ("/fake/cargo", "build", "--release", "--manifest-path")
+        assert cargo_calls[0][4].endswith("apps/dashboard/Cargo.toml")
+    finally:
+        await reconciler.stop()
+        db.close()

@@ -1,4 +1,4 @@
-# jarvis-top — the cockpit (Ratatui)
+# jarvis-dashboard — the dashboard (Ratatui)
 
 A single-binary, fullscreen terminal dashboard for Jarvis's brain (`apps/brain`). Designed to run 24/7 on a
 machine inside Ghostty (or any truecolor terminal) and to be readable over Tailscale SSH from a laptop or phone.
@@ -27,8 +27,8 @@ Five panes: the left workspace holds Flow (`1`), Payload (`2`), Tasks (`3`), and
 ## Build & run
 
 ```bash
-cargo build --release --workspace   # ~2.7 MB binary, no runtime deps; target/release/jarvis-top
-jarvis top                          # finds it on PATH, or in target/{release,debug}
+cargo build --release --workspace   # ~2.7 MB binary, no runtime deps; target/release/jarvis-dashboard
+jarvis dashboard                    # finds it on PATH, or in target/{release,debug}
 ```
 
 An installer or a teammate gets it with `cargo build --release --workspace` in the checkout; there is no packaged
@@ -58,8 +58,8 @@ The dashboard never writes to `state.db`. Operator actions go through the authen
 ### Pairing codes
 
 When a client asks to pair (`POST /v1/pair/request`, which the mac app does on its first Connect), the daemon puts
-`pair.requested` on the telemetry stream and the cockpit shows the six digits in its header and in a banner over the
-panes, with a countdown, until the code is used (`pair.resolved`) or expires. The banner survives opening the cockpit
+`pair.requested` on the telemetry stream and the dashboard shows the six digits in its header and in a banner over the
+panes, with a countdown, until the code is used (`pair.resolved`) or expires. The banner survives opening the dashboard
 late, because the stream replays its ring buffer. Telemetry is the owner's token alone, which is what keeps a paired
 device from reading a code out of it.
 
@@ -86,8 +86,8 @@ device from reading a code out of it.
 ## Diagnostics
 
 ```bash
-jarvis-top --render-check   # paint one frame into a TestBackend and print it (layout smoke test)
-jarvis-top --selftest 4     # run the real workers for 4s and print what arrived
+jarvis-dashboard --render-check   # paint one frame into a TestBackend and print it (layout smoke test)
+jarvis-dashboard --selftest 4     # run the real workers for 4s and print what arrived
 ```
 
 `--render-check` honours `SB_DEMO_PANE`, `SB_DEMO_TAB`, `SB_DEMO_MODAL`, and `SB_DEMO_ZOOM` so every

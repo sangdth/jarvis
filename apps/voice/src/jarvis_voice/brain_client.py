@@ -203,7 +203,7 @@ class BrainClientAdapter(CodingSessionAdapter):
 
     async def send_task(self, task: str, *, replace: bool = False) -> bool:
         body: dict[str, Any] = {"input": task}
-        # The durable correlation pair: `turn_id` keeps the cockpit's turn together, `trace_id` keys the files.
+        # The durable correlation pair: `turn_id` keeps the dashboard's turn together, `trace_id` keys the files.
         body["turn_id"] = telemetry.current_turn()
         body["trace_id"] = telemetry.current_trace()
         if replace:

@@ -1,5 +1,5 @@
 """
-Live telemetry bus for the Brain dashboard (`brain top`).
+Live telemetry bus for the Brain dashboard (`jarvis dashboard`).
 
 `TelemetryHub` is a dependency-free, in-memory ring buffer plus fan-out bus. The daemon publishes
 transient events here (HTTP inbound, reconciler phases, `board.ts` RPC calls, `pi` progress) that are
@@ -16,7 +16,7 @@ import time
 from collections import deque
 from typing import Any, Callable
 
-# Event kinds emitted by the daemon. Keep in sync with `tui/src/model.rs`.
+# Event kinds emitted by the daemon. Keep in sync with `apps/dashboard/src/model.rs`.
 EVENT_HTTP_INBOUND = "http.inbound"
 EVENT_HTTP_COMPLETED = "http.completed"
 EVENT_RUN_STATUS = "run.status"

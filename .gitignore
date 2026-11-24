@@ -27,7 +27,7 @@ __pycache__/
 *.sqlite
 *.sqlite3
 
-# Rust build output (the cockpit and any crate added later; the workspace builds into /target/)
+# Rust build output (the dashboard and any crate added later; the workspace builds into /target/)
 /target/
 **/target/
 

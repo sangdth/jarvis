@@ -3,7 +3,7 @@
 An always-on goal and problem reconciler. It lives in this repository as `apps/brain` and **always runs with
 Jarvis**: the supervisor (`src/jarvis/supervisor.py`) runs it and the voice in one process on this checkout, and its
 HTTP/SSE/WebSocket gateway on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`) is the only network surface. It is
-driven from the voice harness (`BrainClientAdapter`, agent type `brain`), the cockpit (`apps/tui`), `jarvis` itself
+driven from the voice harness (`BrainClientAdapter`, agent type `brain`), the dashboard (`apps/dashboard`), `jarvis` itself
 (`jarvis status|add|mode|...` are HTTP calls), or an iPhone Shortcut over Tailscale (`POST /v1/ask`). Plan and
 history: `docs/super-brain-plan.md`, `docs/architecture.md`.
 
@@ -21,9 +21,9 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
 - Self-improving skill reflection: `jarvis improve`
 - `launchd` plist: `jarvis launchd` (`--install` writes it; `jarvis start` does both)
 - Update the checkout and restart: `git pull` then `jarvis start` (`brain upgrade --check` reports git state)
-- Cockpit: `jarvis top` (Rust, `apps/tui`; build once with `cargo build --release --workspace`)
+- Dashboard: `jarvis dashboard` (Rust, `apps/dashboard`; build once with `cargo build --release --workspace`)
 - Lint & types: `uv run ruff check src apps packages tests` and `uv run mypy` (whole repo, one config)
-- Tests: `uv run pytest` (this app's suite is `apps/brain/tests`); cockpit: `cargo test --workspace`
+- Tests: `uv run pytest` (this app's suite is `apps/brain/tests`); dashboard: `cargo test --workspace`
   and `cargo clippy --workspace --all-targets -- -D warnings`
 
 ## Architecture & Rules
@@ -58,8 +58,8 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   topic or active tasks, the Planner sets `mode='ASSIST'` and `ready=true`; if unsure when to resolve it, the
   Planner asks the owner first. In `ASSIST` too, once a day after `nightly_reflect_hour` (03:00 local) with at
   least 5 unreflected traces, the reconciler runs the Improver over the durable digest; harness proposals still
-  land as `draft` unless `AUTONOMOUS_HARNESS_UPGRADES=true`. The cockpit reads these tables directly, read-only:
-  a column it draws must not change shape without `apps/tui/src/db.rs`.
+  land as `draft` unless `AUTONOMOUS_HARNESS_UPGRADES=true`. The dashboard reads these tables directly, read-only:
+  a column it draws must not change shape without `apps/dashboard/src/db.rs`.
 - **One orchestrator, several runners (`orchestrator.py` + `runners/`):**
   - `BrainOrchestrator.route` turns one interactive request into one runner call: a `Mode`/brief/improve/task
     command is handled in code first; a pinned `jarvis connect` session bypasses the router; otherwise one cheap
@@ -126,15 +126,15 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     skill with 2 failures and 0 successes after an update automatically rolls back or retires.
 - **Self-upgrading this repository (`repo = 'jarvis'`, `brain` still accepted):**
   - `"jarvis"` and `"brain"` are always in `allowed_repo_set` (`config.SELF_REPOS`); the checkout is `config.self_repo_dir`, the running
-    one in dev (`SELF_REPO_DIR` pins another). The owner asking to upgrade "jarvis", "the brain", "your code" or
-    "brain" queues a `ready=true` task there and `server.py` executes it immediately.
+    one in dev (`SELF_REPO_DIR` pins another). Asking to upgrade "jarvis", "the brain", "your code", "brain" or
+    "your dashboard" (`apps/dashboard/`) queues a `ready=true` task there and `server.py` runs it immediately.
   - **Divergence-safe base:** before a self-upgrade worktree is prepared, `reconciler.py` fetches and classifies local
     `HEAD` vs `origin/master` with the pure `upgrade.classify_git_state` helper
     (`UpToDate | FastForward | LocalAhead | Diverged`). The worktree is based on `origin/master` unless local `HEAD`
     has genuinely unpublished commits ahead of it; a diverged checkout is refused with a `blocker` outbox item rather
     than resetting anything backwards.
   - Every self build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, the `brain self-check` canary,
-    then `cargo test` for the cockpit when cargo is on PATH) **plus** the pre-edit baseline held-out suite in
+    then `cargo test` for the dashboard when cargo is on PATH) **plus** the pre-edit baseline held-out suite in
     `apps/brain/tests` against the candidate worktree before the checkout is updated. A candidate that touches the
     voice also runs `scripts/bench_intent.py 1` (≥97% for `executive_filter.py` / `languages.json`) and
     `scripts/bench_routing.py 1` (≥95% for `prompts.py`, `agent_tools.py`, `orchestrator.py`); the scripts are read
@@ -176,11 +176,11 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` -> `{"spoken": "..."}`)
   for the iPhone Shortcut over Tailscale; the operator routes `/v1/status`, `/v1/board`, `GET|POST /v1/tasks`,
   `/v1/tasks/{id}/research`, `/v1/mode`, `/v1/skills/improve`, `/v1/traces`, `/v1/traces/diff`,
-  `/v1/traces/{id}`, `/v1/restart`; the cockpit's telemetry; and the thin
+  `/v1/traces/{id}`, `/v1/restart`; the dashboard's telemetry; and the thin
   client's `/ws` + `/client.py` (registered from `jarvis_voice/remote_audio.py`). `/health` is the only route
   without a token. Any route also accepts `?token=` or `X-Jarvis-Token`. The contract is `schemas/openapi.json`;
   keep it in step.
-- **Fullscreen cockpit (`apps/tui` + `telemetry.py`):**
+- **Fullscreen dashboard (`apps/dashboard` + `telemetry.py`):**
   - `TelemetryHub` is a dependency-free in-memory ring buffer (2000 events) that fans out transient events
     (`http.inbound`, `run.status`, `approval.*`, `reconciler.phase`, `board.rpc`, `pi.progress`,
     `attempt.finished`, `heartbeat`, `pair.*`, `brain.route`) plus the voice's turn stages (`voice.stt`,
@@ -189,7 +189,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     `GET /v1/telemetry/events`; publishing can never fail a worker run. The voice's half is
     `apps/voice/src/jarvis_voice/telemetry.py`, bound to this hub by `src/jarvis/supervisor.py` and a no-op when the
     voice runs alone.
-  - `apps/tui` (`jarvis-top`, Rust + Ratatui, launched with `jarvis top`) reads `state.db` **read-only** on its own
+  - `apps/dashboard` (`jarvis-dashboard`, Rust + Ratatui, launched with `jarvis dashboard`) reads `state.db` **read-only** on its own
     connection, tails `sessions/**/*.jsonl` by byte offset, and reconnects to the SSE stream automatically, so the
     dashboard survives daemon restarts and never blocks WAL writers.
   - Operator actions from the dashboard are ordinary authenticated API calls: `POST /v1/outbox/{id}/resolve`

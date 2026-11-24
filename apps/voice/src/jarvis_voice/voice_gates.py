@@ -323,7 +323,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
         for frame in frames:
             if isinstance(frame, TranscriptionFrame):
                 ms = round((time.monotonic() - started) * 1000)
-                # One turn per sentence: every stage after this lands under the same id in the cockpit.
+                # One turn per sentence: every stage after this lands under the same id in the dashboard.
                 telemetry.new_turn()
                 known = profile is not None and profile.enrolled and profile.name is not None
                 profile_id = "owner" if owner else (profile.id if profile is not None else "room")
@@ -677,7 +677,7 @@ class JarvisIntentGate(FrameProcessor):
         return self.registry.get(user_id)
 
     def _speaker_tag(self, frame: TranscriptionFrame, transcript: str) -> tuple[str, float | None, str]:
-        """The `[Speaker: ...]` tag, its confidence, and the name the cockpit shows for this turn."""
+        """The `[Speaker: ...]` tag, its confidence, and the name the dashboard shows for this turn."""
         self.registry.refresh_from_disk()
         if frame.user_id in ("owner", "u", ""):
             conf = 1.0 if self.registry.owner_voiceprint is not None else None

@@ -44,13 +44,13 @@ EOF
 chmod +x "$BIN_DIR/jarvis"
 "$BIN_DIR/jarvis" --version || true
 
-# The cockpit (`jarvis top`) is the one Rust build. Build it when a toolchain is there; never block setup on it.
+# The dashboard (`jarvis dashboard`) is the one Rust build. Build it when a toolchain is there; never block setup on it.
 if command -v cargo >/dev/null 2>&1; then
-  echo "Building the cockpit (jarvis top)..."
+  echo "Building the dashboard (jarvis dashboard)..."
   (cd "$TARGET" && cargo build --release --workspace >/dev/null 2>&1) ||
-    echo "The cockpit did not build; \`jarvis top\` will print what to run."
+    echo "The dashboard did not build; \`jarvis dashboard\` will print what to run."
 else
-  echo "No Rust toolchain, so the cockpit is skipped: \`cargo build --release --workspace\` in $TARGET later."
+  echo "No Rust toolchain, so the dashboard is skipped: \`cargo build --release --workspace\` in $TARGET later."
 fi
 
 # The mac client app, served at /Jarvis.app.zip so another Mac can install it with one command.

@@ -33,7 +33,7 @@ def log_breakdown(breakdown: LatencyBreakdown) -> None:
     parts = breakdown.turn_contribution_lines()
     for line in parts:
         logger.info(f"[Latency] {line}")
-    # The same numbers on the telemetry bus, so the cockpit's turn row can show where the time went.
+    # The same numbers on the telemetry bus, so the dashboard's turn row can show where the time went.
     telemetry.emit("voice.latency", text=" · ".join(parts))
 
 

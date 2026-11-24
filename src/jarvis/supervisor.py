@@ -3,7 +3,7 @@
 
 There is no build or install step between the code and what runs. The repository is the runtime, so an edit plus
 `jarvis start` is live. One HTTP/SSE/WebSocket server on `BRAIN_PORT` is the only network surface: the brain's
-API, the cockpit's telemetry, the thin client's mic and speaker, and the small probe/operator routes.
+API, the dashboard's telemetry, the thin client's mic and speaker, and the small probe/operator routes.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ async def start_all(
                 meeting=meeting,
                 relay=relay,
                 status=voice_state,
-                # The voice's turn stages ride the same bus the cockpit already subscribes to, so `jarvis top`
+                # The voice's turn stages ride the same bus the dashboard already subscribes to, so `jarvis dashboard`
                 # shows what was heard, how it was checked, and what came back without reading a log file.
                 hub_emit=server.hub.emit,
                 on_memory=server.reconciler.attach_voice_memory,
