@@ -39,7 +39,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `INSTRUCTIONS.md` (owner-written, read-only to workers), and `memory/` (`MEMORY.md`, the small injected index;
   `repos/<slug>.md`; `reported.md`, what the voice has taken; `bookmarks.json`; and `progress/<task_id>.md`, the
   handoff + verified/negative-result ledger).
-- **8 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
+- **9 SQLite tables (`schema.sql`):** `tasks` (`kind IN ('goal', 'problem')`, `mode IN ('ASSIST', 'AUTONOMOUS')`,
   `child_strategy IN ('all', 'any')`, `runner IN ('pi', 't3', 'claude', 'opencode')` defaulting to `pi`,
   `thread_id`, `dedupe_key` for idempotent timer/webhook submissions, `best_metric`, `best_branch`, `best_sha`),
   `attempts` (append-only run ledger with `thread_id`, `metric_value`, `skills_used`, `diagnostic`, and `reflected`),
@@ -49,8 +49,10 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `timers` (one-shot `followup` or five-field cron `schedule`, `action='task'|'check'`, `next_run_at` in UTC and
   `timezone` for the cron), `trace_runs` (one row per voice turn, interactive run or board attempt: `surface`,
   `outcome`, `friction_kind`, `causal_sig`, `git_sha`, `prompt_sha`, `cost_usd`, `trace_path`) with its `trace_fts`
-  FTS5 index, plus the 1-row `system_state` table (`mode`, `daily_budget_usd` defaulting to
-  `$200.00/day`, `last_good_sha`, `upgrade_runs`, `upgrade_failures`). The
+  FTS5 index, `harness_proposals` (one row per Improver harness fix: `surface`, `spec_hash`, the measured
+  `baseline_fail_rate`, and `outcome IN ('proposed','pushed','failed_verify','rejected','rolled_back','falsified','verified')`),
+  plus the 1-row `system_state` table (`mode`, `daily_budget_usd` defaulting to
+  `$200.00/day`, `last_good_sha`, `upgrade_runs`, `upgrade_failures`, and the Improver's 7-day probation columns). The
   reconciler loop runs continuously in both modes, resolving ready `ASSIST` tasks when in `ASSIST` mode and ready
   `AUTONOMOUS` tasks when in `AUTONOMOUS` mode. When the owner gives a new request clearly related to the current
   topic or active tasks, the Planner sets `mode='ASSIST'` and `ready=true`; if unsure when to resolve it, the

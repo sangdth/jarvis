@@ -389,6 +389,29 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "propose_weight_update",
+		label: "Propose a Weight Update",
+		description:
+			"Improver only: queue a draft task to retrain laya-intent, whisper-owner-lora or router-distill. Never trains inside this turn; the owner approves the compute.",
+		promptSnippet: "Propose retraining one local model when its data threshold is met.",
+		parameters: {
+			type: "object",
+			properties: {
+				target: { type: "string", enum: ["laya-intent", "whisper-owner-lora", "router-distill"] },
+				reason: { type: "string", description: "What the corrections or traces show, in one or two sentences" },
+			},
+			required: ["target", "reason"],
+		} as never,
+		async execute(_toolCallId, params: Record<string, unknown>) {
+			const res = await callBoardRpc("propose_weight_update", params);
+			return {
+				content: [{ type: "text", text: JSON.stringify(res) }],
+				details: res,
+			};
+		},
+	});
+
+	pi.registerTool({
 		name: "research_scout",
 		label: "Run Evidence-Preserving Research Scout",
 		description:

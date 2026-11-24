@@ -85,6 +85,14 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
 def _counts(rows: list[tuple[int, float]]) -> tuple[int, int, float]:
     """`(ok, total, average cost)` for the lift comparison; an empty side is `(0, 0, 0.0)`."""
     if not rows:
@@ -360,6 +368,13 @@ class BrainDB:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN thread_id TEXT")
         if "dedupe_key" not in task_cols:
             self._conn.execute("ALTER TABLE tasks ADD COLUMN dedupe_key TEXT")
+        state_cols = {
+            str(r["name"])
+            for r in self._conn.execute("PRAGMA table_info(system_state)").fetchall()
+        }
+        for column in ("improver_probation_until", "improver_rollback_sha", "improver_baseline_json"):
+            if column not in state_cols:
+                self._conn.execute(f"ALTER TABLE system_state ADD COLUMN {column} TEXT")
         if "status" in task_cols:
             self._conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS tasks_dedupe_active "
@@ -1952,6 +1967,98 @@ class BrainDB:
             elif str(row["repo"]) in loaded_repos:
                 baseline.append((ok, cost))
         return _counts(with_skill), _counts(baseline)
+
+    def compute_meta_utility(self, *, days: int = 7) -> dict[str, float]:
+        """The Improver's own scorecard over a rolling window: pass rate, friction, cost and turns per task.
+
+        Computed from `attempts` and `trace_runs` each time, so it needs no ledger of its own and cannot drift
+        from what the board actually did.
+        """
+        since = _iso(_utc_now() - timedelta(days=days))
+        with self._lock:
+            builders = self._conn.execute(
+                "SELECT id, task_id, outcome FROM attempts WHERE role = 'builder' AND created_at >= ? "
+                "ORDER BY id ASC",
+                (since,),
+            ).fetchall()
+            done = self._conn.execute(
+                "SELECT id FROM tasks WHERE status = 'done' AND updated_at >= ?", (since,)
+            ).fetchall()
+            turns = self._conn.execute(
+                "SELECT outcome, friction_kind FROM trace_runs "
+                "WHERE created_at >= ? AND source IN ('voice', 'ask')",
+                (since,),
+            ).fetchall()
+        first: dict[str, str] = {}
+        per_task_turns: dict[str, int] = {}
+        for row in builders:
+            per_task_turns[str(row["task_id"])] = per_task_turns.get(str(row["task_id"]), 0) + 1
+            first.setdefault(str(row["task_id"]), str(row["outcome"]))
+        done_ids = {str(row["id"]) for row in done}
+        costs: list[float] = []
+        if done_ids:
+            with self._lock:
+                placeholders = ",".join("?" for _ in done_ids)
+                rows = self._conn.execute(
+                    f"SELECT task_id, SUM(cost_usd) AS spent FROM attempts "
+                    f"WHERE task_id IN ({placeholders}) GROUP BY task_id",
+                    tuple(done_ids),
+                ).fetchall()
+            costs = [float(row["spent"] or 0.0) for row in rows]
+        attempted = len(first)
+        return {
+            "first_attempt_pass_rate": (
+                sum(1 for outcome in first.values() if outcome in ("pushed", "decomposed")) / attempted
+                if attempted
+                else 0.0
+            ),
+            "friction_per_100_turns": (
+                100.0
+                * sum(1 for row in turns if row["outcome"] != "ok" or row["friction_kind"] is not None)
+                / len(turns)
+                if turns
+                else 0.0
+            ),
+            "median_usd_per_solved_task": _median(costs),
+            "median_turns_per_solved_task": _median(
+                [float(per_task_turns.get(task_id, 0)) for task_id in done_ids]
+            ),
+            "attempted_tasks": float(attempted),
+            "turns": float(len(turns)),
+            "solved_tasks": float(len(done_ids)),
+        }
+
+    def start_improver_probation(
+        self, *, rollback_sha: str, baseline_json: str, until_iso: str
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE system_state SET improver_probation_until = ?, improver_rollback_sha = ?, "
+                "improver_baseline_json = ?, updated_at = ? WHERE id = 1",
+                (until_iso, rollback_sha, baseline_json, _iso(_utc_now())),
+            )
+
+    def improver_probation(self) -> dict[str, str] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT improver_probation_until, improver_rollback_sha, improver_baseline_json "
+                "FROM system_state WHERE id = 1"
+            ).fetchone()
+        if row is None or not row["improver_probation_until"]:
+            return None
+        return {
+            "until": str(row["improver_probation_until"]),
+            "rollback_sha": str(row["improver_rollback_sha"] or ""),
+            "baseline_json": str(row["improver_baseline_json"] or "{}"),
+        }
+
+    def clear_improver_probation(self) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE system_state SET improver_probation_until = NULL, improver_rollback_sha = NULL, "
+                "improver_baseline_json = NULL, updated_at = ? WHERE id = 1",
+                (_iso(_utc_now()),),
+            )
 
     def subscribe_outbox(self, callback: Callable[[OutboxRow], None]) -> None:
         """Called for every newly queued outbox row; the server turns it into a voice event."""
