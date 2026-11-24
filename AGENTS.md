@@ -267,7 +267,6 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 
 ## Later, not now
 
-- Pi as a routable agent (in `agents.json`, not only `jarvis connect pi`), and Codex: a new `<name>_adapter.py` shaped like `opencode_adapter.py` / `hermes_adapter.py`,
-  registered in `orchestrator.py` `ADAPTERS`; or run them as a T3 Code provider and reach them through `t3-code`.
-- Ideas from Hex (replaying saved clips through the pipeline, window context, `hex mcp`):
-  `docs/research/hex-adoption-plan.md`.
+- Pi as a routable agent (in `agents.json`, not only `jarvis connect pi`), and Codex: a new runner in `apps/brain/src/brain/runners/`, or reached as a T3 Code provider.
+- Parked ideas from Hex (WAV pipeline replay, foreground window context): `docs/research/hex-notes.md`.
+- Transcript search over past Claude/OpenCode sessions in Qdrant (`bge-m3`): only if lexical title matching stops being enough.

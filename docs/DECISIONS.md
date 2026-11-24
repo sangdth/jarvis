@@ -49,10 +49,15 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   speaker/mic pair, and anything that bypasses the client (another app on the Mac mini playing sound) is not
   cancelled. The pipeline's local output is 24 kHz and the thin client's wire format is 16 kHz, so `RelayHub`
   resamples on the way out rather than lowering the local speaker's quality or breaking clients already paired.
-- **The relay port trusts a token, not the network.** It is plain HTTP and WebSocket with one shared secret
-  (`REMOTE_TOKEN`, else `~/.config/jarvis/remote_token`). Anyone who reads the token, or the URL it rides in, can
-  talk to Jarvis: with `MASTER_CHECK=false` that means run tasks. Keep it to your own network or a VPN, set your own
-  token to re-pair, and delete the file to cut every client off.
+- **The gateway trusts a token or a paired device's secret, not the network.** It serves plain HTTP and WebSocket on
+  `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`). Every route except `/health` and the client bootstrap
+  (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) requires either the
+  owner's shared token (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; `/ws` also accepts `REMOTE_TOKEN` when set)
+  or a paired device's own secret (sent as `Authorization: Bearer`, never in a URL, stored hashed with SHA-256 in
+  `JARVIS_HOME/devices.json` 0600). `/v1/telemetry/*`, `/v1/pair/*`, and `/v1/devices*` require the owner token alone.
+  Keep it on your LAN or Tailscale; run `jarvis devices revoke <id>` to cut off a lost laptop immediately (`1008` on
+  its live socket) without touching other devices or rotating the shared token. Deleting `remote_token` does not revoke
+  paired devices in `devices.json`.
 - **One relay client at a time.** A second Mac is refused (1013) while one holds the mic; Jarvis has one ear.
   Connecting a new client after a drop does not replay what was said meanwhile.
 - **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so while a
@@ -107,23 +112,26 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   checkouts on one machine would each want the port, and the one-mic lock (`~/.config/jarvis/jarvis.lock`) stops
   the second.
 - **One state home and one network surface.** The state is `JARVIS_HOME` (this checkout unless set, gitignored):
-  `.env`, `SOUL.md`, `agents.json`, the voiceprint, models, memory, `brain/state.db`, and the tokens
-  (`brain_token` 0600 for the apps, `remote_token` for a pinned relay). `BRAIN_API_KEY` in `.env` wins over the
-  file. `jarvis init` (and the supervisor, on first run) moves a pre-merge `~/.config/superbrain` into
+  `.env`, `SOUL.md`, `agents.json`, `devices.json`, the voiceprint, models, memory, `brain/state.db`, and the tokens
+  (`brain_token` 0600 for the apps, optional `remote_token` for a pinned relay). `BRAIN_API_KEY` in `.env` wins over
+  the file. `jarvis init` (and the supervisor, on first run) moves a pre-merge `~/.config/superbrain` into
   `JARVIS_HOME/brain`. Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT`, defaulting to
-  `0.0.0.0:8643` so a laptop or phone can reach the Mac mini; every route but `/health` needs the token, and
-  `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode` and `/v1/restart` mean a client never reads SQLite or the
-  filesystem. Limits: plain HTTP on the LAN, so the token is the only guard (put both machines on Tailscale to go
-  further); a wildcard bind is reached over loopback on the same Mac, which both the Python and Rust clients
-  handle.
+  `0.0.0.0:8643` so a laptop or phone can reach the Mac mini; every route except `/health` and the client bootstrap
+  (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) needs the owner token or
+  a paired device's secret, and `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode` and `/v1/restart` mean a client
+  never reads SQLite or the filesystem. Limits: plain HTTP on the LAN, so credentials are the only guard (put both
+  machines on Tailscale to go further); a wildcard bind is reached over loopback on the same Mac, which both the Python
+  and Rust clients handle.
 - **Native workspaces, one task runner — not Bazel/Buck/Pants.** `uv` and `cargo` keep their own lockfiles, caches and
   native linking (MLX, sherpa-onnx, pyobjc, rusqlite), and `just` is the one entry point (`just test`, `just lint`,
   `just build`). Limits: there is no single cross-language dependency graph or remote cache, so a change to a shared
   schema is coordinated by the `schemas/` table and the commit, not enforced by a build tool. Revisit (moon/Nx, or
   Bazel) only if the repo grows to many apps with heavy CI fan-out.
-- **The dashboard is the one compiled artifact.** `cargo build --release --workspace` in the checkout, and
-  `jarvis dashboard` looks on `PATH` and in `target/{release,debug}`. Limits: Python code is live as written, but a
-  dashboard change needs that build; no toolchain means no dashboard, and the voice and the brain never depend on it.
+- **Two optional compiled artifacts: the dashboard and Connect.** `cargo build --release --workspace` builds
+  `target/release/jarvis-dashboard` (found by `jarvis dashboard`), and `sh apps/connect/build.sh` builds
+  `target/connect/Jarvis.app.zip` (served at `/Jarvis.app.zip`). `jarvis start` rebuilds both when their toolchains
+  (`cargo`, `swiftc`) are installed. Limits: Python code is live as written, while Rust and Swift edits need a rebuild;
+  neither artifact is required for the voice or brain to run.
 - **`schemas/` documents contracts; the canonical files stay in their apps.** `schema.sql` stays in the Python package
   (the daemon reads it as package data at startup) and `openapi.json` describes the one gateway (HTTP, SSE, and the
   `/ws` relay). Limits: the
@@ -144,33 +152,35 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `queued` and gets one line in `memory/reported.md` at that point; in `AUTONOMOUS` mode nothing is spoken until
   the owner switches back or asks for the brief. Limits: a crash between the acknowledgement and the speaker can
   lose one line (the alternative, repeated overnight speech, is worse).
-- **The Improver may queue one bounded harness fix, never apply it or touch a protected file.** Its reflection
-  prompt now carries the deterministic failure summary (`skills.mine_failure_patterns`: failed traces grouped by
-  harness surface, plus `feedback/intent.jsonl` corrections), and `propose_harness_task` files one `repo='jarvis'`
-  problem under `dedupe_key='harness-proposal'` with evidence and a reproduce-first `verify_cmd`. It stays a
-  `draft` unless `AUTONOMOUS_HARNESS_UPGRADES=true`, so the owner still decides. Limits: one open proposal at a
-  time; a fix that needs a protected file is refused and must be asked for by voice.
-- **A harness proposal is remembered, checked and falsified.** `harness_proposals` holds one row per Improver fix:
-  the surface it targets, its spec hash, the failure rate measured from `trace_runs` before it landed, and what
-  became of it. `propose_harness_task` refuses an idea already `rejected`, `failed_verify`, `rolled_back` or
-  `falsified` within 30 days (same spec hash, or word overlap `>= 0.8`), and K=10 runs on the surface after the fix
-  either verify the prediction or mark it falsified and offer a rollback quoting baseline vs post rate. Limits: only
-  `pushed` and `failed_verify` move a proposal automatically in `tick`; a 2-crash rollback stays the sha circuit
-  breaker's job, and the K window counts any run on the surface, not only the ones the fix was meant to change.
+- **The Improver may queue bounded per-surface harness fixes, never apply them or touch protected files.** Its
+  reflection prompt reads `traces/analysis/overview.md` and `skills.mine_failure_patterns` (failed traces grouped by
+  `HARNESS_SURFACES`, plus `feedback/intent.jsonl` corrections), and `propose_harness_task` files a `repo='jarvis'`
+  problem under `dedupe_key='harness:<surface>'` with evidence and a reproduce-first `verify_cmd`. Each proposal lands
+  in `harness_proposals` with its target surface, spec hash, and `baseline_fail_rate` measured from `trace_runs`, and
+  stays a `draft` unless `AUTONOMOUS_HARNESS_UPGRADES=true`. Re-proposing an idea already `rejected`, `failed_verify`,
+  `rolled_back`, or `falsified` within 30 days (same spec hash or word overlap `>= 0.8`) is refused; after K=10 runs on
+  the surface post-upgrade, the prediction is marked `verified` or `falsified` (queueing a rollback approval quoting
+  baseline vs post rate). Limits: one open proposal per surface; protected files require a voice request; only `pushed`
+  and `failed_verify` advance a proposal automatically in `tick` (a 2-crash rollback stays the sha circuit breaker's
+  job), and the K=10 window counts all runs on the surface.
 - **The Improver sits on a 7-day probation when a self-upgrade edits it.** A verified upgrade touching
   `skills.py` or `reconciler.py` records `improver_rollback_sha` and a baseline of `compute_meta_utility()` (first-
   attempt builder pass rate, interactive friction per 100 turns, median USD and turns per solved task, all computed
   from `attempts` + `trace_runs`). Once 10 tasks and 30 turns have run under it, a `-10 pp` pass rate, `+5` friction
   or `+35%` cost queues a rollback approval. Limits: the thresholds are a first guess, and a quiet week with little
   interactive use simply keeps the probation open until its date passes.
-- **A self-upgrade that touches the voice runs its benchmark.** `_changed_files` + `_run_voice_benchmarks` run
-  `scripts/bench_intent.py 1` (≥97%) for `executive_filter.py` / `languages.json`, and `scripts/bench_routing.py 1`
-  (≥95%) for `prompts.py`, `agent_tools.py` or `orchestrator.py`. The script is read from the checkout, not the
-  candidate, so a worker cannot rewrite the gate it is measured by; the candidate's voice modules load through
-  `PYTHONPATH`. Both benchmarks and the scripts themselves are in `PROTECTED_SELF_PATHS`. Limits: the benchmark
-  process gets `OPENROUTER_API_KEY` (it makes paid model calls that the worker's cost ledger does not see), a
-  failing gate is reported as sealed output like the held-out suite, and without a key the gate is skipped with a
-  blocker rather than blocking the daemon.
+- **Self-upgrades touching the voice or router run their benchmarks and sealed held-out checks.** `_changed_files` +
+  `_run_voice_benchmarks` run `scripts/bench_intent.py 1` (≥97%) for `executive_filter.py` / `languages.json`,
+  `scripts/bench_routing.py 1` (≥95%) for `prompts.py` / `agent_tools.py` / `orchestrator.py`,
+  `scripts/bench_voice_prompts.py --split held_in` for `cleanup.py` / `prompts.py` / `state.py` / `system_prompts.py` /
+  `waiting_lines.py` / `SYSTEM.md`, and `scripts/bench_brain_route.py 1 --split held_in` (≥95%, p50 ≤ 800 ms) for
+  `apps/brain/src/brain/orchestrator.py`. When harvested `JARVIS_HOME/evals/held_out/<suite>.jsonl` files exist,
+  `_run_eval_splits` compares baseline (`repo_dir`) against the candidate (`worktree_dir`), requiring 0 held-out
+  regressions, a passing Pareto latency/cost check, and ≥1 newly passing `held_in` case for `harness:*` fixes. Scripts
+  run from the checkout with candidate code on `PYTHONPATH`; all benchmark scripts and `evals.py` are in
+  `PROTECTED_SELF_PATHS`, and `sandbox.py` denies `evals/held_out/` to every worker. Limits: benchmark calls use
+  `OPENROUTER_API_KEY` (untracked by the worker cost ledger), failures return sealed output, and a missing key skips
+  the gate with a blocker outbox item rather than stalling the daemon.
 
 ## Open risks
 

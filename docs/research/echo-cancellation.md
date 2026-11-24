@@ -1,6 +1,6 @@
 # Echo cancellation: talking over Jarvis on speakers
 
-Researched 2026-11-04. Jarvis uses macOS voice processing (`src/jarvis/mac_audio.py`).
+Researched 2026-11-04. Jarvis uses macOS voice processing (`apps/voice/src/jarvis_voice/mac_audio.py`).
 
 ## The problem
 

@@ -191,51 +191,15 @@ real-world scores.
 Whisper on the same clips: both models warm in 0.63–0.64 s; `T3` came out as `Telltie free` (distil) and `D3`
 (turbo), `Hugger` as `Hucker` and `hacker`, with and without the vocabulary prompt.
 
-## Proposals
+## Outcomes
 
-Smallest first. Each: what breaks, what to change, how to check.
-
-1. **Nothing in the log says which setup ran.** Log `WHISPER_MODEL`, `SPEAKER_THRESHOLD` and the voiceprint path
-   once at startup in `main.py`. Check: the next log names them.
-2. **Installed and checkout settings differ.** Pick one pair (turbo + 0.35 is what the 11-03 scores were read
-   for) and put it in `~/.config/jarvis/.env`, `config.py` and `defaults/env.example`. Check: `jarvis connect` and
-   `uv run jarvis` log the same values.
-3. **Answers to Jarvis's own questions are judged without context.** In `JarvisIntentGate._gate`, fall back from
-   the agent question to the last assistant message in the `LLMContext` (`context.messages`) as
-   `recent_jarvis_question`. `scripts/bench_intent.py` only calls `classify_user_utterance(text)`, so add cases
-   with a `jarvis_last_said` column first (garbled and one-word answers after a question, and background talk
-   right after Jarvis speaks), then run the benchmark before and after as the rule requires. Risk: more background
-   sentences accepted in the seconds after Jarvis speaks; the new cases measure that.
-4. **A joined sentence is held again.** In `JarvisIntentGate.process_frame`, hold only when nothing was joined.
-   Cost: a sentence with two long pauses is split in two. Check: unit test on two `...` segments in a row.
-5. **Reply time is not measured.** Before deciding on executive thinking, log the time from `[User Transcript]`
-   to the first TTS sentence for a few sessions. If it stays above about 4 s, revisit the "thinking always on"
-   rule in `AGENTS.md` with those numbers; the decision is Sang's.
-6. Optional: run one `mlx_whisper.transcribe` on a second of zeros at startup so the first sentence is not the
-   slow one (0.3–0.7 s once per start).
+The 2026-11-06 findings led to five changes (now under `apps/voice/src/jarvis_voice/`): startup logging of
+`WHISPER_MODEL`, `SPEAKER_THRESHOLD`, and voiceprint path (`main.py`); unified defaults (`whisper-large-v3-turbo`,
+`0.35`); passing `jarvis_last_said` for `REPLY_WINDOW_SECS = 20` after Jarvis speaks (`JarvisIntentGate`);
+single-pass hold on trailing `"..."`; and Whisper startup warmup.
 
 Tested and rejected: a Whisper `initial_prompt` (finding 6); trimming silence before the speaker embedding
-(finding 3); a threshold under 0.35 (finding 3); removing the filler list (finding 5).
+(finding 3); a threshold under `0.35` (finding 3); removing the filler list (finding 5).
 
-Untested idea: enroll with short phrases too ("Hello?", "Yes.", "Stop it."), so the voiceprint covers how short
-clips embed. The synthetic test did not try it; a deterministic voice could not show whether it helps a real one.
-
-## Status (2026-11-06, evening)
-
-Done, uncommitted on `fix/voice-recognition-misses`: proposals 1, 2, 4 and 6; proposal 3 with one sentence added to
-`INTENT_QUESTION` that tells the decision model what `jarvis_last_said` means. Jarvis's own last reply counts for
-`REPLY_WINDOW_SECS = 20` after it stops talking; an open agent question still comes first. Proposal 5 needs no code:
-`[User Transcript]` and `Generating TTS` lines already carry the timestamps.
-
-`scripts/bench_intent.py` now has eight `REPLY_CASES` (five answers from the logs, three room lines right after
-Jarvis spoke). Results at 3 rounds:
-
-| Run                                         | Accuracy | Misses                                       |
-| :------------------------------------------ | :------- | :------------------------------------------- |
-| Before, old 45 cases                        | 98%      | the game line                                |
-| Context passed, prompt unchanged            | 92%      | the game line, three garbled answers         |
-| Context passed, `jarvis_last_said` sentence | 94%      | the game line, `Ken sorry`, the 11-06 answer |
-
-The old cases score the same in every run, and all three room lines stay ignored. The 94% is below the 97% bar
-only because of the new cases, so keeping them needs Sang's OK. A second wording ("any reply, however garbled")
-flipped `Uh, yeah, okay` and `um yeah okay` to heard and was reverted.
+Untested idea: enroll with short phrases ("Hello?", "Yes.", "Stop it.") so the voiceprint covers how short clips
+embed. The synthetic test could not show whether it helps a real mic.
