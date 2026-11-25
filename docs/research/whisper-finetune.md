@@ -32,11 +32,11 @@ All three scripts keep PyTorch/PEFT/Transformers out of Jarvis's `.venv` (via PE
 # 1. Record sentences through macOS voice processing (1 in 7 held out for test)
 uv run python scripts/voice/record.py
 
-# 2. Train LoRA on MPS and export float16 MLX weights (--no-train verifies base conversion)
-uv run scripts/voice/train.py --data voice_data --out models/whisper-large-v3-owner
+# 2. Train LoRA on MPS and export float16 MLX weights (no `python`: uv reads train.py's PEP 723 header)
+uv run scripts/voice/train.py --data "${JARVIS_HOME:-.}/voice_data" --out "${JARVIS_HOME:-.}/models/whisper-large-v3-owner"
 
 # 3. Measure WER on the held-out test split (set WHISPER_MODEL=<out> only if it beats base)
-uv run python scripts/voice/evaluate.py models/whisper-large-v3-owner --split test
+uv run python scripts/voice/evaluate.py "${JARVIS_HOME:-.}/models/whisper-large-v3-owner" --split test
 ```
 
 ## Notes and Limits

@@ -1,8 +1,9 @@
 # Jarvis
 
-One repository, three apps. The **voice layer** (`jarvis-voice`, Pipecat) talks to the user and hands work to
+One repository, four apps. The **voice layer** (`jarvis-voice`, Pipecat) talks to the user and hands work to
 agents: coding to T3 Code (or Claude Code or OpenCode when named), everything else to **the brain** (`brain`), the daemon
-that always runs with it. The **dashboard** (`jarvis-dashboard`, Rust + Ratatui) shows the brain's board live. No wake word.
+that always runs with it. The **dashboard** (`jarvis-dashboard`, Rust + Ratatui) shows the brain's board live, and
+**Connect** (`Jarvis.app`, SwiftUI) brings another Mac's mic and speaker over the network. No wake word.
 Jarvis stays thin: it routes and relays; the work, tools and memory live in each app's or agent's own harness.
 Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS.md`. Setup and voice commands:
 `README.md`.
@@ -43,7 +44,7 @@ Architecture: `docs/architecture.md`. Choices with known limits: `docs/DECISIONS
 | `apps/brain/src/brain/` | the brain (`brain`): board, reconciler, `pi` workers, HTTP/SSE server |
 | `apps/dashboard/` | the dashboard (`jarvis-dashboard`, Rust + Ratatui) |
 | `apps/connect/` | the Connect app (`Jarvis.app`, SwiftUI): one Connect button, served at `/Jarvis.app.zip` |
-| `packages/jarvis-core/` | what all three share: `REPO_ROOT`/`JARVIS_HOME`, the `.env` settings base, the tokens, paired devices, `SOUL.md` |
+| `packages/jarvis-core/` | shared core: `REPO_ROOT`/`JARVIS_HOME`, `.env` settings, tokens, devices, `SOUL.md` |
 | `src/jarvis/` | the `jarvis` command: dispatch, `init`, `dashboard`, the launchd service, and the supervisor that runs the stack |
 | `schemas/` | cross-language contracts (the gateway's HTTP/SSE/WS API, see `schemas/README.md`) |
 
@@ -112,14 +113,16 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   Sang's OK. New misses found in real use become new cases in that script.
 - **Routing changes need the routing benchmark.** An edit to an agent `role`, `agent_roster` or the system
   prompt runs `scripts/bench_routing.py` before and after; it exits 1 below 95%.
-- **One gateway, two kinds of credential.** Every route but `/health` and `GET /client.py` needs either the shared
-  token (`brain_token`, for the CLI and scripts) or a **paired device's secret**. `jarvis pair` mints a single-use
-  6-digit code (5 minutes, one code at a time, five wrong guesses in a minute and the code is dropped); the device
-  trades it for its own secret via `POST /v1/pair` and keeps it at `~/.config/jarvis-remote/credentials.json`
-  (0600, sent as `Authorization: Bearer`, never in a URL). `JARVIS_HOME/devices.json` (0600, one `DeviceStore` shared
-  by the server and the relay) holds a SHA-256 per device, never the secret; `GET /v1/devices` and
-  `POST /v1/devices/{id}/revoke` are the owner's alone, so a leaked laptop is cut off without disturbing anyone else
-  or rotating the shared token (`jarvis_core/devices.py`, `server.py`, `remote_audio.py`).
+- **One gateway, two kinds of credential.** Every route except `/health` and the client bootstrap (`/client.py`,
+  `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) needs either the shared token
+  (`BRAIN_API_KEY` or `brain_token`, for the CLI and scripts; `REMOTE_TOKEN` overrides it on `/ws` when set) or a
+  **paired device's secret**. `jarvis pair` mints a single-use 6-digit code (5 minutes, one code at a time, five wrong
+  guesses in a minute and the code is dropped); the device trades it for its own secret via `POST /v1/pair` and keeps it
+  at `~/.config/jarvis-remote/credentials.json` (0600, sent as `Authorization: Bearer`, never in a URL).
+  `JARVIS_HOME/devices.json` (0600, one `DeviceStore` shared by the server and the relay) holds a SHA-256 per device,
+  never the secret; `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` are the owner's alone, so a leaked
+  laptop is cut off via `jarvis devices revoke <id>` without disturbing anyone else or rotating the shared token
+  (`jarvis_core/devices.py`, `server.py`, `remote_audio.py`).
 - **Thin layer, one orchestrator.** Jarvis never does an agent's job: no email, calendar or coding logic here.
   The voice routes every task that needs doing to `brain`; the brain decides which runner (one-shot `pi`, a T3
   thread, a minimal Claude/OpenCode turn, or the board). A new kind of work is a new runner in
@@ -129,14 +132,12 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   artifacts (dashboard, mac app), kicks launchd and opens the dashboard; it is the only service command.
   Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`), built by
   `BrainServer`: the brain's API, the dashboard's telemetry, `/health`, `/v1/status`, `/v1/board`, `/v1/tasks`,
-  `/v1/mode`, `/v1/restart`, and the thin client's `/ws` + `/client.py`. Every route but `/health` needs the shared
-  token (`Authorization: Bearer`, `?token=`, or `X-Jarvis-Token`). A client on another machine needs no `jarvis`
-  install: `jarvis health --url http://<mac-mini>:8643`. Both share one state home, `JARVIS_HOME` (this checkout
-  unless set, and gitignored): `.env`, `agents.json`, `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the
-  relay token (`remote_token`), the brain's state in `brain/` (board, worktrees, sessions, traces, skills, notes,
-  `state.db`), and the token the three apps share (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env`
-  wins over it). The brain's `allowed_repo_set` always includes `jarvis` and `brain`, both of which mean this
-  checkout. The shipped `agents.json` has one agent, `brain`; the voice never talks to a coding client directly.
+  `/v1/mode`, `/v1/traces`, `/v1/restart`, and the remote client's `/ws`, `/client.py`, `/Jarvis.app.zip`, and
+  `/install-app` (authenticated with `Authorization: Bearer`, `?token=`, or `X-Jarvis-Token` per the credential rule
+  above). A client on another machine needs no `jarvis` install: `jarvis health --url http://<mac-mini>:8643`. Both
+  share one state home, `JARVIS_HOME` (this checkout unless set, and gitignored; full file list below). The brain's
+  `allowed_repo_set` always includes `jarvis` and `brain`, both of which mean this checkout. The shipped `agents.json`
+  has one agent, `brain`; the voice never talks to a coding client directly.
 - **The brain decides its own approvals.** Its planner defers to the owner for anything protected (`outbox`
   `approval_request`, read out by the voice and answered with `answer_agent`).
 - **Every coding client shares one session contract; T3 Code is the first-class one.** T3 Code, Claude Code,
@@ -180,9 +181,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
   make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.
 - **All user state lives in `JARVIS_HOME`** (`packages/jarvis-core/src/jarvis_core/home.py`): `.env`, `agents.json`,
-  `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the relay token (`remote_token`, when `REMOTE_TOKEN` pins one),
-  the brain's own state in `brain/` (board, worktrees, sessions, traces, skills, progress notes), and the token the
-  three apps share (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env` wins over it). The installed `jarvis` uses
+  `devices.json`, `SOUL.md`, `SYSTEM.md`, the voiceprint, models, memory, the relay token (`remote_token`, when
+  `REMOTE_TOKEN` pins one), the brain's own state in `brain/` (board, worktrees, sessions, traces, evals, skills,
+  progress notes), and the shared token (`brain_token`, made on first use; `BRAIN_API_KEY` in `.env` wins over it). The installed `jarvis` uses
   `~/.config/jarvis`; `uv run jarvis` in a checkout uses that checkout's
   folder (`checkout_root`, found from the running code, never the current folder; gitignored) and stops without its
   `.env`. The T3 setup script copies that state into new worktrees. The one-mic lock stays in `~/.config/jarvis`

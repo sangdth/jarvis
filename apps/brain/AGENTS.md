@@ -133,20 +133,19 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     (`UpToDate | FastForward | LocalAhead | Diverged`). The worktree is based on `origin/master` unless local `HEAD`
     has genuinely unpublished commits ahead of it; a diverged checkout is refused with a `blocker` outbox item rather
     than resetting anything backwards.
-  - Every self build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, the `brain self-check` canary,
-    then `cargo test` for the dashboard when cargo is on PATH) **plus** the pre-edit baseline held-out suite in
-    `apps/brain/tests` against the candidate worktree before the checkout is updated. A candidate that touches the
-    voice also runs `scripts/bench_intent.py 1` (≥97% for `executive_filter.py` / `languages.json`) and
-    `scripts/bench_routing.py 1` (≥95% for `prompts.py`, `agent_tools.py`, `orchestrator.py`); the scripts are read
-    from the checkout, never the candidate.
+  - Every self build must pass `self_upgrade_verify_cmd` (`ruff`, `mypy`, `pytest`, `brain self-check`, plus `cargo test`
+    for the dashboard when cargo is on PATH) **plus** the pre-edit baseline suites (`tests/`, `apps/*/tests/`) against
+    the candidate worktree. Voice and router edits also run `scripts/bench_intent.py 1` (≥97%),
+    `scripts/bench_routing.py 1` (≥95%, `jarvis_voice/{prompts,agent_tools,orchestrator}.py`),
+    `scripts/bench_voice_prompts.py --split held_in`, and `scripts/bench_brain_route.py 1 --split held_in` (≥95%,
+    p50 ≤ 800 ms, `brain/orchestrator.py`), plus sealed `evals/held_out/` regression and Pareto checks from the checkout.
   - Edits touching `PROTECTED_SELF_PATHS` (`pyproject.toml`, `uv.lock`, `Cargo.toml`, `Cargo.lock`,
-    `apps/brain/src/brain/{config,sandbox}.py`, `apps/brain/src/brain/defaults/pi/board.ts`,
-    `apps/voice/src/jarvis_voice/{config,voice_gates}.py`, `src/jarvis/{cli,supervisor}.py`), or modifying/deleting
-    existing files under `tests/`, pin the verified `approved_sha` on `origin/brain/<task_id>` and require owner
-    approval before that exact commit is applied. Verified upgrades record `last_good_sha` in `system_state`, update the
-    checkout (running `uv sync` and, for Rust changes, `cargo build --release`), flush the spoken response, and trigger a
-    clean shutdown for `launchd` respawn; probation clears `last_good_sha` once post-upgrade runs succeed, or rolls the
-    checkout and `origin/master` back after 2 consecutive failures.
+    `apps/brain/src/brain/{config,sandbox,traces,evals}.py`, `apps/brain/src/brain/defaults/pi/board.ts`,
+    `apps/voice/src/jarvis_voice/{config,voice_gates}.py`, `src/jarvis/{cli,supervisor}.py`, `scripts/bench_*.py`), or
+    modifying/deleting existing files under `tests/`, pin `approved_sha` on `origin/brain/<task_id>` and require owner
+    approval before applying. Verified upgrades record `last_good_sha` in `system_state`, update the checkout (`uv sync`
+    and `cargo build --release` when Rust changed), flush speech, and shut down cleanly for `launchd` respawn; probation
+    clears `last_good_sha` once post-upgrade runs succeed, or rolls back after 2 consecutive failures.
   - **Loud divergence handling:** `_apply_self_upgrade` refuses a diverged checkout (blocker outbox) and refuses a
     candidate that is not a descendant of the current `origin/master`; a rejected final `git push origin HEAD:master`
     is logged as an error and queued as a `report` outbox item instead of being silently ignored. `--force` is never
@@ -176,10 +175,11 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`), plus `POST /v1/ask` (`{"input": "..."}` -> `{"spoken": "..."}`)
   for the iPhone Shortcut over Tailscale; the operator routes `/v1/status`, `/v1/board`, `GET|POST /v1/tasks`,
   `/v1/tasks/{id}/research`, `/v1/mode`, `/v1/skills/improve`, `/v1/traces`, `/v1/traces/diff`,
-  `/v1/traces/{id}`, `/v1/restart`; the dashboard's telemetry; and the thin
-  client's `/ws` + `/client.py` (registered from `jarvis_voice/remote_audio.py`). `/health` is the only route
-  without a token. Any route also accepts `?token=` or `X-Jarvis-Token`. The contract is `schemas/openapi.json`;
-  keep it in step.
+  `/v1/traces/{id}`, `/v1/restart`; `/v1/pair*`, `/v1/devices*`, `/v1/telemetry/*`; and the remote client's `/ws`,
+  `/client.py`, `/Jarvis.app.zip`, `/install-app` (`jarvis_voice/remote_audio.py`). Only `/health` and the client
+  bootstrap (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) are open without
+  a token; `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` require the owner token alone. Any authenticated
+  route accepts `Authorization: Bearer`, `?token=`, or `X-Jarvis-Token` (`schemas/openapi.json`).
 - **Fullscreen dashboard (`apps/dashboard` + `telemetry.py`):**
   - `TelemetryHub` is a dependency-free in-memory ring buffer (2000 events) that fans out transient events
     (`http.inbound`, `run.status`, `approval.*`, `reconciler.phase`, `board.rpc`, `pi.progress`,
