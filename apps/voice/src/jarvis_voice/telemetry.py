@@ -58,8 +58,13 @@ def emit(kind: str, **fields: Any) -> None:
         return
     try:
         # `ts` is the voice's own clock, which is the same Mac as the hub's; the hub keeps its own too.
-        turn = (_current or "") if kind == "voice.level" else current_turn()
-        _emit(kind, turn_id=turn, trace_id=current_trace(), ts=time.time(), **_clip(fields))
+        if kind == "voice.level":
+            turn = _current or ""
+            trace = _current_trace or ""
+        else:
+            turn = current_turn()
+            trace = current_trace()
+        _emit(kind, turn_id=turn, trace_id=trace, ts=time.time(), **_clip(fields))
     except Exception as exc:  # noqa: BLE001 - telemetry is best effort by definition
         logger.debug(f"[Telemetry] dropped {kind}: {exc!r}")
 

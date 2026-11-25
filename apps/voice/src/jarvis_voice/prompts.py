@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from jarvis_core.projects import list_projects, projects_dir
 from jarvis_voice.sessions import CodingSessionAdapter
-from jarvis_voice.t3_adapter import list_projects, projects_dir
 
 if TYPE_CHECKING:
     from jarvis_voice.orchestrator import AgentOrchestrator
@@ -303,9 +303,8 @@ def agent_roster(orchestrator: AgentOrchestrator) -> str:
 def project_list(orchestrator: AgentOrchestrator) -> str:
     """The user's project folders, for agents that can work in one, so a spoken name maps to a folder."""
     coders = [a.config.id for a in orchestrator.adapters.values() if isinstance(a, CodingSessionAdapter)]
-    t3 = orchestrator.t3
     default = orchestrator.default_agent_id
-    opener = t3.config.id if t3 else default if default in coders else coders[0] if coders else None
+    opener = default if default in coders else coders[0] if coders else None
     if opener is None:
         return ""
     others = [c for c in coders if c != opener]

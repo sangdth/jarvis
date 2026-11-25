@@ -366,9 +366,10 @@ pub struct PendingPair {
 impl PendingPair {
     /// `123 456`, the way `jarvis pair` prints it.
     pub fn spaced(&self) -> String {
-        match self.code.len() {
-            6 => format!("{} {}", &self.code[..3], &self.code[3..]),
-            _ => self.code.clone(),
+        if self.code.is_ascii() && self.code.len() == 6 {
+            format!("{} {}", &self.code[..3], &self.code[3..])
+        } else {
+            self.code.clone()
         }
     }
 }
@@ -514,5 +515,21 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(ob.detail_str("approved_sha").as_deref(), Some("deadbeef"));
+    }
+
+    #[test]
+    fn pending_pair_spaced_handles_non_ascii_safely() {
+        let ascii = PendingPair {
+            code: "123456".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(ascii.spaced(), "123 456");
+
+        let non_ascii = PendingPair {
+            code: "ééé".to_string(), // 6 bytes, 3 chars; byte index 3 is mid-char
+            ..Default::default()
+        };
+        assert_eq!(non_ascii.code.len(), 6);
+        assert_eq!(non_ascii.spaced(), "ééé");
     }
 }

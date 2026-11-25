@@ -11,6 +11,7 @@ gitignored so they are never committed.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -125,6 +126,30 @@ def env_file_value(name: str, *paths: Path) -> str:
             if sep and key.strip() == name and value.strip():
                 return value.strip().strip('"').strip("'")
     return ""
+
+
+def set_env(name: str, value: str, env: Path = JARVIS_HOME / ".env") -> None:
+    """Set NAME=value in .env atomically (0600): replace its line, or add one at the end."""
+    text = env.read_text(encoding="utf-8") if env.is_file() else ""
+    line = re.search(rf"^{re.escape(name)}=(.*)$", text, re.MULTILINE)
+    entry = f"{name}={value}"
+    if line:
+        new_text = text[: line.start()] + entry + text[line.end() :]
+    elif text:
+        new_text = text.rstrip("\n") + f"\n{entry}\n"
+    else:
+        new_text = f"{entry}\n"
+    env.parent.mkdir(parents=True, exist_ok=True)
+    tmp = env.with_name(f"{env.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(new_text)
+        os.chmod(tmp, 0o600)
+        tmp.replace(env)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def brain_token(home: Path | None = None) -> str:

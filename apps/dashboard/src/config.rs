@@ -1,7 +1,7 @@
 //! Runtime configuration: paths, loopback endpoint, and bearer token discovery.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -25,6 +25,12 @@ impl Config {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .map(|v| expand_path(v.trim()))
+            .or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+                    .and_then(|p| workspace_root_from(&p))
+            })
             .unwrap_or_else(|| expand_path("~/.config/jarvis"));
         let home = brain_home(&jarvis_home);
 
@@ -47,11 +53,7 @@ impl Config {
             .or_else(|| lookup("PORT"))
             .and_then(|v| v.parse::<u16>().ok())
             .unwrap_or(8643);
-        let api_key = lookup("BRAIN_API_KEY")
-            .or_else(|| lookup("SUPERBRAIN_API_KEY")) // the name before the rename
-            .or_else(|| read_token(&jarvis_home.join("brain_token")))
-            .or_else(|| read_token(&home.join("brain_token")))
-            .unwrap_or_default();
+        let api_key = resolve_api_key(lookup, &jarvis_home, &home);
 
         Self {
             db_path: home.join("state.db"),
@@ -98,9 +100,38 @@ impl Config {
     }
 }
 
+/// Nearest ancestor directory containing a uv workspace `pyproject.toml`.
+pub fn workspace_root_from(start: &Path) -> Option<PathBuf> {
+    for dir in start.ancestors() {
+        let pyproject = dir.join("pyproject.toml");
+        if !pyproject.is_file() {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&pyproject) {
+            if text.contains("[tool.uv.workspace]") {
+                return Some(dir.to_path_buf());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_api_key(
+    lookup: impl Fn(&str) -> Option<String>,
+    jarvis_home: &Path,
+    home: &Path,
+) -> String {
+    lookup("JARVIS_TOKEN")
+        .or_else(|| lookup("BRAIN_API_KEY"))
+        .or_else(|| lookup("SUPERBRAIN_API_KEY")) // the name before the rename
+        .or_else(|| read_token(&jarvis_home.join("brain_token")))
+        .or_else(|| read_token(&home.join("brain_token")))
+        .unwrap_or_default()
+}
+
 /// The brain's state folder: `BRAIN_HOME` (or the pre-rename `SUPERBRAIN_HOME`), else `JARVIS_HOME/brain`,
 /// else — for an installed Jarvis only — the pre-merge `~/.config/superbrain` until `jarvis init` moves it.
-pub fn brain_home(jarvis_home: &std::path::Path) -> PathBuf {
+pub fn brain_home(jarvis_home: &Path) -> PathBuf {
     let explicit = std::env::var("BRAIN_HOME")
         .ok()
         .or_else(|| std::env::var("SUPERBRAIN_HOME").ok())
@@ -192,5 +223,56 @@ mod tests {
         std::env::set_var("HOME", "/tmp/sb-home-test");
         assert_eq!(expand_path("~/x/y"), PathBuf::from("/tmp/sb-home-test/x/y"));
         assert_eq!(expand_path("/abs/path"), PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn workspace_root_from_finds_uv_workspace_ancestor() {
+        let base = std::env::temp_dir().join(format!(
+            "jarvis-dashboard-ws-{}",
+            std::process::id()
+        ));
+        let repo = base.join("repo");
+        let sub_pkg = repo.join("apps").join("dashboard");
+        let exe = repo.join("target").join("release").join("jarvis-dashboard");
+        let outside = base.join("other").join("bin").join("app");
+        std::fs::create_dir_all(&sub_pkg).unwrap();
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(repo.join("pyproject.toml"), "[project]\nname = \"jarvis\"\n[tool.uv.workspace]\n").unwrap();
+        // Non-workspace pyproject.toml inside a sub-package must be skipped.
+        std::fs::write(sub_pkg.join("pyproject.toml"), "[project]\nname = \"sub\"\n").unwrap();
+
+        assert_eq!(workspace_root_from(&exe), Some(repo.clone()));
+        assert_eq!(workspace_root_from(&sub_pkg.join("src")), Some(repo));
+        assert_eq!(workspace_root_from(&outside), None);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn jarvis_token_takes_precedence_over_brain_api_key() {
+        let base = std::env::temp_dir().join(format!(
+            "jarvis-dashboard-tok-{}",
+            std::process::id()
+        ));
+        let home = base.join("brain");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(base.join("brain_token"), "from-file\n").unwrap();
+
+        let mut env_map = HashMap::new();
+        env_map.insert("BRAIN_API_KEY".to_string(), "from-brain-key".to_string());
+        env_map.insert("JARVIS_TOKEN".to_string(), "from-jarvis-token".to_string());
+        let lookup = |k: &str| env_map.get(k).cloned();
+        assert_eq!(resolve_api_key(lookup, &base, &home), "from-jarvis-token");
+
+        env_map.remove("JARVIS_TOKEN");
+        let lookup = |k: &str| env_map.get(k).cloned();
+        assert_eq!(resolve_api_key(lookup, &base, &home), "from-brain-key");
+
+        env_map.clear();
+        let lookup = |k: &str| env_map.get(k).cloned();
+        assert_eq!(resolve_api_key(lookup, &base, &home), "from-file");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

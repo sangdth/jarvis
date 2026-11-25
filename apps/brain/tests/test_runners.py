@@ -434,3 +434,117 @@ async def test_your_dashboard_routes_to_jarvis_board_while_generic_dashboard_sta
         await orch.close()
         await reconciler.stop()
         db.close()
+
+
+async def test_claude_and_opencode_runners_interrupt_and_cancel_kill_subprocesses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import os
+
+    from brain.runners.claude import ClaudeRunner
+    from brain.runners.opencode import OpenCodeRunner
+
+    pid_file = tmp_path / "child.pid"
+    slow_cli = tmp_path / "fake_slow_cli.py"
+    slow_cli.write_text(
+        f"""#!/usr/bin/env python3
+import os, pathlib, time
+pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding="utf-8")
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    slow_cli.chmod(slow_cli.stat().st_mode | stat.S_IEXEC)
+    cfg = _cfg(tmp_path)
+
+    async def emit(_event: dict[str, Any]) -> None:
+        return None
+
+    def pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    for runner_cls, bin_name in ((ClaudeRunner, "claude"), (OpenCodeRunner, "opencode")):
+        monkeypatch.setattr(
+            f"brain.runners.{bin_name}.shutil.which",
+            lambda name, target=bin_name: str(slow_cli) if name == target else None,
+        )
+        runner = runner_cls(cfg)
+
+        # 1. `interrupt(run_id)` kills the active subprocess.
+        pid_file.unlink(missing_ok=True)
+        task = asyncio.create_task(
+            runner.run(RunRequest(run_id="r-int", prompt="sleep", cwd=tmp_path), emit)
+        )
+        for _ in range(200):
+            if pid_file.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert pid_file.exists()
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+        assert await runner.interrupt("r-int") is True
+        res = await asyncio.wait_for(task, timeout=5.0)
+        assert res.outcome == "errored"
+        assert not pid_alive(pid)
+
+        # 2. Task cancellation kills the active subprocess in `finally:`.
+        pid_file.unlink(missing_ok=True)
+        task2 = asyncio.create_task(
+            runner.run(RunRequest(run_id="r-cancel", prompt="sleep", cwd=tmp_path), emit)
+        )
+        for _ in range(200):
+            if pid_file.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert pid_file.exists()
+        pid2 = int(pid_file.read_text(encoding="utf-8").strip())
+        task2.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task2
+        assert not pid_alive(pid2)
+        assert "r-cancel" not in runner._active
+
+
+async def test_queue_task_passes_run_key_and_adapted_approval_cb(tmp_path: Path) -> None:
+    from brain.orchestrator import BrainOrchestrator
+
+    cfg = _cfg(tmp_path)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    orch = BrainOrchestrator(cfg, db, reconciler, runners={})
+    captured: dict[str, Any] = {}
+
+    async def fake_execute(task: Any, *, run_key: str | None = None, approval_cb: Any = None) -> Any:
+        captured["run_key"] = run_key
+        captured["approval_result"] = await approval_cb("Approve?", "", None) if approval_cb else None
+        return task
+
+    reconciler.execute_claimed_task = fake_execute  # type: ignore[method-assign]
+
+    async def text_approval_cb(summary: str, details: str, session_id: str | None) -> str | None:
+        return "yes, go ahead"
+
+    try:
+        res = await orch._queue_task(
+            {
+                "kind": "problem",
+                "repo": "jarvis",
+                "title": "Fix bug",
+                "spec": "Fix it",
+                "verify_cmd": "uv run pytest",
+            },
+            "Fix jarvis bug",
+            run_id="run-abc123",
+            approval_cb=text_approval_cb,
+        )
+        assert res.outcome == "pushed"
+        assert captured["run_key"] == "run-abc123"
+        assert captured["approval_result"] is True
+    finally:
+        await orch.close()
+        await reconciler.stop()
+        db.close()

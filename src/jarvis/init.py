@@ -19,6 +19,7 @@ from jarvis_core.home import (
     brain_home,
     brain_token,
     migrate_legacy_brain_home,
+    set_env,
     shared_dir,
 )
 from jarvis_core.soul import DEFAULT_PROJECTS_DIR, SOUL_PATH, render_soul
@@ -90,17 +91,6 @@ def ask_api_keys(env: Path = ENV_PATH) -> None:
         if prefix and not key.startswith(prefix):
             print(f"Note: {name} usually starts with {prefix}; saved it anyway.")
         set_env(name, key, env)
-    env.chmod(0o600)  # .env holds API keys
-
-
-def set_env(name: str, value: str, env: Path = ENV_PATH) -> None:
-    """Set NAME=value in .env: replace its line, or add one at the end."""
-    text = env.read_text(encoding="utf-8") if env.is_file() else ""
-    line = re.search(rf"^{name}=(.*)$", text, re.MULTILINE)
-    entry = f"{name}={value}"
-    text = text[: line.start()] + entry + text[line.end():] if line else text.rstrip("\n") + f"\n{entry}\n"
-    env.parent.mkdir(parents=True, exist_ok=True)
-    env.write_text(text, encoding="utf-8")
     env.chmod(0o600)  # .env holds API keys
 
 

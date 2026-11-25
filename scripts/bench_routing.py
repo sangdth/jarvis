@@ -15,13 +15,13 @@ import time
 
 import httpx
 
+from jarvis_core.projects import list_projects, projects_dir
 from jarvis_core.soul import load_soul
 from jarvis_voice.agent_tools import agent_tools
 from jarvis_voice.config import settings
 from jarvis_voice.orchestrator import AgentOrchestrator
 from jarvis_voice.prompts import system_prompt
 from jarvis_voice.state import JarvisState
-from jarvis_voice.t3_adapter import list_projects, projects_dir
 
 MIN_ACCURACY = 0.95  # 91% on 2026-11-05 (DeepSeek V4 Pro, thinking on): below the bar
 

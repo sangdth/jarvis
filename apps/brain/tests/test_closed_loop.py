@@ -13,7 +13,6 @@ from brain.reconciler import (
     harness_spec_hash,
 )
 from brain.telemetry import TelemetryHub
-from brain.voice_memory import curate_voice_memory
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -202,42 +201,100 @@ async def test_the_first_t3_message_carries_the_standing_memory(tmp_path: Path) 
     assert sent_text.index("Standing context") < sent_text.index("Sync with the master branch")
 
 
-def test_curation_never_crosses_namespaces(tmp_path: Path) -> None:
-    class FakeClient:
-        def __init__(self) -> None:
-            self.rows = {
-                "m1": {"id": "m1", "user_id": "sang", "memory": "the router dedupes by surface"},
-                "m2": {"id": "m2", "user_id": "speaker:david", "memory": "David likes Postgres"},
-            }
-            self.deleted: list[str] = []
+async def test_approving_falsified_harness_rollback_resets_repo_and_does_not_requeue_task(
+    tmp_path: Path,
+) -> None:
+    import subprocess
 
-        def get(self, memory_id: str):
-            return {"results": [self.rows[memory_id]]}
+    from aiohttp.test_utils import TestClient, TestServer
 
-        def delete(self, memory_id: str) -> None:
-            self.deleted.append(memory_id)
+    from brain.server import BrainServer
 
-    client = FakeClient()
-    promoted = curate_voice_memory(client, {"op": "promote", "user_id": "sang", "memory_id": "m1"})
-    assert promoted["text"] == "the router dedupes by surface"
-    with_as_owner = {"op": "promote", "user_id": "sang", "memory_id": "m2"}
-    try:
-        curate_voice_memory(client, with_as_owner)
-    except ValueError as exc:
-        assert "another namespace" in str(exc)
-    else:
-        raise AssertionError("a guest's memory was promoted into the owner's index")
-    try:
-        curate_voice_memory(client, {"op": "delete", "user_id": "sang", "memory_id": "m2"})
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("a delete crossed namespaces")
-    curate_voice_memory(client, {"op": "delete", "user_id": "speaker:david", "memory_id": "m2"})
-    assert client.deleted == ["m2"]
-    try:
-        curate_voice_memory(None, {"op": "delete", "user_id": "sang", "memory_id": "m1"})
-    except ValueError as exc:
-        assert "not running" in str(exc)
-    else:
-        raise AssertionError("curation ran without the voice's client")
+    repo = tmp_path / "jarvis_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "master", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Tester"], check=True)
+    (repo / "app.txt").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "app.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "v1"], check=True, capture_output=True)
+    sha_v1 = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+    (repo / "app.txt").write_text("v2-bad\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "app.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "v2"], check=True, capture_output=True)
+    sha_v2 = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    # Reset back to v1 so `_apply_self_upgrade` applies v2 and records v1 as rollback_sha.
+    subprocess.run(["git", "-C", str(repo), "reset", "--hard", sha_v1], check=True, capture_output=True)
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        self_repo_dir=repo,
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        sandbox_enabled=False,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    task = db.upsert_task(
+        kind="problem",
+        repo="jarvis",
+        title="Bad harness fix",
+        spec="widen the router prompt",
+        verify_cmd="true",
+        dedupe_key="harness:brain_router",
+        ready=True,
+    )
+    db.claim_next_task(task_id=task.id)
+    db.finish_attempt(task_id=task.id, role="builder", summary="applied", outcome="pushed", git_sha=sha_v2)
+    assert db.get_task(task.id).status == "done"
+
+    db.record_harness_proposal(
+        surface="brain_router",
+        spec_hash=harness_spec_hash("widen the router prompt"),
+        title="Bad harness fix",
+        spec="widen the router prompt",
+        predicted_fix="fewer wrong projects",
+        at_risk_regressions="slower routing",
+        baseline_fail_rate=0.2,
+        baseline_runs=10,
+        task_id=task.id,
+    )
+    rec = Reconciler(db, cfg, hub=TelemetryHub())
+    assert await rec._apply_self_upgrade(repo, sha_v2, task.id)
+    rec.restart_pending = False
+    assert subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip() == sha_v2
+
+    pushed = db.pushed_harness_proposals()[0]
+    assert pushed.rollback_sha == sha_v1
+
+    for index in range(HARNESS_PREDICTION_RUNS):
+        db.upsert_trace_run(
+            _run_row(
+                f"{index}" * 32,
+                surface="brain_router",
+                created_at=pushed.applied_at or "2999-01-01T00:00:00Z",
+                failed=True,
+            )
+        )
+    await rec._check_harness_predictions()
+    approvals = [row for row in db.list_outbox() if row.kind == "approval_request"]
+    assert len(approvals) == 1
+    assert approvals[0].task_id is None  # must NOT re-queue the broken task on approval
+
+    server = BrainServer(db, rec, cfg)
+    headers = {"Authorization": "Bearer secret-token"}
+    async with TestClient(TestServer(server.app)) as client:
+        resp = await client.post(
+            f"/v1/outbox/{approvals[0].id}/resolve", json={"approved": True}, headers=headers
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["rolled_back"] is True
+
+    assert subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip() == sha_v1
+    assert rec.restart_pending is True
+    assert db.get_task(task.id).status == "done"
+    assert db.list_harness_proposals()[0].outcome == "rolled_back"
+    await rec.stop()
+    db.close()

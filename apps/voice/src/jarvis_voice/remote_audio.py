@@ -18,7 +18,9 @@ one host, one port and one token.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -489,6 +491,7 @@ trap 'rm -rf "$TMP"' EXIT
 echo "Downloading {MAC_APP_NAME} from {base}..."
 curl -fsSL '{base}/Jarvis.app.zip' -o "$TMP/app.zip"
 ditto -xk "$TMP/app.zip" "$TMP/out"
+codesign --verify --deep --strict "$TMP/out/{MAC_APP_NAME}"
 mkdir -p "$TARGET"
 rm -rf "$TARGET/{MAC_APP_NAME}"
 ditto "$TMP/out/{MAC_APP_NAME}" "$TARGET/{MAC_APP_NAME}"
@@ -557,10 +560,45 @@ echo "Installed $TARGET/{MAC_APP_NAME}; it points at {base}."
         return text.replace(CLIENT_SERVER_PLACEHOLDER, f'DEFAULT_SERVER = "http://{host}:{self.port}"')
 
     def public_host(self, override: str | None = None) -> str:
-        if override and override not in ("0.0.0.0", "::", "[::]"):
-            return override
-        hosts = advertised_hosts()
-        return hosts[0] if hosts else "127.0.0.1"
+        host = _sanitize_host(override)
+        if host is not None:
+            return host
+        for candidate in advertised_hosts():
+            sanitized = _sanitize_host(candidate)
+            if sanitized is not None:
+                return sanitized
+        return "127.0.0.1"
+
+_HOSTNAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?")
+
+
+def _sanitize_host(raw: str | None) -> str | None:
+    """Validate an IP or hostname before interpolating into served scripts; bracket IPv6 literals."""
+    if not raw:
+        return None
+    candidate = raw.strip()
+    if not candidate or candidate in ("0.0.0.0", "::", "[::]"):
+        return None
+    if any(ch in candidate for ch in ("'", '"', " ", "\t", "\r", "\n")) or any(
+        ord(ch) < 32 or ord(ch) == 127 for ch in candidate
+    ):
+        return None
+    try:
+        addr = ipaddress.ip_address(candidate.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        if addr.is_unspecified:
+            return None
+        return f"[{addr}]" if addr.version == 6 else str(addr)
+    if (
+        ".." not in candidate
+        and _HOSTNAME_RE.fullmatch(candidate)
+        and all(not label.startswith("-") and not label.endswith("-") for label in candidate.split("."))
+    ):
+        return candidate
+    return None
+
 
 def make_transport(
     *, port: int | None = None, token: str | None = None, devices: DeviceStore | None = None

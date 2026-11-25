@@ -67,7 +67,7 @@ speech check dropping the sentence, not the conversation model. Paths in the tab
 | Reacts, but the reply is wrong       | `prompts.py` `JARVIS_EXECUTIVE_SYSTEM_PROMPT`, `languages.json` |
 | Says the user's name too often       | `prompts.py` rule 9, `soul.py` `render_soul`, user's `SOUL.md`  |
 | Lists sessions wrong, no titles      | `agent_tools.py` `list_sessions`, `prompts.py` rule 10          |
-| Says something wrong about an agent  | `*_adapter.py` `_surface` call sites                            |
+| Says something wrong about an agent  | `brain_client.py` / `pi_adapter.py` `_surface` call sites       |
 | Retold agent turn is long or odd     | `prompts.py` `AGENT_REPORT_PROMPT`, `state.py` `_retell`        |
 | Wrong agent gets a task              | `agents.json` `role`, `prompts.py` `agent_roster`               |
 | Brain runs nothing overnight         | `apps/brain/src/brain/reconciler.py`, `DEFAULT_MODE`    |
@@ -114,14 +114,14 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
 - **Routing changes need the routing benchmark.** An edit to an agent `role`, `agent_roster` or the system
   prompt runs `scripts/bench_routing.py` before and after; it exits 1 below 95%.
 - **One gateway, two kinds of credential.** Every route except `/health` and the client bootstrap (`/client.py`,
-  `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) needs either the shared token
-  (`BRAIN_API_KEY` or `brain_token`, for the CLI and scripts; `REMOTE_TOKEN` overrides it on `/ws` when set) or a
-  **paired device's secret**. `jarvis pair` mints a single-use 6-digit code (5 minutes, one code at a time, five wrong
-  guesses in a minute and the code is dropped); the device trades it for its own secret via `POST /v1/pair` and keeps it
-  at `~/.config/jarvis-remote/credentials.json` (0600, sent as `Authorization: Bearer`, never in a URL).
-  `JARVIS_HOME/devices.json` (0600, one `DeviceStore` shared by the server and the relay) holds a SHA-256 per device,
-  never the secret; `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` are the owner's alone, so a leaked
-  laptop is cut off via `jarvis devices revoke <id>` without disturbing anyone else or rotating the shared token
+  `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) needs the owner token
+  (`BRAIN_API_KEY` or `brain_token`, for the CLI and scripts; `REMOTE_TOKEN` overrides it on `/ws` when set). A
+  **paired device's secret** works only on `/ws` and `GET /v1/status`. `jarvis pair` mints a single-use 6-digit code
+  (5 minutes, one code at a time, five wrong guesses in a minute and the code is dropped); the device trades it for its
+  own secret via `POST /v1/pair` and keeps it at `~/.config/jarvis-remote/credentials.json` (0600, sent as
+  `Authorization: Bearer`, never in a URL). `JARVIS_HOME/devices.json` (0600, one `DeviceStore` shared by the server
+  and the relay) holds a SHA-256 per device, never the secret; a leaked laptop is cut off via
+  `jarvis devices revoke <id>` without disturbing anyone else or rotating the shared token
   (`jarvis_core/devices.py`, `server.py`, `remote_audio.py`).
 - **Thin layer, one orchestrator.** Jarvis never does an agent's job: no email, calendar or coding logic here.
   The voice routes every task that needs doing to `brain`; the brain decides which runner (one-shot `pi`, a T3
@@ -140,14 +140,10 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   has one agent, `brain`; the voice never talks to a coding client directly.
 - **The brain decides its own approvals.** Its planner defers to the owner for anything protected (`outbox`
   `approval_request`, read out by the voice and answered with `answer_agent`).
-- **Every coding client shares one session contract; T3 Code is the first-class one.** T3 Code, Claude Code,
-  OpenCode and Pi extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`,
-  `session_id`); T3's sessions are its threads. A new client implements those, with no case of its own in
-  `main.py`, `agent_tools.py` or `prompts.py`. What only T3 does (its projects, `jarvis connect` with no agent,
-  continuing its newest thread on the first task) is reached through `orchestrator.t3` when T3 is enabled,
-  never by checking for a method. A switch never happens mid-turn (`busy`). The shipped roster's one agent,
-  `brain`, is a coding-session adapter too: its sessions are T3 threads, listed and picked through
-  `GET /v1/sessions` and `POST /v1/connect`.
+- **Every coding client shares one session contract; T3 Code is the first-class one.** `BrainClientAdapter` and
+  `PiAdapter` extend `CodingSessionAdapter` (`sessions.py`: `list_sessions`, `pick_session`, `new_session`,
+  `session_id`); `brain` lists and picks T3, Claude Code, and OpenCode sessions through `GET /v1/sessions` and
+  `POST /v1/connect`. A switch never happens mid-turn (`busy`).
   By voice, `send_agent_task` takes `session` (`"new"`, or words matched against titles by `match_sessions`) and
   `project` (a listed folder: its newest session that is not running, or a new one) (`agent_tools.py`
   `switch_session`); a connected session ignores both. Results name the session the work went to.
@@ -174,9 +170,9 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   project; Jarvis starts no other thread (`pinned`), and the system prompt names it (`connected_thread`).
   T3 gives project scripts only folders (`T3CODE_PROJECT_ROOT`,
   `T3CODE_WORKTREE_PATH`), no thread id: a worktree names its thread, a project root takes the thread viewed last.
-- **A connected session is the default agent.** `jarvis connect claude|opencode|pi` lists that client's sessions
+- **A connected session is the default agent.** `jarvis connect [t3|claude|opencode|pi]` lists that client's sessions
   (every folder, newest first) and `pick_session(connected=True)`; `default_agent_id` returns it for the run.
-  Claude Code runs one SDK process per session, started with `resume=<id>`, and resumes the same id after a crash.
+  T3, Claude Code, and OpenCode go through `BrainClientAdapter` (`brain`); Pi goes through `PiAdapter`.
 - **Pi is reached only through an open window.** `jarvis connect pi` installs `defaults/pi/jarvis.ts` into
   `~/.pi/agent/extensions/`; it serves a socket per Pi process in `~/.config/jarvis/pi` (mode 0700: a connection can
   make Pi run commands). Jarvis sends prompts and stops there and never answers a Pi dialog; it says one is waiting.
@@ -234,8 +230,7 @@ Debug first, then edit: read the app's terminal log (T3 Code keeps it in `~/.t3/
   a system note (`JarvisState.notify`) so no restart is needed. `JarvisState.meeting` is the one source of truth —
   the gate, the STT and the comment tools read it live; `jarvis meeting` at startup is just its initial value.
 - **Watcher strings start with the verb** (`asks: ...`, `needs approval: ...`); `JarvisState` adds the agent name.
-- **Agent ids are exact** (`brain` in the shipped roster; `claude`, `opencode`, `t3-code` exist only when an
-  `agents.json` enables them), matched as written. A bad `DEFAULT_CODING_AGENT` stops Jarvis at startup.
+- **Agent ids are exact** (`brain` in the shipped roster; `pi` is added by `jarvis connect pi`), matched as written. A bad `DEFAULT_CODING_AGENT` stops Jarvis at startup.
 - **Model settings, one job each:** `EXECUTIVE_MODEL` talks, retells turns and writes the waiting lines, thinking always on;
   `LAYA_MODEL` (Laya's `jarvis-intent`) decides whether a sentence is meant for Jarvis, with `FILTER_MODEL` (an
   OpenRouter decision model on `/api/alpha/decisions`) as its fallback; `EXTRACTION_MODEL` picks memory facts, a

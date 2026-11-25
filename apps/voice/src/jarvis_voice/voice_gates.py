@@ -339,7 +339,8 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                     logger.info(f"[Speaker] {heard} {role}: {frame.text!r}{saved}")
                     telemetry.emit(
                         "voice.stt", text=frame.text, score=score, threshold=self._threshold,
-                        passed=True, role=role, profile_id=profile_id, ms=ms, clip=clip.name if clip else "",
+                        passed=True, role=role, profile_id=profile_id, room=(not owner), ms=ms,
+                        clip=clip.name if clip else "",
                     )
                     frame = replace(frame, user_id=role)
                 else:
@@ -350,7 +351,7 @@ class SpeakerVerifiedWhisperSTT(SegmentedSTTService):
                     telemetry.emit(
                         "voice.stt", text=frame.text, score=score, threshold=self._threshold,
                         passed=passed, role="owner" if owner else (profile.name if known and profile else "guest"),
-                        profile_id=profile_id, ms=ms, clip=clip.name if clip else "",
+                        profile_id=profile_id, room=(not owner), ms=ms, clip=clip.name if clip else "",
                     )
                     if not passed:
                         continue

@@ -18,8 +18,9 @@ from pathlib import Path
 
 import httpx
 
+from jarvis_core.home import brain_home
 from jarvis_voice.cleanup import TranscriptCleaner, keep_cleaned
-from jarvis_voice.config import JARVIS_HOME, settings
+from jarvis_voice.config import settings
 from jarvis_voice.system_prompts import build_retell_prompt, load_overrides
 from jarvis_voice.waiting_lines import WaitingLines
 
@@ -181,7 +182,7 @@ def harvested_cases(split: str) -> list[dict[str, str]]:
     splits = ["held_in"] if split == "held_in" else ["held_out"] if split == "held_out" else ["held_in", "held_out"]
     cases: list[dict[str, str]] = []
     for name in splits:
-        path = JARVIS_HOME / "evals" / name / "voice_prompts.jsonl"
+        path = brain_home() / "evals" / name / "voice_prompts.jsonl"
         if not path.is_file():
             continue
         for line in path.read_text(encoding="utf-8").splitlines():

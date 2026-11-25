@@ -75,9 +75,11 @@ def rollback(home_dir: Path, target: str) -> Path | None:
     return restored
 
 
-def laya_intent_ready(home_dir: Path, *, bookmark_cursor: int = 0) -> tuple[bool, str]:
+def laya_intent_ready(
+    home_dir: Path, *, bookmark_cursor: int = 0, feedback_path: Path | None = None
+) -> tuple[bool, str]:
     """Whether the speech-check corrections accumulated enough new material to retrain `laya-intent`."""
-    path = home_dir / "feedback" / "intent.jsonl"
+    path = feedback_path or (home_dir / "feedback" / "intent.jsonl")
     if not path.is_file():
         return False, "no feedback log yet"
     fresh = 0
@@ -85,7 +87,12 @@ def laya_intent_ready(home_dir: Path, *, bookmark_cursor: int = 0) -> tuple[bool
         for index, line in enumerate(handle):
             if index < bookmark_cursor:
                 continue
-            fresh += 1
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("correction_of"):
+                fresh += 1
     if fresh < LAYA_CORRECTIONS_MIN:
         return False, f"{fresh} new corrections, {LAYA_CORRECTIONS_MIN} needed"
     return True, f"{fresh} new corrections"

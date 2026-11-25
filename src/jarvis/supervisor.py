@@ -89,7 +89,6 @@ async def start_all(
                 # The voice's turn stages ride the same bus the dashboard already subscribes to, so `jarvis dashboard`
                 # shows what was heard, how it was checked, and what came back without reading a log file.
                 hub_emit=server.hub.emit,
-                on_memory=server.reconciler.attach_voice_memory,
             ),
             name="jarvis-voice",
         )

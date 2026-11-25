@@ -19,10 +19,10 @@ The checkout is the runtime. `jarvis` runs the brain and the voice in one proces
 network surface: the brain's API, dashboard telemetry, operator routes (`/v1/status`, `/v1/board`, `/v1/tasks`,
 `/v1/mode`, `/v1/traces`, `/v1/restart`), and remote audio (`/ws`, `/client.py`, `/Jarvis.app.zip`, `/install-app`).
 Unauthenticated routes are limited to `/health` and the client bootstrap (`/client.py`, `/Jarvis.app.zip`,
-`/install-app`, `POST /v1/pair/request`, `POST /v1/pair`). Every other route requires the owner token (`BRAIN_API_KEY`
-or `JARVIS_HOME/brain_token`; on `/ws`, `REMOTE_TOKEN` overrides the shared token when set) or a paired device's secret
-(`JARVIS_HOME/devices.json`), with `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` restricted to the owner
-token. One machine, one board, one SQLite writer, and one client at a time on the mic.
+`/install-app`, `POST /v1/pair/request`, `POST /v1/pair`). Paired device secrets (`JARVIS_HOME/devices.json`) work only
+on `GET /v1/status` and `/ws`. Every other route requires the owner token (`BRAIN_API_KEY` or `JARVIS_HOME/brain_token`;
+on `/ws`, `REMOTE_TOKEN` overrides the shared token when set). One machine, one board, one SQLite writer, and one client
+at a time on the mic.
 
 Each language keeps its native workspace (`uv`, `cargo`; `pnpm`/`go.work` when a client or service in another
 language arrives), so a new app is a folder and a workspace line. Cross-language contracts live in `schemas/`.
@@ -285,7 +285,7 @@ ignores `session` and `project`.
 | `meeting_notes.py`, `screen.py`             | Meeting comments (`meeting/<date>.md`), front-window capture  |
 | `agent_adapter.py`, `sessions.py`           | `BaseAgentAdapter`, `CodingSessionAdapter`                    |
 | `brain_client.py`, `orchestrator.py`        | `BrainClientAdapter` (shipped default), `AgentOrchestrator`   |
-| `{t3,claude,opencode,pi}_adapter.py`        | Optional direct coding adapters + `jarvis connect` helpers    |
+| `pi_adapter.py`                             | Open Pi window adapter (`jarvis connect pi`)                  |
 | `memory.py`, `llm.py`, `telemetry.py`       | Local Mem0 (`LastExchangeMemory`), `JarvisLLM`, stage events  |
 
 ### Brain (`apps/brain/src/brain/`)
@@ -299,7 +299,7 @@ ignores `session` and `project`.
 | `db.py`, `schema.sql`                       | SQLite WAL store (9 tables + `trace_fts` FTS5)                |
 | `sandbox.py`, `defaults/pi/board.ts`        | macOS Seatbelt profiles, Pi extension (`edit_and_run`, RPC)   |
 | `schedule.py`, `upgrade.py`                 | Cron/one-shot timers, divergence-safe git state helper        |
-| `memory.py`, `voice_memory.py`, `skills.py` | Curated `MEMORY.md`, Mem0 curation, skill lift + rollback     |
+| `memory.py`, `skills.py`                    | Curated `MEMORY.md`, repo notes, skill lift + rollback        |
 | `traces.py`, `telemetry.py`                 | `TraceSink`, friction detector, digest, `TelemetryHub`        |
 | `evals.py`, `pareto.py`, `weights.py`       | `held_in`/`held_out` harvest, Pareto selector, weight links   |
 

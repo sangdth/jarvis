@@ -22,6 +22,7 @@ from loguru import logger
 from brain.config import Settings
 from brain.db import BrainDB, TraceRunRow
 from brain.traces import scrub_text
+from jarvis_core.home import JARVIS_HOME
 
 SUITES = ("intent", "brain_route", "voice_prompts")
 HELD_OUT_EVERY = 5  # one case in five, sealed
@@ -75,14 +76,20 @@ def append_case(home_dir: Path, suite: str, case: dict[str, Any]) -> bool:
     return True
 
 
-def harvest_eval_cases(db: BrainDB, cfg: Settings) -> dict[str, int]:
+def harvest_eval_cases(
+    db: BrainDB, cfg: Settings, *, feedback_path: Path | None = None
+) -> dict[str, int]:
     """Adds whatever new evidence the traces and the feedback log hold; returns the count added per suite."""
     routes, prompts = _harvest_traces(db, cfg)
-    return {"intent": _harvest_intent(cfg), "brain_route": routes, "voice_prompts": prompts}
+    return {
+        "intent": _harvest_intent(cfg, feedback_path=feedback_path),
+        "brain_route": routes,
+        "voice_prompts": prompts,
+    }
 
 
-def _harvest_intent(cfg: Settings) -> int:
-    path = cfg.home_dir / "feedback" / "intent.jsonl"
+def _harvest_intent(cfg: Settings, *, feedback_path: Path | None = None) -> int:
+    path = feedback_path if feedback_path is not None else (JARVIS_HOME / "feedback" / "intent.jsonl")
     if not path.is_file():
         return 0
     decisions: dict[str, str] = {}
@@ -105,7 +112,9 @@ def _harvest_intent(cfg: Settings) -> int:
     for record in corrections:
         text = decisions.get(str(record.get("correction_of")))
         # `label` is what it was; `not_label` is what it was not, and only ever the opposite of a mute.
-        label = record.get("label") or {"unmute": "mute", "mute": "unmute"}.get(str(record.get("not_label")))
+        label = record.get("label") or {"unmute": "MUTE", "mute": "UNMUTE"}.get(
+            str(record.get("not_label") or "").lower()
+        )
         if not text or not label:
             continue
         added += append_case(

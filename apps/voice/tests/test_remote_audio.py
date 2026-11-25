@@ -317,6 +317,38 @@ class TestRelayServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"ws://{self.transport.public_host()}:{self.port}/ws", self.transport.client_script("0.0.0.0"))
         self.assertIn(f"ws://192.168.1.20:{self.port}/ws", self.transport.client_script("192.168.1.20"))
 
+    def test_public_host_rejects_injection_and_brackets_ipv6(self) -> None:
+        with mock.patch.object(remote_audio, "advertised_hosts", return_value=["mac-mini.local"]):
+            for bad in (
+                "evil.com' ; id ; '",
+                'evil"\nimport os',
+                "bad host",
+                "a..b.local",
+                "-leading.local",
+                "trailing-.local",
+                "trailing.local-",
+                ".dot.local",
+                "dot.local.",
+                "0.0.0.0",
+                "::",
+                "[::]",
+                "",
+            ):
+                with self.subTest(bad=bad):
+                    self.assertEqual(self.transport.public_host(bad), "mac-mini.local")
+                    self.assertNotIn(bad.strip() or "evil", self.transport.install_script(bad)) if bad.strip() else None
+
+            self.assertEqual(self.transport.public_host("mac-mini.local"), "mac-mini.local")
+            self.assertEqual(self.transport.public_host("192.168.1.20"), "192.168.1.20")
+            self.assertEqual(self.transport.public_host("fd7a:115c:a1e0::1"), "[fd7a:115c:a1e0::1]")
+            self.assertEqual(self.transport.public_host("[fd7a:115c:a1e0::1]"), "[fd7a:115c:a1e0::1]")
+
+        with mock.patch.object(remote_audio, "advertised_hosts", return_value=["fd7a:115c:a1e0::2"]):
+            self.assertEqual(self.transport.public_host("evil.com' ; id ; '"), "[fd7a:115c:a1e0::2]")
+
+        with mock.patch.object(remote_audio, "advertised_hosts", return_value=[]):
+            self.assertEqual(self.transport.public_host(None), "127.0.0.1")
+
     def _fetch(self, path: str) -> str:
         import urllib.request
 
@@ -539,6 +571,7 @@ class TestMacApp(unittest.IsolatedAsyncioTestCase):
         self.assertIn("jarvis-remote/server", body)  # the server URL only
         self.assertNotIn("credentials.json", body)  # the pairing secret is the app's alone
         self.assertNotIn("token", body)
+        self.assertIn("codesign --verify --deep --strict", body)
         self.assertIn("xattr -dr com.apple.quarantine", body)  # a curl install is not quarantined, a download is
 
     async def test_the_zip_is_served_when_built_and_explained_when_not(self) -> None:

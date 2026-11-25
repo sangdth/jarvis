@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 import numpy as np
 
-from jarvis_voice.enroll import suggest_threshold
 from jarvis_voice.speaker import (
     EPHEMERAL_TTL_SECS,
     FRAME,
@@ -26,7 +25,6 @@ from jarvis_voice.speaker import (
     extract_intro_cue,
     extract_introduced_name,
     extract_speaker_name,
-    save_voiceprint,
     speaker_number,
     trim_silence,
 )
@@ -43,19 +41,6 @@ class TestSpeaker(unittest.TestCase):
     def test_trim_silence_leaves_silence_and_tiny_clips_alone(self) -> None:
         self.assertEqual(len(trim_silence(np.zeros(SAMPLE_RATE, dtype=np.float32))), SAMPLE_RATE)
         self.assertEqual(len(trim_silence(np.ones(10, dtype=np.float32))), 10)
-
-    def test_a_loud_clip_does_not_outweigh_the_others(self) -> None:
-        quiet, loud = np.array([1.0, 0.0]), np.array([0.0, 100.0])
-        with tempfile.TemporaryDirectory() as tmp:
-            path = save_voiceprint([quiet, loud], Path(tmp) / "sub" / "v.npy")
-            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE(os.stat(path.parent).st_mode), 0o700)
-            voiceprint = np.load(path)
-        self.assertAlmostEqual(cosine(quiet, voiceprint), cosine(loud, voiceprint))
-
-    def test_suggested_threshold_sits_under_the_lowest_score(self) -> None:
-        self.assertEqual(suggest_threshold([0.52, 0.41, 0.47]), 0.36)
-        self.assertEqual(suggest_threshold([0.68, 0.65, 0.71]), 0.40)
 
     def test_extract_speaker_name_recognizes_self_introductions_and_ignores_adjectives(self) -> None:
         self.assertEqual(extract_speaker_name("Hi Jarvis, I'm David."), "David")

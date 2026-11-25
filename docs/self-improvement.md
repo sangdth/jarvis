@@ -11,7 +11,7 @@ hacking. Framed around Lilian Weng, *Harness Engineering for Self-Improvement*
 | :--- | :------------------------------ | :------------------------------------------------------ |
 | 1    | Prompts, context, skills        | Built: `MEMORY.md`, `SYSTEM.md` guards, lift retirement |
 | 2    | Traces, harvested eval splits   | Built: `traces.py`, `evals.py` (`held_in` / `held_out`) |
-| 3    | Harness code & closed loop      | Built: `harness_proposals`, K=10 check, voice curation  |
+| 3    | Harness code & closed loop      | Built: `harness_proposals`, K=10 check, rollback gate   |
 | 4    | Multi-objective candidate search| Built: `pareto.py`, `bge-m3` novelty, `EVOLVE-BLOCK`    |
 | 5    | Model weights + meta-probation  | Partial: `weights.py` & 7-day probation built; see §3   |
 
@@ -21,10 +21,8 @@ hacking. Framed around Lilian Weng, *Harness Engineering for Self-Improvement*
   local files (`traces/`, `evals/`, `models/`), Ollama `bge-m3`, and PEP 723 training scripts (`scripts/voice/`).
 - **Evaluators, tracer, and held-out splits stay outside worker reach.** `traces.py`, `evals.py`, `board.ts`,
   `sandbox.py`, and all `scripts/bench_*.py` live in `PROTECTED_SELF_PATHS`. Benchmarks run from the checkout
-  (`repo_dir`) against candidate code on `PYTHONPATH`, and `sandbox.py` denies `JARVIS_HOME/evals/held_out/` to every
+  (`repo_dir`) against candidate code on `PYTHONPATH`, and `sandbox.py` denies `brain/evals/held_out/` to every
   worker role (including `Improver`).
-- **One Qdrant lock.** `curate_voice_memory` (`voice_memory.py`) reuses the in-process Mem0 handle attached by
-  `supervisor.py` and enforces namespace isolation in code (`sang` vs `speaker:*`).
 - **Human gate by default.** Harness proposals and weight updates land as `draft` tasks unless
   `AUTONOMOUS_HARNESS_UPGRADES=true`; edits to `skills.py` or `reconciler.py` enter a 7-day meta-utility probation.
 

@@ -1,16 +1,56 @@
+import tempfile
 import unittest
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from fakes import fake_adapter, make
+from fakes import fake_adapter
 
-from jarvis_voice.claude_adapter import ClaudeCodeAdapter
+from jarvis_voice.agent_adapter import WatchedAgentConfig
+from jarvis_voice.brain_client import BrainClientAdapter
 from jarvis_voice.orchestrator import AgentOrchestrator
-from jarvis_voice.sessions import AgentSession, match_sessions
-from jarvis_voice.t3_adapter import T3Adapter
+from jarvis_voice.sessions import AgentSession, CodingSessionAdapter, match_sessions
 
 AUTH = AgentSession("s1", "Refactor the auth service", "/p/platform", 100.0, "feat/jwt")
 VOICE = AgentSession("s2", "Speaker verification threshold", "/p/jarvis", 200.0)
 VOICE_OLD = AgentSession("s3", "speaker enrollment", "/p/jarvis", 50.0)
+
+
+class _FakeCodingAdapter(CodingSessionAdapter):
+    def __init__(self, agent_id: str = "a1", name: str = "Agent One") -> None:
+        super().__init__(WatchedAgentConfig(id=agent_id, name=name, type="fake", cwd="/tmp"), state=MagicMock())
+        self._session_id: str | None = None
+        self.sessions: list[AgentSession] = []
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
+    async def list_sessions(self, cwd: str | None = None, limit: int = 20) -> list[AgentSession]:
+        return self.sessions[:limit]
+
+    async def pick_session(self, session: AgentSession, *, connected: bool = False) -> bool:
+        self._session_id = session.id
+        self.cwd = session.cwd
+        self.connected = connected
+        return True
+
+    async def new_session(self, cwd: str | None = None) -> bool:
+        self._session_id = None
+        if cwd:
+            self.cwd = cwd
+        return True
+
+    async def send_task(self, task: str) -> bool:
+        return True
+
+    async def answer(self, text: str) -> bool:
+        return False
+
+    async def interrupt(self) -> bool:
+        return True
+
+    async def _run_watcher(self) -> None:
+        return None
 
 
 class TestMatchSessions(unittest.TestCase):
@@ -33,19 +73,16 @@ class TestMatchSessions(unittest.TestCase):
         self.assertEqual(match_sessions([AUTH, VOICE, pr], "speak"), [VOICE])  # "speaker"
 
 
-class TestConnectedAndT3(unittest.TestCase):
-    def test_a_connected_agent_is_the_default_and_t3_is_found_by_type(self) -> None:
+class TestConnectedDefault(unittest.TestCase):
+    def test_a_connected_agent_is_the_default(self) -> None:
         orch = AgentOrchestrator(state=MagicMock())
-        claude, t3 = fake_adapter("claude"), MagicMock(spec=T3Adapter)
-        t3.connected = False
-        orch.adapters.update(claude=claude, **{"t3-code": t3})
-        self.assertIs(orch.t3, t3)
-        with patch("jarvis_voice.orchestrator.settings.default_coding_agent", "t3-code"):
-            self.assertEqual(orch.default_agent_id, "t3-code")
-            claude.connected = True  # `jarvis connect claude`
-            self.assertEqual(orch.default_agent_id, "claude")
-        orch.adapters.pop("t3-code")
-        self.assertIsNone(orch.t3)
+        pi, brain = fake_adapter("pi"), MagicMock(spec=BrainClientAdapter)
+        brain.connected = False
+        orch.adapters.update(pi=pi, brain=brain)
+        with patch("jarvis_voice.orchestrator.settings.default_coding_agent", "brain"):
+            self.assertEqual(orch.default_agent_id, "brain")
+            pi.connected = True  # `jarvis connect pi`
+            self.assertEqual(orch.default_agent_id, "pi")
 
 
 class TestConnectPicker(unittest.IsolatedAsyncioTestCase):
@@ -53,15 +90,33 @@ class TestConnectPicker(unittest.IsolatedAsyncioTestCase):
         from jarvis_voice import main
 
         orch = AgentOrchestrator(state=MagicMock())
-        claude = make(ClaudeCodeAdapter, "claude_code")
-        orch.adapters["a1"] = claude
-        claude.list_sessions = AsyncMock(return_value=[VOICE, AUTH])
+        coder = _FakeCodingAdapter("a1", "Agent One")
+        coder.sessions = [VOICE, AUTH]
+        orch.adapters["a1"] = coder
         with patch.object(main, "choose", return_value=1):
             thread = await main.pick_connection(orch, "a1")
         self.assertEqual(thread, {"id": "s1", "title": AUTH.title, "project": "platform", "agent_id": "a1",
                                   "agent_name": "Agent One"})
-        self.assertTrue(claude.connected)
-        self.assertEqual((claude._session_id, claude.cwd), ("s1", "/p/platform"))  # resumed when start_all runs
+        self.assertTrue(coder.connected)
+        self.assertEqual((coder.session_id, coder.cwd), ("s1", "/p/platform"))
+
+    async def test_connect_routes_named_runners_through_brain(self) -> None:
+        from jarvis_voice import main
+
+        orch = AgentOrchestrator(state=MagicMock())
+        brain = MagicMock(spec=BrainClientAdapter)
+        brain.config = WatchedAgentConfig(id="brain", name="Brain", type="brain", cwd="/tmp")
+        brain.runner = "t3"
+        brain.list_sessions = AsyncMock(return_value=[VOICE, AUTH])
+        brain.pick_session = AsyncMock(return_value=True)
+        orch.adapters["brain"] = brain
+
+        with patch.object(main, "choose", return_value=1):
+            picked = await main.pick_connection(orch, "claude")
+        self.assertEqual(brain.runner, "claude")
+        brain.pick_session.assert_awaited_once_with(AUTH, connected=True)
+        self.assertEqual(picked["agent_id"], "brain")
+        self.assertEqual(picked["id"], "s1")
 
     async def test_connect_to_an_agent_without_sessions_stops_with_a_reason(self) -> None:
         from jarvis_voice import main
@@ -71,46 +126,61 @@ class TestConnectPicker(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(SystemExit, "not a coding agent"):
             await main.pick_connection(orch, "hermes")
 
-    async def test_pick_thread_attaches_worktree_thread_without_prompting(self) -> None:
+    def test_thread_for_this_folder_prefers_worktree_over_project_root(self) -> None:
         from jarvis_voice import main
 
-        orch = AgentOrchestrator(state=MagicMock())
-        t3 = MagicMock(spec=T3Adapter)
-        t3.config = MagicMock(id="t3-code", name="T3 Code")
-        t3.shell_snapshot = AsyncMock(
-            return_value={
-                "projects": [{"id": "p1", "title": "jarvis", "workspaceRoot": "/r/jarvis"}],
-                "threads": [
-                    {
-                        "id": "t-main",
-                        "projectId": "p1",
-                        "createdBy": "user",
-                        "title": "Main",
-                        "updatedAt": "2026-01-01T00:00:00Z",
-                    },
-                    {
-                        "id": "t-wt",
-                        "projectId": "p1",
-                        "createdBy": "user",
-                        "title": "Worktree fix",
-                        "updatedAt": "2026-01-02T00:00:00Z",
-                        "worktreePath": "/wt/fix",
-                    },
-                ],
-            }
-        )
-        orch.adapters["t3-code"] = t3
-        with (
-            patch.dict(
+        with tempfile.TemporaryDirectory() as tmp:
+            root = (Path(tmp) / "jarvis").resolve()
+            worktree = (Path(tmp) / "wt-fix").resolve()
+            root.mkdir()
+            worktree.mkdir()
+            sessions = [
+                AgentSession("t-main", "Main", str(root), 10.0),
+                AgentSession("t-wt", "Worktree fix", str(worktree), 20.0),
+            ]
+            with patch.dict(
                 main.os.environ,
-                {"T3CODE_PROJECT_ROOT": "/r/jarvis", "T3CODE_WORKTREE_PATH": "/wt/fix"},
-            ),
-            patch.object(main, "choose", side_effect=AssertionError("should not prompt")),
-        ):
-            picked = await main.pick_thread(orch)
-        t3.attach.assert_called_once_with("t-wt", "/wt/fix", connected=True, title=ANY)
-        self.assertEqual(picked["id"], "t-wt")
-        self.assertEqual(picked["agent_id"], "t3-code")
+                {"T3CODE_PROJECT_ROOT": str(root), "T3CODE_WORKTREE_PATH": str(worktree)},
+                clear=False,
+            ):
+                self.assertEqual(main._thread_for_this_folder(sessions), 1)
+
+            with patch.dict(
+                main.os.environ,
+                {"T3CODE_PROJECT_ROOT": str(root), "T3CODE_WORKTREE_PATH": ""},
+                clear=False,
+            ):
+                self.assertEqual(main._thread_for_this_folder(sessions), 0)
+
+    async def test_connect_attaches_worktree_thread_without_prompting(self) -> None:
+        from jarvis_voice import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = (Path(tmp) / "jarvis").resolve()
+            worktree = (Path(tmp) / "wt-fix").resolve()
+            root.mkdir()
+            worktree.mkdir()
+            main_sess = AgentSession("t-main", "Main", str(root), 10.0)
+            wt_sess = AgentSession("t-wt", "Worktree fix", str(worktree), 20.0)
+
+            orch = AgentOrchestrator(state=MagicMock())
+            brain = MagicMock(spec=BrainClientAdapter)
+            brain.config = WatchedAgentConfig(id="brain", name="Brain", type="brain", cwd="/tmp")
+            brain.runner = "t3"
+            brain.list_sessions = AsyncMock(return_value=[main_sess, wt_sess])
+            brain.pick_session = AsyncMock(return_value=True)
+            orch.adapters["brain"] = brain
+            with (
+                patch.dict(
+                    main.os.environ,
+                    {"T3CODE_PROJECT_ROOT": str(root), "T3CODE_WORKTREE_PATH": str(worktree)},
+                ),
+                patch.object(main, "choose", side_effect=AssertionError("should not prompt")),
+            ):
+                picked = await main.pick_connection(orch, "t3")
+            brain.pick_session.assert_awaited_once_with(wt_sess, connected=True)
+            self.assertEqual(picked["id"], "t-wt")
+            self.assertEqual(picked["agent_id"], "brain")
 
 
 if __name__ == "__main__":

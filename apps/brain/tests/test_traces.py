@@ -70,6 +70,10 @@ def test_sanitize_drops_persistent_noise_and_redacts_pairing_codes(monkeypatch) 
     assert stt is not None and "sk-live" not in stt["text"]
     room = sanitize_event({"event": "voice.stt", "text": "pass the salt", "room": True})
     assert room is None
+    rejected = sanitize_event({"event": "voice.stt", "text": "background chatter", "passed": False})
+    assert rejected is None
+    accepted = sanitize_event({"event": "voice.stt", "text": "jarvis status", "passed": True, "room": False})
+    assert accepted is not None and accepted["text"] == "jarvis status"
 
 
 def test_cleanup_rewrite_ratio_and_surface_attribution() -> None:

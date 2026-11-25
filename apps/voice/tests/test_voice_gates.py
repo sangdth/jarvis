@@ -839,6 +839,7 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
 
         stt_events = [e for e in seen if e["kind"] == "voice.stt"]
         self.assertEqual([e["profile_id"] for e in stt_events], ["owner", "voice_1", "voice_2", "voice_2"])
+        self.assertEqual([e["room"] for e in stt_events], [False, True, True, True])
         self.assertEqual(stt_events[1]["role"], "David")
         self.assertFalse(stt_events[2]["passed"])
         speaker_events = [e for e in seen if e["kind"] == "voice.speaker"]
@@ -846,6 +847,22 @@ class TestSpeakerVerifiedWhisperSTT(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(speaker_events[0]["label"], "David")
         self.assertEqual(speaker_events[0]["profile_id"], "voice_1")
         self.assertEqual(speaker_events[0]["voice_id"], "voice_2")
+
+    async def test_voice_stt_telemetry_tags_room_for_owner_and_guest(self) -> None:
+        from jarvis_voice import telemetry
+
+        seen: list[dict] = []
+        telemetry.bind(lambda kind, **fields: seen.append({"kind": kind, **fields}))
+        try:
+            await self.run_stt("owner regular", [0.95, 0.05], meeting=False)
+            await self.run_stt("guest regular", [0.05, 0.95], meeting=False)
+            await self.run_stt("owner meeting", [0.95, 0.05], meeting=True)
+            await self.run_stt("guest meeting", [0.05, 0.95], meeting=True)
+        finally:
+            telemetry.bind(None)
+
+        stt_events = [e for e in seen if e["kind"] == "voice.stt"]
+        self.assertEqual([e["room"] for e in stt_events], [False, True, False, True])
 
 
 class TestSmartTurn(unittest.IsolatedAsyncioTestCase):
@@ -959,18 +976,6 @@ class TestVoiceprint(unittest.TestCase):
 
         with self.assertRaises(FileNotFoundError):
             load_voiceprint(Path("/nonexistent/owner_voice.npy"))
-
-    def test_saved_voiceprint_is_the_average(self) -> None:
-        import tempfile
-        from pathlib import Path
-
-        import numpy as np
-
-        from jarvis_voice.speaker import load_voiceprint, save_voiceprint
-
-        with tempfile.TemporaryDirectory() as d:
-            path = save_voiceprint([np.array([1.0, 0.0]), np.array([0.0, 1.0])], Path(d) / "v.npy")
-            np.testing.assert_allclose(load_voiceprint(path), [0.5, 0.5])
 
 
 if __name__ == "__main__":

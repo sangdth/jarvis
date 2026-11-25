@@ -178,8 +178,8 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
   `/v1/traces/{id}`, `/v1/restart`; `/v1/pair*`, `/v1/devices*`, `/v1/telemetry/*`; and the remote client's `/ws`,
   `/client.py`, `/Jarvis.app.zip`, `/install-app` (`jarvis_voice/remote_audio.py`). Only `/health` and the client
   bootstrap (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) are open without
-  a token; `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` require the owner token alone. Any authenticated
-  route accepts `Authorization: Bearer`, `?token=`, or `X-Jarvis-Token` (`schemas/openapi.json`).
+  a token; paired device secrets work only on `GET /v1/status` and `/ws`, and every other route requires the owner token.
+  Any authenticated route accepts `Authorization: Bearer`, `?token=`, or `X-Jarvis-Token` (`schemas/openapi.json`).
 - **Fullscreen dashboard (`apps/dashboard` + `telemetry.py`):**
   - `TelemetryHub` is a dependency-free in-memory ring buffer (2000 events) that fans out transient events
     (`http.inbound`, `run.status`, `approval.*`, `reconciler.phase`, `board.rpc`, `pi.progress`,

@@ -205,3 +205,47 @@ async def test_router_dispatches_a_question_to_the_one_shot_runner(tmp_path: Pat
     finally:
         await reconciler.stop()
         db.close()
+
+
+async def test_list_sessions_returns_worktree_path_as_cwd(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    root = cfg.projects_dir / "app"
+    wt = tmp_path / "worktrees" / "app-wt"
+
+    class _WtT3(T3Runner):
+        async def shell_snapshot(self) -> dict[str, Any]:
+            return {
+                "projects": [{"id": "p1", "workspaceRoot": str(root), "title": "App"}],
+                "threads": [
+                    {
+                        "id": "th-wt",
+                        "projectId": "p1",
+                        "title": "Worktree feature",
+                        "createdBy": "user",
+                        "status": "idle",
+                        "updatedAt": "2026-11-22T12:00:00Z",
+                        "branch": "feat/x",
+                        "worktreePath": str(wt),
+                    },
+                    {
+                        "id": "th-root",
+                        "projectId": "p1",
+                        "title": "Main thread",
+                        "createdBy": "user",
+                        "status": "idle",
+                        "updatedAt": "2026-11-22T10:00:00Z",
+                        "branch": "master",
+                        "worktreePath": None,
+                    },
+                ],
+            }
+
+    try:
+        runner = _WtT3(cfg, db)
+        sessions = await runner.list_sessions()
+        by_id = {s.id: s for s in sessions}
+        assert by_id["th-wt"].cwd == str(wt)
+        assert by_id["th-root"].cwd == str(root)
+    finally:
+        db.close()
