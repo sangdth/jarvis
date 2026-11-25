@@ -177,8 +177,8 @@ async def test_eval_split_rejects_a_held_out_regression(tmp_path: Path, monkeypa
     rec = Reconciler(db, cfg)
     answers = iter(
         [
-            ({"a": True, "b": True}, {}, True),  # baseline, held_out
-            ({"a": True, "b": False}, {}, False),  # candidate, held_out: b regressed
+            ({"a": True, "b": True}, {}),  # baseline, held_out
+            ({"a": True, "b": False}, {}),  # candidate, held_out: b regressed
         ]
     )
 
@@ -208,10 +208,10 @@ async def test_a_harness_fix_must_fix_a_held_in_case(tmp_path: Path, monkeypatch
     rec = Reconciler(db, cfg)
     answers = iter(
         [
-            ({"a": True}, {}, True),  # baseline held_out
-            ({"a": True}, {}, True),  # candidate held_out: no regression
-            ({"a": False}, {}, False),  # baseline held_in: the case the proposal promised to fix
-            ({"a": False}, {}, False),  # candidate held_in: still broken
+            ({"a": True}, {}),  # baseline held_out
+            ({"a": True}, {}),  # candidate held_out: no regression
+            ({"a": False}, {}),  # baseline held_in: the case the proposal promised to fix
+            ({"a": False}, {}),  # candidate held_in: still broken
         ]
     )
 
@@ -284,9 +284,11 @@ dump = pathlib.Path(args[args.index("--dump-results") + 1])
 brain_home = pathlib.Path(os.environ["BRAIN_HOME"])
 text = (brain_home / "evals" / split / "brain_route.jsonl").read_text()
 rows = [json.loads(line) for line in text.splitlines() if line.strip()]
-dump.write_text(json.dumps({"split": split, "cases": {r["input"]: True for r in rows}}), encoding="utf-8")
-acc = 1.0 if "worktree" in dump.name else 0.9
+is_cand = "worktree" in dump.name
+dump.write_text(json.dumps({"split": split, "cases": {r["input"]: is_cand for r in rows}}), encoding="utf-8")
+acc = 1.0 if is_cand else 0.0
 print(f'METRICS: {{"accuracy": {acc}, "p50_ms": 100}}')
+sys.exit(0 if is_cand else 1)  # baseline below threshold exits 1; candidate fixes it
 """,
         encoding="utf-8",
     )
