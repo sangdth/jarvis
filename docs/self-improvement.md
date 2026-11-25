@@ -40,17 +40,11 @@ Items not yet built (in priority order):
    and an owner turn logs `friction_kind='asr_rewrite'`, stage `{wav, raw_stt, cleaned}` into
    `JARVIS_HOME/voice_data/staged.jsonl`; add `jarvis voice-review` (`[y]es / [e]dit / [n]o`) so only human-checked
    clips enter `voice_data/manifest.jsonl`.
-3. **Checkpoint CLI (`jarvis models [status|rollback <target>]`):** Wire `weights.status()` and `weights.rollback()`
-   plus `POST /v1/restart` into `src/jarvis/cli.py`.
+3. **Checkpoint CLI (`jarvis models [status|rollback <target>]`) and `laya` runner check:** Wire `weights.status()` and
+   `weights.rollback()` plus `POST /v1/restart` into `src/jarvis/cli.py`, and verify `~/Projects/laya/data/distill.py
+   feedback` runs unattended on this Mac for `laya-intent` retrains.
 4. **Dashboard meta-utility and probation strip (`apps/dashboard/`):** Read `system_state` probation columns and
    rolling 7-day `compute_meta_utility()` metrics read-only in `apps/dashboard/src/db.rs` and show them in the header.
 5. **Executable skill sidecars (`context.py` / `check.sh`, deferred):** Optional read-only, network-denied scripts
    beside `SKILL.md`. Deferred because 10-load marginal-lift retirement already removes placebo skills and the payoff
    of sidecar prompt injection is unproven.
-
-## 4. Open Calibration Questions
-
-- Whether `bge-m3` cosine `>= 0.88` separates distinct hypotheses cleanly in real use (`docs/DECISIONS.md`).
-- Whether the 7-day Improver probation thresholds (`-10 pp` pass rate, `+5` friction per 100 turns, `+35%` cost) are
-  calibrated after a week of live traffic.
-- Whether `laya` repo's `distill.py feedback` runs unattended on this Mac for `laya-intent` retrains.

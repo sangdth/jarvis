@@ -18,10 +18,11 @@ voice-harness model.
 
 ## 2. Adopted (Built)
 
-- **OpenCode 2 `service.json` discovery & `cwd` scoping** (`opencode_adapter.py`, `runners/opencode.py`): Reads
+- **OpenCode 2 `service.json` discovery & `cwd` scoping** (`apps/voice/src/jarvis_voice/opencode_adapter.py`): Reads
   `$XDG_STATE_HOME/opencode/service.json` (verifying owner-only `0600`, no symlink, loopback URL, live pid) unless
   `OPENCODE_SERVER_PASSWORD` or a custom `url` pins a server, and scopes listings, new sessions, and events to `cwd`
-  so Jarvis never approves tool calls in another project.
+  so Jarvis never approves tool calls in another project. (`apps/brain/src/brain/runners/opencode.py` instead runs
+  one-shot `opencode run --format json` subprocesses without an SSE stream.)
 - **Audio segment retention** (`SAVE_SEGMENTS=N` in `voice_gates.py`): Writes 16 kHz WAVs to `JARVIS_HOME/clips/`
   (`0700`/`0600`, rotated to newest `N`) for every segment Whisper receives — including Whisper's no-text drops — so
   real misses can be re-scored offline.

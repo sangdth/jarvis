@@ -20,9 +20,9 @@ network surface: the brain's API, dashboard telemetry, operator routes (`/v1/sta
 `/v1/mode`, `/v1/traces`, `/v1/restart`), and remote audio (`/ws`, `/client.py`, `/Jarvis.app.zip`, `/install-app`).
 Unauthenticated routes are limited to `/health` and the client bootstrap (`/client.py`, `/Jarvis.app.zip`,
 `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`). Every other route requires the owner token (`BRAIN_API_KEY`
-or `JARVIS_HOME/brain_token`) or a paired device's secret (`JARVIS_HOME/devices.json`), with `/v1/telemetry/*`,
-`/v1/pair/*`, and `/v1/devices*` restricted to the owner token. One machine, one board, one SQLite writer, and one
-client at a time on the mic.
+or `JARVIS_HOME/brain_token`; on `/ws`, `REMOTE_TOKEN` overrides the shared token when set) or a paired device's secret
+(`JARVIS_HOME/devices.json`), with `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` restricted to the owner
+token. One machine, one board, one SQLite writer, and one client at a time on the mic.
 
 Each language keeps its native workspace (`uv`, `cargo`; `pnpm`/`go.work` when a client or service in another
 language arrives), so a new app is a folder and a workspace line. Cross-language contracts live in `schemas/`.

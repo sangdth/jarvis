@@ -52,12 +52,12 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 - **The gateway trusts a token or a paired device's secret, not the network.** It serves plain HTTP and WebSocket on
   `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`). Every route except `/health` and the client bootstrap
   (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) requires either the
-  owner's shared token (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; `/ws` also accepts `REMOTE_TOKEN` when set)
-  or a paired device's own secret (sent as `Authorization: Bearer`, never in a URL, stored hashed with SHA-256 in
-  `JARVIS_HOME/devices.json` 0600). `/v1/telemetry/*`, `/v1/pair/*`, and `/v1/devices*` require the owner token alone.
-  Keep it on your LAN or Tailscale; run `jarvis devices revoke <id>` to cut off a lost laptop immediately (`1008` on
-  its live socket) without touching other devices or rotating the shared token. Deleting `remote_token` does not revoke
-  paired devices in `devices.json`.
+  owner's shared token (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; on `/ws`, `REMOTE_TOKEN` overrides the shared
+  token when set) or a paired device's own secret (sent as `Authorization: Bearer`, never in a URL, stored hashed with
+  SHA-256 in `JARVIS_HOME/devices.json` 0600). `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` require the
+  owner token alone. Keep it on your LAN or Tailscale; run `jarvis devices revoke <id>` to cut off a lost laptop
+  immediately (`1008` on its live socket) without touching other devices or rotating the shared token. Deleting
+  `remote_token` does not revoke paired devices in `devices.json`.
 - **One relay client at a time.** A second Mac is refused (1013) while one holds the mic; Jarvis has one ear.
   Connecting a new client after a drop does not replay what was said meanwhile.
 - **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so while a
@@ -115,13 +115,10 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `.env`, `SOUL.md`, `agents.json`, `devices.json`, the voiceprint, models, memory, `brain/state.db`, and the tokens
   (`brain_token` 0600 for the apps, optional `remote_token` for a pinned relay). `BRAIN_API_KEY` in `.env` wins over
   the file. `jarvis init` (and the supervisor, on first run) moves a pre-merge `~/.config/superbrain` into
-  `JARVIS_HOME/brain`. Everything network-shaped is one aiohttp app on `BRAIN_HOST:BRAIN_PORT`, defaulting to
-  `0.0.0.0:8643` so a laptop or phone can reach the Mac mini; every route except `/health` and the client bootstrap
-  (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) needs the owner token or
-  a paired device's secret, and `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode` and `/v1/restart` mean a client
-  never reads SQLite or the filesystem. Limits: plain HTTP on the LAN, so credentials are the only guard (put both
-  machines on Tailscale to go further); a wildcard bind is reached over loopback on the same Mac, which both the Python
-  and Rust clients handle.
+  `JARVIS_HOME/brain`. Everything network-shaped runs on one aiohttp app (`BRAIN_HOST:BRAIN_PORT`, default
+  `0.0.0.0:8643`, auth rules in the gateway bullet above), and `/v1/status`, `/v1/board`, `/v1/tasks`, `/v1/mode` and
+  `/v1/restart` mean a client never reads SQLite or the filesystem. Limits: a wildcard bind is reached over loopback on
+  the same Mac, which both the Python and Rust clients handle.
 - **Native workspaces, one task runner — not Bazel/Buck/Pants.** `uv` and `cargo` keep their own lockfiles, caches and
   native linking (MLX, sherpa-onnx, pyobjc, rusqlite), and `just` is the one entry point (`just test`, `just lint`,
   `just build`). Limits: there is no single cross-language dependency graph or remote cache, so a change to a shared
@@ -171,7 +168,7 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   interactive use simply keeps the probation open until its date passes.
 - **Self-upgrades touching the voice or router run their benchmarks and sealed held-out checks.** `_changed_files` +
   `_run_voice_benchmarks` run `scripts/bench_intent.py 1` (≥97%) for `executive_filter.py` / `languages.json`,
-  `scripts/bench_routing.py 1` (≥95%) for `prompts.py` / `agent_tools.py` / `orchestrator.py`,
+  `scripts/bench_routing.py 1` (≥95%) for `jarvis_voice/{prompts,agent_tools,orchestrator}.py`,
   `scripts/bench_voice_prompts.py --split held_in` for `cleanup.py` / `prompts.py` / `state.py` / `system_prompts.py` /
   `waiting_lines.py` / `SYSTEM.md`, and `scripts/bench_brain_route.py 1 --split held_in` (≥95%, p50 ≤ 800 ms) for
   `apps/brain/src/brain/orchestrator.py`. When harvested `JARVIS_HOME/evals/held_out/<suite>.jsonl` files exist,
