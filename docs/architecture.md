@@ -81,10 +81,10 @@ flowchart LR
 
     subgraph BrainApp ["4. The brain (`apps/brain`)"]
         SB["Board (SQLite WAL)"] --> REC["Reconciler"]
-        REC -->|"one `pi` worker per repo"| WT["Worktree `brain/<task_id>`"]
+        REC -->|"one `pi` worker per repo"| WT["Worktree brain/task_id"]
         WT -->|"verify_cmd, then push (never merge)"| SB
         SRV["HTTP/SSE/WS :8643"] --- SB
-        DASH["`jarvis dashboard` (Rust dashboard)"] -->|"read-only state.db + /v1/telemetry"| SB
+        DASH["Jarvis dashboard (Rust)"] -->|"read-only state.db + /v1/telemetry"| SB
     end
 
     BC -->|"POST /v1/runs, GET /v1/runs/:id/events"| SRV
