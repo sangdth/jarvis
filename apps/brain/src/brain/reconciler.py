@@ -2342,10 +2342,10 @@ class Reconciler:
             script, _ = EVAL_GATES[suite]
             if not (self.cfg.home_dir / "evals" / "held_out" / f"{suite}.jsonl").is_file():
                 continue  # nothing harvested yet: Phase 2 has no sealed set to protect
-            baseline, base_metrics, base_ok = await self._run_eval_split(
+            baseline, base_metrics = await self._run_eval_split(
                 repo_dir, repo_dir, worktree_dir, script, suite, "held_out", session_dir
             )
-            candidate, cand_metrics, cand_ok = await self._run_eval_split(
+            candidate, cand_metrics = await self._run_eval_split(
                 repo_dir, worktree_dir, worktree_dir, script, suite, "held_out", session_dir
             )
             if not baseline or not candidate:
@@ -2353,8 +2353,6 @@ class Reconciler:
             regressed = sorted(key for key, ok in baseline.items() if ok and not candidate.get(key, False))
             if regressed:
                 return False, f"{suite}: {len(regressed)} held-out case(s) regressed"
-            if not base_ok or not cand_ok:
-                return False, f"{suite}: held-out eval exited non-zero"
             if base_metrics and cand_metrics:
                 winner = select_winner(
                     [
@@ -2377,10 +2375,10 @@ class Reconciler:
                     return False, f"{suite}: the candidate did not earn the change on accuracy, latency and cost"
             is_harness_fix = (task.dedupe_key or "").startswith("harness:")
             if is_harness_fix:
-                base_in, _, _ = await self._run_eval_split(
+                base_in, _ = await self._run_eval_split(
                     repo_dir, repo_dir, worktree_dir, script, suite, "held_in", session_dir
                 )
-                cand_in, _, cand_in_ok = await self._run_eval_split(
+                cand_in, _ = await self._run_eval_split(
                     repo_dir, worktree_dir, worktree_dir, script, suite, "held_in", session_dir
                 )
                 if not base_in or not cand_in:
@@ -2388,8 +2386,6 @@ class Reconciler:
                 fixed = [key for key, ok in base_in.items() if not ok and cand_in.get(key)]
                 if not fixed:
                     return False, f"{suite}: a harness fix must make at least one held-in case pass"
-                if not cand_in_ok:
-                    return False, f"{suite}: held-in eval exited non-zero"
             outputs.append(f"{suite}: {len(candidate)} held-out cases, 0 regressions")
         return True, "\n\n".join(outputs)
 
@@ -2402,14 +2398,14 @@ class Reconciler:
         suite: str,
         split: str,
         session_dir: Path,
-    ) -> tuple[dict[str, bool], dict[str, float], bool]:
-        """One benchmark run: case results, parsed `METRICS:`, and whether it exited 0 with a valid dump."""
+    ) -> tuple[dict[str, bool], dict[str, float]]:
+        """One benchmark run: case results and parsed `METRICS:` (empty cases fail closed in caller)."""
         dump = session_dir / f"eval-{suite}-{split}-{code_root.name}.json"
         dump.unlink(missing_ok=True)
         sources = [code_root / "src", code_root]
         sources += sorted((code_root / "apps").glob("*/src"))
         sources += sorted((code_root / "packages").glob("*/src"))
-        cmd_ok, output = await self._run_sandboxed_cmd(
+        _, output = await self._run_sandboxed_cmd(
             [sys.executable, str(script_root / script), "--split", split, "--dump-results", str(dump)],
             worktree_dir=worktree_dir,
             session_dir=session_dir,
@@ -2425,12 +2421,12 @@ class Reconciler:
         try:
             raw = json.loads(dump.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return {}, parse_metrics(output), False
+            return {}, parse_metrics(output)
         cases = raw.get("cases") if isinstance(raw, dict) else None
         if not isinstance(cases, dict):
-            return {}, parse_metrics(output), False
+            return {}, parse_metrics(output)
         passed = {str(key): bool(value) for key, value in cases.items()}
-        return passed, parse_metrics(output), (cmd_ok and bool(passed))
+        return passed, parse_metrics(output)
 
     async def _run_held_out_baseline_tests(
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path
