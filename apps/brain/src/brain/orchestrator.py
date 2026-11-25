@@ -24,6 +24,7 @@ from brain.reconciler import Reconciler
 from brain.runners.base import ApprovalCallback, RunRequest, RunResult
 from brain.telemetry import EVENT_BRAIN_ROUTE, preview
 from jarvis_core.projects import list_projects, projects_dir, resolve_project
+from jarvis_core.questions import is_approval
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -201,7 +202,6 @@ class BrainOrchestrator:
         started = time.monotonic()
         choice = await self._choose(prompt, user_input)
         route_ms = round((time.monotonic() - started) * 1000)
-        route_ms = round((time.monotonic() - started) * 1000)
         if choice is None:
             choice = self._heuristic(user_input, projects, session_id)
         return choice, route_ms
@@ -350,7 +350,7 @@ class BrainOrchestrator:
             project = str(args.get("project") or "")
             return await self._list_sessions(runner, project)
         if name == "queue_board_task":
-            return await self._queue_task(args, user_input)
+            return await self._queue_task(args, user_input, run_id=run_id, approval_cb=approval_cb)
         if name == "ask_ephemeral_pi":
             question = str(args.get("question") or user_input)
             prompt = (
@@ -378,6 +378,8 @@ class BrainOrchestrator:
                 {"kind": "goal", "repo": str(args.get("project") or ""),
                  "title": user_input[:80], "spec": user_input, "mode": "ASSIST"},
                 user_input,
+                run_id=run_id,
+                approval_cb=approval_cb,
             )
         project = str(args.get("project") or "")
         cwd_path = Path(cwd).expanduser() if cwd else None
@@ -426,7 +428,14 @@ class BrainOrchestrator:
 
     # ------------------------------------------------------------------ board & sessions
 
-    async def _queue_task(self, args: dict[str, Any], user_input: str) -> RunResult:
+    async def _queue_task(
+        self,
+        args: dict[str, Any],
+        user_input: str,
+        *,
+        run_id: str | None = None,
+        approval_cb: ApprovalCallback | None = None,
+    ) -> RunResult:
         repo = str(args.get("repo") or "").strip() or next(iter(sorted(self.db.allowed_repos)), "jarvis")
         repo = repo if repo in self.db.allowed_repos else self.db.validate_repo(repo)
         spec = str(args.get("spec") or user_input)
@@ -452,7 +461,18 @@ class BrainOrchestrator:
         if task.verify_cmd and task.repo in ("jarvis", "brain"):
             claimed = self.db.claim_next_task(lease_seconds=self.cfg.lease_seconds, task_id=task.id)
             if claimed is not None:
-                done = await self.reconciler.execute_claimed_task(claimed)
+                bool_cb = None
+                if approval_cb is not None:
+                    async def _bool_cb(
+                        summary_spoken: str, details: str, session_id: str | None
+                    ) -> bool | None:
+                        answer = await approval_cb(summary_spoken, details, session_id)
+                        return None if answer is None else is_approval(answer)
+
+                    bool_cb = _bool_cb
+                done = await self.reconciler.execute_claimed_task(
+                    claimed, run_key=run_id, approval_cb=bool_cb
+                )
                 note = f"{task.id} finished with status {done.status}."
                 return RunResult(outcome="pushed", summary=note)
         self.reconciler.wake()

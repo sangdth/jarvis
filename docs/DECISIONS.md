@@ -51,13 +51,12 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   resamples on the way out rather than lowering the local speaker's quality or breaking clients already paired.
 - **The gateway trusts a token or a paired device's secret, not the network.** It serves plain HTTP and WebSocket on
   `BRAIN_HOST:BRAIN_PORT` (default `0.0.0.0:8643`). Every route except `/health` and the client bootstrap
-  (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) requires either the
-  owner's shared token (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; on `/ws`, `REMOTE_TOKEN` overrides the shared
-  token when set) or a paired device's own secret (sent as `Authorization: Bearer`, never in a URL, stored hashed with
-  SHA-256 in `JARVIS_HOME/devices.json` 0600). `/v1/telemetry/*`, `POST /v1/pair/start`, and `/v1/devices*` require the
-  owner token alone. Keep it on your LAN or Tailscale; run `jarvis devices revoke <id>` to cut off a lost laptop
-  immediately (`1008` on its live socket) without touching other devices or rotating the shared token. Deleting
-  `remote_token` does not revoke paired devices in `devices.json`.
+  (`/client.py`, `/Jarvis.app.zip`, `/install-app`, `POST /v1/pair/request`, `POST /v1/pair`) requires the owner's
+  shared token (`BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`; on `/ws`, `REMOTE_TOKEN` overrides the shared token
+  when set). A paired device's own secret (sent as `Authorization: Bearer`, never in a URL, stored hashed with SHA-256
+  in `JARVIS_HOME/devices.json` 0600) works only on `GET /v1/status` and `/ws`. Keep it on your LAN or Tailscale; run
+  `jarvis devices revoke <id>` to cut off a lost laptop immediately (`1008` on its live socket) without touching other
+  devices or rotating the shared token. Deleting `remote_token` does not revoke paired devices in `devices.json`.
 - **One relay client at a time.** A second Mac is refused (1013) while one holds the mic; Jarvis has one ear.
   Connecting a new client after a drop does not replay what was said meanwhile.
 - **The master check's voiceprint belongs to a mic.** `jarvis enroll` records with the Mac running Jarvis, so while a

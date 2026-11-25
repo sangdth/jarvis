@@ -25,6 +25,21 @@ class TestVoiceTelemetry(unittest.TestCase):
         self.assertTrue(all(event["turn_id"] == turn for event in seen), "one sentence is one turn")
         self.assertEqual(seen[0]["text"], "check the build")
 
+    def test_voice_level_before_any_turn_does_not_mint_turn_or_trace(self) -> None:
+        from unittest.mock import patch
+
+        seen: list[dict[str, Any]] = []
+        telemetry.bind(lambda kind, **fields: seen.append({"kind": kind, **fields}))
+        with patch.object(telemetry, "_current", None), patch.object(telemetry, "_current_trace", None):
+            telemetry.emit("voice.level", peak=0.1)
+            self.assertIsNone(telemetry._current)
+            self.assertIsNone(telemetry._current_trace)
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["kind"], "voice.level")
+        self.assertEqual(seen[0]["turn_id"], "")
+        self.assertEqual(seen[0]["trace_id"], "")
+
     def test_a_long_payload_is_clipped_before_it_reaches_the_bus(self) -> None:
         seen: list[dict[str, Any]] = []
         telemetry.bind(lambda kind, **fields: seen.append(fields))

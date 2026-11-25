@@ -54,13 +54,24 @@ def test_laya_needs_twenty_five_new_corrections(tmp_path: Path) -> None:
     home = tmp_path / "home"
     feedback = home / "feedback" / "intent.jsonl"
     feedback.parent.mkdir(parents=True)
-    feedback.write_text("\n".join(json.dumps({"id": f"d{i}"}) for i in range(10)) + "\n", encoding="utf-8")
+    # Plain decision lines do NOT count as corrections.
+    feedback.write_text("\n".join(json.dumps({"id": f"d{i}"}) for i in range(40)) + "\n", encoding="utf-8")
+    ready, why = laya_intent_ready(home)
+    assert not ready and "0 new corrections" in why
+    # 10 corrections + 40 decisions is still under the threshold.
+    lines = [json.dumps({"id": f"d{i}"}) for i in range(40)] + [
+        json.dumps({"correction_of": f"d{i}", "label": "ADDRESSED_TO_JARVIS"}) for i in range(10)
+    ]
+    feedback.write_text("\n".join(lines) + "\n", encoding="utf-8")
     ready, why = laya_intent_ready(home)
     assert not ready and "10 new corrections" in why
-    feedback.write_text(
-        "\n".join(json.dumps({"id": f"d{i}"}) for i in range(30)) + "\n", encoding="utf-8"
-    )
+    # 25 corrections crosses the threshold.
+    lines = [json.dumps({"id": f"d{i}"}) for i in range(40)] + [
+        json.dumps({"correction_of": f"d{i}", "label": "ADDRESSED_TO_JARVIS"}) for i in range(25)
+    ]
+    feedback.write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert laya_intent_ready(home)[0]
+    assert not laya_intent_ready(home, bookmark_cursor=45)[0]
 
 
 def _seed_meta(db: BrainDB, *, tasks: int, failures: int, turns: int, bad_turns: int) -> None:
@@ -156,3 +167,88 @@ async def test_probation_stays_quiet_without_enough_new_evidence(tmp_path: Path)
     await Reconciler(db, cfg, hub=TelemetryHub())._check_improver_probation()
     assert db.improver_probation() is not None  # still watching
     assert not [row for row in db.list_outbox() if row.kind == "approval_request"]
+
+
+async def test_approving_probation_rollback_resets_git_and_sets_restart_pending(tmp_path: Path) -> None:
+    import subprocess
+
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from brain.server import BrainServer
+
+    repo = tmp_path / "jarvis_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "master", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Tester"], check=True)
+    (repo / "improver.txt").write_text("good\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "improver.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "good"], check=True, capture_output=True)
+    sha_good = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+    (repo / "improver.txt").write_text("regressed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "improver.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "bad"], check=True, capture_output=True)
+    sha_bad = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    assert sha_good != sha_bad
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        self_repo_dir=repo,
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        sandbox_enabled=False,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    rec = Reconciler(db, cfg, hub=TelemetryHub())
+    db.start_improver_probation(
+        rollback_sha=sha_good,
+        baseline_json=json.dumps(
+            {
+                "first_attempt_pass_rate": 0.9,
+                "friction_per_100_turns": 2.0,
+                "median_usd_per_solved_task": 1.0,
+            }
+        ),
+        until_iso="2999-01-01T00:00:00Z",
+    )
+    _seed_meta(
+        db,
+        tasks=PROBATION_MIN_TASKS,
+        failures=PROBATION_MIN_TASKS,
+        turns=PROBATION_MIN_TURNS,
+        bad_turns=PROBATION_MIN_TURNS,
+    )
+    await rec._check_improver_probation()
+    approvals = [row for row in db.list_outbox() if row.kind == "approval_request"]
+    assert len(approvals) == 1
+    assert approvals[0].task_id is None
+
+    server = BrainServer(db, rec, cfg)
+    headers = {"Authorization": "Bearer secret-token"}
+    async with TestClient(TestServer(server.app)) as client:
+        # Approve through the live morning brief flow.
+        brief_resp = await client.post("/v1/runs", json={"input": "morning brief"}, headers=headers)
+        run_id = (await brief_resp.json())["run_id"]
+        async with client.get(f"/v1/runs/{run_id}/events", headers=headers) as sse:
+            async for raw_line in sse.content:
+                line = raw_line.decode("utf-8").strip()
+                if not line.startswith("data:"):
+                    continue
+                ev = json.loads(line.removeprefix("data:").strip())
+                if ev.get("event") == "approval.request":
+                    ans = await client.post(
+                        f"/v1/runs/{run_id}/answer",
+                        json={"answer": "yes", "request_id": ev["request_id"]},
+                        headers=headers,
+                    )
+                    assert ans.status == 200
+                elif ev.get("event") == "run.completed":
+                    assert sha_good[:7] in ev["output"]
+                    break
+
+    assert subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip() == sha_good
+    assert rec.restart_pending is True
+    await rec.stop()
+    db.close()

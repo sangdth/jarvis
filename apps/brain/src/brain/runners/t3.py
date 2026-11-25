@@ -355,7 +355,7 @@ class T3Runner:
             if not run_id:
                 return
             if status in _ACTIVE:
-                state.runs[run_id] = status
+                state.runs[run_id] = str(status)
                 return
             state.runs.pop(run_id, None)
             text = state.last_text.pop(run_id, "")
@@ -406,7 +406,7 @@ class T3Runner:
             return []
         return [
             AgentSession(
-                id=t["id"], title=t["title"], cwd=t["projectRoot"], branch=t["branch"],
+                id=t["id"], title=t["title"], cwd=t["root"], branch=t["branch"],
                 running=t["status"] in _ACTIVE,
                 updated_at=datetime.fromisoformat(t["updatedAt"]).timestamp() if t["updatedAt"] else 0.0,
             )

@@ -43,8 +43,8 @@ Website: [sangdth.github.io/jarvis](https://sangdth.github.io/jarvis/) (source i
 | Hear only speech meant for Jarvis | `ExecutiveFilter` (decision model)          | `executive_filter.py` |
 | Tidy a sentence before the model  | `TranscriptCleaner` (`CLEANUP_MODEL`)       | `cleanup.py`          |
 | "Shut up" / "You can talk"        | `JarvisState` (`VOICE`, `BEEP_ONLY`)        | `state.py`            |
-| Claude Code, OpenCode, the brain  | `*Adapter` classes                          | `*_adapter.py`        |
-| T3 Code, projects by name         | `T3Adapter`                                 | `t3_adapter.py`       |
+| The brain, coding agents          | `BrainClientAdapter`, `PiAdapter`           | `brain_client.py`, `pi_adapter.py` |
+| T3 Code, projects by name         | `T3Runner`                                  | `runners/t3.py`       |
 | Memory                            | Mem0 + Qdrant + Ollama `bge-m3`             | `memory.py`           |
 | Goals, problems, overnight work   | `Reconciler` + `pi` workers in worktrees    | `reconciler.py`       |
 | Its own board, spend and approvals| SQLite WAL + one HTTP/SSE/WS gateway        | `server.py`           |

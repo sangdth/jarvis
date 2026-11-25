@@ -20,6 +20,7 @@ from brain.evals import normalized, read_cases, suite_path
 from brain.orchestrator import BrainOrchestrator
 from brain.reconciler import Reconciler
 from brain.telemetry import TelemetryHub
+from jarvis_core.home import brain_home
 
 MIN_ACCURACY = 0.95
 MAX_P50_MS = 800  # the voice waits on this call before it can answer
@@ -78,7 +79,7 @@ def case_id(text: str) -> str:
     return normalized(text)
 
 
-def load_cases(cfg: Settings, split: str, seed: bool) -> list[dict[str, str]]:
+def load_cases(home_dir: Path, split: str, seed: bool) -> list[dict[str, str]]:
     cases: list[dict[str, str]] = []
     if seed and split in ("held_in", "all"):
         cases += [
@@ -86,7 +87,7 @@ def load_cases(cfg: Settings, split: str, seed: bool) -> list[dict[str, str]]:
         ]
     splits = ["held_in"] if split == "held_in" else ["held_out"] if split == "held_out" else ["held_in", "held_out"]
     for name in splits:
-        for case in read_cases(suite_path(cfg.home_dir, name, "brain_route")):
+        for case in read_cases(suite_path(home_dir, name, "brain_route")):
             cases.append({str(k): str(v) for k, v in case.items()})
     return cases
 
@@ -109,12 +110,13 @@ def matches(choice: dict, case: dict[str, str]) -> bool:
 
 
 async def main(rounds: int, split: str, dump: Path | None, seed: bool) -> int:
+    source_home = brain_home()
     # A throwaway state home: the benchmark must never recover timers or sync skills in the live board.
     cfg = Settings(home_dir=Path(tempfile.mkdtemp(prefix="bench-route-")))
     if not cfg.openrouter_api_key:
         print("OPENROUTER_API_KEY is not set.")
         return 2
-    cases = load_cases(cfg, split, seed)
+    cases = load_cases(source_home, split, seed)
     if not cases:
         print(f"no {split} cases: run the Improver once so evals.py can harvest them, or drop --no-seed")
         return 2

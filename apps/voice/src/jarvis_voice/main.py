@@ -32,43 +32,16 @@ from jarvis_voice.prompts import LANGUAGES, enrollment_step_prompt, greeting_pro
 from jarvis_voice.sessions import AgentSession, CodingSessionAdapter
 from jarvis_voice.state import JarvisState
 from jarvis_voice.system_prompts import build_retell_prompt, load_overrides
-from jarvis_voice.t3_adapter import current_thread, recent_threads
 
 
 async def pick_connection(orchestrator: AgentOrchestrator, target: str) -> dict[str, Any]:
     """`jarvis connect [agent]`: pick the session every task goes to this run."""
-    t3 = orchestrator.t3
-    if t3 is not None and (target == "t3" or target == t3.config.id):
-        return await pick_thread(orchestrator)
     brain = orchestrator.adapters.get("brain")
     if isinstance(brain, BrainClientAdapter) and target in ("t3", "brain", "claude", "opencode"):
         # The brain owns the T3 threads and the named clients, so its picker serves every one of them.
         brain.runner = "t3" if target in ("t3", "brain") else target
         return await pick_session(orchestrator, "brain")
     return await pick_session(orchestrator, target)
-
-
-async def pick_thread(orchestrator: AgentOrchestrator) -> dict[str, Any]:
-    """`jarvis connect`: attach T3 Code to the thread this runs in (a T3 project script), else to one picked here."""
-    t3 = orchestrator.t3
-    if t3 is None:
-        sys.exit("jarvis connect needs a T3 Code agent enabled in agents.json.")
-    try:
-        snapshot = await t3.shell_snapshot()
-    except Exception as exc:
-        sys.exit(f"Could not read T3 threads; is the T3 app running? ({exc!r})")
-    root = os.environ.get("T3CODE_PROJECT_ROOT")  # set only in a T3 project script
-    thread = current_thread(snapshot, root, os.environ.get("T3CODE_WORKTREE_PATH")) if root else None
-    if not thread:
-        threads = recent_threads(snapshot)
-        if not threads:
-            sys.exit("No T3 threads to connect to.")
-        labels = [f"{t['project']}: {t['title']}  ({t['status']}, {_when(t['updatedAt'])})" for t in threads]
-        thread = threads[choose("Your recent T3 Code threads", labels, "Thread to continue")]
-    # Its waiting question, if any, is read out once T3 Code connects.
-    t3.attach(thread["id"], thread["root"], connected=True, title=thread["title"])
-    logger.info(f"Connected to T3 thread {thread['id']} ({thread['title']}, {thread['root']})")
-    return {**thread, "agent_id": t3.config.id, "agent_name": t3.config.name}
 
 
 async def pick_session(orchestrator: AgentOrchestrator, agent_id: str) -> dict[str, Any]:
@@ -114,7 +87,7 @@ def _when(moment: str | float | None) -> str:
 
 def _thread_for_this_folder(sessions: list[AgentSession]) -> int | None:
     """A T3 project script names its folder and nothing else: take the first thread there, no keyboard prompt."""
-    root = os.environ.get("T3CODE_PROJECT_ROOT") or os.environ.get("T3CODE_WORKTREE_PATH")
+    root = os.environ.get("T3CODE_WORKTREE_PATH") or os.environ.get("T3CODE_PROJECT_ROOT")
     if not root:
         return None
     wanted = Path(root).expanduser().resolve()
@@ -200,7 +173,6 @@ async def run_pipecat_harness(
     relay: Any = None,
     status: dict[str, Any] | None = None,
     hub_emit: Any = None,
-    on_memory: Any = None,
     enroll_owner: bool = False,
 ) -> VoiceProfile | None:
     """Assemble and run the full Pipecat voice pipeline + background coding agent watchers.
@@ -494,9 +466,6 @@ async def run_pipecat_harness(
     memory = create_memory_service() if llm is not None and not enroll_owner else None
     if memory is not None:
         processors.append(memory)
-        if on_memory is not None:
-            # The brain shares this process: hand it the live client so curation never opens a second Qdrant.
-            on_memory(getattr(memory, "memory_client", None))
     if llm is not None:
         processors.append(llm)
 

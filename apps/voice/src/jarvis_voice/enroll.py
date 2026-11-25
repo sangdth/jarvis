@@ -11,18 +11,11 @@ import asyncio
 import os
 import sys
 
-from jarvis.init import ENV_PATH, set_env
+from jarvis_core.home import JARVIS_HOME, set_env
 from jarvis_voice.config import settings
 from jarvis_voice.speaker import VOICEPRINT_PATH
 
-# Kept for score-tuning scripts and tests: sits just below the lowest seen owner score, capped for short commands.
-THRESHOLD_MARGIN = 0.05
-MAX_SUGGESTED_THRESHOLD = 0.40
-
-
-def suggest_threshold(scores: list[float]) -> float:
-    """A threshold just under the lowest score of your own unseen sentences."""
-    return min(round(min(scores) - THRESHOLD_MARGIN, 2), MAX_SUGGESTED_THRESHOLD)
+ENV_PATH = JARVIS_HOME / ".env"
 
 
 def main() -> None:

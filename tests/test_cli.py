@@ -147,6 +147,32 @@ class HttpTest(unittest.TestCase):
             cli.call("GET", "/v1/status")
         self.assertIn("refused the token", str(stopped.exception))
 
+    def test_self_check_runs_brain_self_check_and_exits_with_its_code(self) -> None:
+        for code in (0, 2):
+            with patch("brain.cli.run_self_check", return_value=code) as check, \
+                    self.assertRaises(SystemExit) as stopped:
+                cli.dispatch(["self-check"])
+            check.assert_called_once_with()
+            self.assertEqual(stopped.exception.code, code)
+
+    def test_traces_failed_filters_by_errored_outcome(self) -> None:
+        with patch.object(cli, "call", return_value={"traces": []}) as called, patch("builtins.print"):
+            cli.dispatch(["traces", "--failed"])
+        called.assert_called_once_with("GET", "/v1/traces", params={"limit": 30, "outcome": "errored"})
+
+        with patch.object(cli, "call", return_value={"traces": []}) as called, patch("builtins.print"):
+            cli.dispatch(["traces", "--failed", "--outcome", "ok"])
+        called.assert_called_once_with("GET", "/v1/traces", params={"limit": 30, "outcome": "ok"})
+
+    def test_traces_diff_accepts_range_and_two_args(self) -> None:
+        with patch.object(cli, "call", return_value={"stats": []}) as called, patch("builtins.print"):
+            cli.dispatch(["traces", "diff", "abc..def"])
+        called.assert_called_once_with("GET", "/v1/traces/diff", params={"base": "abc", "head": "def"})
+
+        with patch.object(cli, "call", return_value={"stats": []}) as called, patch("builtins.print"):
+            cli.dispatch(["traces", "diff", "abc", "def"])
+        called.assert_called_once_with("GET", "/v1/traces/diff", params={"base": "abc", "head": "def"})
+
 
 class ServiceTest(unittest.TestCase):
     def test_start_builds_everything_starts_it_and_opens_the_dashboard(self) -> None:

@@ -7,24 +7,10 @@ key and memory stays on the Mac running Jarvis; this app is a mic tap, a resampl
 curl -fsSL 'http://<mac-mini>:8643/install-app' | sh
 ```
 
-That installs `/Applications/Jarvis.app` (or `~/Applications` when `/Applications` is not writable), clears the
-download's quarantine flag, writes only the server URL to `~/.config/jarvis-remote/server`, and opens it. A raw
-[`/Jarvis.app.zip`](http://localhost:8643/Jarvis.app.zip) download works too; put the URL in Settings by hand.
-
-Without a Jarvis to ask, the newest build is on the rolling [releases page](https://github.com/sangdth/jarvis/releases/tag/connect).
-The repo is private, so that page needs a signed-in browser; from a terminal:
-
-```bash
-# download only
-gh release download connect --repo sangdth/jarvis --pattern '*.dmg' --dir ~/Downloads
-
-# or download, install, and clear the quarantine flag so Gatekeeper does not block the first launch
-gh release download connect --repo sangdth/jarvis --pattern 'install-connect.sh' --dir /tmp --clobber
-sh /tmp/install-connect.sh http://mac-mini:8643     # the address is optional; Settings takes it too
-```
-
-By hand: open `Jarvis.Connect.dmg`, drag `Jarvis.app` to Applications, then allow it once in Privacy & Security
-(ad-hoc signature, not notarized).
+That installs `/Applications/Jarvis.app` (or `~/Applications` when `/Applications` is not writable), verifies its
+code signature (`codesign --verify --deep --strict`), clears the download's quarantine flag, writes only the server URL
+to `~/.config/jarvis-remote/server`, and opens it. A raw [`/Jarvis.app.zip`](http://localhost:8643/Jarvis.app.zip)
+download works too; put the URL in Settings by hand.
 
 ## What it does
 
@@ -49,8 +35,8 @@ with `codesign --verify --deep --strict`, swaps the bundle, and relaunches. The 
 
 Limits: ad-hoc signing (`codesign -s -`) changes the bundle's hash on every build, so macOS may ask for the
 Microphone again after an update; an Apple Development identity in the keychain avoids that. In-place updates assume
-the bundle is writable — otherwise install again with `/install-app`. An app downloaded from the release (not
-installed through `/install-app`, which clears the quarantine flag) is blocked on first launch, because ad-hoc
+the bundle is writable — otherwise install again with `/install-app`. A manual browser download of `/Jarvis.app.zip`
+(not installed through `/install-app`, which clears the quarantine flag) is blocked on first launch, because ad-hoc
 signatures are not notarized: allow it once in System Settings → Privacy & Security → Open Anyway, or run
 `xattr -dr com.apple.quarantine /Applications/Jarvis.app`.
 
@@ -61,7 +47,6 @@ sh apps/connect/build.sh      # or: just mac
 ```
 
 Writes `target/connect/Jarvis.app` and `target/connect/Jarvis.app.zip`, signed ad-hoc (or with an Apple Development
-identity when one is in the keychain). `.github/workflows/connect.yml` does the same on every push to master and
-keeps the zip as the `connect` workflow artifact. Needs only the Command Line Tools (`xcode-select --install`):
+identity when one is in the keychain). Needs only the Command Line Tools (`xcode-select --install`):
 the sources are `src/JarvisApp.swift` (the window), `src/AppModel.swift` (state and the update),
 `src/ApiClient.swift` (health, pairing, credentials) and `src/AudioRelay.swift` (the socket and the audio).

@@ -197,7 +197,7 @@ def sanitize_event(event: dict[str, Any], secrets: list[str] | None = None) -> d
     name = str(event.get("event") or "")
     if name in _DROP_EVENTS:
         return None
-    if name == EVENT_VOICE_STT and event.get("room") is True:
+    if name == EVENT_VOICE_STT and (event.get("room") is True or event.get("passed") is False):
         return None
     secrets = _secret_values() if secrets is None else secrets
     out: dict[str, Any] = {}
@@ -232,6 +232,7 @@ class TraceSink:
         self.hub = hub
         self._queue: asyncio.Queue[dict[str, Any]] | None = None
         self._task: asyncio.Task[None] | None = None
+        self._export_tasks: set[asyncio.Task[None]] = set()
         self._buffers: dict[str, dict[str, Any]] = {}
         self._last_by_session: dict[str, dict[str, Any]] = {}
         self._recent: deque[dict[str, Any]] = deque(maxlen=20)
@@ -263,6 +264,11 @@ class TraceSink:
         for buffer in list(self._buffers.values()):
             self._flush(buffer, force=True)
         self._buffers.clear()
+        for export_task in list(self._export_tasks):
+            export_task.cancel()
+        if self._export_tasks:
+            await asyncio.gather(*list(self._export_tasks), return_exceptions=True)
+        self._export_tasks.clear()
 
     def _on_event(self, envelope: dict[str, Any]) -> None:
         queue = self._queue
@@ -719,7 +725,12 @@ class TraceSink:
                 }
             ]
         }
-        asyncio.create_task(self._post_otlp(endpoint, payload))
+        try:
+            task = asyncio.create_task(self._post_otlp(endpoint, payload))
+        except RuntimeError:
+            return
+        self._export_tasks.add(task)
+        task.add_done_callback(self._export_tasks.discard)
 
     @staticmethod
     async def _post_otlp(endpoint: str, payload: dict[str, Any]) -> None:

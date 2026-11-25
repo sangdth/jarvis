@@ -156,6 +156,17 @@ class InitTest(unittest.TestCase):
             init.set_env("MEETING_GUESTS", "allow", env)
             self.assertEqual(env.read_text(), "MASTER_CHECK=true\nOTHER=1\nMEETING_GUESTS=allow\n")
             self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], [".env"])
+
+    def test_set_env_creates_new_file_atomically_with_0600(self):
+        from jarvis_core.home import set_env
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Path(tmp) / "nested" / ".env"
+            set_env("MASTER_CHECK", "true", env)
+            self.assertEqual(env.read_text(), "MASTER_CHECK=true\n")
+            self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+            self.assertEqual([p.name for p in env.parent.iterdir()], [".env"])
 
 
 if __name__ == "__main__":

@@ -39,7 +39,7 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
         import tempfile
 
         with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
-            json.dump({"agents": [{"id": "claude", "name": "Claude", "type": "claude_code"}]}, f)
+            json.dump({"agents": [{"id": "brain", "name": "Brain", "type": "brain"}]}, f)
             f.flush()
             with patch("jarvis_voice.orchestrator.settings.default_coding_agent", "opencod"):
                 with self.assertRaisesRegex(ValueError, "opencod"):
@@ -68,18 +68,18 @@ class TestAgentRouting(unittest.IsolatedAsyncioTestCase):
         self.assertIs(orch.find_waiting(None), hermes)
 
     async def test_start_all_with_connected_agent_skips_other_coding_watchers(self) -> None:
+        from jarvis_voice.brain_client import BrainClientAdapter
         from jarvis_voice.sessions import CodingSessionAdapter
-        from jarvis_voice.t3_adapter import T3Adapter
 
-        t3 = MagicMock(spec=T3Adapter, connected=True, start=AsyncMock())
-        opencode = MagicMock(spec=CodingSessionAdapter, connected=False, start=AsyncMock())
+        brain = MagicMock(spec=BrainClientAdapter, connected=True, start=AsyncMock())
+        other = MagicMock(spec=CodingSessionAdapter, connected=False, start=AsyncMock())
         hermes = fake_adapter("hermes")
         hermes.start = AsyncMock()
-        self.orch.adapters.update({"t3-code": t3, "opencode": opencode, "hermes": hermes})
+        self.orch.adapters.update({"brain": brain, "pi": other, "hermes": hermes})
         await self.orch.start_all()
-        t3.start.assert_awaited_once()
+        brain.start.assert_awaited_once()
         hermes.start.assert_awaited_once()
-        opencode.start.assert_not_awaited()
+        other.start.assert_not_awaited()
 
 
 

@@ -100,7 +100,12 @@ class RunRecord:
     def publish(self, event: dict[str, Any]) -> None:
         self.events.append(event)
         for q in list(self.subscribers):
-            q.put_nowait(event)
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                with contextlib.suppress(asyncio.QueueEmpty, asyncio.QueueFull):
+                    q.get_nowait()
+                    q.put_nowait(event)
         if self.mirror is not None:
             self.mirror(event)
 
@@ -224,15 +229,10 @@ class BrainServer:
         token = self.request_token(request)
         if self._is_owner(token):
             return await handler(request)
-        if request.path.startswith("/v1/telemetry/"):
-            # The pairing code rides the telemetry stream, so a paired device must not read it: only the owner's
-            # token does, which is the one `jarvis dashboard` already uses.
-            return web.json_response({"error": "owner token required"}, status=401)
-        if request.path.startswith(("/v1/pair/", "/v1/devices")):
-            # Minting and revoking devices is the owner's business; a paired device cannot do it.
-            return web.json_response({"error": "owner token required"}, status=401)
         if self.devices.verify(token) is not None:
-            return await handler(request)
+            if request.method == "GET" and request.path == "/v1/status":
+                return await handler(request)
+            return web.json_response({"error": "owner token required"}, status=401)
         return web.json_response({"error": "Unauthorized"}, status=401)
 
     def _is_owner(self, token: str) -> bool:
@@ -333,7 +333,12 @@ class BrainServer:
 
     def _publish_global(self, event: dict[str, Any]) -> None:
         for queue in list(self._global_subscribers):
-            queue.put_nowait(event)
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                with contextlib.suppress(asyncio.QueueEmpty, asyncio.QueueFull):
+                    queue.get_nowait()
+                    queue.put_nowait(event)
 
     async def handle_events(self, request: web.Request) -> web.StreamResponse:
         """The daemon-to-voice stream: events no voice-initiated run is waiting on (a T3 thread finished,
@@ -348,7 +353,7 @@ class BrainServer:
             },
         )
         await resp.prepare(request)
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
         self._global_subscribers.add(queue)
         try:
             await resp.write(b": brain events connected\n\n")
@@ -946,8 +951,8 @@ class BrainServer:
         )
         await resp.prepare(request)
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        for past in rec.events:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
+        for past in rec.events[-256:]:
             queue.put_nowait(past)
         rec.subscribers.add(queue)
 
@@ -1045,6 +1050,27 @@ class BrainServer:
                 task_id=row.task_id,
                 approved=approved,
                 source="dashboard",
+            )
+        try:
+            details = json.loads(row.details_json or "{}")
+        except ValueError:
+            details = {}
+        if approved and isinstance(details, dict) and details.get("rollback_sha"):
+            self.db.mark_outbox_consumed(row.id)
+            raw_pid = details.get("proposal_id")
+            proposal_id = int(raw_pid) if raw_pid is not None else None
+            rolled_back = await self.reconciler.apply_rollback(
+                str(details["rollback_sha"]), proposal_id=proposal_id
+            )
+            self._schedule_restart_if_pending()
+            return web.json_response(
+                {
+                    "ok": True,
+                    "id": row.id,
+                    "status": row.status,
+                    "task_id": row.task_id,
+                    "rolled_back": rolled_back,
+                }
             )
         if approved and row.task_id:
             self.reconciler.wake()
@@ -1451,6 +1477,36 @@ class BrainServer:
                     approved = is_approval(answer)
 
                     outbox_row = self.db.resolve_approval(pending_approval.id, approved)
+                    try:
+                        ob_details = (
+                            json.loads(outbox_row.details_json or "{}") if outbox_row else {}
+                        )
+                    except ValueError:
+                        ob_details = {}
+                    if (
+                        approved
+                        and outbox_row is not None
+                        and isinstance(ob_details, dict)
+                        and ob_details.get("rollback_sha")
+                    ):
+                        self.db.mark_outbox_consumed(outbox_row.id)
+                        raw_pid = ob_details.get("proposal_id")
+                        proposal_id = int(raw_pid) if raw_pid is not None else None
+                        rollback_sha = str(ob_details["rollback_sha"])
+                        rolled_back = await self.reconciler.apply_rollback(
+                            rollback_sha, proposal_id=proposal_id
+                        )
+                        rec.output = (
+                            f"Rolled back to {rollback_sha[:7]}."
+                            if rolled_back
+                            else f"Rollback to {rollback_sha[:7]} failed."
+                        )
+                        rec.status = "completed"
+                        rec.publish(
+                            {"event": "run.completed", "run_id": rec.run_id, "output": rec.output}
+                        )
+                        self._schedule_restart_if_pending()
+                        return
                     if (
                         approved
                         and outbox_row is not None

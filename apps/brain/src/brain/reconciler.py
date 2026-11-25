@@ -56,7 +56,6 @@ from brain.telemetry import (
 )
 from brain.traces import HARNESS_SURFACES, classify_surface, distill_experience
 from brain.upgrade import GitState, classify_git_state
-from brain.voice_memory import curate_voice_memory
 from brain.weights import laya_intent_ready
 from jarvis_core.home import JARVIS_HOME
 
@@ -72,7 +71,7 @@ BUILDER_TOOLS = (
 )
 IMPROVER_TOOLS = (
     "read,grep,find,ls,propose_skill_change,propose_memory_update,propose_harness_task,"
-    "curate_voice_memory,propose_weight_update"
+    "propose_weight_update"
 )
 SCOUT_TOOLS = "read,grep,find,ls"
 _METRIC_LINE_RE = re.compile(r"\bMETRIC\s*[:=]\s*(-?\d+(?:\.\d+)?)(?![\d.])", re.IGNORECASE)
@@ -277,8 +276,6 @@ class Reconciler:
         self.hub = hub if hub is not None else TelemetryHub()
         self.restart_pending: bool = False
         self._last_phase: str | None = None
-        # The voice's live Mem0 client, attached by the supervisor when both run in one process.
-        self.voice_memory: Any | None = None
         self.cfg.worktrees_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.cfg.notes_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -312,10 +309,6 @@ class Reconciler:
         target.write_text(source_text, encoding="utf-8")
         os.chmod(target, 0o600)
         return target
-
-    def attach_voice_memory(self, client: Any | None) -> None:
-        """The voice's live Mem0 client, so curation shares its Qdrant handle instead of opening a second one."""
-        self.voice_memory = client
 
     def start(self) -> None:
         if self._loop_task is None or self._loop_task.done():
@@ -1084,7 +1077,7 @@ class Reconciler:
                 self.db.set_harness_outcome(proposal_id=proposal.id, outcome="falsified")
                 self.db.queue_outbox(
                     kind="approval_request",
-                    task_id=proposal.task_id,
+                    task_id=None,
                     summary_spoken=(
                         f"Roll back the {proposal.surface} fix? Its failure rate rose from "
                         f"{proposal.baseline_fail_rate:.0%} to {rate:.0%} over {total} runs."
@@ -1420,7 +1413,6 @@ class Reconciler:
         diagnostics: list[str] = []
         modified_skills: list[str] = []
         modified_memory: list[str] = []
-        curated_voice: list[str] = []
         stream_state = PiStreamState(session_id=resume_session_id)
         extra_scout_cost = 0.0
         timed_out = False
@@ -1711,7 +1703,7 @@ class Reconciler:
                         raise ValueError("A weight update needs a reason: what the data shows.")
                     if target == "laya-intent":
                         cursor = int(memory.read_bookmarks(self.cfg.home_dir).get("laya_intent_cursor", "0") or 0)
-                        ready_now, why = laya_intent_ready(self.cfg.home_dir, bookmark_cursor=cursor)
+                        ready_now, why = laya_intent_ready(JARVIS_HOME, bookmark_cursor=cursor)
                     else:
                         ready_now, why = True, "thresholds are checked by the training task itself"
                     queued_weight = self.db.upsert_task(
@@ -1737,16 +1729,6 @@ class Reconciler:
                             "gate": why,
                         },
                     }
-                elif method == "curate_voice_memory":
-                    if role != "improver":
-                        raise ValueError(
-                            "curate_voice_memory is only permitted for the improver role."
-                        )
-                    if curated_voice:
-                        raise ValueError("Updates are scoped to one voice-memory change per reflection run.")
-                    curated = curate_voice_memory(self.voice_memory, params)
-                    curated_voice.append(str(curated.get("memory_id") or ""))
-                    resp = {"ok": True, "result": curated}
                 elif method == "schedule_followup":
                     if role not in ("planner", "builder"):
                         raise ValueError("schedule_followup is only permitted for planner or builder roles.")
@@ -1827,8 +1809,6 @@ class Reconciler:
                 detail = str(result.get("name") or "")
             elif method == "propose_harness_task":
                 detail = str(result.get("id") or "")
-            elif method == "curate_voice_memory":
-                detail = str(result.get("op") or "")
             elif method == "propose_weight_update":
                 detail = str(result.get("id") or "")
             elif method == "schedule_followup":
@@ -2232,6 +2212,7 @@ class Reconciler:
         extra_pythonpath: list[str] | None = None,
         timeout_seconds: float | None = None,
         extra_env: dict[str, str] | None = None,
+        allow_read_held_out: bool = False,
     ) -> tuple[bool, str]:
         cmd = wrap_with_sandbox(
             raw_cmd,
@@ -2239,6 +2220,7 @@ class Reconciler:
             session_dir=session_dir,
             notes_dir=self.cfg.notes_dir,
             home_dir=self.cfg.home_dir,
+            allow_read_held_out=allow_read_held_out,
             enabled=self.cfg.sandbox_enabled,
             deny_env_file=False,  # pytest imports the settings that read `JARVIS_HOME/.env`
         )
@@ -2329,7 +2311,10 @@ class Reconciler:
                 label=script,
                 extra_pythonpath=[str(path) for path in sources if path.is_dir()],
                 timeout_seconds=self.cfg.verify_timeout_seconds * 6,
-                extra_env={"OPENROUTER_API_KEY": self.cfg.openrouter_api_key},
+                extra_env={
+                    "OPENROUTER_API_KEY": self.cfg.openrouter_api_key,
+                    "BRAIN_HOME": str(self.cfg.home_dir),
+                },
             )
             outputs.append(f"{script}: {'pass' if ok else 'FAIL'}\n{output[-1500:]}")
             if not ok:
@@ -2357,15 +2342,19 @@ class Reconciler:
             script, _ = EVAL_GATES[suite]
             if not (self.cfg.home_dir / "evals" / "held_out" / f"{suite}.jsonl").is_file():
                 continue  # nothing harvested yet: Phase 2 has no sealed set to protect
-            baseline, base_metrics = await self._run_eval_split(
+            baseline, base_metrics, base_ok = await self._run_eval_split(
                 repo_dir, repo_dir, worktree_dir, script, suite, "held_out", session_dir
             )
-            candidate, cand_metrics = await self._run_eval_split(
+            candidate, cand_metrics, cand_ok = await self._run_eval_split(
                 repo_dir, worktree_dir, worktree_dir, script, suite, "held_out", session_dir
             )
+            if not baseline or not candidate:
+                return False, f"{suite}: held-out eval failed to produce results"
             regressed = sorted(key for key, ok in baseline.items() if ok and not candidate.get(key, False))
             if regressed:
                 return False, f"{suite}: {len(regressed)} held-out case(s) regressed"
+            if not base_ok or not cand_ok:
+                return False, f"{suite}: held-out eval exited non-zero"
             if base_metrics and cand_metrics:
                 winner = select_winner(
                     [
@@ -2388,15 +2377,19 @@ class Reconciler:
                     return False, f"{suite}: the candidate did not earn the change on accuracy, latency and cost"
             is_harness_fix = (task.dedupe_key or "").startswith("harness:")
             if is_harness_fix:
-                base_in, _ = await self._run_eval_split(
+                base_in, _, _ = await self._run_eval_split(
                     repo_dir, repo_dir, worktree_dir, script, suite, "held_in", session_dir
                 )
-                cand_in, _ = await self._run_eval_split(
+                cand_in, _, cand_in_ok = await self._run_eval_split(
                     repo_dir, worktree_dir, worktree_dir, script, suite, "held_in", session_dir
                 )
+                if not base_in or not cand_in:
+                    return False, f"{suite}: held-in eval failed to produce results"
                 fixed = [key for key, ok in base_in.items() if not ok and cand_in.get(key)]
-                if base_in and not fixed:
+                if not fixed:
                     return False, f"{suite}: a harness fix must make at least one held-in case pass"
+                if not cand_in_ok:
+                    return False, f"{suite}: held-in eval exited non-zero"
             outputs.append(f"{suite}: {len(candidate)} held-out cases, 0 regressions")
         return True, "\n\n".join(outputs)
 
@@ -2409,29 +2402,35 @@ class Reconciler:
         suite: str,
         split: str,
         session_dir: Path,
-    ) -> tuple[dict[str, bool], dict[str, float]]:
-        """One benchmark run: which cases passed, and the `METRICS:` line it printed (empty if it printed none)."""
+    ) -> tuple[dict[str, bool], dict[str, float], bool]:
+        """One benchmark run: case results, parsed `METRICS:`, and whether it exited 0 with a valid dump."""
         dump = session_dir / f"eval-{suite}-{split}-{code_root.name}.json"
         dump.unlink(missing_ok=True)
         sources = [code_root / "src", code_root]
         sources += sorted((code_root / "apps").glob("*/src"))
         sources += sorted((code_root / "packages").glob("*/src"))
-        _, output = await self._run_sandboxed_cmd(
+        cmd_ok, output = await self._run_sandboxed_cmd(
             [sys.executable, str(script_root / script), "--split", split, "--dump-results", str(dump)],
             worktree_dir=worktree_dir,
             session_dir=session_dir,
             label=f"{script} {split}",
             extra_pythonpath=[str(path) for path in sources if path.is_dir()],
             timeout_seconds=self.cfg.verify_timeout_seconds * 8,
-            extra_env={"OPENROUTER_API_KEY": self.cfg.openrouter_api_key},
+            extra_env={
+                "OPENROUTER_API_KEY": self.cfg.openrouter_api_key,
+                "BRAIN_HOME": str(self.cfg.home_dir),
+            },
+            allow_read_held_out=True,
         )
         try:
             raw = json.loads(dump.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return {}, parse_metrics(output)
+            return {}, parse_metrics(output), False
         cases = raw.get("cases") if isinstance(raw, dict) else None
-        passed = {str(key): bool(value) for key, value in cases.items()} if isinstance(cases, dict) else {}
-        return passed, parse_metrics(output)
+        if not isinstance(cases, dict):
+            return {}, parse_metrics(output), False
+        passed = {str(key): bool(value) for key, value in cases.items()}
+        return passed, parse_metrics(output), (cmd_ok and bool(passed))
 
     async def _run_held_out_baseline_tests(
         self, repo_dir: Path, worktree_dir: Path, session_dir: Path
@@ -2828,6 +2827,39 @@ class Reconciler:
                 await self._report_self_upgrade_push_rejected(
                     repo_dir, task_id, local_sha=new_head, detail=push_detail
                 )
+        self.db.set_harness_outcome(
+            task_id=task_id, outcome="pushed", applied_sha=new_head, rollback_sha=old_head
+        )
+        self.restart_pending = True
+        return True
+
+    async def apply_rollback(self, rollback_sha: str, *, proposal_id: int | None = None) -> bool:
+        """Reset the self checkout to a recorded rollback SHA, push if origin exists, and mark restart pending."""
+        repo_dir = self.cfg.self_repo_dir
+        if not (repo_dir / ".git").exists():
+            return False
+        if await self._git_rc(repo_dir, "cat-file", "-e", f"{rollback_sha}^{{commit}}") != 0:
+            logger.error(f"[Reconciler] rollback SHA {rollback_sha!r} not found in {repo_dir}")
+            return False
+        dirty = (await self._git_out(repo_dir, "status", "--porcelain", check=False)).strip()
+        if dirty:
+            await self._git_out(
+                repo_dir,
+                "stash",
+                "push",
+                "-u",
+                "-m",
+                "brain-pre-approved-rollback",
+                check=False,
+            )
+        await self._git_out(repo_dir, "reset", "--hard", rollback_sha)
+        remotes = await self._git_out(repo_dir, "remote", check=False)
+        if "origin" in remotes.splitlines():
+            await self._git_out(
+                repo_dir, "push", "origin", "HEAD:master", "--force-with-lease", check=False
+            )
+        if proposal_id is not None:
+            self.db.set_harness_outcome(proposal_id=proposal_id, outcome="rolled_back")
         self.restart_pending = True
         return True
 

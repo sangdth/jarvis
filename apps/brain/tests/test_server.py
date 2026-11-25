@@ -469,9 +469,24 @@ async def test_pairing_hands_each_device_its_own_revocable_secret(tmp_path: Path
         # 4. The code is spent: a replay cannot mint a second device.
         assert (await client.post("/v1/pair", json={"code": code, "name": "x"})).status == 403
 
-        # 5. The device secret works on the API but not on device administration.
+        # 5. The device secret only works on `GET /v1/status` (and `/ws`); every other route needs the owner token.
         device_auth = {"Authorization": f"Bearer {secret}"}
         assert (await client.get("/v1/status", headers=device_auth)).status == 200
+        assert (await client.post("/v1/ask", json={"input": "morning brief"}, headers=device_auth)).status == 401
+        assert (
+            await client.post(
+                "/v1/tasks",
+                json={"kind": "problem", "repo": "jarvis", "title": "x", "spec": "y"},
+                headers=device_auth,
+            )
+        ).status == 401
+        assert (await client.post("/v1/runs", json={"input": "hi"}, headers=device_auth)).status == 401
+        assert (
+            await client.post("/v1/outbox/OB-1/resolve", json={"approved": True}, headers=device_auth)
+        ).status == 401
+        assert (await client.get("/v1/board", headers=device_auth)).status == 401
+        assert (await client.get("/v1/telemetry/snapshot", headers=device_auth)).status == 401
+        assert (await client.get("/v1/telemetry/events", headers=device_auth)).status == 401
         assert (await client.get("/v1/devices", headers=device_auth)).status == 401
         assert (await client.post("/v1/pair/start", headers=device_auth)).status == 401
 

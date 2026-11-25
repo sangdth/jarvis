@@ -13,10 +13,12 @@ use crate::app::AppEvent;
 use crate::config::Config;
 use crate::model::{Turn, TurnKind};
 
+const MAX_PARTIAL_BYTES: usize = 4 * 1024 * 1024;
+
 struct TailState {
     path: Option<PathBuf>,
     offset: u64,
-    partial: String,
+    partial: Vec<u8>,
 }
 
 pub fn tailer_loop(
@@ -28,7 +30,7 @@ pub fn tailer_loop(
     let mut state = TailState {
         path: None,
         offset: 0,
-        partial: String::new(),
+        partial: Vec::new(),
     };
     while !stop.load(Ordering::Relaxed) {
         let pinned = pin.lock().ok().and_then(|guard| guard.clone());
@@ -67,19 +69,23 @@ pub fn tailer_loop(
 fn read_new_turns(path: &Path, state: &mut TailState) -> std::io::Result<Vec<Turn>> {
     let mut file = std::fs::File::open(path)?;
     file.seek(SeekFrom::Start(state.offset))?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf)?;
-    state.offset += buf.len() as u64;
-    state.partial.push_str(&buf);
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)?;
+    state.offset += raw.len() as u64;
+    state.partial.extend_from_slice(&raw);
 
     let mut turns = Vec::new();
-    while let Some(idx) = state.partial.find('\n') {
-        let line: String = state.partial.drain(..=idx).collect();
-        let line = line.trim();
+    while let Some(idx) = state.partial.iter().position(|&b| b == b'\n') {
+        let line_bytes: Vec<u8> = state.partial.drain(..=idx).collect();
+        let decoded = String::from_utf8_lossy(&line_bytes);
+        let line = decoded.trim();
         if line.is_empty() {
             continue;
         }
         turns.extend(parse_line(line));
+    }
+    if state.partial.len() > MAX_PARTIAL_BYTES {
+        state.partial.clear();
     }
     Ok(turns)
 }
@@ -327,5 +333,51 @@ mod tests {
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].kind, TurnKind::User);
         assert_eq!(turns[0].body, "fix the bug");
+    }
+
+    #[test]
+    fn read_new_turns_recovers_from_invalid_utf8_and_caps_partial() {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join(format!(
+            "jarvis-dashboard-session-utf8-{}.jsonl",
+            std::process::id()
+        ));
+        let mut raw = Vec::new();
+        raw.extend_from_slice(br#"{"message":{"role":"user","content":"first valid"}}"#);
+        raw.push(b'\n');
+        raw.extend_from_slice(&[b'b', b'a', b'd', 0xff, 0xfe, b'\n']);
+        raw.extend_from_slice(br#"{"message":{"role":"user","content":"second valid"}}"#);
+        raw.push(b'\n');
+        std::fs::write(&path, &raw).unwrap();
+
+        let mut state = TailState {
+            path: Some(path.clone()),
+            offset: 0,
+            partial: Vec::new(),
+        };
+        let turns = read_new_turns(&path, &mut state).unwrap();
+        let user_bodies: Vec<&str> = turns
+            .iter()
+            .filter(|t| t.kind == TurnKind::User)
+            .map(|t| t.body.as_str())
+            .collect();
+        assert_eq!(user_bodies, vec!["first valid", "second valid"]);
+        assert_eq!(state.offset, raw.len() as u64);
+
+        // Appending another turn after invalid bytes keeps tailing cleanly.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, r#"{{"message":{{"role":"user","content":"third valid"}}}}"#).unwrap();
+        let more = read_new_turns(&path, &mut state).unwrap();
+        assert_eq!(more.len(), 1);
+        assert_eq!(more[0].body, "third valid");
+
+        // An unbounded line with no newline clears the partial buffer once it exceeds the cap.
+        let giant = vec![b'x'; MAX_PARTIAL_BYTES + 1];
+        file.write_all(&giant).unwrap();
+        let _ = read_new_turns(&path, &mut state).unwrap();
+        assert!(state.partial.is_empty());
+
+        let _ = std::fs::remove_file(&path);
     }
 }

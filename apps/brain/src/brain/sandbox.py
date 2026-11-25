@@ -27,7 +27,11 @@ def strip_secrets(env: dict[str, str]) -> dict[str, str]:
 
 
 def _deny_reads(
-    home_dir: Path | None, *, allow_read_traces: bool = False, deny_env_file: bool = True
+    home_dir: Path | None,
+    *,
+    allow_read_traces: bool = False,
+    allow_read_held_out: bool = False,
+    deny_env_file: bool = True,
 ) -> list[str]:
     """`deny file-read-data` lines for the credentials and the board: no worker needs to read them."""
     lines: list[str] = []
@@ -52,8 +56,9 @@ def _deny_reads(
             lines.append(f'(deny file-read-data (literal "{_escape_sb_path(home_dir / db_name)}"))')
         if not allow_read_traces:
             lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "traces")}"))')
-        # Never readable, not even by the Improver: a candidate tuned against the set that measures it is no gate.
-        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "evals" / "held_out")}"))')
+        if not allow_read_held_out:
+            # Never readable by workers or the Improver: a candidate tuned against the set that measures it is no gate.
+            lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "evals" / "held_out")}"))')
     return lines
 
 
@@ -83,6 +88,7 @@ def build_sandbox_profile(
     *,
     home_dir: Path | None = None,
     allow_read_traces: bool = False,
+    allow_read_held_out: bool = False,
     deny_env_file: bool = True,
 ) -> str:
     """
@@ -114,19 +120,26 @@ def build_sandbox_profile(
     if wt_gitdir is not None:
         lines.append(f'(allow file-write* (subpath "{_escape_sb_path(wt_gitdir)}"))')
     lines.extend(
-        _deny_reads(home_dir, allow_read_traces=allow_read_traces, deny_env_file=deny_env_file)
+        _deny_reads(
+            home_dir,
+            allow_read_traces=allow_read_traces,
+            allow_read_held_out=allow_read_held_out,
+            deny_env_file=deny_env_file,
+        )
     )
     lines.append("")
     return "\n".join(lines)
 
 
-def wrap_with_sandbox(    cmd: list[str],
+def wrap_with_sandbox(
+    cmd: list[str],
     *,
     worktree_dir: Path,
     session_dir: Path,
     notes_dir: Path,
     home_dir: Path | None = None,
     allow_read_traces: bool = False,
+    allow_read_held_out: bool = False,
     enabled: bool = True,
     deny_env_file: bool = True,
 ) -> list[str]:
@@ -142,6 +155,7 @@ def wrap_with_sandbox(    cmd: list[str],
             notes_dir,
             home_dir=home_dir,
             allow_read_traces=allow_read_traces,
+            allow_read_held_out=allow_read_held_out,
             deny_env_file=deny_env_file,
         ),
         encoding="utf-8",

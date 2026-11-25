@@ -537,6 +537,10 @@ def dispatch(argv: list[str]) -> None:
 
         with paused_listening():
             return enroll()
+    if cmd == "self-check":
+        from brain.cli import run_self_check
+
+        sys.exit(run_self_check())
 
     # Foreground flags, in any order: `jarvis --meeting`, `jarvis connect pi`, `jarvis --remote` (an old no-op).
     return run_foreground(argv)
@@ -574,8 +578,11 @@ def traces_command(args: list[str]) -> None:
     """`jarvis traces` and the Meta-Harness-style drill-down: list, filter, show one, diff two commits."""
     rest = list(args)
     if rest and rest[0] == "diff":
-        base = rest[1] if len(rest) > 1 else ""
-        head = rest[2] if len(rest) > 2 else ""
+        if len(rest) == 2 and ".." in rest[1]:
+            base, head = rest[1].split("..", 1)
+        else:
+            base = rest[1] if len(rest) > 1 else ""
+            head = rest[2] if len(rest) > 2 else ""
         body = call("GET", "/v1/traces/diff", params={"base": base, "head": head})
         stats = body.get("stats") or []
         if not stats:
@@ -590,9 +597,14 @@ def traces_command(args: list[str]) -> None:
     outcome = _take(rest, "--outcome")
     surface = _take(rest, "--surface")
     search = _take(rest, "--search")
+    failed = "--failed" in rest
+    if failed:
+        rest = [a for a in rest if a != "--failed"]
     params: dict[str, Any] = {"limit": 30}
     if outcome:
         params["outcome"] = outcome
+    elif failed:
+        params["outcome"] = "errored"
     if surface:
         params["surface"] = surface
     if search:

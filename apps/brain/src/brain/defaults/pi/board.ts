@@ -365,30 +365,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "curate_voice_memory",
-		label: "Curate Voice Memory",
-		description:
-			"Improver only: delete a duplicate or contradicted Mem0 memory, or promote one of the owner's durable engineering facts into MEMORY.md. Never crosses namespaces.",
-		promptSnippet: "Delete a duplicate voice memory or promote an owner fact from it.",
-		parameters: {
-			type: "object",
-			properties: {
-				op: { type: "string", enum: ["delete", "promote"] },
-				user_id: { type: "string", description: "'sang' (the owner) or 'speaker:<name>'" },
-				memory_id: { type: "string", description: "The Mem0 memory id from the index above" },
-			},
-			required: ["op", "user_id", "memory_id"],
-		} as never,
-		async execute(_toolCallId, params: Record<string, unknown>) {
-			const res = await callBoardRpc("curate_voice_memory", params);
-			return {
-				content: [{ type: "text", text: JSON.stringify(res) }],
-				details: res,
-			};
-		},
-	});
-
-	pi.registerTool({
 		name: "propose_weight_update",
 		label: "Propose a Weight Update",
 		description:

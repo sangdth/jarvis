@@ -10,6 +10,7 @@ from typing import Any
 
 from loguru import logger
 
+from jarvis_core.projects import resolve_project
 from jarvis_voice import meeting_notes, telemetry
 from jarvis_voice.config import settings
 from jarvis_voice.orchestrator import AgentOrchestrator
@@ -17,7 +18,6 @@ from jarvis_voice.screen import ScreenError, ask_screen, capture_front_window
 from jarvis_voice.sessions import CodingSessionAdapter, match_sessions
 from jarvis_voice.speaker import SpeakerRegistry, normalize_speaker_name, speaker_number
 from jarvis_voice.state import WorkingContext
-from jarvis_voice.t3_adapter import resolve_project
 
 
 def agent_tools() -> list:
@@ -295,7 +295,6 @@ def agent_tool_handlers(
                 return exc.status  # nothing went out: the task needs the screen it points at
             # Only the agent gets this line: the waiting lines below are written from `task` by a model and spoken.
             prompt += f"\n\n[Screenshot of the user's front window ({shot.app}: {shot.title}): {shot.path}]"
-        before = agent.session_id if isinstance(agent, CodingSessionAdapter) else None
         from jarvis_voice.brain_client import BrainClientAdapter
 
         if isinstance(agent, BrainClientAdapter):
@@ -307,9 +306,6 @@ def agent_tool_handlers(
         if has_held and not side:
             ctx.clear()
         orchestrator.remind_while_busy(agent, task)
-        t3 = orchestrator.t3
-        if agent is t3 and t3 is not None and t3.session_id != before:  # T3 continued its newest thread, or started one
-            moved = {**moved, "session": t3.title or "new"}
         if has_held and side:
             moved = {**moved, "held_notes": len(ctx.notes)}
         return {**moved, "status": "sent"}

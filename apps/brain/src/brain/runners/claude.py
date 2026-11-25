@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +28,14 @@ class ClaudeRunner:
     def __init__(self, cfg: Settings) -> None:
         self.cfg = cfg
         self._sessions: dict[str, str] = {}  # cwd -> last session id (Claude names it)
+        self._active: dict[str, asyncio.subprocess.Process] = {}
 
     async def start(self) -> None:
         return None
 
     async def stop(self) -> None:
-        return None
+        for proc in list(self._active.values()):
+            self._terminate(proc)
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
         try:
@@ -68,12 +72,19 @@ class ClaudeRunner:
             *cmd, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
+        self._active[request.run_id] = proc
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return RunResult(outcome="timed_out", summary="Claude Code exceeded its time limit.")
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                self._terminate(proc, signal.SIGKILL)
+                await proc.wait()
+                return RunResult(outcome="timed_out", summary="Claude Code exceeded its time limit.")
+        finally:
+            self._active.pop(request.run_id, None)
+            if proc.returncode is None:
+                self._terminate(proc, signal.SIGKILL)
+                await proc.wait()
         text = out.decode("utf-8", errors="replace").strip()
         detail = err.decode("utf-8", errors="replace").strip()
         if proc.returncode != 0:
@@ -96,4 +107,20 @@ class ClaudeRunner:
         return False  # a minimal one-shot turn has no live question
 
     async def interrupt(self, run_id: str) -> bool:
-        return False
+        proc = self._active.get(run_id)
+        if proc is None or proc.returncode is not None:
+            return False
+        self._terminate(proc, signal.SIGTERM)
+        return True
+
+    @staticmethod
+    def _terminate(proc: asyncio.subprocess.Process, sig: signal.Signals = signal.SIGTERM) -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, OSError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass

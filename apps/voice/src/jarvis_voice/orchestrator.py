@@ -9,20 +9,14 @@ from loguru import logger
 
 from jarvis_voice.agent_adapter import BaseAgentAdapter, WatchedAgentConfig
 from jarvis_voice.brain_client import BrainClientAdapter
-from jarvis_voice.claude_adapter import ClaudeCodeAdapter
 from jarvis_voice.config import settings
-from jarvis_voice.opencode_adapter import OpenCodeSSEAdapter
 from jarvis_voice.sessions import CodingSessionAdapter
 from jarvis_voice.state import JarvisMode, JarvisState
-from jarvis_voice.t3_adapter import T3Adapter
 from jarvis_voice.waiting_lines import WaitingLines
 
 # agents.json `type` -> its adapter; a new agent is a new <name>_adapter.py and one line here.
 ADAPTERS: dict[str, type[BaseAgentAdapter]] = {
-    "claude_code": ClaudeCodeAdapter,
-    "opencode_sse": OpenCodeSSEAdapter,
     "brain": BrainClientAdapter,  # the brain: routing, T3 threads, one-shot pi answers, the board
-    "t3": T3Adapter,
 }
 
 
@@ -121,11 +115,6 @@ class AgentOrchestrator:
                 wait, next_wait = next_wait, wait + next_wait
         finally:
             lines.stop()  # the agent finished: no batch for a task that's over
-
-    @property
-    def t3(self) -> T3Adapter | None:
-        """T3 Code, the first-class client: projects and threads of its own. None when it is not enabled."""
-        return next((a for a in self.adapters.values() if isinstance(a, T3Adapter)), None)
 
     @property
     def default_agent_id(self) -> str | None:

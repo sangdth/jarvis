@@ -1091,14 +1091,6 @@ def save_owner_voiceprint(voiceprint: np.ndarray, path: Path = VOICEPRINT_PATH) 
     return path
 
 
-def save_voiceprint(embeddings: list[np.ndarray], path: Path = VOICEPRINT_PATH) -> Path:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # Each clip scaled to length 1 first, so one loud or odd clip doesn't pull the average toward itself
-    np.save(path, np.mean([e / np.linalg.norm(e) for e in embeddings], axis=0))
-    os.chmod(path, 0o600)
-    return path
-
-
 def load_voiceprint(path: Path = VOICEPRINT_PATH) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(f"No owner voiceprint at {path}. Run `jarvis enroll` first.")
