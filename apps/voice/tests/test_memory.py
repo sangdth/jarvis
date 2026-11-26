@@ -135,9 +135,10 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         assert service is not None
         room = memory.ROOM + " Jarvis, what does Sang have planned tonight?"
         guest = memory.SPEAKER + " David? (70%)]: Jarvis, what does Sang have planned tonight?"
+        owner_in_meeting = memory.USER + " Jarvis, check the status."
         transcript_room = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + room
         transcript_guest = memory.MEETING_TRANSCRIPT + "\n[User]: Hello.]\n" + guest
-        for query in (room, guest, transcript_room, transcript_guest):
+        for query in (room, guest, owner_in_meeting, transcript_room, transcript_guest):
             ctx = MagicMock()
             ctx.get_messages.return_value = [{"role": "user", "content": query}]
             await service._enhance_context_with_memories(ctx, query)
@@ -145,12 +146,28 @@ class TestMemory(unittest.IsolatedAsyncioTestCase):
         for turn in (
             room,
             guest,
-            memory.USER + " Jarvis, check the status.",
+            owner_in_meeting,
             memory.MEETING_TRANSCRIPT + "\n[Room]: Anna is on leave.]\n[User]: Jarvis, note that.",
             memory.MEETING_TRANSCRIPT + "\n[Room]: Anna is on leave.]\n[Speaker: David]: Jarvis, note that.",
         ):
             await service._store_messages([{"role": "user", "content": turn}])
             await service._store_messages([{"role": "user", "content": turn}, {"role": "assistant", "content": "Ok."}])
+        client.add.assert_not_called()
+
+        # Even with an empty meeting log (no MEETING_TRANSCRIPT prefix), live meeting mode skips confirmed guests too.
+        with (
+            patch.object(memory.settings, "openrouter_api_key", "sk-test"),
+            patch.object(memory, "MEMORY_DIR", Path("/tmp/jarvis-test-memory")),
+            patch("mem0.Memory.from_config", return_value=client),
+        ):
+            live_meeting_service = memory.create_memory_service(is_meeting=lambda: True)
+        assert live_meeting_service is not None
+        confirmed_in_call = memory.SPEAKER + " David]: Jarvis, note that I prefer tea."
+        ctx = MagicMock()
+        ctx.get_messages.return_value = [{"role": "user", "content": confirmed_in_call}]
+        await live_meeting_service._enhance_context_with_memories(ctx, confirmed_in_call)
+        await live_meeting_service._store_messages([{"role": "user", "content": confirmed_in_call}])
+        client.search.assert_not_called()
         client.add.assert_not_called()
 
     async def test_a_confirmed_guest_has_their_own_memory_namespace(self) -> None:

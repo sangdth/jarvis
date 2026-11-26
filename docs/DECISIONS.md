@@ -10,8 +10,11 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `jarvis dashboard` can pair a device; with no dashboard open, `jarvis pair` in a terminal is the way to see a code.
 - **The Connect app is a download from the gateway, not a release.** `apps/connect/build.sh` builds `Jarvis.app` on the
   checkout and the gateway serves it at `/Jarvis.app.zip` with `/install-app` beside it, so the app is never older
-  than the code running on the Mac mini. Limits: `swiftc` is needed to build it; the bundle is signed ad-hoc when no
-  Apple Development identity is in the keychain, so macOS can ask for the Microphone again after an in-app update.
+  than the code running on the Mac mini. When an already-paired Mac updates, `GET /Jarvis.app.zip` signs
+  `nonce:sha256(zip)` in `X-Jarvis-Signature` using the device's `secret_sha256` and verifies the bundle identifier
+  with `codesign`, so an impostor `.local` host on public Wi-Fi cannot swap in an unverified app. Limits: `swiftc` is
+  needed to build it; the bundle is signed ad-hoc when no Apple Development identity is in the keychain, so macOS can
+  ask for the Microphone again after an in-app update.
 - **One service command: `jarvis start`.** It syncs, builds the dashboard, builds the mac app, kicks launchd and opens
   the dashboard; `restart`, `update` and `upgrade` were separate spellings of parts of that and are gone. Limits: it is
   a restart, not "ensure running" — on a live instance it kills the voice mid-sentence. Run `jarvis` in a terminal,
@@ -70,7 +73,8 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   interrupted enrollment never writes a partial voiceprint. `jarvis enroll` says goodbye and exits once confirmed;
   startup enrollment welcomes the owner and stays listening. An introduction then offers a guest name to the room;
   the next unknown voice to answer gets it with a confidence (about 70% from adjacency alone, about 99% once it says
-  "I'm David"), and only a name at 85% or more with at least 4 s of speech is written to `speakers/`. Unknown voices
+  "I'm David"), and only an owner-vouched name at 85% or more with at least 4 s of speech is written to `speakers/`
+  (unvouched meeting callers stay RAM-only for the call). Unknown voices
   live in RAM for ten minutes, so TV never reaches the disk. Limits: if another person addresses Jarvis before the
   owner on a fresh install, run `jarvis enroll` to reset it; one label per sentence (no diarization); pitch only
   separates clear cases (~155–180 Hz overlaps).

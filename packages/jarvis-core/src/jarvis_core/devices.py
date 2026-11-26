@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 from collections.abc import Callable
@@ -91,10 +92,16 @@ class DeviceStore:
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"devices": [asdict(d) for d in self._devices.values()]}
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        tmp.chmod(0o600)
-        tmp.replace(self.path)
+        tmp = self.path.with_suffix(f".{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, indent=2) + "\n")
+            os.chmod(tmp, 0o600)
+            tmp.replace(self.path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def add(self, name: str, secret: str | None = None) -> tuple[Device, str]:
         """Register a device and return it with its secret (the only time the secret exists in the clear)."""
@@ -128,6 +135,12 @@ class DeviceStore:
                     self._save()
                 return device
         return None
+
+    def get(self, device_id: str) -> Device | None:
+        """The active device with this id, or None when unknown or revoked."""
+        with self._lock:
+            device = self._devices.get((device_id or "").strip())
+            return device if device is not None and not device.revoked else None
 
     def devices(self) -> list[Device]:
         with self._lock:

@@ -244,11 +244,18 @@ class EphemeralPiRunner:
 
     def _env(self, tmp_dir: Path) -> dict[str, str]:
         env = dict(os.environ)
-        # A one-shot answer needs no board socket and must not inherit a stale task identity.
+        # A one-shot answer needs no board socket and must not inherit a stale task identity or git push credentials.
         for key in ("BRAIN_RPC_SOCK", "BRAIN_WORKTREE_DIR", "BRAIN_TASK_ID", "BRAIN_TASK_KIND"):
             env.pop(key, None)
+        gh_dir = tmp_dir / "gh"
+        gh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         env["HOME"] = env.get("HOME", str(Path.home()))
         env["TMPDIR"] = str(tmp_dir)
+        env["GH_CONFIG_DIR"] = str(gh_dir)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "credential.helper"
+        env["GIT_CONFIG_VALUE_0"] = ""
         return strip_secrets(env)
 
     @staticmethod

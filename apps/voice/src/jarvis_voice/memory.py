@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -93,7 +94,7 @@ def _ensure_ollama_model_exists(self: Any) -> None:
     self.client.embed(model=self.config.model, input=".")
 
 
-def create_memory_service() -> Any | None:
+def create_memory_service(*, is_meeting: Callable[[], bool] = lambda: False) -> Any | None:
     """The Pipecat memory processor, or None (Jarvis runs without memory) when it can't start."""
     if not settings.openrouter_api_key:
         logger.warning("No OPENROUTER_API_KEY: long-term memory is off (it needs a model to pick facts).")
@@ -117,7 +118,7 @@ def create_memory_service() -> Any | None:
             # Agent reports (system) and tool round-trips (tool) reuse the current turn's recall block without re-querying.
             if not raw or not isinstance(raw[-1], dict) or raw[-1].get("role") != "user":
                 return
-            # Strip any prior recall block first so a skipped turn (guest, non-user) never keeps the master's memories.
+            # Strip any prior recall block first so a skipped turn (guest, non-user, meeting) never keeps owner memories.
             messages = [
                 m
                 for m in raw
@@ -125,8 +126,8 @@ def create_memory_service() -> Any | None:
             ]
             if len(messages) != len(raw):
                 context.set_messages(messages)
-            # Jarvis's own notes (the greeting) and meeting context are not a memory query.
-            if query.startswith((NOT_THE_USER, MEETING_TRANSCRIPT)):
+            # Meeting mode, Jarvis's own notes (the greeting), and meeting transcripts never query personal memories.
+            if is_meeting() or query.startswith((NOT_THE_USER, MEETING_TRANSCRIPT, USER)):
                 return
             user = memory_user(query)
             if user is None:
@@ -165,7 +166,7 @@ def create_memory_service() -> Any | None:
 
         async def _store_messages(self, messages):  # type: ignore[override]
             # process_frame runs before the LLM responds, so a new user turn ends with "user"; agent reports do not.
-            if not messages or messages[-1].get("role") != "user":
+            if is_meeting() or not messages or messages[-1].get("role") != "user":
                 return
             if _skip_text(str(messages[-1].get("content", ""))):
                 return

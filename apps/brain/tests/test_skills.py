@@ -518,3 +518,14 @@ def test_voice_benchmarks_are_protected_from_workers() -> None:
     # The tracer and the harvester: a worker that edits either can fake what the gate measures.
     assert "apps/brain/src/brain/traces.py" in PROTECTED_SELF_PATHS
     assert "apps/brain/src/brain/evals.py" in PROTECTED_SELF_PATHS
+    for critical in (
+        "apps/brain/src/brain/server.py",
+        "apps/brain/src/brain/reconciler.py",
+        "apps/brain/src/brain/upgrade.py",
+        "apps/voice/src/jarvis_voice/remote_audio.py",
+        "apps/voice/src/jarvis_voice/agent_tools.py",
+        "packages/jarvis-core/src/jarvis_core/devices.py",
+        "packages/jarvis-core/src/jarvis_core/home.py",
+        "packages/jarvis-core/src/jarvis_core/settings.py",
+    ):
+        assert critical in PROTECTED_SELF_PATHS

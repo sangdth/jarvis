@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -319,19 +320,42 @@ final class AppModel: ObservableObject {
         guard let url = URL(string: server + "/Jarvis.app.zip") else {
             throw ApiError(status: 0, message: "That server address is not a URL.")
         }
-        let (download, response) = try await URLSession.shared.download(from: url)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        let pairedRecord = credentials.flatMap { !$0.device_id.isEmpty && !$0.secret.isEmpty ? $0 : nil }
+        if let pairedRecord {
+            request.setValue(pairedRecord.device_id, forHTTPHeaderField: "X-Jarvis-Device")
+            request.setValue(nonce, forHTTPHeaderField: "X-Jarvis-Nonce")
+        }
+        let (download, response) = try await URLSession.shared.download(for: request)
+        let http = response as? HTTPURLResponse
+        let status = http?.statusCode ?? 0
+        if status == 401 {
+            throw ApiError(status: 401, message: "This Mac's pairing is not recognized by \(server). Re-pair before updating.")
+        }
         guard (200..<300).contains(status) else {
             throw ApiError(status: status, message: "The server has no app to download (\(status)). Build it with `jarvis start`.")
         }
-        try fm.moveItem(at: download, to: work.appendingPathComponent("Jarvis.app.zip"))
-        try run("/usr/bin/ditto", ["-xk", work.appendingPathComponent("Jarvis.app.zip").path, work.path])
+        let zipPath = work.appendingPathComponent("Jarvis.app.zip")
+        try fm.moveItem(at: download, to: zipPath)
+        if let pairedRecord {
+            let headerSig = http?.value(forHTTPHeaderField: "X-Jarvis-Signature") ?? ""
+            guard Self.verifyAppZipSignature(
+                zipPath: zipPath, secret: pairedRecord.secret, nonce: nonce, signatureHex: headerSig
+            ) else {
+                throw ApiError(status: 0, message: "Refused update: server signature did not match this Mac's pairing.")
+            }
+        }
+        try run("/usr/bin/ditto", ["-xk", zipPath.path, work.path])
 
         let fresh = work.appendingPathComponent("Jarvis.app")
         guard fm.fileExists(atPath: fresh.path) else {
             throw ApiError(status: 0, message: "The download is not a Jarvis.app bundle.")
         }
-        try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", fresh.path])
+        try run("/usr/bin/codesign", [
+            "--verify", "--deep", "--strict", "-R", "=identifier \"com.sangdth.jarvis.remote\"", fresh.path
+        ])
 
         let bundle = Bundle.main.bundlePath
         let old = work.appendingPathComponent("Jarvis.old.app")
@@ -365,6 +389,37 @@ final class AppModel: ObservableObject {
             throw ApiError(status: Int(process.terminationStatus), message: text.isEmpty ? "\(tool) failed." : text)
         }
         return text
+    }
+
+    private static func verifyAppZipSignature(
+        zipPath: URL, secret: String, nonce: String, signatureHex: String
+    ) -> Bool {
+        guard let sigBytes = hexBytes(signatureHex),
+              let zipData = try? Data(contentsOf: zipPath)
+        else { return false }
+        let zipSha = SHA256.hash(data: zipData).map { String(format: "%02x", $0) }.joined()
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyHex = SHA256.hash(data: Data(trimmed.utf8)).map { String(format: "%02x", $0) }.joined()
+        return HMAC<SHA256>.isValidAuthenticationCode(
+            sigBytes,
+            authenticating: Data("\(nonce):\(zipSha)".utf8),
+            using: SymmetricKey(data: Data(keyHex.utf8))
+        )
+    }
+
+    private static func hexBytes(_ raw: String) -> [UInt8]? {
+        let hex = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hex.count == 64, hex.count % 2 == 0 else { return nil }
+        var out: [UInt8] = []
+        out.reserveCapacity(32)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            out.append(byte)
+            index = next
+        }
+        return out
     }
 
     private var hostName: String {

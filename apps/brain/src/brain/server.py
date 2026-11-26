@@ -45,23 +45,35 @@ PAIR_TTL_SECS = 300
 PAIR_MAX_FAILURES = 5
 PAIR_FAILURE_WINDOW_SECS = 60.0
 
+_CMD_PREFIX = r"^\s*(?:(?:hey\s+)?jarvis[,\s]+)?(?:please\s+)?"
 _AUTONOMOUS_RE = re.compile(
-    r"\b(switch\s+to\s+autonomous|start\s+(?:the\s+)?night\s+(?:mode|run)|autonomous\s+mode)\b",
+    _CMD_PREFIX
+    + r"(?:(?:switch|go|put\s+it)\s+(?:to|into)\s+autonomous(?:\s+mode)?"
+    + r"|start\s+(?:the\s+)?night\s+(?:mode|run)|autonomous\s+mode)\s*[.!]*\s*$",
     re.IGNORECASE,
 )
 _ASSIST_RE = re.compile(
-    r"\b(switch\s+to\s+assist|pause\s+background|hold\s+background|assist\s+mode|day\s+mode)\b",
+    _CMD_PREFIX
+    + r"(?:(?:switch|go|put\s+it)\s+(?:back\s+)?(?:to|into)\s+assist(?:\s+mode)?"
+    + r"|(?:pause|hold)\s+background(?:\s+work|\s+tasks)?|assist\s+mode|day\s+mode)\s*[.!]*\s*$",
     re.IGNORECASE,
 )
 _BRIEF_RE = re.compile(
-    r"\b(morning\s+brief|what\s+happened\s+overnight|brain\s+status|status\s+report)\b",
+    _CMD_PREFIX
+    + r"(?:(?:give\s+me\s+(?:the\s+)?|read\s+(?:me\s+)?(?:the\s+)?|what(?:'s|\s+is)\s+(?:the\s+)?)?"
+    + r"(?:morning\s+brief|brain\s+status|status\s+report)|what\s+happened\s+overnight)\s*[.!?]*\s*$",
     re.IGNORECASE,
 )
 _IMPROVE_RE = re.compile(
-    r"\b(improve\s+skills|learn\s+from\s+recent\s+runs|reflect\s+on\s+recent\s+runs|self[\s-]+improve)\b",
+    _CMD_PREFIX
+    + r"(?:improve\s+skills|learn\s+from\s+recent\s+runs|reflect\s+on\s+recent\s+runs|(?:run\s+)?self[\s-]+improve)\s*[.!]*\s*$",
     re.IGNORECASE,
 )
-_RUN_TASK_RE = re.compile(r"\brun\s+((?:SG|PRB)-\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_RUN_TASK_RE = re.compile(
+    _CMD_PREFIX + r"run\s+(?:task\s+)?((?:SG|PRB)-\d+(?:\.\d+)?)\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+_TRACE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _DURATION_WORDS = r"\d+(?:\.\d+)?\s*(?:seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)"
 _REMIND_RE = re.compile(
     r"^\s*(?:jarvis[,\s]+)?(?:please\s+)?remind\s+me(?:\s+to)?\s+"
@@ -216,6 +228,9 @@ class BrainServer:
         request: web.Request,
         handler: Any,
     ) -> web.StreamResponse:
+        if request.headers.get("Origin"):
+            # Jarvis has no web client on this port; rejecting browser Origins blocks cross-site CSRF and WS hijacking.
+            return web.json_response({"error": "Browser origins are not allowed"}, status=403)
         if request.path == "/health":
             return await handler(request)  # the liveness probe: no secret, and no state
         if request.method == "POST" and request.path in ("/v1/pair", "/v1/pair/request"):
@@ -857,11 +872,13 @@ class BrainServer:
             if isinstance(raw_pinned, dict) and raw_pinned.get("session_id")
             else None
         )
+        raw_trace = str(body.get("trace_id") or "").strip()
+        safe_trace = raw_trace if _TRACE_ID_RE.fullmatch(raw_trace) else uuid.uuid4().hex
         rec = RunRecord(run_id=run_id, session_id=session_id, pinned=pinned,
                         session_mode=str(body.get("session") or "") or None,
                         cwd=str(body.get("cwd") or "") or None,
                         turn_id=str(body.get("turn_id") or "") or "",
-                        trace_id=str(body.get("trace_id") or "") or uuid.uuid4().hex)
+                        trace_id=safe_trace)
         rec.chat_session_key = self._chat_key_for(session_id, rec.session_mode)
         self.runs[run_id] = rec
         replace = bool(body.get("replace"))

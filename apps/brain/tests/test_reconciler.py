@@ -321,3 +321,62 @@ print(json.dumps({"role": "assistant", "content": "Updated app.py", "cost_usd": 
     finally:
         await reconciler.stop()
         db.close()
+
+
+async def test_verify_cmd_denies_env_file_under_sandbox_and_problem_blocks_modified_tests(
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    projects_dir, _ = await _init_repo_with_origin(tmp_path, "demo")
+    home_dir = tmp_path / "home"
+    home_dir.mkdir(parents=True, exist_ok=True)
+    env_file = home_dir / ".env"
+    env_file.write_text("BRAIN_API_KEY=top-secret-key\n", encoding="utf-8")
+
+    fake_pi = _write_fake_pi(
+        tmp_path / "fake_pi_mod_test.py",
+        """
+import json, pathlib
+wt = pathlib.Path.cwd()
+(wt / "tests" / "test_app.py").write_text("def test_ok(): pass\\n", encoding="utf-8")
+print(json.dumps({"role": "assistant", "content": "Weakened test", "cost_usd": 0.01}), flush=True)
+""",
+    )
+    cfg = Settings(
+        home_dir=home_dir,
+        projects_dir=projects_dir,
+        allowed_repos="demo",
+        pi_bin=str(fake_pi),
+        default_mode="AUTONOMOUS",
+        sandbox_enabled=True,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
+    reconciler = Reconciler(db, cfg)
+    try:
+        # 1. Problem task modifying (not deleting) an existing test file is blocked.
+        t1 = db.upsert_task(
+            kind="problem",
+            repo="demo",
+            title="No weakening tests",
+            spec="Keep test_app.py intact",
+            verify_cmd="true",
+            ready=True,
+        )
+        finished = await reconciler.tick()
+        assert finished is not None
+        attempts = db.list_attempts(t1.id)
+        assert attempts[-1].outcome == "failed_verify"
+        assert "modified or deleted test files" in (attempts[-1].verify_output or "")
+
+        # 2. verify_cmd runs under Seatbelt with `.env` blocked (`PermissionError`), while EnvSettings skips it cleanly.
+        if sys.platform == "darwin":
+            ok, out = await reconciler._run_verify(
+                projects_dir / "demo",
+                home_dir / "sessions" / "verify-env-test",
+                f'{sys.executable} -c "import pathlib; pathlib.Path({str(env_file.resolve())!r}).read_text()"',
+            )
+            assert not ok and "Operation not permitted" in out
+    finally:
+        await reconciler.stop()
+        db.close()

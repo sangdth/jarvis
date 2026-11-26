@@ -139,9 +139,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     `scripts/bench_routing.py 1` (≥95%, `jarvis_voice/{prompts,agent_tools,orchestrator}.py`),
     `scripts/bench_voice_prompts.py --split held_in`, and `scripts/bench_brain_route.py 1 --split held_in` (≥95%,
     p50 ≤ 800 ms, `brain/orchestrator.py`), plus sealed `evals/held_out/` regression and Pareto checks from the checkout.
-  - Edits touching `PROTECTED_SELF_PATHS` (`pyproject.toml`, `uv.lock`, `Cargo.toml`, `Cargo.lock`,
-    `apps/brain/src/brain/{config,sandbox,traces,evals}.py`, `apps/brain/src/brain/defaults/pi/board.ts`,
-    `apps/voice/src/jarvis_voice/{config,voice_gates}.py`, `src/jarvis/{cli,supervisor}.py`, `scripts/bench_*.py`), or
+  - Edits touching `PROTECTED_SELF_PATHS` (`pyproject.toml`, `uv.lock`, `Cargo.*`, `brain/{config,reconciler,sandbox,server,traces,evals,upgrade}.py`, `board.ts`, `jarvis_core/{devices,home,settings}.py`, `jarvis_voice/{agent_tools,config,remote_audio,voice_gates}.py`, `jarvis/{cli,supervisor}.py`, `scripts/bench_*.py`), or
     modifying/deleting existing files under `tests/`, pin `approved_sha` on `origin/brain/<task_id>` and require owner
     approval before applying. Verified upgrades record `last_good_sha` in `system_state`, update the checkout (`uv sync`
     and `cargo build --release` when Rust changed), flush speech, and shut down cleanly for `launchd` respawn; probation

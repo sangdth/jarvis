@@ -175,8 +175,16 @@ def brain_token(home: Path | None = None) -> str:
             return token
     token = secrets.token_urlsafe(32)
     shared_dir(token_path.parent)
-    token_path.write_text(f"{token}\n", encoding="utf-8")
-    token_path.chmod(0o600)
+    tmp = token_path.with_name(f"{token_path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(f"{token}\n")
+        os.chmod(tmp, 0o600)
+        tmp.replace(token_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return token
 
 

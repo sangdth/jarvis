@@ -8,6 +8,7 @@ import re
 import shutil
 import signal
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -83,15 +84,24 @@ PROTECTED_SELF_PATHS = {
     "uv.lock",
     "Cargo.toml",
     "Cargo.lock",
-    # what runs the workers, and what lets them write anywhere
+    # what runs the workers, authenticates callers, and lets code write anywhere
     "apps/brain/src/brain/config.py",
+    "apps/brain/src/brain/reconciler.py",
     "apps/brain/src/brain/sandbox.py",
+    "apps/brain/src/brain/server.py",
+    "apps/brain/src/brain/upgrade.py",
     # the tracer and its store: a worker that can edit these can fake its own evidence
     "apps/brain/src/brain/traces.py",
     "apps/brain/src/brain/evals.py",
     "apps/brain/src/brain/defaults/pi/board.ts",
-    # the voice harness's own gatekeeping and entry point
+    # shared state home, `.env` loading, and device credential store
+    "packages/jarvis-core/src/jarvis_core/devices.py",
+    "packages/jarvis-core/src/jarvis_core/home.py",
+    "packages/jarvis-core/src/jarvis_core/settings.py",
+    # the voice harness's own gatekeeping, guest guardrails, relay, and entry point
+    "apps/voice/src/jarvis_voice/agent_tools.py",
     "apps/voice/src/jarvis_voice/config.py",
+    "apps/voice/src/jarvis_voice/remote_audio.py",
     "apps/voice/src/jarvis_voice/voice_gates.py",
     "src/jarvis/cli.py",
     "src/jarvis/supervisor.py",
@@ -747,7 +757,7 @@ class Reconciler:
                         pi_session_id=pi_res.session_id,
                         session_jsonl_path=pi_res.session_jsonl_path,
                         git_branch=branch_name,
-                        verify_output=f"Blocked: problem task deleted test files: {', '.join(deleted_tests)}",
+                        verify_output=f"Blocked: problem task modified or deleted test files: {', '.join(deleted_tests)}",
                         skills_used=pi_res.skills_used,
                         diagnostic=pi_res.diagnostic,
                     )
@@ -1406,7 +1416,9 @@ class Reconciler:
             role=role,
             run_key=run_key,
         )
-        sock_path = Path(f"/tmp/sb-{uuid.uuid4().hex[:12]}.sock")
+        sock_dir = Path(tempfile.mkdtemp(prefix="sb-", dir="/tmp"))
+        os.chmod(sock_dir, 0o700)
+        sock_path = sock_dir / "rpc.sock"
         deferred_flag = False
         upserted_ids: list[str] = []
         skills_loaded: list[str] = []
@@ -1642,7 +1654,8 @@ class Reconciler:
                         raise ValueError(
                             "A harness task needs evidence: name the trace ids or corrections."
                         )
-                    protected = sorted(set(targets) & PROTECTED_SELF_PATHS)
+                    editable = set(HARNESS_SURFACES[surface].editable_files)
+                    protected = sorted((set(targets) & PROTECTED_SELF_PATHS) - editable)
                     if protected:
                         raise ValueError(
                             f"Protected files belong to the owner: {', '.join(protected)}."
@@ -2021,6 +2034,7 @@ class Reconciler:
             server.close()
             await server.wait_closed()
             sock_path.unlink(missing_ok=True)
+            shutil.rmtree(sock_path.parent, ignore_errors=True)
 
         return _cleanup
 
@@ -2194,12 +2208,19 @@ class Reconciler:
     def _build_sandbox_env(session_dir: Path) -> dict[str, str]:
         tmp_dir = session_dir / "tmp"
         cache_dir = session_dir / "cache"
+        gh_dir = session_dir / "gh"
         tmp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        gh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         env = os.environ.copy()
         env["TMPDIR"] = str(tmp_dir)
         env["XDG_CACHE_HOME"] = str(cache_dir)
         env["UV_CACHE_DIR"] = str(cache_dir / "uv")
+        env["GH_CONFIG_DIR"] = str(gh_dir)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "credential.helper"
+        env["GIT_CONFIG_VALUE_0"] = ""
         return strip_secrets(env)
 
     async def _run_sandboxed_cmd(
@@ -2222,7 +2243,6 @@ class Reconciler:
             home_dir=self.cfg.home_dir,
             allow_read_held_out=allow_read_held_out,
             enabled=self.cfg.sandbox_enabled,
-            deny_env_file=False,  # pytest imports the settings that read `JARVIS_HOME/.env`
         )
         env = self._build_sandbox_env(session_dir)
         env.update(extra_env or {})
@@ -2584,8 +2604,9 @@ class Reconciler:
         self.restart_pending = True
 
     async def _find_deleted_tests(self, worktree_dir: Path, base_sha: str) -> list[str]:
+        await self._git_out(worktree_dir, "add", "-A", check=False)
         out = await self._git_out(
-            worktree_dir, "diff", "--diff-filter=D", "--name-only", base_sha, check=False
+            worktree_dir, "diff", "--cached", "--diff-filter=DMR", "--name-only", base_sha, check=False
         )
         return [
             line.strip()

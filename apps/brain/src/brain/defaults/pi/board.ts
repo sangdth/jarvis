@@ -85,7 +85,7 @@ function checkWorktreeWriteGuard(rawPath: string, worktreeDir: string, taskKind?
 	}
 	if (taskKind === "problem" && existsSync(targetPath)) {
 		const rel = _nearest_existing_resolved(targetPath).slice(_nearest_existing_resolved(worktreeDir).length + 1);
-		if (/^tests?(?:[\\/]|$)/i.test(rel)) {
+		if (/(?:^|[\\/])tests?[\\/]/i.test(rel)) {
 			return "Modifying existing test files under tests/ while fixing a problem is blocked.";
 		}
 	}

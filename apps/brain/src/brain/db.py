@@ -16,6 +16,13 @@ from typing import Any, Callable, Literal
 from brain import schedule
 
 _METRIC_COMPARATOR_RE = re.compile(r"(?<![-=!<>])(<=|>=|==|<|>)\s*(-?\d+(?:\.\d+)?)")
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def _fts_phrase_query(raw: str) -> str:
+    """Quote whitespace tokens so FTS5 operators (`-`, `:`, `*`, `\"`) never raise syntax errors."""
+    words = [w.replace('"', "") for w in raw.split() if w.replace('"', "")]
+    return " ".join(f'"{w}"' for w in words)
 
 
 def has_metric_comparator(metric_target: str | None) -> bool:
@@ -652,6 +659,8 @@ class BrainDB:
                     return self._row_to_task(active)
             state = self.get_state()
             resolved_id = (task_id or "").strip() or self._next_task_id(kind)
+            if not _TASK_ID_RE.fullmatch(resolved_id) or ".." in resolved_id:
+                raise ValueError(f"Invalid task id: {resolved_id!r}")
             existing = self._conn.execute(
                 "SELECT * FROM tasks WHERE id = ?", (resolved_id,)
             ).fetchone()
@@ -1566,8 +1575,11 @@ class BrainDB:
         if exclude_boards:
             where.append("source != 'board'")
         if query:
+            fts_query = _fts_phrase_query(query)
+            if not fts_query:
+                return []
             where.append("trace_id IN (SELECT trace_id FROM trace_fts WHERE trace_fts MATCH ?)")
-            params.append(query)
+            params.append(fts_query)
         sql = "SELECT * FROM trace_runs"
         if where:
             sql += " WHERE " + " AND ".join(where)
