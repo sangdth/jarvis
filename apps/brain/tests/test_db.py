@@ -304,3 +304,63 @@ def test_task_mode_inheritance_and_mode_filtered_claiming(tmp_path: Path) -> Non
         assert db.claim_next_task(mode="AUTONOMOUS") is None
     finally:
         db.close()
+
+
+def test_upsert_task_rejects_path_traversal_and_fts_handles_punctuation(tmp_path: Path) -> None:
+    import pytest
+
+    from brain.db import TraceRunRow
+
+    db = BrainDB(tmp_path / "state.db", allowed_repos={"jarvis"})
+    try:
+        for bad_id in ("../escape", "../../etc", "SG-1/../../x", ".hidden", "a/b"):
+            with pytest.raises(ValueError, match="Invalid task id"):
+                db.upsert_task(
+                    task_id=bad_id,
+                    kind="problem",
+                    repo="jarvis",
+                    title="Bad id",
+                    spec="Attempt traversal",
+                )
+        valid = db.upsert_task(
+            task_id="SG-9.1",
+            kind="goal",
+            repo="jarvis",
+            title="Valid id",
+            spec="Sub-hypothesis",
+            metric_target="passes",
+        )
+        assert valid.id == "SG-9.1"
+
+        db.upsert_trace_run(
+            TraceRunRow(
+                trace_id="t" * 32,
+                turn_id="t1",
+                source="voice",
+                surface="brain_router",
+                runner="t3",
+                repo="jarvis",
+                task_id=None,
+                attempt_id=None,
+                outcome="ok",
+                friction_kind=None,
+                causal_sig="",
+                latency_ms=100,
+                ttfb_ms=None,
+                tokens_in=0,
+                tokens_out=0,
+                cost_usd=0.0,
+                git_sha="abc",
+                prompt_sha="def",
+                skills_used=(),
+                user_input="check foo-bar reconnect",
+                output_summary="done",
+                trace_path="",
+                superseded_by=None,
+                reflected=0,
+            )
+        )
+        assert len(db.list_trace_runs(query='foo-bar "reconnect')) == 1
+        assert db.list_trace_runs(query='"" : * -') == []
+    finally:
+        db.close()

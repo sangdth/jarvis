@@ -23,7 +23,7 @@ from brain.db import BrainDB, TaskRow
 from brain.reconciler import Reconciler
 from brain.runners.base import ApprovalCallback, RunRequest, RunResult
 from brain.telemetry import EVENT_BRAIN_ROUTE, preview
-from jarvis_core.projects import list_projects, projects_dir, resolve_project
+from jarvis_core.projects import is_listed_project, list_projects, projects_dir, resolve_project
 from jarvis_core.questions import is_approval
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -383,6 +383,8 @@ class BrainOrchestrator:
             )
         project = str(args.get("project") or "")
         cwd_path = Path(cwd).expanduser() if cwd else None
+        if cwd_path is not None and not pinned and not is_listed_project(cwd_path):
+            return RunResult(outcome="errored", summary=f"Refusing unlisted project path {cwd_path}.")
         if not project and cwd_path is None:
             project = self._last_project(session_id) or (list_projects() or [""])[0]
             if not project:

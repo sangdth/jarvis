@@ -124,6 +124,7 @@ _MAX_TEXT = 4000
 _SUMMARY_CHARS = 280
 _FLUSH_AFTER_SECS = 30 * 60
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TRACE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def causal_signature(cause: str, behavior: str, mechanism: str) -> str:
@@ -161,13 +162,29 @@ def word_change_ratio(left: str, right: str) -> float:
     return len(old - new) / len(old)
 
 
-def _secret_values() -> list[str]:
-    return [value for name in SECRET_ENV if (value := os.environ.get(name)) and len(value) >= 6]
+def _secret_values(home_dir: Path | None = None) -> list[str]:
+    from jarvis_core.home import BRAIN_TOKEN_FILE, JARVIS_HOME, brain_home, env_file_value
+
+    b_home = home_dir or brain_home()
+    env_paths = (JARVIS_HOME / ".env", b_home / ".env")
+    values: list[str] = []
+    for name in SECRET_ENV:
+        for candidate in (os.environ.get(name), env_file_value(name, *env_paths)):
+            if candidate and len(candidate) >= 6 and candidate not in values:
+                values.append(candidate)
+    for token_file in (JARVIS_HOME / BRAIN_TOKEN_FILE, JARVIS_HOME / "remote_token"):
+        try:
+            tok = token_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if len(tok) >= 6 and tok not in values:
+            values.append(tok)
+    return values
 
 
-def scrub_text(text: str) -> str:
+def scrub_text(text: str, *, home_dir: Path | None = None) -> str:
     """The sink's redaction, for callers that write elsewhere (harvested eval cases): one rule, one place."""
-    return _scrub(text, _secret_values())
+    return _scrub(text, _secret_values(home_dir))
 
 
 def _scrub(text: str, secrets: list[str]) -> str:
@@ -306,16 +323,21 @@ class TraceSink:
                 self._sweep()
 
     async def _drain(self, batch: list[dict[str, Any]]) -> None:
-        secrets = _secret_values()
+        secrets = _secret_values(self.cfg.home_dir)
         lines: dict[str, list[str]] = {}
         ready: list[dict[str, Any]] = []
         for raw in batch:
             event = sanitize_event(raw, secrets)
             if event is None:
                 continue
-            trace_id = str(event.get("trace_id") or "")
-            if not trace_id:
+            raw_trace_id = str(event.get("trace_id") or "")
+            if not raw_trace_id:
                 continue
+            trace_id = (
+                raw_trace_id
+                if _TRACE_ID_RE.fullmatch(raw_trace_id)
+                else hashlib.sha256(raw_trace_id.encode("utf-8")).hexdigest()[:32]
+            )
             event["trace_id"] = trace_id
             day = _day(float(event.get("ts") or time.time()))
             lines.setdefault(day, []).append(json.dumps(event, separators=(",", ":"), ensure_ascii=False))
@@ -662,7 +684,10 @@ class TraceSink:
         self._maybe_export(record)
 
     def _write_trace_file(self, relative: str, record: dict[str, Any]) -> None:
-        path = self.cfg.traces_dir / relative
+        root = self.cfg.traces_dir.resolve()
+        path = (root / relative).resolve()
+        if root not in path.parents:
+            raise ValueError(f"Refusing to write trace outside {root}: {relative!r}")
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         existing: dict[str, Any] = {}
         if path.is_file():

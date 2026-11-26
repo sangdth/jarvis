@@ -576,10 +576,15 @@ async def test_a_client_that_has_never_paired_asks_for_a_code_without_reading_it
         assert paired.status == 200
         secret = (await paired.json())["secret"]
 
-        # 5. A paired device can no longer read the stream, so it can never pick a code out of it.
+        # 5. A paired device works only on GET /v1/status (plus /ws); operator, run, approval and trace routes 401.
         device = {"Authorization": f"Bearer {secret}"}
+        assert (await client.get("/v1/status", headers=device)).status == 200
         assert (await client.get("/v1/telemetry/snapshot", headers=device)).status == 401
         assert (await client.get("/v1/telemetry/events", headers=device)).status == 401
+        assert (await client.post("/v1/runs", json={"input": "hi"}, headers=device)).status == 401
+        assert (await client.post("/v1/tasks", json={"title": "x", "spec": "y"}, headers=device)).status == 401
+        assert (await client.post("/v1/outbox/OB-1/resolve", json={"approved": True}, headers=device)).status == 401
+        assert (await client.get("/v1/traces", headers=device)).status == 401
         assert (await client.get("/v1/telemetry/snapshot", headers=owner)).status == 200
 
         # 6. Pairing is announced too, so the dashboard can clear the code.
@@ -630,3 +635,78 @@ async def test_the_bootstrap_routes_bypass_the_shared_token(tmp_path: Path) -> N
 
     await reconciler.stop()
     db.close()
+
+
+async def test_origin_header_rejected_trace_id_confined_unlisted_cwd_blocked_and_fast_cmds_anchored(
+    tmp_path: Path,
+) -> None:
+    from brain.orchestrator import BrainOrchestrator
+    from brain.runners.base import RunResult
+
+    class DummyRunner:
+        id = "t3"
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def run(self, request, emit):  # type: ignore[no-untyped-def]
+            return RunResult(outcome="pushed", summary=f"ran in {request.cwd}")
+
+        async def interrupt(self, run_id: str) -> bool:
+            return False
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        openrouter_api_key="",
+        sandbox_enabled=False,
+    )
+    (cfg.projects_dir / "jarvis" / ".git").mkdir(parents=True, exist_ok=True)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    orch = BrainOrchestrator(cfg, db, reconciler, runners={"t3": DummyRunner()})
+    server = BrainServer(db, reconciler, cfg, runners={"t3": DummyRunner()}, orchestrator=orch)  # type: ignore[dict-item]
+    await server.start_background()
+    owner = {"Authorization": "Bearer secret-token"}
+
+    try:
+        async with TestClient(TestServer(server.app)) as client:
+            for path, method in (("/v1/pair/request", "POST"), ("/v1/pair", "POST"), ("/health", "GET")):
+                resp = await client.request(method, path, headers={"Origin": "https://evil.example"})
+                assert resp.status == 403
+
+            # Mentioning "autonomous mode" inside a task must NOT flip daemon mode.
+            ask = await client.post(
+                "/v1/ask",
+                json={"input": "Fix the autonomous mode badge in the header"},
+                headers=owner,
+            )
+            assert ask.status == 200
+            assert db.get_state().mode == "ASSIST"
+
+            # Unlisted cwd on /v1/runs is refused, and traversal trace_ids never escape traces_dir.
+            bad_cwd = await client.post(
+                "/v1/runs",
+                json={"input": "Fix bug", "cwd": "/etc", "trace_id": "x/../../../../escape"},
+                headers=owner,
+            )
+            assert bad_cwd.status == 200
+            run_id = (await bad_cwd.json())["run_id"]
+            async with client.get(f"/v1/runs/{run_id}/events", headers=owner) as sse:
+                async for raw in sse.content:
+                    line = raw.decode("utf-8").strip()
+                    if line.startswith("data:") and "run.failed" in line:
+                        break
+            run_state = await (await client.get(f"/v1/runs/{run_id}", headers=owner)).json()
+            assert run_state["status"] == "failed"
+            assert "unlisted" in run_state["error"].lower()
+            assert not (tmp_path / "escape.json").exists()
+    finally:
+        await server.stop_background()
+        await reconciler.stop()
+        db.close()

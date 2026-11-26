@@ -11,11 +11,14 @@ from jarvis_core.home import JARVIS_HOME
 SECRET_ENV = (
     "BRAIN_API_KEY",
     "JARVIS_TOKEN",
+    "REMOTE_TOKEN",
     "SUPERBRAIN_API_KEY",
     "OPENROUTER_API_KEY",
     "ELEVENLABS_API_KEY",
     "LAYA_API_KEY",
     "OPENCODE_SERVER_PASSWORD",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
 )
 
 
@@ -26,29 +29,29 @@ def strip_secrets(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _deny_reads(
+def _deny_reads_and_ipc(
     home_dir: Path | None,
     *,
     allow_read_traces: bool = False,
     allow_read_held_out: bool = False,
-    deny_env_file: bool = True,
 ) -> list[str]:
-    """`deny file-read-data` lines for the credentials and the board: no worker needs to read them."""
+    """Seatbelt rules blocking credentials, board DB, and local agent control sockets/ports."""
     lines: list[str] = []
-    ssh_dir = Path("~/.ssh").expanduser()
-    if ssh_dir.exists():
-        lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(ssh_dir)}"))')
+    for secret_dir in ("~/.ssh", "~/.t3/userdata", "~/.config/gh", "~/.aws", "~/.config/jarvis/pi"):
+        expanded = Path(secret_dir).expanduser()
+        lines.append(f'(deny file-read* (subpath "{_escape_sb_path(expanded)}"))')
     secrets = [
         JARVIS_HOME / "brain_token",
         JARVIS_HOME / "remote_token",
         JARVIS_HOME / "devices.json",
+        JARVIS_HOME / ".env",
         Path("~/.config/jarvis-remote/credentials.json").expanduser(),
+        Path("~/.local/state/opencode/service.json").expanduser(),
+        Path("~/.git-credentials").expanduser(),
+        Path("~/.netrc").expanduser(),
     ]
-    # shortcut: `verify_cmd` keeps `.env` (pytest imports the settings that read it); only the pi sessions deny it.
-    if deny_env_file:
-        secrets.append(JARVIS_HOME / ".env")
-        if home_dir is not None:
-            secrets.append(home_dir / ".env")
+    if home_dir is not None:
+        secrets.append(home_dir / ".env")
     for path in secrets:
         lines.append(f'(deny file-read-data (literal "{_escape_sb_path(path)}"))')
     if home_dir is not None:
@@ -59,6 +62,11 @@ def _deny_reads(
         if not allow_read_held_out:
             # Never readable by workers or the Improver: a candidate tuned against the set that measures it is no gate.
             lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "evals" / "held_out")}"))')
+    pi_sock_dir = _escape_sb_path(Path("~/.config/jarvis/pi").expanduser())
+    lines.append(
+        f'(deny network-outbound (remote unix-socket (subpath "{pi_sock_dir}")) '
+        '(remote tcp "*:8643") (remote tcp "*:3773"))'
+    )
     return lines
 
 
@@ -89,7 +97,6 @@ def build_sandbox_profile(
     home_dir: Path | None = None,
     allow_read_traces: bool = False,
     allow_read_held_out: bool = False,
-    deny_env_file: bool = True,
 ) -> str:
     """
     macOS Seatbelt (`sandbox-exec`) profile for Brain workers.
@@ -120,11 +127,10 @@ def build_sandbox_profile(
     if wt_gitdir is not None:
         lines.append(f'(allow file-write* (subpath "{_escape_sb_path(wt_gitdir)}"))')
     lines.extend(
-        _deny_reads(
+        _deny_reads_and_ipc(
             home_dir,
             allow_read_traces=allow_read_traces,
             allow_read_held_out=allow_read_held_out,
-            deny_env_file=deny_env_file,
         )
     )
     lines.append("")
@@ -141,7 +147,6 @@ def wrap_with_sandbox(
     allow_read_traces: bool = False,
     allow_read_held_out: bool = False,
     enabled: bool = True,
-    deny_env_file: bool = True,
 ) -> list[str]:
     """Wraps `cmd` in `sandbox-exec -f <profile.sb>` on macOS when enabled."""
     if not enabled or sys.platform != "darwin" or shutil.which("sandbox-exec") is None:
@@ -156,7 +161,6 @@ def wrap_with_sandbox(
             home_dir=home_dir,
             allow_read_traces=allow_read_traces,
             allow_read_held_out=allow_read_held_out,
-            deny_env_file=deny_env_file,
         ),
         encoding="utf-8",
     )
@@ -164,7 +168,7 @@ def wrap_with_sandbox(
 
 
 def build_ephemeral_sandbox_profile(
-    work_dir: Path, *, home_dir: Path | None = None, deny_env_file: bool = True
+    work_dir: Path, *, home_dir: Path | None = None
 ) -> str:
     """Seatbelt profile for a one-shot `pi` answer: writes only in its own temp dir, reads no secrets.
 
@@ -181,7 +185,7 @@ def build_ephemeral_sandbox_profile(
         '(allow file-write* (subpath "/private/tmp"))',
         f'(allow file-write* (subpath "{work}"))',
     ]
-    lines.extend(_deny_reads(home_dir, deny_env_file=deny_env_file))
+    lines.extend(_deny_reads_and_ipc(home_dir))
     lines.append("")
     return "\n".join(lines)
 
@@ -192,7 +196,6 @@ def wrap_ephemeral(
     work_dir: Path,
     home_dir: Path | None = None,
     enabled: bool = True,
-    deny_env_file: bool = True,
 ) -> list[str]:
     """Wrap a one-shot worker in a temp-dir-only Seatbelt profile on macOS."""
     if not enabled or sys.platform != "darwin" or shutil.which("sandbox-exec") is None:
@@ -200,7 +203,7 @@ def wrap_ephemeral(
     work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile_path = work_dir / "sandbox.sb"
     profile_path.write_text(
-        build_ephemeral_sandbox_profile(work_dir, home_dir=home_dir, deny_env_file=deny_env_file),
+        build_ephemeral_sandbox_profile(work_dir, home_dir=home_dir),
         encoding="utf-8",
     )
     return ["sandbox-exec", "-f", str(profile_path), *cmd]

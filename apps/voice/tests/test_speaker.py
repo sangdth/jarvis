@@ -168,6 +168,18 @@ class TestSpeaker(unittest.TestCase):
         self.assertTrue(graduate(5.0))
         self.assertEqual(speaker_number(VoiceProfile(id="voice_7", voiceprint=np.zeros(2))), 7)
 
+        # In a meeting, an unvouched stranger stating their name stays RAM-only (never enrolled permanently).
+        unvouched_reg = SpeakerRegistry(folder=None)
+        unvouched_tracker = SpeakerBeliefTracker()
+        stranger = VoiceProfile(id="voice_2", voiceprint=np.array([1.0, 0.0], dtype=np.float32), speech_secs=6.0)
+        unvouched_reg.profiles = {stranger.id: stranger}
+        unvouched_res = unvouched_tracker.observe_guest(
+            stranger, "Hi, my name is Mallory.", pitch_hz=200.0, now=1005.0, meeting=True, registry=unvouched_reg
+        )
+        self.assertEqual(unvouched_res.name, "Mallory")
+        self.assertFalse(unvouched_res.graduated)
+        self.assertFalse(stranger.enrolled)
+
     def test_speaker_registry_creates_profiles_links_identity_and_persists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / "speakers"

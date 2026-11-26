@@ -594,6 +594,57 @@ class TestMacApp(unittest.IsolatedAsyncioTestCase):
             finally:
                 response.close()
 
+    async def test_paired_update_signs_zip_and_rejects_revoked_device_or_browser_ws_origin(self) -> None:
+        import hashlib
+        import urllib.error
+        import urllib.request
+
+        from jarvis_core.devices import DeviceStore
+
+        store = DeviceStore(self.dir / "devices.json")
+        device, secret = store.add("Sang's MacBook")
+        self.transport.devices = store
+        built = self.dir / "built.zip"
+        payload = b"PK\x03\x04 signed bundle"
+        built.write_bytes(payload)
+        nonce = "nonce12345678"
+
+        def fetch_signed(dev_id: str):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/Jarvis.app.zip",
+                headers={"X-Jarvis-Device": dev_id, "X-Jarvis-Nonce": nonce},
+            )
+            return urllib.request.urlopen(req, timeout=5)
+
+        with mock.patch.object(remote_audio, "MAC_APP_ZIP", built):
+            resp = await asyncio.to_thread(fetch_signed, device.id)
+            try:
+                sig = resp.headers["X-Jarvis-Signature"]
+                expected = remote_audio.sign_app_zip(
+                    hashlib.sha256(secret.encode()).hexdigest(),
+                    nonce,
+                    hashlib.sha256(payload).hexdigest(),
+                )
+                self.assertEqual(sig, expected)
+            finally:
+                resp.close()
+
+            store.revoke(device.id)
+            with self.assertRaises(urllib.error.HTTPError) as revoked_err:
+                await asyncio.to_thread(fetch_signed, device.id)
+            self.assertEqual(revoked_err.exception.code, 401)
+
+        def fetch_ws_with_origin():
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/ws?token=test-token",
+                headers={"Origin": "https://evil.example"},
+            )
+            return urllib.request.urlopen(req, timeout=5)
+
+        with self.assertRaises(urllib.error.HTTPError) as ws_err:
+            await asyncio.to_thread(fetch_ws_with_origin)
+        self.assertEqual(ws_err.exception.code, 403)
+
 
 class TestToken(unittest.TestCase):
     def test_the_relay_uses_the_one_gateway_token(self) -> None:

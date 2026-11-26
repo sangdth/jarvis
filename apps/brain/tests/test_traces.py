@@ -282,3 +282,28 @@ def test_prune_deletes_old_day_folders(tmp_path: Path) -> None:
     assert removed == 1
     assert not old.exists() and keep.exists()
     assert db.get_trace_run("c" * 32) is None
+
+
+async def test_trace_sink_redacts_dotenv_secrets_and_confines_traversal_ids(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("LAYA_API_KEY", raising=False)
+    cfg = _settings(tmp_path)
+    cfg.home_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.home_dir / ".env").write_text("LAYA_API_KEY=laya_dotenv_secret_987654\n", encoding="utf-8")
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    hub = TelemetryHub()
+    sink = TraceSink(db, cfg, hub)
+    sink.start()
+    try:
+        hub.emit("voice.stt", turn_id="t9", trace_id="x/../../../../outside", text="leak laya_dotenv_secret_987654")
+        hub.emit("voice.tts", turn_id="t9", trace_id="x/../../../../outside", text="echo laya_dotenv_secret_987654")
+        assert await _settle(lambda: len(db.list_trace_runs(limit=5)) == 1)
+    finally:
+        await sink.stop()
+        db.close()
+
+    assert not (tmp_path / "outside.json").exists()
+    for path in cfg.traces_dir.rglob("*"):
+        if path.is_file():
+            assert "laya_dotenv_secret_987654" not in path.read_text(encoding="utf-8", errors="replace")

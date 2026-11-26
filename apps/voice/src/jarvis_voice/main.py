@@ -463,7 +463,11 @@ async def run_pipecat_harness(
         context_aggregator.user(),
     ]
     # Long-term memory sits right before the brain: it adds what Jarvis remembers to each request (~22 ms).
-    memory = create_memory_service() if llm is not None and not enroll_owner else None
+    memory = (
+        create_memory_service(is_meeting=lambda: state.meeting)
+        if llm is not None and not enroll_owner
+        else None
+    )
     if memory is not None:
         processors.append(memory)
     if llm is not None:

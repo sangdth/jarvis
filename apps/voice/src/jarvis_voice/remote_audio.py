@@ -18,6 +18,8 @@ one host, one port and one token.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import json
 import re
@@ -43,6 +45,8 @@ CLIENT_SCRIPT = Path(__file__).parent / "defaults" / "remote" / "client.py"
 # inside.
 MAC_APP_ZIP = REPO_ROOT / "target" / "connect" / "Jarvis.app.zip"
 MAC_APP_NAME = "Jarvis.app"
+APP_BUNDLE_ID = "com.sangdth.jarvis.remote"
+_NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 # Mic audio waiting for the pipeline, in 20 ms blocks: past a second behind, the oldest goes rather than lag.
 MIC_QUEUE_BLOCKS = 50
 # A write that takes this long means the other Mac stopped reading: drop that client, never mark the transport broken
@@ -447,7 +451,8 @@ class RemoteVoiceTransport:
         The mac app itself, built on this checkout, as a plain `.app.zip`.
 
         Open like `/client.py`, and for the same reason: it arrives before the client has a secret and carries none.
-        The bundle is signed as it ships, so nothing is patched per request.
+        When a paired Mac updates (`X-Jarvis-Device` + `X-Jarvis-Nonce`), sign `nonce:sha256(zip)` with the device's
+        stored `secret_sha256` so an impostor `.local` responder on public Wi-Fi cannot serve an unverified bundle.
         """
         if not MAC_APP_ZIP.is_file():
             return web.Response(
@@ -455,13 +460,19 @@ class RemoteVoiceTransport:
                 text="No mac app built on this checkout yet: run `jarvis start` (or `just build`) on the Mac "
                 "running Jarvis, then download again.\n",
             )
-        return web.FileResponse(
-            MAC_APP_ZIP,
-            headers={
-                "Content-Disposition": f'attachment; filename="{MAC_APP_NAME}.zip"',
-                "Cache-Control": "no-store",
-            },
-        )
+        headers = {
+            "Content-Disposition": f'attachment; filename="{MAC_APP_NAME}.zip"',
+            "Cache-Control": "no-store",
+        }
+        device_id = (request.headers.get("X-Jarvis-Device") or "").strip()
+        nonce = (request.headers.get("X-Jarvis-Nonce") or "").strip()
+        if device_id or nonce:
+            device = self.devices.get(device_id) if (self.devices is not None and _NONCE_RE.fullmatch(nonce)) else None
+            if device is None or not device.secret_sha256:
+                return web.json_response({"error": "unknown or revoked device"}, status=401)
+            zip_sha = await asyncio.to_thread(_sha256_file, MAC_APP_ZIP)
+            headers["X-Jarvis-Signature"] = sign_app_zip(device.secret_sha256, nonce, zip_sha)
+        return web.FileResponse(MAC_APP_ZIP, headers=headers)
 
     async def handle_install_script(self, request: web.Request) -> web.Response:
         """`curl -fsSL http://<mac-mini>:8643/install-app | sh`: install into /Applications and open it."""
@@ -491,7 +502,7 @@ trap 'rm -rf "$TMP"' EXIT
 echo "Downloading {MAC_APP_NAME} from {base}..."
 curl -fsSL '{base}/Jarvis.app.zip' -o "$TMP/app.zip"
 ditto -xk "$TMP/app.zip" "$TMP/out"
-codesign --verify --deep --strict "$TMP/out/{MAC_APP_NAME}"
+codesign --verify --deep --strict -R '=identifier "{APP_BUNDLE_ID}"' "$TMP/out/{MAC_APP_NAME}"
 mkdir -p "$TARGET"
 rm -rf "$TARGET/{MAC_APP_NAME}"
 ditto "$TMP/out/{MAC_APP_NAME}" "$TARGET/{MAC_APP_NAME}"
@@ -506,6 +517,8 @@ echo "Installed $TARGET/{MAC_APP_NAME}; it points at {base}."
 
     async def handle_ws(self, request: web.Request) -> web.StreamResponse:
         """One WebSocket per listening Jarvis: binary audio down, binary audio up, JSON control both ways."""
+        if request.headers.get("Origin"):
+            return web.Response(status=403, text="Browser origins are not allowed.\n")
         if not self._authorized(request):
             logger.warning(f"Relay: refused a connection from {request.remote} (bad token).")
             return web.Response(status=401, text="Jarvis relay: the token does not match this Mac's.\n")
@@ -598,6 +611,23 @@ def _sanitize_host(raw: str | None) -> str | None:
     ):
         return candidate
     return None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sign_app_zip(secret_sha256: str, nonce: str, zip_sha256: str) -> str:
+    """HMAC-SHA256 over `nonce:zip_sha256` keyed by `secret_sha256` (which both paired sides can derive)."""
+    return hmac.new(
+        secret_sha256.encode("utf-8"),
+        f"{nonce}:{zip_sha256}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def make_transport(

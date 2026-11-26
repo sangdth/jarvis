@@ -1052,7 +1052,7 @@ class SpeakerBeliefTracker:
             and confidence >= KNOWN_AT
             and profile.speech_secs >= ENOUGH_SPEECH_SECS
             and not profile.enrolled
-            and (profile.owner_vouched or meeting)
+            and profile.owner_vouched
         ):
             linked = registry.link_name(profile.id, best_name, enroll=True)
             if linked is not None:

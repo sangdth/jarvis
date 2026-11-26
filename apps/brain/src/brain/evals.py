@@ -118,7 +118,9 @@ def _harvest_intent(cfg: Settings, *, feedback_path: Path | None = None) -> int:
         if not text or not label:
             continue
         added += append_case(
-            cfg.home_dir, "intent", {"input": scrub_text(text), "intent": str(label)}
+            cfg.home_dir,
+            "intent",
+            {"input": scrub_text(text, home_dir=cfg.home_dir), "intent": str(label)},
         )
     return added
 
@@ -136,7 +138,7 @@ def _harvest_traces(db: BrainDB, cfg: Settings) -> tuple[int, int]:
                 cfg.home_dir,
                 "brain_route",
                 {
-                    "input": scrub_text(row.user_input),
+                    "input": scrub_text(row.user_input, home_dir=cfg.home_dir),
                     "expected_tool": "delegate_project",
                     "project": fixed.repo or "",
                     "runner": fixed.runner or "t3",
@@ -150,7 +152,10 @@ def _harvest_traces(db: BrainDB, cfg: Settings) -> tuple[int, int]:
             prompts += append_case(
                 cfg.home_dir,
                 "voice_prompts",
-                {"input": scrub_text(stt), "cleanup": scrub_text(cleanup)},
+                {
+                    "input": scrub_text(stt, home_dir=cfg.home_dir),
+                    "cleanup": scrub_text(cleanup, home_dir=cfg.home_dir),
+                },
             )
     return routes, prompts
 
