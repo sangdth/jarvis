@@ -44,6 +44,7 @@ from jarvis_core.questions import is_approval
 PAIR_TTL_SECS = 300
 PAIR_MAX_FAILURES = 5
 PAIR_FAILURE_WINDOW_SECS = 60.0
+PAIR_EMIT_COOLDOWN_SECS = 5.0
 
 _CMD_PREFIX = r"^\s*(?:(?:hey\s+)?jarvis[,\s]+)?(?:please\s+)?"
 _AUTONOMOUS_RE = re.compile(
@@ -156,6 +157,9 @@ class BrainServer:
             "claude": ClaudeRunner(cfg),
             "opencode": OpenCodeRunner(cfg),
         }
+        t3_runner = self.runners.get("t3")
+        if t3_runner is not None and hasattr(t3_runner, "on_unsolicited"):
+            t3_runner.on_unsolicited = self._publish_global  # type: ignore[attr-defined]
         self.orchestrator = orchestrator or BrainOrchestrator(
             cfg, db, reconciler, runners=self.runners, last_project=self._last_project
         )
@@ -165,6 +169,7 @@ class BrainServer:
         # One pairing code at a time, in memory: a restart clears it, which is what we want.
         self._pair_codes: dict[str, float] = {}
         self._pair_name = ""  # who asked, for the dashboard's banner; the app that asked first keeps it
+        self._pair_last_emitted = 0.0
         self._pair_failures: deque[float] = deque(maxlen=PAIR_MAX_FAILURES * 2)
         self._voice_snapshot = voice_snapshot or (lambda: {"state": "not running"})
         self._started_at = started_at if started_at is not None else time.time()
@@ -403,7 +408,7 @@ class BrainServer:
                 return web.json_response({"error": f"Unknown project {project!r}"}, status=404)
             cwd = str(folder)
         try:
-            limit = max(1, min(int(request.query.get("limit", "20")), 50))
+            limit = max(1, min(int(request.query.get("limit", "20")), 200))
         except ValueError:
             limit = 20
         try:
@@ -414,32 +419,52 @@ class BrainServer:
             "runner": runner_id,
             "sessions": [
                 {"id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch,
-                 "running": s.running, "updated_at": s.updated_at}
+                 "running": s.running, "updated_at": s.updated_at,
+                 "visited_at": getattr(s, "visited_at", 0.0)}
                 for s in sessions
             ],
         })
 
     async def handle_connect(self, request: web.Request) -> web.Response:
-        """`jarvis connect`: pin one session for the run, or list what can be picked."""
+        """`jarvis connect`: pin one session for the run, answer its prompt, or list what can be picked."""
         body = await self._read_json_dict(request)
         runner_id = str(body.get("runner") or "t3")
         runner = self.runners.get(runner_id)
         if runner is None:
             return web.json_response({"error": f"Unknown runner {runner_id!r}"}, status=404)
         session_id = str(body.get("session_id") or "").strip()
+        answer = str(body.get("answer") or "").strip()
+        if session_id and answer:
+            ok = await runner.answer(session_id, answer)
+            return web.json_response({"ok": ok})
+        project_root = str(body.get("project_root") or "").strip()
+        worktree_path = str(body.get("worktree_path") or "").strip() or None
         project = str(body.get("project") or "").strip() or None
         try:
-            sessions = await runner.list_sessions(None, limit=20)
+            if (project_root or worktree_path) and hasattr(runner, "resolve_folder_session"):
+                chosen = await runner.resolve_folder_session(project_root, worktree_path)  # type: ignore[attr-defined]
+                if chosen is None:
+                    return web.json_response({"error": "Session not found"}, status=404)
+                pending = await runner.watch_session(chosen.id) if hasattr(runner, "watch_session") else None  # type: ignore[attr-defined]
+                return web.json_response({
+                    "pinned": {"runner": runner_id, "session_id": chosen.id},
+                    "session": {"id": chosen.id, "title": chosen.title, "cwd": chosen.cwd,
+                                "branch": chosen.branch, "running": chosen.running},
+                    **({"pending": pending} if pending else {}),
+                })
+            sessions = await runner.list_sessions(None, limit=200)
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=503)
         if session_id:
             chosen = next((s for s in sessions if s.id == session_id), None)
             if chosen is None:
                 return web.json_response({"error": "Session not found"}, status=404)
+            pending = await runner.watch_session(chosen.id) if hasattr(runner, "watch_session") else None  # type: ignore[attr-defined]
             return web.json_response({
                 "pinned": {"runner": runner_id, "session_id": chosen.id},
                 "session": {"id": chosen.id, "title": chosen.title, "cwd": chosen.cwd,
                             "branch": chosen.branch, "running": chosen.running},
+                **({"pending": pending} if pending else {}),
             })
         if project:
             from jarvis_core.projects import resolve_project
@@ -451,7 +476,7 @@ class BrainServer:
             "runner": runner_id,
             "sessions": [
                 {"id": s.id, "title": s.title, "cwd": s.cwd, "branch": s.branch, "running": s.running}
-                for s in sessions
+                for s in sessions[:20]
             ],
         })
 
@@ -627,7 +652,6 @@ class BrainServer:
         st = self.db.get_state()
         tasks = self.db.list_tasks()
         skills = self.db.list_skills(status="active")
-        outbox = self.db.list_outbox()
         return {
             "ok": True,
             "version": self._version,
@@ -643,9 +667,9 @@ class BrainServer:
             "tasks_ready": sum(1 for t in tasks if t.status == "ready"),
             "tasks_running": sum(1 for t in tasks if t.status == "in_progress"),
             "skills_active": len(skills),
-            "approvals_waiting": sum(1 for o in outbox if o.kind == "approval_request" and o.status == "queued"),
+            "approvals_waiting": self.db.count_outbox(status="queued", kind="approval_request"),
             "timers_active": sum(1 for t in self.db.list_timers(status="active")),
-            "outbox_queued": sum(1 for o in outbox if o.status == "queued"),
+            "outbox_queued": self.db.count_outbox(status="queued"),
             "telemetry_seq": self.hub.sequence,
             "voice": self._voice_snapshot(),
         }
@@ -665,11 +689,7 @@ class BrainServer:
     async def handle_status(self, request: web.Request) -> web.Response:
         return web.json_response(self.status_payload())
 
-    def authenticate(self, token: str) -> bool:
-        """The shared token, or a paired device's secret. Used by the relay for `/ws` and `/client.py`."""
-        return self._is_owner(token) or self.devices.verify(token) is not None
-
-    def _reveal_pair_code(self, name: str) -> tuple[str, float]:
+    def _reveal_pair_code(self, name: str, *, throttle_emit: bool = False) -> tuple[str, float]:
         """
         One pending code at a time, and it shows where the owner can see it: the dashboard's telemetry, or `jarvis pair`.
 
@@ -678,6 +698,7 @@ class BrainServer:
         """
         now = time.time()
         active = {code: expires for code, expires in self._pair_codes.items() if expires > now}
+        reused = bool(active)
         if active:
             code, expires = next(iter(active.items()))
             label = name or self._pair_name
@@ -687,13 +708,15 @@ class BrainServer:
             self._pair_failures.clear()
             self._pair_name = label = name
             logger.info("[Pair] a pairing code was issued (single use, 5 minutes); `jarvis dashboard` shows it.")
-        self.hub.emit(
-            EVENT_PAIR_REQUESTED,
-            code=code,
-            name=label or "A device",
-            expires_at=round(expires, 3),
-            ttl_s=max(0, int(expires - now)),
-        )
+        if not (reused and throttle_emit and now - self._pair_last_emitted < PAIR_EMIT_COOLDOWN_SECS):
+            self._pair_last_emitted = now
+            self.hub.emit(
+                EVENT_PAIR_REQUESTED,
+                code=code,
+                name=label or "A device",
+                expires_at=round(expires, 3),
+                ttl_s=max(0, int(expires - now)),
+            )
         return code, expires
 
     async def handle_pair_start(self, request: web.Request) -> web.Response:
@@ -717,7 +740,7 @@ class BrainServer:
         except Exception:
             body = {}
         name = " ".join(str(body.get("name") or "").split())[:60] if isinstance(body, dict) else ""
-        _, expires = self._reveal_pair_code(name)
+        _, expires = self._reveal_pair_code(name, throttle_emit=True)
         return web.json_response({"ok": True, "expires_in": max(0, int(expires - time.time()))})
 
     async def handle_pair(self, request: web.Request) -> web.Response:
@@ -771,7 +794,7 @@ class BrainServer:
                     "upgrade_failures": st.upgrade_failures,
                 },
                 "tasks": [self._task_dict(t) for t in self.db.list_tasks()],
-                "attempts": [self._attempt_dict(a) for a in self.db.list_attempts()],
+                "attempts": [self._attempt_dict(a) for a in self.db.list_attempts(limit=400)],
                 "skills": [self._skill_dict(s) for s in self.db.list_skills(status=None)],
                 "outbox": [self._outbox_dict(o) for o in self.db.list_outbox()],
             }
@@ -1091,6 +1114,9 @@ class BrainServer:
             )
         if approved and row.task_id:
             self.reconciler.wake()
+        answer_text = str(body.get("answer") or ("yes" if approved else "no")).strip()
+        if isinstance(details, dict) and details.get("runner") and details.get("session_id"):
+            await self._forward_runner_outbox(row, details, answer_text)
         if approved and row.task_id is None and row.resume_session_id:
             # A deferred interactive Planner turn: resume the exact `pi` session that parked itself, without
             # holding this HTTP response (and the voice) open for the whole turn.
@@ -1106,6 +1132,20 @@ class BrainServer:
                 "task_id": row.task_id,
             }
         )
+
+    async def _forward_runner_outbox(
+        self, row: OutboxRow, details: dict[str, Any], answer_text: str
+    ) -> bool:
+        runner = self.runners.get(str(details.get("runner") or ""))
+        session_id = str(details.get("session_id") or "").strip()
+        if runner is None or not session_id:
+            return False
+        self.db.mark_outbox_consumed(row.id)
+        try:
+            return await runner.answer(session_id, answer_text)
+        except Exception as exc:
+            logger.error(f"[Brain] forwarding outbox {row.id} to {runner.id} failed: {exc!r}")
+            return False
 
     async def _resume_approved_outbox(self, row: OutboxRow) -> None:
         try:
@@ -1525,6 +1565,13 @@ class BrainServer:
                         self._schedule_restart_if_pending()
                         return
                     if (
+                        outbox_row is not None
+                        and isinstance(ob_details, dict)
+                        and ob_details.get("runner")
+                        and ob_details.get("session_id")
+                    ):
+                        await self._forward_runner_outbox(outbox_row, ob_details, answer)
+                    if (
                         approved
                         and outbox_row is not None
                         and outbox_row.task_id is None
@@ -1627,11 +1674,16 @@ class BrainServer:
                 while len(self._last_project_by_session) > 200:
                     self._last_project_by_session.pop(next(iter(self._last_project_by_session)))
             if result.outcome == "deferred_approval" and result.question:
-                # Nobody can answer live (an iPhone one-shot): leave it on the board for the owner.
+                # Nobody can answer live (an iPhone one-shot, or an unanswered prompt): leave it on the board.
+                details = {
+                    **result.question,
+                    "runner": result.runner or "t3",
+                    "session_id": result.session_id or "",
+                }
                 outbox = self.db.queue_outbox(
                     kind="approval_request",
                     summary_spoken=str(result.question.get("description") or result.summary),
-                    details=result.question,
+                    details=details,
                 )
                 result.summary = f"{result.summary} (queued as {outbox.id})"
             if result.outcome in ("errored", "timed_out"):

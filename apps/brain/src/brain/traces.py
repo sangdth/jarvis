@@ -162,24 +162,44 @@ def word_change_ratio(left: str, right: str) -> float:
     return len(old - new) / len(old)
 
 
+_SECRET_CACHE: tuple[tuple[Any, ...], list[str]] | None = None
+
+
+def _file_mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return -1
+
+
 def _secret_values(home_dir: Path | None = None) -> list[str]:
+    global _SECRET_CACHE
     from jarvis_core.home import BRAIN_TOKEN_FILE, JARVIS_HOME, brain_home, env_file_value
 
     b_home = home_dir or brain_home()
     env_paths = (JARVIS_HOME / ".env", b_home / ".env")
+    token_files = (JARVIS_HOME / BRAIN_TOKEN_FILE, JARVIS_HOME / "remote_token")
+    sig = (
+        str(b_home),
+        tuple(os.environ.get(name, "") for name in SECRET_ENV),
+        tuple(_file_mtime_ns(p) for p in (*env_paths, *token_files)),
+    )
+    if _SECRET_CACHE is not None and _SECRET_CACHE[0] == sig:
+        return list(_SECRET_CACHE[1])
     values: list[str] = []
     for name in SECRET_ENV:
         for candidate in (os.environ.get(name), env_file_value(name, *env_paths)):
             if candidate and len(candidate) >= 6 and candidate not in values:
                 values.append(candidate)
-    for token_file in (JARVIS_HOME / BRAIN_TOKEN_FILE, JARVIS_HOME / "remote_token"):
+    for token_file in token_files:
         try:
             tok = token_file.read_text(encoding="utf-8").strip()
         except OSError:
             continue
         if len(tok) >= 6 and tok not in values:
             values.append(tok)
-    return values
+    _SECRET_CACHE = (sig, values)
+    return list(values)
 
 
 def scrub_text(text: str, *, home_dir: Path | None = None) -> str:
@@ -255,6 +275,7 @@ class TraceSink:
         self._recent: deque[dict[str, Any]] = deque(maxlen=20)
         self._prompt_sha_cache: tuple[float, str] | None = None
         self._git_sha = ""
+        self._last_prune_day = ""
         self._dropped = 0
 
     # ------------------------------------------------------------------ lifecycle
@@ -264,6 +285,7 @@ class TraceSink:
             return
         self._queue = asyncio.Queue(maxsize=4096)
         self.hub.add_listener(self._on_event)
+        self._last_prune_day = _local_date()
         removed = self.prune()
         if removed:
             logger.info(f"[Traces] pruned {removed} day folder(s) older than {self.cfg.trace_retention_days}d")
@@ -290,6 +312,8 @@ class TraceSink:
     def _on_event(self, envelope: dict[str, Any]) -> None:
         queue = self._queue
         if queue is None:
+            return
+        if envelope.get("event") in _DROP_EVENTS or not envelope.get("trace_id"):
             return
         try:
             queue.put_nowait(envelope)
@@ -320,7 +344,7 @@ class TraceSink:
                 logger.warning(f"[Traces] drain failed: {exc!r}")
             if time.monotonic() - last_sweep > 60:
                 last_sweep = time.monotonic()
-                self._sweep()
+                await asyncio.to_thread(self._sweep)
 
     async def _drain(self, batch: list[dict[str, Any]]) -> None:
         secrets = _secret_values(self.cfg.home_dir)
@@ -768,6 +792,13 @@ class TraceSink:
     # ------------------------------------------------------------------ housekeeping
 
     def _sweep(self) -> None:
+        today = _local_date()
+        if today != self._last_prune_day:
+            self._last_prune_day = today
+            try:
+                self.prune()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"[Traces] daily prune failed: {exc!r}")
         cutoff = time.time() - _FLUSH_AFTER_SECS
         for trace_id, buffer in list(self._buffers.items()):
             if float(buffer["touched"]) < cutoff:

@@ -19,6 +19,7 @@ from loguru import logger
 
 from brain.config import Settings
 from brain.runners.base import EventCallback, RunRequest, RunResult
+from brain.sandbox import strip_gateway_secrets
 from jarvis_core.sessions import AgentSession
 
 
@@ -44,6 +45,7 @@ class OpenCodeRunner:
         try:
             proc = await asyncio.create_subprocess_exec(
                 binary, "api", "GET", "/session", "--format", "json",
+                env=strip_gateway_secrets(dict(os.environ)),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 cwd=str(cwd or Path.home()),
             )
@@ -79,7 +81,8 @@ class OpenCodeRunner:
         cmd.extend(["--", request.prompt])
         timeout = request.timeout_seconds or 1800.0
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            *cmd, cwd=str(cwd), env=strip_gateway_secrets(dict(os.environ)),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
         self._active[request.run_id] = proc

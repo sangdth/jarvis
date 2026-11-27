@@ -13,6 +13,7 @@ from brain.reconciler import PROTECTED_SELF_PATHS, Reconciler, spec_similarity
 from brain.skills import (
     SkillProposal,
     apply_skill_proposal,
+    attempt_trace_path,
     mine_failure_patterns,
     record_skill_outcome,
     render_failure_patterns,
@@ -391,7 +392,7 @@ print(json.dumps({"role": "assistant", "content": "Tried 99", "cost_usd": 0.01})
         assert len(attempts) == 1 and attempts[0].outcome == "failed_verify"
 
         # Trace file and deterministic negative-result ledger were written to disk
-        trace_path = cfg.traces_dir / f"attempt-{attempts[0].id}.json"
+        trace_path = attempt_trace_path(cfg.traces_dir, attempts[0])
         assert trace_path.is_file()
         assert "app.py" in trace_path.read_text(encoding="utf-8")
         note_text = (cfg.notes_dir / f"{t1.id}.md").read_text(encoding="utf-8")

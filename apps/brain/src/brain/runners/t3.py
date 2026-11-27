@@ -18,6 +18,7 @@ import os
 import shutil
 import signal
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,10 +32,11 @@ from brain import memory
 from brain.config import Settings
 from brain.db import BrainDB
 from brain.runners.base import EventCallback, RunRequest, RunResult
+from brain.sandbox import strip_gateway_secrets
 from jarvis_core.projects import resolve_project
 from jarvis_core.questions import describe_fields, form_answer, is_approval, question_fields
 from jarvis_core.sessions import AgentSession, match_sessions
-from jarvis_core.t3 import ACTIVE_STATUSES, T3_HOME, find_project, recent_threads, t3_defaults
+from jarvis_core.t3 import ACTIVE_STATUSES, T3_HOME, current_thread, find_project, recent_threads, t3_defaults
 
 PROTOCOL = 2  # T3's ORCHESTRATION_PROTOCOL_VERSION; the server answers 426 to any other
 _ACTIVE = ACTIVE_STATUSES
@@ -57,10 +59,15 @@ class _ThreadState:
     project_id: str | None = None
     # A thread this runner just launched already carries the task as its first message.
     initial_message_sent: bool = False
+    watched: bool = False
+    on_unsolicited: Callable[[dict[str, Any]], None] | None = None
 
     def publish(self, event: dict[str, Any]) -> None:
-        for queue in list(self.listeners):
-            queue.put_nowait(event)
+        if self.listeners:
+            for queue in list(self.listeners):
+                queue.put_nowait(event)
+        elif self.watched and self.on_unsolicited is not None:
+            self.on_unsolicited({**event, "runner": "t3", "session_id": self.thread_id})
 
 
 class T3Runner:
@@ -81,7 +88,8 @@ class T3Runner:
         self._snapshots: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._subs: dict[str, str] = {}  # subscription request id -> thread id
         self._threads: dict[str, _ThreadState] = {}
-        self._active_runs: dict[str, tuple[str, str]] = {}  # server run id -> (thread id, t3 run id)
+        self._active_runs: dict[str, tuple[str, str | None]] = {}  # server run id -> (thread id, t3 run id)
+        self.on_unsolicited: Callable[[dict[str, Any]], None] | None = None
         self._loop_task: asyncio.Task[None] | None = None
         self._connected = asyncio.Event()
         self._autostart_lock = asyncio.Lock()
@@ -162,9 +170,16 @@ class T3Runner:
         proc = await asyncio.create_subprocess_exec(
             t3, "auth", "session", "issue", "--scope", "orchestration:read", "--scope", "orchestration:operate",
             "--ttl", "30d", "--label", "jarvis brain", "--token-only",
+            env=strip_gateway_secrets(dict(os.environ)),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await proc.communicate()
+        except asyncio.CancelledError:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise
         if proc.returncode != 0:
             raise RuntimeError(f"`t3 auth session issue` failed: {err.decode().strip()}")
         return out.decode().strip()
@@ -195,6 +210,7 @@ class T3Runner:
             with log_file.open("ab") as handle:
                 self._spawned_proc = await asyncio.create_subprocess_exec(
                     t3, "serve", "--mode", "desktop", "--host", host, "--port", str(self._port()),
+                    env=strip_gateway_secrets(dict(os.environ)),
                     stdout=handle, stderr=handle, start_new_session=True,
                 )
             deadline = asyncio.get_running_loop().time() + self.cfg.t3_start_timeout_seconds
@@ -237,11 +253,17 @@ class T3Runner:
                     if item.get("kind") == "snapshot" and not snap.done():
                         snap.set_result(item["snapshot"])
         elif tag == "Exit":
-            if msg["requestId"] in self._subs:  # a thread subscription ended: subscribe again
+            if msg["requestId"] in self._subs:
                 thread_id = self._subs.pop(msg["requestId"], None)
-                thread_state = self._threads.get(thread_id or "")
-                if thread_state is not None and self._ws is not None:
-                    asyncio.create_task(self._subscribe(thread_state))
+                exit_tag = (msg.get("exit") or {}).get("_tag")
+                if exit_tag == "Failure":
+                    if thread_id:
+                        self._threads.pop(thread_id, None)
+                    logger.warning(f"[t3] Thread subscription {thread_id} failed; stopped watching it.")
+                else:
+                    thread_state = self._threads.get(thread_id or "")
+                    if thread_state is not None and self._ws is not None:
+                        asyncio.create_task(self._resubscribe_later(thread_state))
             if (snap := self._snapshots.pop(msg["requestId"], None)) is not None and not snap.done():
                 snap.set_exception(RuntimeError(f"T3 shell subscription failed: {json.dumps(msg)[:300]}"))
             call = self._calls.pop(msg["requestId"], None)
@@ -276,6 +298,11 @@ class T3Runner:
     async def _command(self, thread_id: str, command: dict[str, Any]) -> bool:
         payload = {"commandId": str(uuid.uuid4()), "threadId": thread_id, **command}
         return await self._call("orchestration.dispatchCommand", payload) is not None
+
+    async def _resubscribe_later(self, state: _ThreadState) -> None:
+        await asyncio.sleep(1.0)
+        if self._ws is not None and self._threads.get(state.thread_id) is state:
+            await self._subscribe(state)
 
     async def _subscribe(self, state: _ThreadState) -> None:
         if self._ws is None:
@@ -329,8 +356,10 @@ class T3Runner:
     def _state(self, thread_id: str) -> _ThreadState:
         state = self._threads.get(thread_id)
         if state is None:
-            state = _ThreadState(thread_id=thread_id)
+            state = _ThreadState(thread_id=thread_id, on_unsolicited=self.on_unsolicited)
             self._threads[thread_id] = state
+        else:
+            state.on_unsolicited = self.on_unsolicited
         return state
 
     async def _on_stream_item(self, state: _ThreadState, item: dict[str, Any]) -> None:
@@ -409,10 +438,48 @@ class T3Runner:
                 id=t["id"], title=t["title"], cwd=t["root"], branch=t["branch"],
                 running=t["status"] in _ACTIVE,
                 updated_at=datetime.fromisoformat(t["updatedAt"]).timestamp() if t["updatedAt"] else 0.0,
+                visited_at=datetime.fromisoformat(t["visitedAt"]).timestamp() if t.get("visitedAt") else 0.0,
             )
             for t in recent_threads(snapshot, limit=None)
             if project is None or t["projectId"] == project["id"]
         ][:limit]
+
+    async def resolve_folder_session(self, project_root: str, worktree_path: str | None) -> AgentSession | None:
+        snapshot = await self.shell_snapshot()
+        t = current_thread(snapshot, project_root, worktree_path)
+        if t is None:
+            return None
+        return AgentSession(
+            id=t["id"], title=t["title"], cwd=t["root"], branch=t["branch"],
+            running=t["status"] in _ACTIVE,
+            updated_at=datetime.fromisoformat(t["updatedAt"]).timestamp() if t["updatedAt"] else 0.0,
+            visited_at=datetime.fromisoformat(t["visitedAt"]).timestamp() if t.get("visitedAt") else 0.0,
+        )
+
+    async def watch_session(self, session_id: str) -> dict[str, Any] | None:
+        """Subscribe to a `jarvis connect` thread immediately and return any prompt it is already waiting on."""
+        await self._ensure_connected()
+        state = self._threads.get(session_id) or (await self._restore_state(session_id)) or self._state(session_id)
+        state.watched = True
+        state.on_unsolicited = self.on_unsolicited
+        if not any(tid == session_id for tid in self._subs.values()):
+            await self._subscribe(state)
+        if state.pending is None:
+            return None
+        pending = state.pending
+        if pending.get("type") == "approval_request":
+            return {
+                "event": "approval.request",
+                "request_id": pending.get("requestId"),
+                "description": f"needs approval: {pending.get('prompt') or pending.get('requestKind') or 'a tool call'}",
+            }
+        fields = question_fields(pending.get("questions", []))
+        return {
+            "event": "question.request",
+            "request_id": pending.get("requestId"),
+            "description": f"asks: {describe_fields(fields)}",
+            "questions": fields,
+        }
 
     # ------------------------------------------------------------------ work
 
@@ -440,6 +507,7 @@ class T3Runner:
                                   "description": f"asks: {describe_fields(fields)}", "questions": fields})
         try:
             before = set(state.runs)
+            self._active_runs[request.run_id] = (state.thread_id, None)
             # A thread this run just launched carries the task as its first message already; dispatching it
             # again would run the whole thing a second time.
             already_sent = state.initial_message_sent
@@ -463,7 +531,7 @@ class T3Runner:
             while True:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
-                    for run_id in list(state.runs):
+                    for run_id in ([our_run] if our_run else list(state.runs)):
                         await self._command(state.thread_id, {
                             "type": "run.interrupt", "runId": run_id, "reason": "Timed out.",
                         })
@@ -487,7 +555,6 @@ class T3Runner:
                 if kind in ("turn.completed", "turn.failed", "turn.cancelled") and event.get("run_id") in (
                     our_run, None
                 ):
-                    self._active_runs.pop(request.run_id, None)
                     self.db.set_thread_binding(
                         repo=repo_key, runner=self.id, thread_id=state.thread_id,
                         project_id=state.project_id, title=state.title,
@@ -515,14 +582,17 @@ class T3Runner:
                         return RunResult(
                             outcome="deferred_approval",
                             summary=f"The T3 thread is waiting: {event.get('description', '')}",
+                            runner=self.id,
                             session_id=state.thread_id, session_title=state.title,
                             worktree_path=state.worktree_path, branch=state.branch,
                             question={"request_id": pending.get("requestId"),
                                       "type": pending.get("type"),
+                                      "description": str(event.get("description") or ""),
                                       "questions": question_fields(pending.get("questions", []))},
                         )
                     await self._respond(state, pending, answer)
         finally:
+            self._active_runs.pop(request.run_id, None)
             state.listeners.discard(queue)
 
     async def answer(self, session_id: str, answer: str) -> bool:
@@ -544,13 +614,17 @@ class T3Runner:
 
     async def interrupt(self, run_id: str) -> bool:
         target = self._active_runs.pop(run_id, None)
-        candidates = [target] if target else [(t, r) for t, runs in self._threads.items() for r in runs.runs]
+        if target is None:
+            return False
+        thread_id, t3_run = target
+        state = self._threads.get(thread_id)
+        t3_runs = [t3_run] if t3_run else list(state.runs if state else ())
         stopped = False
-        for thread_id, t3_run in candidates:
-            if not thread_id or not t3_run:
+        for active_run in t3_runs:
+            if not thread_id or not active_run:
                 continue
             stopped = await self._command(thread_id, {
-                "type": "run.interrupt", "runId": t3_run, "reason": "Stopped by the user.",
+                "type": "run.interrupt", "runId": active_run, "reason": "Stopped by the user.",
             }) or stopped
         return stopped
 

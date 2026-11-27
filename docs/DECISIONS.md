@@ -34,9 +34,9 @@ Choices that look like bugs but were made on purpose, with their known limits. R
 - **No Whisper vocabulary prompt.** An `initial_prompt` with project and agent names was tested on 2026-11-06: it
   leaked names into sentences that never said them and fixed none (`docs/research/voice-recognition-misses.md`,
   finding 6). Names are matched after Whisper, by the conversation model and `open_project`.
-- **OpenCode's shared service streams every session.** Jarvis follows only sessions whose folder is the agent's `cwd`
-  (`OpenCodeSSEAdapter._is_ours`, one lookup per session); a request from another project is never read out or
-  answered. A server pinned with `OPENCODE_SERVER_PASSWORD` or a custom `url` is taken as one folder's, unfiltered.
+- **Claude Code and OpenCode run as minimal CLI turns inside Brain.** `ClaudeRunner` (`claude -p`) and
+  `OpenCodeRunner` (`opencode run`) resume one session per folder when named or connected (`jarvis connect`), while
+  T3 Code (`T3Runner`) is the default long-lived coding client.
 - **One memory.** The brain runs in the same process as the voice, so what you tell Jarvis and what the board
   learned share one home; there is no second assistant with its own memory any more.
 - **One ear, one mouth: a paired Mac takes them over, and there is no `jarvis remote` mode.** The relay routes are
@@ -89,8 +89,8 @@ Choices that look like bugs but were made on purpose, with their known limits. R
   `BRAIN_RPC_SOCK`, `BRAIN_TASK_ID`, `BRAIN_TASK_KIND`, `BRAIN_ALLOWED_REPOS`, `BRAIN_SKILLS_DIR`. Two reads stay for
   a running daemon or an old `.env`: `SUPERBRAIN_HOME` and `SUPERBRAIN_API_KEY` (Python and the dashboard, as fallbacks)
   and the state folder `~/.config/superbrain` until `jarvis init` moves it. The separate `brain` console script is
-  gone: one command, `jarvis` (`jarvis serve|status|…`, or `uv run python -m brain.cli …` when working inside
-  `apps/brain`).
+  gone: one command, `jarvis` (`jarvis serve|status|add|improve|research|…`, or `uv run python -m brain.cli serve`
+  for the gateway without the voice).
 - **Traces are local files plus one SQLite row, never an observability server.** `apps/brain/src/brain/traces.py`
   drains `TelemetryHub` in the background into `traces/<YYYY-MM-DD>/` (per-day folders, so retention is
   `shutil.rmtree`) and one `trace_runs` row with `git_sha`/`prompt_sha`, then writes `traces/analysis/` as the

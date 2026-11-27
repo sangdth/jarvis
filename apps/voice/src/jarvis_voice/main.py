@@ -55,8 +55,9 @@ async def pick_session(orchestrator: AgentOrchestrator, agent_id: str) -> dict[s
         ids = [a.config.id for a in orchestrator.adapters.values() if isinstance(a, CodingSessionAdapter)] + ["pi"]
         sys.exit(f"jarvis connect {agent_id}: not a coding agent enabled in agents.json; use one of {ids}.")
     name = adapter.config.name
+    folder_env = bool(os.environ.get("T3CODE_WORKTREE_PATH") or os.environ.get("T3CODE_PROJECT_ROOT"))
     try:
-        sessions = await adapter.list_sessions()
+        sessions = await (adapter.list_sessions(limit=200) if folder_env else adapter.list_sessions())
     except Exception as exc:
         sys.exit(f"Could not read {name} sessions; is {name} running? ({exc!r})")
     if not sessions:
@@ -86,19 +87,17 @@ def _when(moment: str | float | None) -> str:
 
 
 def _thread_for_this_folder(sessions: list[AgentSession]) -> int | None:
-    """A T3 project script names its folder and nothing else: take the first thread there, no keyboard prompt."""
+    """A T3 project script names its folder and nothing else: take the thread viewed last there, no keyboard prompt."""
     root = os.environ.get("T3CODE_WORKTREE_PATH") or os.environ.get("T3CODE_PROJECT_ROOT")
     if not root:
         return None
     wanted = Path(root).expanduser().resolve()
-    return next(
-        (
-            index
-            for index, session in enumerate(sessions)
-            if session.cwd and Path(session.cwd).expanduser().resolve() == wanted
-        ),
-        None,
-    )
+    matches = [
+        index
+        for index, session in enumerate(sessions)
+        if session.cwd and Path(session.cwd).expanduser().resolve() == wanted
+    ]
+    return max(matches, key=lambda idx: sessions[idx].visited_at or sessions[idx].updated_at, default=None)
 
 
 def choose(heading: str, labels: list[str], question: str) -> int:
@@ -608,7 +607,7 @@ async def run_pipecat_harness(
     live["state"] = "listening"
     logger.info("Jarvis is listening (no wake word required). Say 'Shut up' to mute to beep-only mode.")
 
-    runner = PipelineRunner()
+    runner = PipelineRunner(handle_sigterm=True)
     try:
         await runner.run(task)
     finally:

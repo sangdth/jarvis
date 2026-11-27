@@ -151,6 +151,12 @@ class TestConnectPicker(unittest.IsolatedAsyncioTestCase):
                 clear=False,
             ):
                 self.assertEqual(main._thread_for_this_folder(sessions), 0)
+                older_updated_but_just_visited = AgentSession(
+                    "t-visited", "Just clicked", str(root), 5.0, visited_at=500.0
+                )
+                self.assertEqual(
+                    main._thread_for_this_folder([sessions[0], older_updated_but_just_visited]), 1
+                )
 
     async def test_connect_attaches_worktree_thread_without_prompting(self) -> None:
         from jarvis_voice import main

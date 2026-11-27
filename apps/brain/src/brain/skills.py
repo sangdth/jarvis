@@ -73,7 +73,7 @@ def validate_skill_proposal(
             raise ValueError(f"Cannot retire non-active skill {slug!r}.")
         return [], "", ""
 
-    known_attempt_ids = {a.id for a in db.list_attempts()}
+    known_attempt_ids = db.existing_attempt_ids(proposal.evidence_attempt_ids)
     cited_ids = sorted({int(i) for i in proposal.evidence_attempt_ids if int(i) in known_attempt_ids})
 
     if proposal.action == "append":
@@ -495,7 +495,11 @@ def mine_failure_patterns(
     proposal context small and points each edit at one component (AHE's experience observability).
     """
     groups: dict[str, list[str]] = {}
-    for path in sorted(traces_dir.glob("attempt-*.json"))[-limit:]:
+    attempt_files = sorted(
+        [*traces_dir.glob("attempt-*.json"), *traces_dir.glob("????-??-??/attempt-*.json")],
+        key=lambda p: (p.parent.name if p.parent != traces_dir else "", p.name),
+    )
+    for path in attempt_files[-limit:]:
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -543,12 +547,22 @@ def render_failure_patterns(patterns: list[dict[str, Any]]) -> str:
     )
 
 
+def attempt_trace_path(traces_dir: Path, attempt: AttemptRow) -> Path:
+    """Day-bucketed path (`traces/<YYYY-MM-DD>/attempt-<id>.json`) so daily retention prunes attempts too."""
+    day = (
+        attempt.created_at[:10]
+        if len(attempt.created_at) >= 10 and attempt.created_at[4:5] == "-" and attempt.created_at[7:8] == "-"
+        else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    )
+    return traces_dir / day / f"attempt-{attempt.id}.json"
+
+
 def write_attempt_trace(
     traces_dir: Path, attempt: AttemptRow, *, diff_stat: str = ""
 ) -> Path:
-    """Persists a layered file-system trace artifact (`traces/attempt-<id>.json`) for on-demand inspection."""
-    traces_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    trace_path = traces_dir / f"attempt-{attempt.id}.json"
+    """Persists a layered file-system trace artifact (`traces/<YYYY-MM-DD>/attempt-<id>.json`)."""
+    trace_path = attempt_trace_path(traces_dir, attempt)
+    trace_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     record = inspect_attempt_trajectory(attempt, diff_stat=diff_stat)
     trace_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     os.chmod(trace_path, 0o600)

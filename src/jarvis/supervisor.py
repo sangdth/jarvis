@@ -9,7 +9,9 @@ API, the dashboard's telemetry, the thin client's mic and speaker, and the small
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import signal
 from typing import Any
 
 from loguru import logger
@@ -19,8 +21,9 @@ from jarvis_core.home import brain_home, brain_token, shared_dir
 
 def prepare_environment() -> None:
     """
-    Settle the paths and the one token before any app builds its settings: the voice harness and the daemon
-    then read the same `.env`, the same state folder and the same bearer token.
+    Settle the paths and the one token file before any app builds its settings: the voice harness and the daemon
+    then read the same `.env`, the same state folder and the same bearer token without leaking `BRAIN_API_KEY`
+    into child agent environments.
 
     A pre-merge `~/.config/superbrain` is adopted into `JARVIS_HOME/brain` on first run, so an older board keeps
     working after the move to a checkout-owned state home.
@@ -29,7 +32,7 @@ def prepare_environment() -> None:
 
     migrate_legacy_brain_home()
     os.environ.setdefault("BRAIN_HOME", str(brain_home()))
-    os.environ.setdefault("BRAIN_API_KEY", brain_token())
+    brain_token()
     shared_dir(brain_home())
 
 
@@ -49,6 +52,11 @@ async def start_all(
     from jarvis_voice.remote_audio import make_transport
 
     restart = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    sigterm_installed = False
+    with contextlib.suppress(NotImplementedError, RuntimeError):
+        loop.add_signal_handler(signal.SIGTERM, restart.set)
+        sigterm_installed = True
     voice_state: dict[str, Any] = {
         "state": "starting",
         "meeting": meeting,
@@ -67,48 +75,53 @@ async def start_all(
         snapshot["port"] = relay.port
         return snapshot
 
-    async with running(
-        on_restart=restart.set,
-        extra_routes=relay.routes(),
-        voice_snapshot=voice_snapshot,
-        devices=devices,
-    ) as server:
-        relay.port = server.cfg.brain_port
-        relay.hub._hint = _relay_hint(relay)
-        relay.announce()
-        logger.info(f"Jarvis {server.status_payload()['version']} on {server.cfg.endpoint_url}")
+    try:
+        async with running(
+            on_restart=restart.set,
+            extra_routes=relay.routes(),
+            voice_snapshot=voice_snapshot,
+            devices=devices,
+        ) as server:
+            relay.port = server.cfg.brain_port
+            relay.hub._hint = _relay_hint(relay)
+            relay.announce()
+            logger.info(f"Jarvis {server.status_payload()['version']} on {server.cfg.endpoint_url}")
 
-        from jarvis_voice.main import run_pipecat_harness
+            from jarvis_voice.main import run_pipecat_harness
 
-        voice = asyncio.create_task(
-            run_pipecat_harness(
-                connect=connect,
-                meeting=meeting,
-                relay=relay,
-                status=voice_state,
-                # The voice's turn stages ride the same bus the dashboard already subscribes to, so `jarvis dashboard`
-                # shows what was heard, how it was checked, and what came back without reading a log file.
-                hub_emit=server.hub.emit,
-            ),
-            name="jarvis-voice",
-        )
-        stop = asyncio.create_task(restart.wait(), name="jarvis-restart")
-        try:
-            done, _ = await asyncio.wait({voice, stop}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            if not voice.done():
-                voice.cancel()
-            stop.cancel()
-            for task in (voice, stop):
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            voice_state["state"] = "stopped"
-        if restart.is_set():
-            logger.info("Restart requested: stopping cleanly so the supervisor starts the new code.")
-        if voice.done() and not voice.cancelled() and voice.exception() is not None:
-            raise voice.exception()  # type: ignore[misc]
+            voice = asyncio.create_task(
+                run_pipecat_harness(
+                    connect=connect,
+                    meeting=meeting,
+                    relay=relay,
+                    status=voice_state,
+                    # The voice's turn stages ride the same bus the dashboard already subscribes to, so `jarvis dashboard`
+                    # shows what was heard, how it was checked, and what came back without reading a log file.
+                    hub_emit=server.hub.emit,
+                ),
+                name="jarvis-voice",
+            )
+            stop = asyncio.create_task(restart.wait(), name="jarvis-restart")
+            try:
+                done, _ = await asyncio.wait({voice, stop}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                if not voice.done():
+                    voice.cancel()
+                stop.cancel()
+                for task in (voice, stop):
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                voice_state["state"] = "stopped"
+            if restart.is_set():
+                logger.info("Restart requested: stopping cleanly so the supervisor starts the new code.")
+            if voice.done() and not voice.cancelled() and voice.exception() is not None:
+                raise voice.exception()  # type: ignore[misc]
+    finally:
+        if sigterm_installed:
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.remove_signal_handler(signal.SIGTERM)
 
 
 def _relay_hint(relay: Any) -> str:

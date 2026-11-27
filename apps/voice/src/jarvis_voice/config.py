@@ -65,8 +65,6 @@ class Settings(EnvSettings):
     # Exact agents.json id that gets coding tasks when no agent is named; empty = first enabled agent
     default_coding_agent: str = ""
 
-    # Pins an `opencode serve` started with this password; empty = OpenCode 2's own service (service.json)
-    opencode_server_password: str = ""
     watch_config_path: str = str(JARVIS_HOME / "agents.json")  # a relative path counts from JARVIS_HOME
 
     # OpenRouter model IDs

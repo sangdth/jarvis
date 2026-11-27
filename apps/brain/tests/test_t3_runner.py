@@ -249,3 +249,30 @@ async def test_list_sessions_returns_worktree_path_as_cwd(tmp_path: Path) -> Non
         assert by_id["th-root"].cwd == str(root)
     finally:
         db.close()
+
+
+async def test_t3_interrupt_ignores_unrelated_runs_and_failed_exit_drops_subscription(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    try:
+        runner = _ScriptedT3(cfg, db)
+        other = runner._state("th-other")
+        other.runs["t3-run-99"] = "running"
+
+        # Stopping a non-T3 run id (e.g. ephemeral pi) must NEVER interrupt unrelated T3 threads.
+        assert await runner.interrupt("ephemeral-run-1") is False
+        assert runner.calls == []
+
+        # A failed thread subscription Exit drops the thread instead of tight-looping _subscribe.
+        runner._subs["req-7"] = "th-other"
+        runner._ws = object()  # type: ignore[assignment]
+        await runner._on_message(
+            runner._ws,  # type: ignore[arg-type]
+            {"_tag": "Exit", "requestId": "req-7", "exit": {"_tag": "Failure"}},
+        )
+        assert "th-other" not in runner._threads
+        assert runner.subscribed == []
+    finally:
+        db.close()

@@ -104,6 +104,30 @@ class TestBrainClient(unittest.IsolatedAsyncioTestCase):
         assert self.http.post.await_args.kwargs["json"] == {"approved": True}
         assert self.adapter._pending_outbox is None
 
+    async def test_connected_session_surfaces_pending_prompt_on_start_and_answers_it(self) -> None:
+        await self.adapter.pick_session(
+            AgentSession(id="th-9", title="Login form", cwd="/Users/x/Projects/app", updated_at=1.0),
+            connected=True,
+        )
+        self.http.post = AsyncMock(
+            return_value=_Response(
+                {
+                    "pinned": {"runner": "t3", "session_id": "th-9"},
+                    "pending": {"event": "question.request", "description": "asks: Which DB?"},
+                }
+            )
+        )
+        await self.adapter._attach_connected()
+        self.state.notify_topic.assert_awaited()
+        self.http.post = AsyncMock(return_value=_Response({"ok": True}))
+        assert await self.adapter.answer("Postgres")
+        assert self.http.post.await_args.args[0] == "/v1/connect"
+        assert self.http.post.await_args.kwargs["json"] == {
+            "runner": "t3",
+            "session_id": "th-9",
+            "answer": "Postgres",
+        }
+
 
 if __name__ == "__main__":
     unittest.main()
