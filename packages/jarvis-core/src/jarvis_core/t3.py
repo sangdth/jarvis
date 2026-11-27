@@ -1,8 +1,4 @@
-"""T3 Code's own store: the thread snapshot both apps read, and the user's T3 defaults.
-
-The brain's `T3Runner` and the voice's `T3Adapter` name the same threads and projects, so the shapes they read
-live here once instead of drifting apart in two copies.
-"""
+"""T3 Code's own store: the thread snapshot `T3Runner` reads, and the user's T3 defaults."""
 
 from __future__ import annotations
 

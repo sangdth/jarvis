@@ -1070,7 +1070,7 @@ class BrainDB:
         cutoff = _iso(_utc_now() - timedelta(seconds=max_age_seconds))
         with self._lock, self._conn:
             rows = self._conn.execute(
-                "SELECT id FROM timers WHERE status = 'firing' AND updated_at < ?",
+                "SELECT id FROM timers WHERE status = 'firing' AND updated_at <= ?",
                 (cutoff,),
             ).fetchall()
             ids = [str(r["id"]) for r in rows]
@@ -1080,6 +1080,14 @@ class BrainDB:
                     (_iso(_utc_now()), timer_id),
                 )
             return ids
+
+    def requeue_firing_timer(self, timer_id: str) -> None:
+        """Return an interrupted `firing` timer to `active` so a clean restart does not drop a reminder."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE timers SET status = 'active', updated_at = ? WHERE id = ? AND status = 'firing'",
+                (_iso(_utc_now()), timer_id),
+            )
 
     def count_agent_followups(self, task_id: str | None) -> int:
         with self._lock:
@@ -1114,6 +1122,28 @@ class BrainDB:
                     task_id=task_id,
                     role=role,
                     summary="Worker lease expired before completion; reaped by reconciler.",
+                    outcome="reaped",
+                    cost_usd=0.0,
+                    now_iso=now_iso,
+                )
+        return reaped
+
+    def reap_orphaned_tasks(self, now: datetime | None = None) -> list[str]:
+        """On daemon startup no prior worker is alive: return any `in_progress` tasks to `ready` immediately."""
+        now_iso = _iso(now or _utc_now())
+        reaped: list[str] = []
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                "SELECT id, verify_cmd FROM tasks WHERE status = 'in_progress'"
+            ).fetchall()
+            for row in rows:
+                task_id = str(row["id"])
+                reaped.append(task_id)
+                role: WorkerRole = "builder" if row["verify_cmd"] else "planner"
+                self._record_attempt_locked(
+                    task_id=task_id,
+                    role=role,
+                    summary="Daemon restarted while task was in progress; returned to ready.",
                     outcome="reaped",
                     cost_usd=0.0,
                     now_iso=now_iso,
@@ -1424,15 +1454,47 @@ class BrainDB:
                 )
         return self.get_task(task_id)
 
-    def list_attempts(self, task_id: str | None = None) -> list[AttemptRow]:
+    def list_attempts(
+        self, task_id: str | None = None, *, limit: int | None = None
+    ) -> list[AttemptRow]:
         with self._lock:
             if task_id is not None:
-                rows = self._conn.execute(
-                    "SELECT * FROM attempts WHERE task_id = ? ORDER BY id ASC", (task_id,)
-                ).fetchall()
+                if limit is not None:
+                    rows = list(
+                        reversed(
+                            self._conn.execute(
+                                "SELECT * FROM attempts WHERE task_id = ? ORDER BY id DESC LIMIT ?",
+                                (task_id, max(1, int(limit))),
+                            ).fetchall()
+                        )
+                    )
+                else:
+                    rows = self._conn.execute(
+                        "SELECT * FROM attempts WHERE task_id = ? ORDER BY id ASC", (task_id,)
+                    ).fetchall()
+            elif limit is not None:
+                rows = list(
+                    reversed(
+                        self._conn.execute(
+                            "SELECT * FROM attempts ORDER BY id DESC LIMIT ?",
+                            (max(1, int(limit)),),
+                        ).fetchall()
+                    )
+                )
             else:
                 rows = self._conn.execute("SELECT * FROM attempts ORDER BY id ASC").fetchall()
             return [self._row_to_attempt(r) for r in rows]
+
+    def existing_attempt_ids(self, attempt_ids: tuple[int, ...] | list[int]) -> set[int]:
+        clean = sorted({int(i) for i in attempt_ids})
+        if not clean:
+            return set()
+        placeholders = ",".join("?" for _ in clean)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT id FROM attempts WHERE id IN ({placeholders})", tuple(clean)
+            ).fetchall()
+            return {int(r["id"]) for r in rows}
 
     def list_unreflected_attempts(self, limit: int = 20) -> list[AttemptRow]:
         with self._lock:
@@ -2166,6 +2228,24 @@ class BrainDB:
                 (limit,),
             ).fetchall()
             return [self._row_to_outbox(r) for r in rows]
+
+    def count_outbox(
+        self, *, status: OutboxStatus | None = None, kind: OutboxKind | None = None
+    ) -> int:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM outbox{where}", tuple(params)
+            ).fetchone()
+            return int(row["cnt"]) if row is not None else 0
 
     def drain_digest(self) -> tuple[list[OutboxRow], OutboxRow | None]:
         """Marks queued non-approval items as spoken and returns them plus the oldest pending approval."""

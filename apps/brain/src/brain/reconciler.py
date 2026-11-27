@@ -39,6 +39,7 @@ from brain.sandbox import strip_secrets, wrap_with_sandbox
 from brain.skills import (
     SkillProposal,
     apply_skill_proposal,
+    attempt_trace_path,
     inspect_attempt_trajectory,
     mine_failure_patterns,
     record_skill_outcome,
@@ -322,6 +323,8 @@ class Reconciler:
 
     def start(self) -> None:
         if self._loop_task is None or self._loop_task.done():
+            self.db.reap_orphaned_tasks()
+            self.db.recover_firing_timers(max_age_seconds=0)
             self._loop_task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
@@ -470,12 +473,19 @@ class Reconciler:
             # A check is a short worker turn: run it beside the loop so a user task never waits behind it.
             task = asyncio.create_task(self._timer_check_job(timer), name=f"timer-{timer.id}")
             self._timer_tasks.add(task)
-            task.add_done_callback(self._timer_tasks.discard)
+
+            def _on_timer_done(done_task: asyncio.Task[None], tid: str = timer.id) -> None:
+                self._timer_tasks.discard(done_task)
+                if done_task.cancelled():
+                    self.db.requeue_firing_timer(tid)
+
+            task.add_done_callback(_on_timer_done)
 
     async def _timer_check_job(self, timer: TimerRow) -> None:
         try:
             await self._run_timer_check(timer)
         except asyncio.CancelledError:
+            self.db.requeue_firing_timer(timer.id)
             raise
         except Exception as exc:
             logger.error(f"[Reconciler] timer {timer.id} failed: {exc!r}")
@@ -485,7 +495,8 @@ class Reconciler:
                 summary_spoken=f"Scheduled check {timer.title!r} failed: {exc}",
                 details={"timer_id": timer.id, "reason": "timer_error"},
             )
-        finally:
+            self.db.finish_timer(timer.id)
+        else:
             self.db.finish_timer(timer.id)
 
     async def wait_for_timer_checks(self) -> None:
@@ -1168,47 +1179,60 @@ class Reconciler:
                 modified_skills=[],
             )
 
-        overview = distill_experience(self.db, self.cfg)
-        # Real use becomes the next gate: the editable set grows, the sealed one grows where no worker reads.
-        harvested = harvest_eval_cases(self.db, self.cfg)
-        if any(harvested.values()):
-            logger.info(f"[Reconciler] harvested eval cases: {harvested}")
-        # Its own history: a rejected or falsified idea must not come back unchanged.
-        proposal_history = "\n".join(
-            f"- [{p.surface}] {p.outcome}: {p.title}"
-            for p in self.db.list_harness_proposals(limit=10)
-        ) or "(none yet)"
+        def _prepare_reflection() -> tuple[
+            Path, dict[str, int], str, list[str], list[str], str, str, list[str], list[dict[str, Any]]
+        ]:
+            ov = distill_experience(self.db, self.cfg)
+            harv = harvest_eval_cases(self.db, self.cfg)
+            hist = "\n".join(
+                f"- [{p.surface}] {p.outcome}: {p.title}"
+                for p in self.db.list_harness_proposals(limit=10)
+            ) or "(none yet)"
+            att_lines: list[str] = []
+            for a in unreflected:
+                trace_file = attempt_trace_path(self.cfg.traces_dir, a)
+                if not trace_file.is_file():
+                    trace_file = write_attempt_trace(self.cfg.traces_dir, a)
+                att_lines.append(
+                    f"- Attempt #{a.id} [{a.role}/{a.outcome}] task={a.task_id} "
+                    f"skills={list(a.skills_used)} diag={a.diagnostic!r} "
+                    f"trace={trace_file}"
+                )
+            active = self.db.list_skills(status="active")
+            sk_lines = [
+                f"- {s.slug} (v{s.version}, sha256={s.sha256}, loads={s.loads_since_update}, "
+                f"ok={s.successes_since_update}, fail={s.failures_since_update}): "
+                f"{s.description} | path={self.cfg.skills_dir / s.slug / 'SKILL.md'}"
+                for s in active
+            ]
+            mem_idx = memory.memory_index(self.cfg.home_dir)
+            mem_sha = memory.file_sha(self.cfg.memory_index_path) or ""
+            r_notes = [
+                f"- {path.name} sha256={memory.file_sha(path) or ''} path={path}"
+                for path in memory.repo_note_files(self.cfg.home_dir)
+            ]
+            pats = mine_failure_patterns(
+                self.cfg.traces_dir, JARVIS_HOME / "feedback" / "intent.jsonl"
+            )
+            return ov, harv, hist, att_lines, sk_lines, mem_idx, mem_sha, r_notes, pats
 
         session_dir = self.cfg.sessions_dir / "improver"
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._set_phase("skill_improver")
-        attempt_index_lines: list[str] = []
-        for a in unreflected:
-            trace_file = self.cfg.traces_dir / f"attempt-{a.id}.json"
-            if not trace_file.is_file():
-                write_attempt_trace(self.cfg.traces_dir, a)
-            attempt_index_lines.append(
-                f"- Attempt #{a.id} [{a.role}/{a.outcome}] task={a.task_id} "
-                f"skills={list(a.skills_used)} diag={a.diagnostic!r} "
-                f"trace={trace_file}"
-            )
-
-        active_skills = self.db.list_skills(status="active")
-        skill_index_lines = [
-            f"- {s.slug} (v{s.version}, sha256={s.sha256}, loads={s.loads_since_update}, "
-            f"ok={s.successes_since_update}, fail={s.failures_since_update}): "
-            f"{s.description} | path={self.cfg.skills_dir / s.slug / 'SKILL.md'}"
-            for s in active_skills
-        ]
-        memory_index = memory.memory_index(self.cfg.home_dir)
-        memory_sha = memory.file_sha(self.cfg.memory_index_path) or ""
-        repo_notes = [
-            f"- {path.name} sha256={memory.file_sha(path) or ''} path={path}"
-            for path in memory.repo_note_files(self.cfg.home_dir)
-        ]
-        patterns = mine_failure_patterns(
-            self.cfg.traces_dir, JARVIS_HOME / "feedback" / "intent.jsonl"
-        )
+        (
+            overview,
+            harvested,
+            proposal_history,
+            attempt_index_lines,
+            skill_index_lines,
+            memory_index,
+            memory_sha,
+            repo_notes,
+            patterns,
+        ) = await asyncio.to_thread(_prepare_reflection)
+        if any(harvested.values()):
+            logger.info(f"[Reconciler] harvested eval cases: {harvested}")
+        active_skills_count = len(skill_index_lines)
         prompt = (
             "You are Brain Skill Improver and memory curator. Use `read` and `grep` to inspect the trace "
             "files, skill files, standing instructions and memory index below before deciding anything.\n"
@@ -1242,7 +1266,7 @@ class Reconciler:
             f"Owner instructions: {self.cfg.instructions_path}\n"
             f"Memory index (sha256={memory_sha}):\n{memory_index}\n\n"
             f"Repo notes ({len(repo_notes)}):\n{chr(10).join(repo_notes) or '(none)'}\n\n"
-            f"Active skills ({len(active_skills)}/{self.cfg.max_personal_skills}):\n"
+            f"Active skills ({active_skills_count}/{self.cfg.max_personal_skills}):\n"
             f"{chr(10).join(skill_index_lines) or '(none)'}\n\n"
             f"Unreflected attempt traces ({len(unreflected)}):\n"
             f"{chr(10).join(attempt_index_lines)}\n\n"
@@ -1897,6 +1921,7 @@ class Reconciler:
             notes_dir=self.cfg.notes_dir,
             home_dir=self.cfg.home_dir,
             allow_read_traces=(role == "improver"),
+            brain_port=self.cfg.brain_port,
             enabled=self.cfg.sandbox_enabled,
         )
 
@@ -2164,10 +2189,11 @@ class Reconciler:
         raw_cmd.extend(["--", scout_prompt])
         cmd = wrap_with_sandbox(
             raw_cmd,
-            worktree_dir=root_dir,
+            worktree_dir=scout_session_dir,
             session_dir=scout_session_dir,
             notes_dir=self.cfg.notes_dir,
             home_dir=self.cfg.home_dir,
+            brain_port=self.cfg.brain_port,
             enabled=self.cfg.sandbox_enabled,
         )
         env = self._build_sandbox_env(scout_session_dir)
@@ -2242,6 +2268,7 @@ class Reconciler:
             notes_dir=self.cfg.notes_dir,
             home_dir=self.cfg.home_dir,
             allow_read_held_out=allow_read_held_out,
+            brain_port=self.cfg.brain_port,
             enabled=self.cfg.sandbox_enabled,
         )
         env = self._build_sandbox_env(session_dir)
@@ -2816,10 +2843,22 @@ class Reconciler:
                 uv_exe,
                 "sync",
                 cwd=str(repo_dir),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
             )
-            await sync_proc.wait()
+            sync_out, _ = await sync_proc.communicate()
+            if sync_proc.returncode != 0:
+                detail = sync_out.decode("utf-8", errors="replace").strip()[-1000:]
+                logger.error(f"[Reconciler] self-upgrade {task_id}: uv sync failed; rolling back to {old_head[:7]}")
+                await self._git_out(repo_dir, "reset", "--hard", old_head, check=False)
+                self.db.clear_last_good_sha()
+                self.db.queue_outbox(
+                    kind="blocker",
+                    task_id=task_id,
+                    summary_spoken=f"Brain self-upgrade {task_id} failed `uv sync` and was rolled back.",
+                    details={"reason": "uv_sync_failed", "output": detail},
+                )
+                return False
         rust_changed = any(
             p in ("Cargo.toml", "Cargo.lock") or p.startswith("apps/dashboard/")
             for p in changed
@@ -2837,6 +2876,16 @@ class Reconciler:
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await cargo_proc.wait()
+        connect_script = repo_dir / "apps" / "connect" / "build.sh"
+        if sys.platform == "darwin" and connect_script.is_file() and shutil.which("swiftc"):
+            connect_proc = await asyncio.create_subprocess_exec(
+                "/bin/sh",
+                str(connect_script),
+                cwd=str(repo_dir),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await connect_proc.wait()
         if has_origin:
             # Never swallow this: a rejected push means origin/master moved ahead of the checkout.
             push_rc, push_detail = await self._git_capture(repo_dir, "push", "origin", "HEAD:master")

@@ -49,6 +49,7 @@ class BrainClientAdapter(CodingSessionAdapter):
         self._run_id: str | None = None
         self._runs: asyncio.Queue[str] = asyncio.Queue()
         self._pending: dict[str, Any] | None = None
+        self._pending_session: dict[str, Any] | None = None
         self._pending_outbox: dict[str, Any] | None = None
         self._seen_outbox: set[str] = set()
         self._events_task: asyncio.Task[None] | None = None
@@ -57,10 +58,24 @@ class BrainClientAdapter(CodingSessionAdapter):
 
     async def start(self) -> None:
         await super().start()
+        if self.connected and self._pinned:
+            await self._attach_connected()
         if self._events_task is None or self._events_task.done():
             self._events_task = asyncio.create_task(
                 self._events_loop(), name=f"events-{self.config.id}"
             )
+
+    async def _attach_connected(self) -> None:
+        """Tell the brain to subscribe to the pinned session now and surface any pending prompt right away."""
+        try:
+            resp = await self._http.post("/v1/connect", json=self._pinned)
+            resp.raise_for_status()
+            pending = resp.json().get("pending")
+            if isinstance(pending, dict):
+                self._pending_session = pending
+                await self._surface(str(pending.get("description") or "needs approval"))
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug(f"[{self.config.id}] connect attach skipped ({exc!r})")
 
     async def stop(self) -> None:
         if self._events_task is not None:
@@ -91,6 +106,8 @@ class BrainClientAdapter(CodingSessionAdapter):
                             continue
                         if event.get("event") == "outbox.queued" and event.get("mode", "ASSIST") == "ASSIST":
                             await self._handle_outbox(event.get("outbox") or {})
+                        else:
+                            await self._handle_connected_event(event)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -130,6 +147,24 @@ class BrainClientAdapter(CodingSessionAdapter):
         except httpx.HTTPError as exc:
             logger.debug(f"[{self.config.id}] could not acknowledge outbox {outbox_id}: {exc!r}")
             self._seen_outbox.discard(outbox_id)
+
+    async def _handle_connected_event(self, event: dict[str, Any]) -> None:
+        """Events from a `jarvis connect` thread when no voice run is waiting on it."""
+        if not self._pinned or event.get("session_id") != self._pinned.get("session_id"):
+            return
+        kind = event.get("event", "")
+        if kind in ("approval.request", "question.request"):
+            self._pending_session = event
+            await self._surface(str(event.get("description") or "needs approval"))
+        elif kind in ("approval.responded", "question.answered"):
+            self._pending_session = None
+            self._question_settled()
+        elif kind == "turn.completed" and event.get("text"):
+            self._pending_session = None
+            await self._surface(str(event["text"]), is_report=True)
+        elif kind == "turn.failed":
+            self._pending_session = None
+            await self._surface(f"The turn failed. {event.get('error', '')}".strip(), is_report=True)
 
     # ------------------------------------------------------------------ watcher
 
@@ -261,12 +296,27 @@ class BrainClientAdapter(CodingSessionAdapter):
             except httpx.HTTPError as exc:
                 logger.error(f"Failed to answer the brain: {exc}")
                 return False
+        if self._pending_session is not None and self._pinned is not None:
+            try:
+                resp = await self._http.post("/v1/connect", json={**self._pinned, "answer": answer})
+                if resp.is_success and resp.json().get("ok", True):
+                    self._pending_session = None
+                    self._question_settled()
+                    return True
+                return False
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.error(f"Failed to answer the connected session: {exc}")
+                return False
         if self._pending_outbox is not None:
             outbox_id = str(self._pending_outbox.get("id") or "")
+            details = self._pending_outbox.get("details")
+            payload: dict[str, Any] = {"approved": is_approval(answer)}
+            if isinstance(details, dict) and details.get("questions"):
+                payload["answer"] = answer
             try:
                 resp = await self._http.post(
                     f"/v1/outbox/{outbox_id}/resolve",
-                    json={"approved": is_approval(answer)},
+                    json=payload,
                 )
                 if resp.is_success:
                     self._pending_outbox = None
@@ -309,7 +359,7 @@ class BrainClientAdapter(CodingSessionAdapter):
         return (self._pinned or {}).get("session_id") or self._thread_id
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
-        params: dict[str, str] = {"runner": self.runner}
+        params: dict[str, str] = {"runner": self.runner, "limit": str(limit)}
         if cwd:
             params["project"] = self._project_name(cwd)
         resp = await self._http.get("/v1/sessions", params=params)
@@ -319,6 +369,7 @@ class BrainClientAdapter(CodingSessionAdapter):
                 id=str(s["id"]), title=str(s.get("title") or "(untitled)"),
                 cwd=str(s.get("cwd") or ""), branch=str(s.get("branch") or ""),
                 running=bool(s.get("running")), updated_at=float(s.get("updated_at") or 0.0),
+                visited_at=float(s.get("visited_at") or 0.0),
             )
             for s in resp.json().get("sessions", [])
         ][:limit]

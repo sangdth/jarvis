@@ -287,5 +287,102 @@ class ServiceTest(unittest.TestCase):
             self.assertEqual((out / "Jarvis.app.zip").read_bytes(), b"last-good-bundle")
 
 
+class SupervisorAndRollbackTest(unittest.IsolatedAsyncioTestCase):
+    async def test_supervisor_starts_gateway_without_leaking_token_to_environ(self) -> None:
+        import asyncio
+        import os
+
+        import httpx
+
+        from brain.config import settings as brain_settings
+        from jarvis import supervisor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".env").write_text("", encoding="utf-8")
+            with patch.dict(os.environ, {"JARVIS_HOME": str(home), "BRAIN_HOME": str(home / "brain")}, clear=False):
+                os.environ.pop("BRAIN_API_KEY", None)
+                with patch("jarvis_core.home.JARVIS_HOME", home):
+                    supervisor.prepare_environment()
+                    self.assertNotIn("BRAIN_API_KEY", os.environ)
+                    tok = (home / "brain_token").read_text(encoding="utf-8").strip()
+                    self.assertTrue(tok)
+
+                async def fake_voice(*, relay=None, status=None, **_kw):
+                    status["state"] = "listening"
+                    async with httpx.AsyncClient() as http:
+                        health = await http.get(f"http://127.0.0.1:{relay.port}/health")
+                        self.assertEqual(health.status_code, 200)
+                        restart = await http.post(
+                            f"http://127.0.0.1:{relay.port}/v1/restart",
+                            headers={"Authorization": f"Bearer {tok}"},
+                        )
+                        self.assertEqual(restart.status_code, 200)
+                    await asyncio.sleep(5.0)
+
+                import socket
+
+                with socket.socket() as s:
+                    s.bind(("127.0.0.1", 0))
+                    free_port = s.getsockname()[1]
+
+                with patch.object(brain_settings, "home_dir", home / "brain"), \
+                        patch.object(brain_settings, "brain_host", "127.0.0.1"), \
+                        patch.object(brain_settings, "brain_port", free_port), \
+                        patch.object(brain_settings, "brain_api_key", tok), \
+                        patch("jarvis_voice.main.run_pipecat_harness", side_effect=fake_voice):
+                    await asyncio.wait_for(supervisor.start_all(), timeout=5.0)
+
+    def test_run_foreground_rolls_back_checkout_when_startup_crashes(self) -> None:
+        from brain.db import BrainDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            for cmd in (
+                ["git", "init", "-b", "master"],
+                ["git", "config", "user.email", "t@example.com"],
+                ["git", "config", "user.name", "Test"],
+            ):
+                subprocess.run(cmd, cwd=repo, check=True, capture_output=True)
+            (repo / "app.py").write_text("V = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "good"], cwd=repo, check=True, capture_output=True)
+            good_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            (repo / "app.py").write_text("V = 'broken'\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "bad"], cwd=repo, check=True, capture_output=True)
+
+            home = root / "home"
+            home.mkdir()
+            (home / ".env").write_text("OPENROUTER_API_KEY=sk-test\n", encoding="utf-8")
+            db = BrainDB(home / "brain" / "state.db", {"jarvis"})
+            db.set_last_good_sha(good_sha)
+            db.close()
+
+            async def boom(**_kw):
+                raise RuntimeError("voice crash on boot")
+
+            with patch.dict(
+                cli.os.environ,
+                {"BRAIN_HOME": str(home / "brain"), "SELF_REPO_DIR": str(repo)},
+                clear=False,
+            ), patch.object(cli, "JARVIS_HOME", home), patch.object(cli, "hold_lock"), \
+                    patch("jarvis.supervisor.prepare_environment"), \
+                    patch("jarvis.supervisor.start_all", side_effect=boom):
+                with self.assertRaisesRegex(RuntimeError, "voice crash on boot"):
+                    cli.run_foreground([])
+
+            self.assertEqual((repo / "app.py").read_text(encoding="utf-8"), "V = 1\n")
+            db2 = BrainDB(home / "brain" / "state.db", {"jarvis"})
+            try:
+                self.assertIsNone(db2.get_state().last_good_sha)
+            finally:
+                db2.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -279,3 +279,41 @@ async def test_timer_api_rejects_two_whens(tmp_path: Path) -> None:
             assert resp.status == 400
     finally:
         db.close()
+
+
+async def test_cancelled_followup_timer_stays_active_and_startup_reaps_orphaned_tasks(
+    tmp_path: Path,
+) -> None:
+    slow_pi = tmp_path / "slow_pi.py"
+    slow_pi.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n", encoding="utf-8")
+    slow_pi.chmod(slow_pi.stat().st_mode | stat.S_IEXEC)
+    cfg = _cfg(tmp_path)
+    cfg = cfg.model_copy(update={"pi_bin": str(slow_pi)})
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    try:
+        timer = db.add_timer(
+            kind="followup", title="Remind me", prompt_spec="check",
+            run_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+        await reconciler._fire_timers()
+        await asyncio.sleep(0.05)  # let the check subprocess start before shutdown cancels it
+        assert db.get_timer(timer.id).status == "firing"
+        await reconciler.stop()
+        # Cancelling on shutdown must return the one-shot reminder to `active`, never mark it `done`.
+        assert db.get_timer(timer.id).status == "active"
+
+        # A task left `in_progress` by a killed daemon is reaped immediately on `Reconciler.start()`.
+        task = db.upsert_task(
+            kind="problem", repo="jarvis", title="Interrupted", spec="s", verify_cmd="true", ready=True
+        )
+        assert db.claim_next_task(task_id=task.id, lease_seconds=1200) is not None
+        assert db.get_task(task.id).status == "in_progress"
+        reconciler2 = Reconciler(db, cfg)
+        reconciler2.start()
+        try:
+            assert db.get_task(task.id).status == "ready"
+        finally:
+            await reconciler2.stop()
+    finally:
+        db.close()

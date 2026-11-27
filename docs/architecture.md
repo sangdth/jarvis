@@ -152,30 +152,12 @@ or a new one), so the next task goes to that session, and its result names that 
 a client's session titles, project, time, and which is running or current. A connected session (`jarvis connect`)
 ignores `session` and `project`.
 
-1. **Claude Code (`ClaudeCodeAdapter`):** One `ClaudeSDKClient` (Python `claude-agent-sdk`) per session, with
-   the user's own Claude settings and permission mode (Jarvis sets none). It starts with `resume=<session id>`: the
-   id from the CLI's `init` message, or the one `jarvis connect claude` picked from `list_sessions` (every folder,
-   newest first). A crash restarts the process on the same id, and a crash mid-turn is said out loud. Picking or
-   starting a session restarts the process, so neither happens while a turn runs. Tool permissions and `AskUserQuestion` arrive in
-   `can_use_tool`; Jarvis reads them out and the agent waits for `answer_agent`. A turn ends with a `ResultMessage`.
-   `stop_agent` calls `interrupt()` and denies any pending question.
-2. **OpenCode (`OpenCodeSSEAdapter`):** Talks to the service OpenCode 2 registers in
-   `~/.local/state/opencode/service.json` (`discover_service`, read before each connect since a restart picks a new
-   port). The file is trusted only when it is the user's own, not a symlink, unreadable to others, names a loopback
-   URL and a live pid. `OPENCODE_SERVER_PASSWORD` or a custom `url` pins a user-started `opencode serve` instead. Auth
-   is HTTP Basic (`opencode` / password). Events come from `GET /api/event`; 45 s without bytes (heartbeats arrive
-   every 15 s) means a dead stream and a reconnect. After each connect it re-reads `GET /api/permission/request` and
-   `GET /api/form`, since events are not replayed. It surfaces `permission.asked`, `form.created` and the last text of
-   each finished run, and drops a pending request on `permission.replied`, `form.replied` or `form.cancelled`.
-   The shared service streams every session on the Mac, so Jarvis keeps to its `cwd`: listings carry
-   `x-opencode-directory`, new sessions get `location.directory`, and an unknown session's events count only after
-   one `GET /api/session/:id` shows it is in `cwd` (`_is_ours`); otherwise Jarvis could approve tool calls in other
-   projects. Within `cwd` it follows one session: the first it sees, the one `jarvis connect opencode` picked from
-   `GET /api/session` (which moves `cwd` to that session's folder), or a new one from `POST /api/session`. Events
-   from other sessions (sub-agents run in child sessions) do not end the turn. Tasks go to that session
-   (`POST /api/session/:id/prompt`); answers go to
-   `.../permission/:requestID/reply` or `.../form/:formID/reply`; stop is `POST /api/session/:id/interrupt`.
-
+1. **Claude Code (`ClaudeRunner`, `apps/brain/src/brain/runners/claude.py`):** Minimal `claude -p --output-format json`
+   runner with the user's own Claude settings and permission mode (Jarvis sets none), resuming `--resume <session id>`
+   across turns and reading session titles directly from `~/.claude/projects/*/*.jsonl` for `jarvis connect claude`.
+2. **OpenCode (`OpenCodeRunner`, `apps/brain/src/brain/runners/opencode.py`):** Minimal `opencode run --format json`
+   runner when the owner names OpenCode or attaches via `jarvis connect opencode`, continuing `--session <id>` in the
+   project folder and listing sessions through `opencode api GET /session`.
 3. **The brain (`BrainClientAdapter`, type `brain`):** The voice's one agent. It talks to Brain on
    `127.0.0.1:8643` (Bearer `BRAIN_API_KEY`, else `JARVIS_HOME/brain_token`) with the protocol below, which
    Brain serves from `apps/brain/src/brain/server.py`. A task is `POST /v1/runs` with `input` (and optionally
@@ -184,13 +166,12 @@ ignores `session` and `project`.
    with `POST /v1/runs/:id/answer`, free text mapped deterministically), `session.switched` (the thread changed),
    and `run.completed` / `run.failed` (retold); `run.cancelled` is silent. If the stream drops,
    `GET /v1/runs/:id` gives the result. Stop is `POST /v1/runs/:id/stop`. `GET /v1/events` carries events no voice
-   run is waiting on. Inside Brain, `BrainOrchestrator.route` picks the runner: a one-shot `pi` worker for a small
-   question, a long-lived T3 thread for project work (auto-starting `t3 serve` on loopback), a minimal
-   Claude/OpenCode turn when the owner names one, or the board. The reconciler still decides which board work waits
-   for the owner. The whole contract is `schemas/openapi.json`.
-4. **T3 Code (`T3Adapter` in the voice, `T3Runner` in the brain):** The normal path is `T3Runner` behind
-   `POST /v1/runs`; the voice adapter remains for an `agents.json` that enables `t3-code` directly and for
-   `jarvis connect`. Both talk to the running T3 Code app over `ws://127.0.0.1:3773/ws`
+   run is waiting on (including `jarvis connect` watched T3 threads). Inside Brain, `BrainOrchestrator.route` picks the
+   runner: a one-shot `pi` worker for a small question, a long-lived T3 thread for project work (auto-starting
+   `t3 serve` on loopback), a minimal Claude/OpenCode turn when the owner names one, or the board. The reconciler still
+   decides which board work waits for the owner. The whole contract is `schemas/openapi.json`.
+4. **T3 Code (`T3Runner`, `apps/brain/src/brain/runners/t3.py`):** Driven behind `POST /v1/runs` and `POST /v1/connect`,
+   talking to the running T3 Code app over `ws://127.0.0.1:3773/ws`
    (`?orchestrationProtocol=2`), the API the T3 window itself uses: Effect RPC messages as JSON (`Request`, `Exit`,
    `Chunk`, and an `Ack` for every chunk). Auth is a 30-day bearer token from
    `t3 auth session issue --scope orchestration:read --scope orchestration:operate`, issued once per run and again
@@ -200,13 +181,12 @@ ignores `session` and `project`.
    (`list_projects`). The first task continues the newest thread there that is not running; with none, or after a
    new session, it starts a thread (`orchestration.launchThread`, `generateTitle`) with the user's T3 default model
    and runtime mode, whose first message is "Sync with the master branch first. Then: <task>". A project folder T3
-   doesn't know yet is added with `project.create`. Jarvis watches one thread (picked, continued, started, or the
-   one `jarvis connect` attached: `current_thread` from the T3 project script's folder env, else picked from
-   `recent_threads`); a switch closes the old thread's stream with `Interrupt`. Tasks to it are `message.dispatch`
-   with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
+   doesn't know yet is added with `project.create`. `T3Runner` watches active and `jarvis connect` threads; tasks are
+   `message.dispatch` with `deliveryIntent: "auto"`, like a send in the T3 window. `orchestration.subscribeThread`
    (resumed with `afterSequence`) gives `run.updated`, finished `assistant_message` items (retold when the run
-   completes) and `approval_request` / `user_input_request` items (read out; answered with `runtime-request.respond`).
-   Stop is `run.interrupt`. A 426 means T3 changed its protocol version.
+   completes) and `approval_request` / `user_input_request` items (read out; answered with `runtime-request.respond`,
+   or queued in `outbox` when deferred). Stop is `run.interrupt` scoped to that run's thread. A 426 means T3 changed its
+   protocol version.
 
 ### D. Executive Filter & Mute State Machine
 1. **What reaches the user:** Watchers only pass on questions, approvals and finished turns. Questions and approvals

@@ -134,6 +134,7 @@ class EphemeralPiRunner:
                 cmd,
                 work_dir=work_dir,
                 home_dir=self.cfg.home_dir,
+                brain_port=self.cfg.brain_port,
                 enabled=self.cfg.sandbox_enabled,
             )
             env = self._env(work_dir)

@@ -9,7 +9,8 @@ decisions: `docs/architecture.md`, `docs/DECISIONS.md`.
 
 ## Commands
 
-Run from the repository root. `jarvis …` is the documented surface; `uv run python -m brain.cli …` is the same code.
+Run from the repository root. `jarvis …` is the documented surface; `brain.cli` holds only the daemon runner
+(`serve`, `self-check`, `launchd`), so every operator write goes over HTTP through the single SQLite writer.
 
 - Install / sync: `uv sync` (the only build step; the checkout is what runs)
 - Run the whole stack: `jarvis` (this terminal) or `jarvis start` (launchd, 24/7; the same command restarts it)
@@ -19,8 +20,8 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
 - Switch mode: `jarvis mode ASSIST|AUTONOMOUS`
 - SoL-Pi auto-research fan-out: `jarvis research <task_id>`
 - Self-improving skill reflection: `jarvis improve`
-- `launchd` plist: `jarvis launchd` (`--install` writes it; `jarvis start` does both)
-- Update the checkout and restart: `git pull` then `jarvis start` (`brain upgrade --check` reports git state)
+- `launchd` plist: `uv run python -m brain.cli launchd` (`--install` writes it; `jarvis start` does both)
+- Update the checkout and restart: `git pull` then `jarvis start`
 - Dashboard: `jarvis dashboard` (Rust, `apps/dashboard`; build once with `cargo build --release --workspace`)
 - Lint & types: `uv run ruff check src apps packages tests` and `uv run mypy` (whole repo, one config)
 - Tests: `uv run pytest` (this app's suite is `apps/brain/tests`); dashboard: `cargo test --workspace`
@@ -108,7 +109,7 @@ Run from the repository root. `jarvis …` is the documented surface; `uv run py
     details.
 - **Self-improving skills loop (`skills.py` + `traces.py` + `reconciler.py`):**
   - **Evidence:** `board.ts` records `record_skill_load` when a worker reads `skills/<slug>/SKILL.md` and exposes
-    `report_diagnostic`; `reconciler.py` writes `traces/attempt-<id>.json` after every attempt. `traces.py`'s
+    `report_diagnostic`; `reconciler.py` writes `traces/<YYYY-MM-DD>/attempt-<id>.json` after every attempt. `traces.py`'s
     `TraceSink` drains `TelemetryHub` into `traces/<YYYY-MM-DD>/` and `trace_runs`, stamping `git_sha`/`prompt_sha`
     and the deterministic friction signal (`replaced`, `stopped`, `router_override`, `not_you`, `asr_rewrite`,
     `latency_sla`, …); pairing codes, credentials and room speech never reach disk.

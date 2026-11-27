@@ -24,6 +24,7 @@ class AgentSession:
     updated_at: float  # seconds since the epoch; lists are newest first
     branch: str = ""  # git branch, when the client records it (Claude Code and T3 do)
     running: bool = False  # a turn is running in it right now (T3 reports this)
+    visited_at: float = 0.0  # when the user last viewed it in T3, for project-script handoff
 
 
 _WORD = re.compile(r"\w+")

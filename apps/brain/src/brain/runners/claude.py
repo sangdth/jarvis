@@ -19,7 +19,110 @@ from loguru import logger
 
 from brain.config import Settings
 from brain.runners.base import EventCallback, RunRequest, RunResult
+from brain.sandbox import strip_gateway_secrets
 from jarvis_core.sessions import AgentSession
+
+_LITE_BUF = 65536
+
+
+def _claude_projects_dir() -> Path:
+    custom = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    base = Path(custom).expanduser() if custom else (Path.home() / ".claude")
+    return base / "projects"
+
+
+def _parse_claude_session(path: Path, target_cwd: Path | None, default_cwd: str) -> AgentSession | None:
+    try:
+        with path.open("rb") as handle:
+            stat = os.fstat(handle.fileno())
+            head_bytes = handle.read(_LITE_BUF)
+            if not head_bytes:
+                return None
+            head = head_bytes.decode("utf-8", errors="replace")
+            tail_offset = max(0, stat.st_size - _LITE_BUF)
+            if tail_offset == 0:
+                tail = head
+            else:
+                handle.seek(tail_offset)
+                tail = handle.read(_LITE_BUF).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    first_line = head.split("\n", 1)[0]
+    if '"isSidechain":true' in first_line or '"isSidechain": true' in first_line:
+        return None
+    session_cwd = ""
+    branch = ""
+    title = ""
+    first_prompt = ""
+    for chunk in (head, tail):
+        for raw_line in chunk.splitlines():
+            if not raw_line.startswith("{"):
+                continue
+            try:
+                entry = json.loads(raw_line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("isSidechain"):
+                return None
+            session_cwd = str(entry.get("cwd") or session_cwd)
+            branch = str(entry.get("gitBranch") or branch)
+            title = str(
+                entry.get("customTitle") or entry.get("aiTitle") or entry.get("summary") or title
+            ).strip()
+            if not first_prompt and entry.get("type") == "user" and not entry.get("isMeta"):
+                msg = entry.get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if isinstance(content, str):
+                    first_prompt = " ".join(content.split())[:200]
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                            first_prompt = " ".join(str(block["text"]).split())[:200]
+                            break
+    resolved_cwd = session_cwd or default_cwd
+    if target_cwd is not None:
+        if not session_cwd:
+            return None
+        try:
+            cand = Path(session_cwd).expanduser().resolve()
+        except OSError:
+            return None
+        if cand != target_cwd and not cand.is_relative_to(target_cwd):
+            return None
+    label = title or first_prompt
+    if not label:
+        return None
+    return AgentSession(
+        id=path.stem,
+        title=label,
+        cwd=resolved_cwd,
+        updated_at=stat.st_mtime,
+        branch=branch,
+    )
+
+
+def _list_claude_sessions(cwd: str | None, limit: int, default_cwd: str) -> list[AgentSession]:
+    projects = _claude_projects_dir()
+    if not projects.is_dir():
+        return []
+    target_cwd = Path(cwd).expanduser().resolve() if cwd else None
+    files: list[tuple[float, Path]] = []
+    for jsonl in projects.glob("*/*.jsonl"):
+        try:
+            files.append((jsonl.stat().st_mtime, jsonl))
+        except OSError:
+            continue
+    files.sort(key=lambda item: item[0], reverse=True)
+    sessions: list[AgentSession] = []
+    for _, path in files:
+        parsed = _parse_claude_session(path, target_cwd, default_cwd)
+        if parsed is not None:
+            sessions.append(parsed)
+            if len(sessions) >= limit:
+                break
+    return sessions
 
 
 class ClaudeRunner:
@@ -39,24 +142,12 @@ class ClaudeRunner:
 
     async def list_sessions(self, cwd: str | None = None, limit: int = 15) -> list[AgentSession]:
         try:
-            from claude_agent_sdk import list_sessions
-        except ImportError:
-            return []
-        try:
-            found = await asyncio.to_thread(list_sessions, directory=cwd, limit=limit)
+            return await asyncio.to_thread(
+                _list_claude_sessions, cwd, limit, str(cwd or self.cfg.home_dir)
+            )
         except Exception as exc:
             logger.debug(f"[claude] Could not list sessions: {exc!r}")
             return []
-        return [
-            AgentSession(
-                id=s.session_id,
-                title=s.custom_title or s.summary or s.first_prompt or "(untitled)",
-                cwd=s.cwd or cwd or str(self.cfg.home_dir),
-                updated_at=s.last_modified / 1000,
-                branch=s.git_branch or "",
-            )
-            for s in found
-        ]
 
     async def run(self, request: RunRequest, emit: EventCallback) -> RunResult:
         binary = shutil.which("claude")
@@ -69,7 +160,8 @@ class ClaudeRunner:
             cmd.extend(["--resume", session_id])
         timeout = request.timeout_seconds or 1800.0
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            *cmd, cwd=str(cwd), env=strip_gateway_secrets(dict(os.environ)),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
         self._active[request.run_id] = proc

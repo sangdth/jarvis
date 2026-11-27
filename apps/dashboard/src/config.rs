@@ -83,7 +83,12 @@ impl Config {
     }
 
     pub fn endpoint(&self) -> String {
-        format!("{}:{}", self.connect_host(), self.port)
+        let host = self.connect_host();
+        if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]:{}", self.port)
+        } else {
+            format!("{host}:{}", self.port)
+        }
     }
 
     /// The address to dial: a wildcard bind address (`0.0.0.0`, `::`) means "every interface", so a client
@@ -274,5 +279,25 @@ mod tests {
         assert_eq!(resolve_api_key(lookup, &base, &home), "from-file");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn endpoint_brackets_ipv6_literals() {
+        let mut cfg = Config {
+            jarvis_home: PathBuf::from("/tmp"),
+            home: PathBuf::from("/tmp"),
+            db_path: PathBuf::from("/tmp/state.db"),
+            sessions_dir: PathBuf::from("/tmp/s"),
+            traces_dir: PathBuf::from("/tmp/t"),
+            skills_dir: PathBuf::from("/tmp/k"),
+            notes_dir: PathBuf::from("/tmp/n"),
+            logs_dir: PathBuf::from("/tmp/l"),
+            host: "::1".to_string(),
+            port: 8643,
+            api_key: String::new(),
+        };
+        assert_eq!(cfg.endpoint(), "[::1]:8643");
+        cfg.host = "0.0.0.0".to_string();
+        assert_eq!(cfg.endpoint(), "127.0.0.1:8643");
     }
 }

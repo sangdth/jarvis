@@ -4,7 +4,7 @@
 > Jarvis is at an early stage. Commands, settings and file formats (like `SOUL.md`) can change
 > dramatically between versions, without a migration path.
 
-Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sherpa-onnx**, the **Claude Agent SDK** and the **OpenCode v2 API**.
+Jarvis is an always-on voice harness built on **Pipecat**, **MLX Whisper**, **sherpa-onnx**, **T3 Code** and **pi**.
 
 It listens continuously without a wake word and hands your requests to agents: coding to **T3 Code** (or **Claude Code** or **OpenCode** when you name it), everything else to **the brain** (`brain`), the daemon it runs alongside itself: goals, research, notes, email, calendar. It reads out their questions and approvals and retells each finished turn in plain words.
 
@@ -144,12 +144,10 @@ your shell wins over the file, so `op run -- jarvis` (1Password) works too:
 ### 4. Configure Watched Coding Agents
 Edit `JARVIS_HOME/agents.json`. Each agent's `role` tells Jarvis
 what to send it. A `cwd` of `.` means the folder you start Jarvis in; set a path to pin an agent to one project.
-- **Claude Code** runs through the Agent SDK with your own Claude settings (`defaultMode`, allow rules), the same as
-  in your terminal. Whatever those settings would ask you, and Claude's own questions, are read out, and Claude waits
-  for your answer.
-- **OpenCode** 2 runs its own service, and Jarvis finds it (`~/.local/state/opencode/service.json`); its sessions
-  go in the agent's `cwd`, and requests from other projects are ignored. To use a server of your own instead, start
-  it with `OPENCODE_SERVER_PASSWORD=<same value as in .env> opencode serve --port 4096` in the project folder.
+- **Claude Code** (`ClaudeRunner`) runs `claude -p` with your own Claude settings (`defaultMode`, allow rules) when
+  named or connected via `jarvis connect claude`, resuming the same session across turns.
+- **OpenCode** (`OpenCodeRunner`) runs `opencode run` when named or connected via `jarvis connect opencode`,
+  continuing the same session in the project folder.
 - **The brain** (the only agent in the shipped roster) needs no setup: it always runs with the voice, in
   the same process, and its HTTP/SSE/WebSocket gateway is the only network surface Jarvis exposes. It routes each
   task itself: a small question to a one-shot `pi` worker, project work to a T3 Code thread, a named Claude Code or

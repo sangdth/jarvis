@@ -474,6 +474,16 @@
           "session_id": {
             "type": "string"
           },
+          "answer": {
+            "type": "string",
+            "description": "Free-text answer to a pending question on the connected session."
+          },
+          "project_root": {
+            "type": "string"
+          },
+          "worktree_path": {
+            "type": "string"
+          },
           "project": {
             "type": "string",
             "description": "A listed folder, to narrow the list."
@@ -501,6 +511,10 @@
           "updated_at": {
             "type": "number",
             "description": "Epoch seconds; 0 when the client does not report one."
+          },
+          "visited_at": {
+            "type": "number",
+            "description": "Epoch seconds when last viewed in T3; 0 when unreported."
           }
         }
       },

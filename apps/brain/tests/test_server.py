@@ -710,3 +710,40 @@ async def test_origin_header_rejected_trace_id_confined_unlisted_cwd_blocked_and
         await server.stop_background()
         await reconciler.stop()
         db.close()
+
+
+async def test_openapi_routes_match_gateway_and_pair_request_is_rate_limited(tmp_path: Path) -> None:
+    from jarvis_core.home import REPO_ROOT
+    from jarvis_voice.remote_audio import make_transport
+
+    cfg = Settings(
+        home_dir=tmp_path / "home",
+        projects_dir=tmp_path / "Projects",
+        allowed_repos="jarvis",
+        brain_api_key="secret-token",
+        openrouter_api_key="",
+        sandbox_enabled=False,
+    )
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    relay = make_transport()
+    server = BrainServer(db, reconciler, cfg, extra_routes=relay.routes())
+    try:
+        openapi = json.loads((REPO_ROOT / "schemas" / "openapi.json").read_text(encoding="utf-8"))
+        documented = set(openapi["paths"].keys())
+        registered = {
+            res.canonical
+            for res in server.app.router.resources()
+            if not res.canonical.startswith("/_debug")
+        }
+        assert documented == registered
+
+        async with TestClient(TestServer(server.app)) as client:
+            for _ in range(10):
+                resp = await client.post("/v1/pair/request", json={"name": "Laptop"})
+                assert resp.status == 200
+            emitted = [e for e in server.hub.snapshot(50) if e["event"] == "pair.requested"]
+            assert len(emitted) == 1
+    finally:
+        await reconciler.stop()
+        db.close()

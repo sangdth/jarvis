@@ -29,7 +29,16 @@ from typing import IO, Any, Iterator
 import httpx
 from loguru import logger
 
-from jarvis_core.home import IPC_HOME, JARVIS_HOME, REPO_ROOT, brain_home, brain_token, git_version, workspace_root
+from jarvis_core.home import (
+    IPC_HOME,
+    JARVIS_HOME,
+    REPO_ROOT,
+    brain_home,
+    brain_token,
+    git_version,
+    rollback_if_last_good,
+    workspace_root,
+)
 
 LAUNCHD_LABEL = "com.sangdth.jarvis"
 PLIST_PATH = Path(f"~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist").expanduser()
@@ -773,21 +782,25 @@ def parse_foreground(argv: list[str]) -> tuple[bool, str | None]:
 
 def run_foreground(argv: list[str] | None = None) -> None:
     meeting, connect = parse_foreground(list(argv or []))
-    from jarvis.supervisor import prepare_environment
-
-    prepare_environment()
-    if not (JARVIS_HOME / ".env").exists():
-        sys.exit(f"No .env in {JARVIS_HOME}: run `jarvis init` first.")
-    lock = hold_lock()  # noqa: F841 (held until exit)
-    logger.info(f"Jarvis {version()}")
-
-    from jarvis.supervisor import start_all
-
     try:
+        from jarvis.supervisor import prepare_environment
+
+        prepare_environment()
+        if not (JARVIS_HOME / ".env").exists():
+            sys.exit(f"No .env in {JARVIS_HOME}: run `jarvis init` first.")
+        lock = hold_lock()  # noqa: F841 (held until exit)
+        logger.info(f"Jarvis {version()}")
+
+        from jarvis.supervisor import start_all
+
         asyncio.run(start_all(connect=connect, meeting=meeting))
     except KeyboardInterrupt:
         logger.info("Jarvis stopped.")
         sys.exit(0)
+    except Exception:
+        if rolled_back := rollback_if_last_good():
+            logger.error(f"Startup crashed; rolled back checkout to last_good_sha {rolled_back}.")
+        raise
 
 
 def main() -> None:

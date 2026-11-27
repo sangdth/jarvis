@@ -548,3 +548,82 @@ async def test_queue_task_passes_run_key_and_adapted_approval_cb(tmp_path: Path)
         await orch.close()
         await reconciler.stop()
         db.close()
+
+
+async def test_deferred_t3_outbox_approval_forwards_answer_to_runner(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set)
+    reconciler = Reconciler(db, cfg)
+    runner = FakeT3Runner()
+    server = BrainServer(
+        db, reconciler, cfg, runners={"t3": runner},  # type: ignore[dict-item]
+        orchestrator=DirectOrchestrator(runner),
+    )
+    headers = {"Authorization": "Bearer secret"}
+    try:
+        async with TestClient(TestServer(server.app)) as client:
+            ask = await client.post("/v1/ask", json={"input": "Add a login form"}, headers=headers)
+            assert ask.status == 200
+            queued = db.list_outbox()
+            assert len(queued) == 1 and queued[0].kind == "approval_request"
+
+            resolved = await client.post(
+                f"/v1/outbox/{queued[0].id}/resolve",
+                json={"approved": True, "answer": "Postgres"},
+                headers=headers,
+            )
+            assert resolved.status == 200
+            assert runner.answers == ["Postgres"]
+    finally:
+        await server.stop_background()
+        await reconciler.stop()
+        db.close()
+
+
+async def test_claude_list_sessions_reads_jsonl_and_strips_gateway_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from brain.runners.claude import ClaudeRunner
+    from brain.sandbox import strip_gateway_secrets
+
+    claude_cfg = tmp_path / "claude"
+    proj_dir = claude_cfg / "projects" / "my-app"
+    proj_dir.mkdir(parents=True)
+    app_cwd = (tmp_path / "Projects" / "my-app").resolve()
+    app_cwd.mkdir(parents=True)
+    other_cwd = (tmp_path / "Projects" / "other").resolve()
+    other_cwd.mkdir(parents=True)
+
+    (proj_dir / "11111111-1111-1111-1111-111111111111.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(app_cwd), "gitBranch": "feat/auth",
+                    "message": {"content": "Fix JWT validation"}}) + "\n"
+        + json.dumps({"customTitle": "JWT validation"}) + "\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "22222222-2222-2222-2222-222222222222.jsonl").write_text(
+        json.dumps({"isSidechain": True, "type": "user", "cwd": str(app_cwd),
+                    "message": {"content": "Subagent"}}) + "\n",
+        encoding="utf-8",
+    )
+    (proj_dir / "33333333-3333-3333-3333-333333333333.jsonl").write_text(
+        json.dumps({"type": "user", "cwd": str(other_cwd),
+                    "message": {"content": "Other project prompt"}}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_cfg))
+    runner = ClaudeRunner(_cfg(tmp_path))
+    all_sessions = await runner.list_sessions()
+    assert len(all_sessions) == 2
+    scoped = await runner.list_sessions(cwd=str(app_cwd))
+    assert len(scoped) == 1
+    assert scoped[0].title == "JWT validation"
+    assert scoped[0].branch == "feat/auth"
+
+    cleaned = strip_gateway_secrets(
+        {"BRAIN_API_KEY": "owner-tok", "JARVIS_TOKEN": "owner-tok", "OPENROUTER_API_KEY": "keep-me"}
+    )
+    assert "BRAIN_API_KEY" not in cleaned and "JARVIS_TOKEN" not in cleaned
+    assert cleaned["OPENROUTER_API_KEY"] == "keep-me"
+    _ = os

@@ -311,7 +311,11 @@ class BrainOrchestrator:
                 },
             }
         if _BOARD.search(text):
-            return {"name": "queue_board_task", "arguments": {"text": text}}
+            recent_repo = self._last_project(session_id) or ""
+            args: dict[str, Any] = {"text": text}
+            if recent_repo and recent_repo in self.db.allowed_repos:
+                args["repo"] = recent_repo
+            return {"name": "queue_board_task", "arguments": args}
         for project in projects:
             name = Path(project).name.lower()
             if name and name in lowered:
@@ -423,10 +427,12 @@ class BrainOrchestrator:
         if runner is None:
             return RunResult(outcome="errored", summary=f"The {runner_id} runner is not available.")
         try:
-            return await runner.run(request, emit)
+            res = await runner.run(request, emit)
+            res.runner = res.runner or runner_id
+            return res
         except Exception as exc:
             logger.error(f"[Brain] {runner_id} run failed: {exc!r}")
-            return RunResult(outcome="errored", summary=f"{runner_id} failed: {exc}")
+            return RunResult(outcome="errored", summary=f"{runner_id} failed: {exc}", runner=runner_id)
 
     # ------------------------------------------------------------------ board & sessions
 
@@ -438,7 +444,9 @@ class BrainOrchestrator:
         run_id: str | None = None,
         approval_cb: ApprovalCallback | None = None,
     ) -> RunResult:
-        repo = str(args.get("repo") or "").strip() or next(iter(sorted(self.db.allowed_repos)), "jarvis")
+        non_self = sorted(self.db.allowed_repos - {"jarvis", "brain"})
+        default_repo = non_self[0] if non_self else "jarvis"
+        repo = str(args.get("repo") or "").strip() or default_repo
         repo = repo if repo in self.db.allowed_repos else self.db.validate_repo(repo)
         spec = str(args.get("spec") or user_input)
         kind = str(args.get("kind") or "goal")

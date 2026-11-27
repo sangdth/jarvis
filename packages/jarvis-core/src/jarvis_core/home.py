@@ -199,3 +199,44 @@ def migrate_legacy_brain_home(home: Path | None = None) -> Path | None:
     shared_dir(base)
     shutil.move(str(LEGACY_BRAIN_HOME), str(target))
     return target
+
+
+def rollback_if_last_good(db_path: Path | None = None, repo_root: Path | None = None) -> str | None:
+    """Reset the checkout to `last_good_sha` when a self-upgraded startup crashes; returns the SHA rolled back to."""
+    import sqlite3
+
+    target_db = db_path or (brain_home() / "state.db")
+    if not target_db.is_file():
+        return None
+    last_sha: str | None = None
+    conn = sqlite3.connect(str(target_db))
+    try:
+        row = conn.execute("SELECT last_good_sha FROM system_state WHERE id = 1").fetchone()
+        last_sha = str(row[0]).strip() if row and row[0] else None
+        if last_sha:
+            with conn:
+                conn.execute(
+                    "UPDATE system_state SET last_good_sha = NULL, upgrade_runs = 0, upgrade_failures = 0 WHERE id = 1"
+                )
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not last_sha:
+        return None
+    explicit_repo = os.environ.get("SELF_REPO_DIR", "").strip() or env_file_value("SELF_REPO_DIR")
+    root = (repo_root or (Path(explicit_repo).expanduser() if explicit_repo else REPO_ROOT)).resolve()
+    if (root / ".git").exists():
+        dirty = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if dirty:
+            subprocess.run(
+                ["git", "-C", str(root), "stash", "push", "-u", "-m", "jarvis-pre-startup-rollback"],
+                check=False,
+            )
+        subprocess.run(["git", "-C", str(root), "reset", "--hard", last_sha], check=False)
+    return last_sha

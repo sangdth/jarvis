@@ -61,6 +61,7 @@ class RunResult:
     outcome: RunOutcome
     summary: str
     cost_usd: float = 0.0
+    runner: str = ""
     session_id: str | None = None  # the thread/session the work went to
     session_title: str | None = None
     project: str | None = None  # the listed folder a project turn went to, for follow-up turns

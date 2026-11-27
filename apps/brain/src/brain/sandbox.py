@@ -6,13 +6,17 @@ from pathlib import Path
 
 from jarvis_core.home import JARVIS_HOME
 
-# Credentials a worker must never inherit. It runs model-authored commands, and the gateway token would let a
-# prompt-injected worker approve its own protected changes over loopback.
-SECRET_ENV = (
+GATEWAY_SECRET_ENV = (
     "BRAIN_API_KEY",
     "JARVIS_TOKEN",
     "REMOTE_TOKEN",
     "SUPERBRAIN_API_KEY",
+)
+
+# Credentials a worker must never inherit. It runs model-authored commands, and the gateway token would let a
+# prompt-injected worker approve its own protected changes over loopback.
+SECRET_ENV = (
+    *GATEWAY_SECRET_ENV,
     "OPENROUTER_API_KEY",
     "ELEVENLABS_API_KEY",
     "LAYA_API_KEY",
@@ -20,6 +24,13 @@ SECRET_ENV = (
     "GH_TOKEN",
     "GITHUB_TOKEN",
 )
+
+
+def strip_gateway_secrets(env: dict[str, str]) -> dict[str, str]:
+    """Drop Jarvis's own gateway tokens from coding-client child processes while keeping their LLM keys."""
+    for key in GATEWAY_SECRET_ENV:
+        env.pop(key, None)
+    return env
 
 
 def strip_secrets(env: dict[str, str]) -> dict[str, str]:
@@ -34,6 +45,7 @@ def _deny_reads_and_ipc(
     *,
     allow_read_traces: bool = False,
     allow_read_held_out: bool = False,
+    brain_port: int = 8643,
 ) -> list[str]:
     """Seatbelt rules blocking credentials, board DB, and local agent control sockets/ports."""
     lines: list[str] = []
@@ -63,10 +75,8 @@ def _deny_reads_and_ipc(
             # Never readable by workers or the Improver: a candidate tuned against the set that measures it is no gate.
             lines.append(f'(deny file-read-data (subpath "{_escape_sb_path(home_dir / "evals" / "held_out")}"))')
     pi_sock_dir = _escape_sb_path(Path("~/.config/jarvis/pi").expanduser())
-    lines.append(
-        f'(deny network-outbound (remote unix-socket (subpath "{pi_sock_dir}")) '
-        '(remote tcp "*:8643") (remote tcp "*:3773"))'
-    )
+    ports = " ".join(f'(remote tcp "*:{p}")' for p in sorted({8643, int(brain_port), 3773}))
+    lines.append(f'(deny network-outbound (remote unix-socket (subpath "{pi_sock_dir}")) {ports})')
     return lines
 
 
@@ -97,6 +107,7 @@ def build_sandbox_profile(
     home_dir: Path | None = None,
     allow_read_traces: bool = False,
     allow_read_held_out: bool = False,
+    brain_port: int = 8643,
 ) -> str:
     """
     macOS Seatbelt (`sandbox-exec`) profile for Brain workers.
@@ -131,6 +142,7 @@ def build_sandbox_profile(
             home_dir,
             allow_read_traces=allow_read_traces,
             allow_read_held_out=allow_read_held_out,
+            brain_port=brain_port,
         )
     )
     lines.append("")
@@ -146,6 +158,7 @@ def wrap_with_sandbox(
     home_dir: Path | None = None,
     allow_read_traces: bool = False,
     allow_read_held_out: bool = False,
+    brain_port: int = 8643,
     enabled: bool = True,
 ) -> list[str]:
     """Wraps `cmd` in `sandbox-exec -f <profile.sb>` on macOS when enabled."""
@@ -161,6 +174,7 @@ def wrap_with_sandbox(
             home_dir=home_dir,
             allow_read_traces=allow_read_traces,
             allow_read_held_out=allow_read_held_out,
+            brain_port=brain_port,
         ),
         encoding="utf-8",
     )
@@ -168,7 +182,7 @@ def wrap_with_sandbox(
 
 
 def build_ephemeral_sandbox_profile(
-    work_dir: Path, *, home_dir: Path | None = None
+    work_dir: Path, *, home_dir: Path | None = None, brain_port: int = 8643
 ) -> str:
     """Seatbelt profile for a one-shot `pi` answer: writes only in its own temp dir, reads no secrets.
 
@@ -185,7 +199,7 @@ def build_ephemeral_sandbox_profile(
         '(allow file-write* (subpath "/private/tmp"))',
         f'(allow file-write* (subpath "{work}"))',
     ]
-    lines.extend(_deny_reads_and_ipc(home_dir))
+    lines.extend(_deny_reads_and_ipc(home_dir, brain_port=brain_port))
     lines.append("")
     return "\n".join(lines)
 
@@ -195,6 +209,7 @@ def wrap_ephemeral(
     *,
     work_dir: Path,
     home_dir: Path | None = None,
+    brain_port: int = 8643,
     enabled: bool = True,
 ) -> list[str]:
     """Wrap a one-shot worker in a temp-dir-only Seatbelt profile on macOS."""
@@ -203,7 +218,7 @@ def wrap_ephemeral(
     work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile_path = work_dir / "sandbox.sb"
     profile_path.write_text(
-        build_ephemeral_sandbox_profile(work_dir, home_dir=home_dir),
+        build_ephemeral_sandbox_profile(work_dir, home_dir=home_dir, brain_port=brain_port),
         encoding="utf-8",
     )
     return ["sandbox-exec", "-f", str(profile_path), *cmd]

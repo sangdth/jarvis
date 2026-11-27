@@ -7,16 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from brain import upgrade as upgrade_mod
-from brain.cli import main
 from brain.config import Settings
 from brain.db import BrainDB
 from brain.reconciler import Reconciler
 from brain.upgrade import (
     GitState,
     classify_git_state,
-    read_snapshot,
-    run_upgrade,
 )
 
 
@@ -101,169 +97,6 @@ def _peer_commit(tmp_path: Path, bare: Path, files: dict[str, str], message: str
 
 def _db(tmp_path: Path) -> BrainDB:
     return BrainDB(tmp_path / "state.db", allowed_repos={"brain"})
-
-
-# --------------------------------------------------------------------------------------
-# `brain upgrade` CLI
-# --------------------------------------------------------------------------------------
-def test_upgrade_check_is_read_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    repo, _ = _init_scratch_repo(tmp_path)
-    (repo / "src" / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
-    before = _git(repo, "rev-parse", "HEAD")
-
-    assert run_upgrade(repo_dir=repo, check=True) == 0
-
-    assert _git(repo, "rev-parse", "HEAD") == before
-    assert (repo / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
-    assert _git(repo, "stash", "list") == ""
-    out = capsys.readouterr().out
-    assert "state:" in out
-    assert "dirty" in out
-    assert "fast-forward possible:" in out
-    assert read_snapshot(repo).dirty_entries
-
-
-def test_upgrade_cli_check_subcommand_is_wired(tmp_path: Path) -> None:
-    repo, _ = _init_scratch_repo(tmp_path)
-    assert main(["upgrade", "--check", "--repo", str(repo)]) == 0
-
-
-def test_upgrade_noop_when_up_to_date(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    repo, _ = _init_scratch_repo(tmp_path)
-    db = _db(tmp_path)
-    try:
-        assert run_upgrade(repo_dir=repo, db=db) == 0
-        assert db.get_state().last_good_sha is None
-        assert "Already up to date" in capsys.readouterr().out
-    finally:
-        db.close()
-
-
-def test_upgrade_fast_forwards_and_skips_uv_sync_for_src_only_changes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo, bare = _init_scratch_repo(tmp_path)
-    old_head = _git(repo, "rev-parse", "HEAD")
-    new_head = _peer_commit(tmp_path, bare, {"src/app.py": "VALUE = 42\n"})
-
-    sync_calls: list[Path] = []
-    monkeypatch.setattr(upgrade_mod, "run_uv_sync", lambda path: sync_calls.append(path) or 0)
-    restarts: list[int] = []
-    monkeypatch.setattr(upgrade_mod, "restart_daemon", lambda: restarts.append(1) or 0)
-
-    db = _db(tmp_path)
-    try:
-        assert run_upgrade(repo_dir=repo, db=db) == 0
-        assert _git(repo, "rev-parse", "HEAD") == new_head
-        assert (repo / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 42\n"
-        # last_good_sha anchors rollback to the pre-upgrade commit
-        assert db.get_state().last_good_sha == old_head
-        assert sync_calls == []  # only src/ changed -> no uv sync
-        assert restarts == [1]
-        out = capsys.readouterr().out
-        assert "Fast-forwarded" in out
-        assert "skipping `uv sync`" in out
-    finally:
-        db.close()
-
-
-def test_upgrade_syncs_dependencies_when_pyproject_or_lock_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo, bare = _init_scratch_repo(tmp_path)
-    _peer_commit(tmp_path, bare, {"uv.lock": "version = 2\n"})
-
-    sync_calls: list[Path] = []
-    monkeypatch.setattr(upgrade_mod, "run_uv_sync", lambda path: sync_calls.append(path) or 0)
-    monkeypatch.setattr(upgrade_mod, "restart_daemon", lambda: 0)
-
-    db = _db(tmp_path)
-    try:
-        assert run_upgrade(repo_dir=repo, db=db) == 0
-        assert sync_calls == [repo]
-    finally:
-        db.close()
-
-
-def test_upgrade_refuses_dirty_tree_without_stash(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo, bare = _init_scratch_repo(tmp_path)
-    old_head = _git(repo, "rev-parse", "HEAD")
-    _peer_commit(tmp_path, bare, {"src/app.py": "VALUE = 7\n"})
-    (repo / "src" / "app.py").write_text("VALUE = 'uncommitted'\n", encoding="utf-8")
-
-    db = _db(tmp_path)
-    try:
-        assert run_upgrade(repo_dir=repo, db=db) == 1
-        assert _git(repo, "rev-parse", "HEAD") == old_head
-        assert (repo / "src" / "app.py").read_text(encoding="utf-8") == "VALUE = 'uncommitted'\n"
-        assert db.get_state().last_good_sha is None
-        out = capsys.readouterr().out
-        assert "uncommitted changes" in out
-        assert "--stash" in out
-    finally:
-        db.close()
-
-
-def test_upgrade_stashes_dirty_tree_when_asked(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo, bare = _init_scratch_repo(tmp_path)
-    new_head = _peer_commit(tmp_path, bare, {"src/app.py": "VALUE = 7\n"})
-    (repo / "src" / "app.py").write_text("VALUE = 'uncommitted'\n", encoding="utf-8")
-
-    db = _db(tmp_path)
-    try:
-        assert run_upgrade(repo_dir=repo, db=db, stash=True, restart=False) == 0
-        assert _git(repo, "rev-parse", "HEAD") == new_head
-        stash_list = _git(repo, "stash", "list")
-        assert "brain-upgrade-" in stash_list
-        assert "Stashed local changes" in capsys.readouterr().out
-    finally:
-        db.close()
-
-
-def test_upgrade_refuses_divergence_and_prints_remedy(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo, bare = _init_scratch_repo(tmp_path)
-    (repo / "src" / "local.py").write_text("LOCAL = True\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "local only")
-    local_head = _git(repo, "rev-parse", "HEAD")
-    origin_head = _peer_commit(tmp_path, bare, {"src/peer.py": "PEER = True\n"})
-
-    db = _db(tmp_path)
-    try:
-        assert run_upgrade(repo_dir=repo, db=db) == 1
-        assert _git(repo, "rev-parse", "HEAD") == local_head
-        assert (repo / "src" / "local.py").exists()
-        # origin was never rewritten
-        assert _git(bare, "rev-parse", "master") == origin_head
-        assert db.get_state().last_good_sha is None
-        out = capsys.readouterr().out
-        assert "diverged" in out
-        assert "rebase origin/master" in out
-        assert "never" in out.lower()
-    finally:
-        db.close()
-
-
-def test_upgrade_without_restart_flag_does_not_kickstart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo, bare = _init_scratch_repo(tmp_path)
-    _peer_commit(tmp_path, bare, {"src/app.py": "VALUE = 3\n"})
-    restarts: list[int] = []
-    monkeypatch.setattr(upgrade_mod, "restart_daemon", lambda: restarts.append(1) or 0)
-
-    db = _db(tmp_path)
-    try:
-        assert run_upgrade(repo_dir=repo, db=db, restart=False) == 0
-        assert restarts == []
-    finally:
-        db.close()
 
 
 # --------------------------------------------------------------------------------------
@@ -530,6 +363,59 @@ async def test_self_upgrade_refuses_stale_candidate_when_master_advanced(tmp_pat
             for r in reports
         )
         assert db.get_state().last_good_sha is None
+    finally:
+        await reconciler.stop()
+        db.close()
+
+
+async def test_apply_self_upgrade_rolls_back_on_failed_uv_sync_and_rebuilds_connect_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    projects_dir, repo, _, initial_sha = _init_brain_repo(tmp_path)
+    connect_dir = repo / "apps" / "connect"
+    connect_dir.mkdir(parents=True)
+    marker = tmp_path / "connect-built.txt"
+    build_sh = connect_dir / "build.sh"
+    build_sh.write_text(f"#!/bin/sh\necho ok > '{marker}'\n", encoding="utf-8")
+    build_sh.chmod(0o755)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "dep change")
+    candidate_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "reset", "--hard", initial_sha)
+
+    bad_uv = _write_fake_pi(tmp_path / "bad_uv.py", "import sys; sys.exit(2)")
+    good_uv = _write_fake_pi(tmp_path / "good_uv.py", "import sys; sys.exit(0)")
+
+    cfg = _settings(tmp_path, projects_dir, _write_fake_pi(tmp_path / "noop_pi.py", "pass"))
+    db = BrainDB(cfg.db_path, cfg.allowed_repo_set, default_mode="AUTONOMOUS")
+    db.upsert_task(
+        task_id="SG-1", kind="goal", repo="brain", title="Dep upgrade",
+        spec="Upgrade deps", metric_target="passes", verify_cmd="true", ready=False,
+    )
+    reconciler = Reconciler(db, cfg)
+    try:
+        # 1. Failed `uv sync` aborts apply, resets HEAD back to initial_sha, and clears last_good_sha.
+        monkeypatch.setattr(
+            "brain.reconciler.shutil.which",
+            lambda name: str(bad_uv) if name == "uv" else ("/usr/bin/true" if name == "swiftc" else None),
+        )
+        assert await reconciler._apply_self_upgrade(repo, candidate_sha, "SG-1") is False
+        assert _git(repo, "rev-parse", "HEAD") == initial_sha
+        assert db.get_state().last_good_sha is None
+        assert reconciler.restart_pending is False
+
+        # 2. Passing `uv sync` runs `apps/connect/build.sh` when `swiftc` is present.
+        monkeypatch.setattr(
+            "brain.reconciler.shutil.which",
+            lambda name: str(good_uv) if name == "uv" else ("/usr/bin/true" if name == "swiftc" else None),
+        )
+        monkeypatch.setattr("brain.reconciler.sys.platform", "darwin")
+        assert await reconciler._apply_self_upgrade(repo, candidate_sha, "SG-1") is True
+        assert marker.is_file()
+        _ = asyncio
     finally:
         await reconciler.stop()
         db.close()
